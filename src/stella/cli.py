@@ -247,11 +247,16 @@ def create_stella_from_environment() -> Stella:
 
     provider = os.environ.get("STELLA_LLM_PROVIDER", "openai").casefold()
     if provider == "ollama":
+        # The compatibility endpoint ignores per-request options on Ollama
+        # 0.33.x; native /api/chat is the only way to apply num_ctx=4096,
+        # which keeps the model fully on GPU (measured ~3x faster turns).
         llm = OllamaLLMClient(
             model=model,
             base_url=os.environ.get(
                 "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
             ),
+            native=True,
+            num_ctx=4096,
         )
     elif provider == "openai":
         llm = OpenAILLMClient(

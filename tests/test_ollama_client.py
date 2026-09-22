@@ -174,6 +174,8 @@ def test_cli_selects_ollama_provider(monkeypatch) -> None:
     ollama_client.assert_called_once_with(
         model="qwen3:4b",
         base_url=DEFAULT_OLLAMA_BASE_URL,
+        native=True,
+        num_ctx=4096,
     )
     assert stella.brain.llm is ollama_client.return_value
 
@@ -192,6 +194,8 @@ def test_cli_honours_custom_ollama_base_url(monkeypatch) -> None:
     ollama_client.assert_called_once_with(
         model="qwen3:4b",
         base_url="http://192.0.2.1:11434/v1",
+        native=True,
+        num_ctx=4096,
     )
 
 

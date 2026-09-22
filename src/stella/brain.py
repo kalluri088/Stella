@@ -50,6 +50,7 @@ class Decision:
     arguments: dict[str, object] | None = None
     memory_write: MemoryWriteRequest | None = None
     capability: str | None = None
+    tool_final: bool = False
 
 
 class ToolUsePolicy:
@@ -196,6 +197,11 @@ capabilities, argument names, or argument values. Tool descriptions are
 guidance for deciding when a capability is relevant; Stella performs the
 trusted runtime lookup and validation. Read-only tools do not provide
 environment variables, secrets, shell commands, or arbitrary code execution.
+A kind=tool decision may set "tool_final": true only when that single tool
+result is all the request needs and no further tool call or clarification can
+follow; the runtime then answers directly from that one observation. Omit
+tool_final (or use false) for multi-step plans. It never overrides approval,
+and a failed observation is still reported honestly.
 Risk and approval are determined by trusted application code, not by the
 structured response. Do not include or invent risk or approval fields.
 The filesystem_write capability only creates a new UTF-8 text file inside the
@@ -378,12 +384,15 @@ Behavioral preferences:
             arguments = payload.get("arguments")
             memory_write = payload.get("memory_write")
             capability = payload.get("capability")
+            tool_final = payload.get("tool_final")
 
             if content is not None and not isinstance(content, str):
                 return cls._safe_decision()
             if arguments is not None and not isinstance(arguments, dict):
                 return cls._safe_decision()
             if capability is not None and not isinstance(capability, str):
+                return cls._safe_decision()
+            if tool_final is not None and not isinstance(tool_final, bool):
                 return cls._safe_decision()
             if memory_write is not None:
                 if not isinstance(memory_write, dict):
@@ -399,6 +408,8 @@ Behavioral preferences:
                 arguments=arguments,
                 memory_write=memory_write,
                 capability=capability,
+                tool_final=bool(tool_final)
+                and kind is DecisionKind.TOOL,
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return cls._safe_decision()

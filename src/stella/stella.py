@@ -286,7 +286,26 @@ class Stella:
                             memory_write_requested=memory_write_requested,
                         ),
                     )
-                continue
+                if decision.tool_final and tool_steps == 1:
+                    # Targeted fast path: the Brain declared this first tool
+                    # call terminal, so synthesize from the observation
+                    # instead of paying for a middle re-decision call. The
+                    # synthetic ANSWER decision keeps step_trace, result
+                    # metadata, and trace semantics identical to the
+                    # re-decision flow; approval, memory-write gating, and
+                    # tool-output limits already ran above and are unchanged.
+                    decision = Decision(DecisionKind.ANSWER)
+                    trace.record(
+                        DecisionEvent(
+                            kind=decision.kind.value,
+                            capability=None,
+                            argument_keys=(),
+                            content_chars=0,
+                            memory_write_proposed=False,
+                        )
+                    )
+                else:
+                    continue
 
             if (
                 memory_write is None

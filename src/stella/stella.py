@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from stella.audio import (
     NormalizedInput,
@@ -160,6 +160,7 @@ class Stella:
         step_trace: list[StellaStep] = []
         memory_write = None
         memory_write_requested = False
+        memory_write_denied = False
         tool_steps = 0
         last_tool_result = None
 
@@ -172,6 +173,10 @@ class Stella:
                 input_envelope=context.input_envelope,
             )
             decision = self.brain.decide(decision_context)
+            # Provenance is fixed at decision time: a proposal made after
+            # tool observations entered the context may have been shaped by
+            # untrusted output and is only stored with user approval.
+            decision_from_observations = bool(observations)
             trace.record(
                 DecisionEvent(
                     kind=decision.kind.value,
@@ -247,7 +252,16 @@ class Stella:
                     and tool_result.memory_action is None
                     and self._is_meaningful_tool_result(tool_result)
                 ):
-                    memory_write = self._write_memory(decision.memory_write)
+                    memory_write, write_denied = self._write_memory(
+                        decision.memory_write,
+                        requires_approval=decision_from_observations,
+                        trace=trace,
+                    )
+                    memory_write_denied = memory_write_denied or write_denied
+                    if write_denied:
+                        # A proposal the runtime refused must not reach
+                        # response synthesis as pending work.
+                        decision = replace(decision, memory_write=None)
                     trace.record_memory_write(
                         MemoryWriteEvent(
                             proposed=True,
@@ -297,6 +311,9 @@ class Stella:
                             observations,
                         )
                     )
+                    response = self._with_memory_note(
+                        response, memory_write_denied
+                    )
                     return StellaResult(
                         decision,
                         response=response,
@@ -341,7 +358,14 @@ class Stella:
                     or self._is_meaningful_tool_result(last_tool_result)
                 )
             ):
-                memory_write = self._write_memory(decision.memory_write)
+                memory_write, write_denied = self._write_memory(
+                    decision.memory_write,
+                    requires_approval=decision_from_observations,
+                    trace=trace,
+                )
+                memory_write_denied = memory_write_denied or write_denied
+                if write_denied:
+                    decision = replace(decision, memory_write=None)
                 trace.record_memory_write(
                     MemoryWriteEvent(
                         proposed=True,
@@ -361,9 +385,12 @@ class Stella:
                     # to be a complete user-facing final response, whether or
                     # not a tool observation preceded it. Re-synthesizing it
                     # spent a whole extra LLM call on identical authority.
+                    response = self._with_memory_note(
+                        decision.content, memory_write_denied
+                    )
                     return StellaResult(
                         decision,
-                        response=decision.content,
+                        response=response,
                         tool_result=last_tool_result,
                         retrieved_memories=retrieved_memories,
                         memory_write=memory_write,
@@ -371,7 +398,7 @@ class Stella:
                         interaction_trace=self._complete_trace(
                             trace,
                             decision,
-                            response=decision.content,
+                            response=response,
                             memory_write=memory_write,
                             memory_write_requested=memory_write_requested,
                         ),
@@ -383,6 +410,9 @@ class Stella:
                         decision,
                         observations,
                     )
+                )
+                response = self._with_memory_note(
+                    response, memory_write_denied
                 )
                 return StellaResult(
                     decision,
@@ -686,13 +716,60 @@ class Stella:
         ]
 
     def _write_memory(
-        self, request: MemoryWriteRequest | None
-    ) -> MemoryWriteResult | None:
+        self,
+        request: MemoryWriteRequest | None,
+        *,
+        requires_approval: bool = False,
+        trace: InteractionTrace | None = None,
+    ) -> tuple[MemoryWriteResult | None, bool]:
+        """Store one explicit memory proposal; return (result, denied).
+
+        Proposals grounded only in the user's own turn are stored directly.
+        A proposal formed after tool observations may have been shaped by
+        untrusted output, so it is stored only after a trusted approval
+        provider approves the exact content; without a provider it is never
+        stored.
+        """
+
         if request is None:
-            return None
+            return None, False
+        if requires_approval:
+            approval_request = ApprovalRequest(
+                "memory_write", {"content": request.item.content}
+            )
+            approved = False
+            if self.approval_provider is not None:
+                approval = self.approval_provider(approval_request)
+                approved = (
+                    isinstance(approval, ToolApproval)
+                    and approval.approved is True
+                    and approval.request == approval_request
+                )
+            if trace is not None:
+                trace.record(ApprovalEvent("memory_write", approved))
+            if not approved:
+                return (
+                    MemoryWriteResult(item=request.item, written=False),
+                    True,
+                )
 
         stored = self.memory.store(request.item)
-        return MemoryWriteResult(item=request.item, written=stored is not False)
+        return (
+            MemoryWriteResult(item=request.item, written=stored is not False),
+            False,
+        )
+
+    @staticmethod
+    def _with_memory_note(
+        response: str, memory_write_denied: bool
+    ) -> str:
+        if not memory_write_denied:
+            return response
+        return (
+            response
+            + "\n\nNote: a memory write was proposed but not approved, "
+            "so nothing was remembered."
+        )
 
     @staticmethod
     def _is_meaningful_tool_result(

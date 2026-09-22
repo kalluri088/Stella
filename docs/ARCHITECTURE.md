@@ -270,7 +270,10 @@ application-produced `ToolApproval`; missing or mismatched approval fails
 closed. The normal CLI currently registers `DateTimeTool`,
 `SystemInfoTool`, `EchoTool`, the workspace-scoped `FileSystemReadTool`, and
 the approval-required `FileSystemWriteTool` and `FileSystemDeleteTool`
-together, and `NetworkReadTool`.
+together, and `NetworkReadTool`. It also registers the memory tools:
+`memory_list` is `SENSITIVE`, while `memory_update` and `memory_forget` are
+`DANGEROUS` and require exact application approval before they mutate stored
+memory.
 
 Tools are standalone abstractions. They are invoked by the orchestration layer
 only after a `Brain` returns a tool decision. Stella delegates to the trusted
@@ -308,7 +311,7 @@ has no message. This is a synchronous result contract, not a notification
 provider or delivery mechanism. The caller remains responsible for deciding
 whether and how to display the message.
 
-After the Brain returns, Stella performs at most one explicit memory write for the interaction. For an ordinary `ANSWER` from `LLMBrain`, the Brain's structured `content` is required to be a complete final response and Stella returns it without a second LLM call. If that content is missing, Stella falls back to the dedicated final-response request. A tool-result answer still uses that dedicated request containing the current input, conversation history, retrieved memories, tool observations, and selected decision; the request explicitly tells the LLM to generate text for the already-selected answer rather than choose another action. For an ask decision, Stella returns the decision content and marks that more information is needed. For a tool decision, it passes the decision's structured arguments through the dispatcher. With a bound greater than one, the resulting structured `ToolObservation` is fed to the Brain for the next decision. Once the Brain selects `ANSWER` after tool observations, Stella makes one final response-generation call. A failed `ToolResult` is also represented as an observation; no retry is performed independently by Stella. If the bound is reached before another tool proposal can execute, Stella returns a deterministic limit result. For a do-nothing decision, it returns without calling the LLM or tool.
+After the Brain returns, Stella performs at most one explicit memory write for the interaction. A write proposed by a decision grounded only in the user's own turn is stored directly; a proposal formed after tool observations may have been shaped by untrusted output, so it is stored only after a trusted approval provider approves the exact content, and it is never stored without a provider. A refused write is reported deterministically in the final response rather than left to the model's narration. For an ordinary `ANSWER` from `LLMBrain`, the Brain's structured `content` is required to be a complete final response and Stella returns it without a second LLM call. If that content is missing, Stella falls back to the dedicated final-response request. A tool-result answer still uses that dedicated request containing the current input, conversation history, retrieved memories, tool observations, and selected decision; the request explicitly tells the LLM to generate text for the already-selected answer rather than choose another action. For an ask decision, Stella returns the decision content and marks that more information is needed. For a tool decision, it passes the decision's structured arguments through the dispatcher. With a bound greater than one, the resulting structured `ToolObservation` is fed to the Brain for the next decision. Once the Brain selects `ANSWER` after tool observations, Stella makes one final response-generation call. A failed `ToolResult` is also represented as an observation; no retry is performed independently by Stella. If the bound is reached before another tool proposal can execute, Stella returns a deterministic limit result. For a do-nothing decision, it returns without calling the LLM or tool.
 
 Each `Stella.process()` result also exposes an `InteractionTrace`. The trace is
 an ordered, in-memory, provider-neutral record of the interaction boundaries:
@@ -409,8 +412,9 @@ This is a direct, bounded synchronous coordinator. It does not run in the
 background, learn, or turn a natural-language response into another action.
 The important design decision is that retrieval and writing are both explicit:
 Stella chooses the current-input query, while the Brain's non-empty write
-request is the only cause of a memory write. No conversation, response, or
-retrieved memory is stored by default.
+request is the only cause of a memory write; an observation-grounded proposal
+additionally executes only under exact approval-provider consent. No
+conversation, response, or retrieved memory is stored by default.
 
 The cross-instance persistence behavior is covered by an integration test: one Stella/SQLiteMemory instance explicitly writes a fact, both instances are closed or discarded, and a second Stella/SQLiteMemory instance retrieves that fact. A deterministic Brain changes its decision to `answer` when the retrieved memory is present, proving that SQLite memory affects behavior rather than merely retaining rows.
 

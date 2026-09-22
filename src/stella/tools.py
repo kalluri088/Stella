@@ -984,7 +984,7 @@ class MemoryUpdateTool(Tool):
 
     @property
     def risk_level(self) -> RiskLevel:
-        return RiskLevel.SENSITIVE
+        return RiskLevel.DANGEROUS
 
     def validate_arguments(self, arguments: dict[str, object]) -> bool:
         return (

@@ -391,6 +391,11 @@ def test_cli_approval_provider_requires_explicit_confirmation(
             {"query": "tea", "content": "green tea"},
             "change the memory matching \"tea\" to \"green tea\"",
         ),
+        (
+            "memory_write",
+            {"content": "The user prefers tea"},
+            "remember this as a permanent fact: \"The user prefers tea\"",
+        ),
         ("memory_list", {}, "show everything it has remembered about you"),
     ],
 )

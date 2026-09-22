@@ -245,6 +245,10 @@ def _action_summary(request: ApprovalRequest) -> str:
         url = quoted("url")
         if url is not None:
             return f"fetch text from this public web address: {url}"
+    elif capability == "memory_write":
+        content = quoted("content")
+        if content is not None:
+            return f"remember this as a permanent fact: {content}"
     elif capability == "memory_update":
         query = quoted("query")
         content = quoted("content")

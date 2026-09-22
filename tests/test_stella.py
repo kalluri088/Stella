@@ -32,6 +32,7 @@ from stella.tools import (
     ToolDispatcher,
     ToolResult,
 )
+from stella.trace import ApprovalEvent
 
 
 class FixedBrain(Brain):
@@ -898,6 +899,7 @@ def test_successful_tool_outcome_can_produce_one_memory_write() -> None:
         ToolDispatcher([RecordingTool()]),
         memory,
         max_tool_steps=2,
+        approval_provider=lambda request: ToolApproval(request, True),
     )
 
     result = stella.process(Context(user_input="Record the result."))
@@ -935,6 +937,7 @@ def test_filesystem_read_outcome_can_produce_independent_memory(tmp_path) -> Non
         ToolDispatcher([FileSystemReadTool(workspace)]),
         memory,
         max_tool_steps=2,
+        approval_provider=lambda request: ToolApproval(request, True),
     )
 
     result = stella.process(Context(user_input="Read the profile file."))
@@ -944,6 +947,133 @@ def test_filesystem_read_outcome_can_produce_independent_memory(tmp_path) -> Non
     )
     assert result.memory_write is not None
     assert memory.retrieve() == [item]
+
+
+def test_observation_grounded_memory_write_is_not_stored_without_approval(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text(
+        "The notes mention a fact worth keeping.", encoding="utf-8"
+    )
+    item = MemoryItem(content="INJECTED-MEMORY-FACT")
+    llm = RecordingLLM(response="I read the notes.")
+    stella = Stella(
+        SequenceBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    arguments={"path": "notes.txt"},
+                    capability="filesystem_read",
+                ),
+                Decision(
+                    DecisionKind.ANSWER,
+                    content="I will remember that.",
+                    memory_write=MemoryWriteRequest(item),
+                ),
+            ]
+        ),
+        llm,
+        ToolDispatcher([FileSystemReadTool(workspace)]),
+        RecordingMemory(),
+        max_tool_steps=2,
+    )
+
+    result = stella.process(Context(user_input="Read the notes file."))
+
+    assert isinstance(stella.memory, RecordingMemory)
+    assert stella.memory.write_count == 0
+    assert stella.memory.retrieve() == []
+    assert result.memory_write is not None
+    assert result.memory_write.written is False
+    assert result.decision.memory_write is None
+    assert "not approved" in result.response
+    # The refused proposal must not reach response synthesis as pending work.
+    assert "INJECTED-MEMORY-FACT" not in json.dumps(
+        [[message.content for message in call] for call in llm.messages]
+    )
+    approval_events = [
+        event
+        for event in result.interaction_trace.events
+        if isinstance(event, ApprovalEvent)
+    ]
+    assert approval_events == [ApprovalEvent("memory_write", False)]
+
+
+def test_explicit_provider_denial_blocks_observation_grounded_memory_write(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text(
+        "The notes mention a fact worth keeping.", encoding="utf-8"
+    )
+    item = MemoryItem(content="INJECTED-MEMORY-FACT")
+    requested: list[ApprovalRequest] = []
+
+    def deny(request: ApprovalRequest) -> ToolApproval:
+        requested.append(request)
+        return ToolApproval(request=request, approved=False)
+
+    memory = RecordingMemory()
+    stella = Stella(
+        SequenceBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    arguments={"path": "notes.txt"},
+                    capability="filesystem_read",
+                ),
+                Decision(
+                    DecisionKind.ANSWER,
+                    content="I will remember that.",
+                    memory_write=MemoryWriteRequest(item),
+                ),
+            ]
+        ),
+        RecordingLLM(response="I read the notes."),
+        ToolDispatcher([FileSystemReadTool(workspace)]),
+        memory,
+        max_tool_steps=2,
+        approval_provider=deny,
+    )
+
+    result = stella.process(Context(user_input="Read the notes file."))
+
+    assert requested == [
+        ApprovalRequest("memory_write", {"content": "INJECTED-MEMORY-FACT"})
+    ]
+    assert memory.write_count == 0
+    assert result.memory_write is not None
+    assert result.memory_write.written is False
+    assert "not approved" in result.response
+
+
+def test_user_grounded_memory_write_needs_no_provider() -> None:
+    memory = RecordingMemory()
+    item = MemoryItem(content="The user prefers tea")
+    stella = Stella(
+        SequenceBrain(
+            [
+                Decision(
+                    DecisionKind.ANSWER,
+                    content="I will remember that.",
+                    memory_write=MemoryWriteRequest(item),
+                )
+            ]
+        ),
+        RecordingLLM(response="Notified."),
+        ToolDispatcher([]),
+        memory,
+    )
+
+    result = stella.process(Context(user_input="Remember that I prefer tea."))
+
+    assert memory.write_count == 1
+    assert result.memory_write is not None
+    assert result.memory_write.written is True
+    assert "not approved" not in result.response
 
 
 def test_failed_or_irrelevant_tool_outcomes_do_not_create_memory() -> None:
@@ -1011,6 +1141,7 @@ def test_outcome_memory_persists_and_changes_fresh_stella_behavior(tmp_path) -> 
             ToolDispatcher([RecordingTool()]),
             first_memory,
             max_tool_steps=2,
+            approval_provider=lambda request: ToolApproval(request, True),
         )
         result = first_stella.process(Context(user_input="Record the result."))
 

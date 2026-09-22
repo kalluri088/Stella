@@ -7,11 +7,13 @@ from stella.llm import LLMClient
 from stella.memory import InMemoryMemory, MemoryItem, MemoryWriteRequest
 from stella.stella import Stella, StellaResult
 from stella.tools import (
+    ApprovalRequest,
     MemoryAction,
     MemoryForgetTool,
     MemoryListTool,
     MemoryUpdateTool,
     RiskLevel,
+    ToolApproval,
     ToolDispatcher,
 )
 from stella.trace import InteractionTrace, MemoryActionEvent
@@ -72,6 +74,27 @@ def test_memory_update_requires_exact_non_empty_arguments() -> None:
     assert not tool.validate_arguments(
         {"query": "tea", "content": "new", "extra": 1}
     )
+
+
+def test_memory_update_requires_dispatcher_approval() -> None:
+    memory = make_memory()
+    dispatcher = ToolDispatcher([MemoryUpdateTool(memory)])
+    arguments = {"query": "jasmine tea", "content": "green tea"}
+
+    assert dispatcher.risk_level("memory_update") is RiskLevel.DANGEROUS
+    assert dispatcher.requires_approval("memory_update") is True
+
+    refused = dispatcher.execute("memory_update", arguments)
+    assert refused.success is False
+    assert refused.output == "Approval required."
+    assert [item.content for item in memory.retrieve()] == [TEA, WIFI]
+
+    approval = ToolApproval(
+        ApprovalRequest("memory_update", dict(arguments)), True
+    )
+    granted = dispatcher.execute("memory_update", arguments, approval)
+    assert granted.success is True
+    assert "green tea" in [item.content for item in memory.retrieve()]
 
 
 def test_memory_update_without_a_match_fails() -> None:

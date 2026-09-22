@@ -81,9 +81,10 @@ class ToolUsePolicy:
     ) -> ToolUseMode:
         """Require a tool only for clear, relevant external-state requests."""
 
-        if not tools or any(
-            observation.success for observation in context.tool_observations
-        ):
+        # Any recorded observation — successful or failed — means the
+        # external state was already inspected. A failed tool must stay
+        # answerable so the model can honestly report the failure.
+        if not tools or context.tool_observations:
             return ToolUseMode.AUTO
 
         request_terms = cls._terms(context.user_input)
@@ -165,6 +166,10 @@ that an available tool provides:
   present in the context. If the required capability is unavailable or a
   required argument is missing or ambiguous, choose kind=ask or
   kind=do_nothing; never fabricate a tool result.
+- If the newest tool observation failed or an action was not approved, a
+  kind=answer response MUST state plainly that the action did not succeed and
+  give the reason from that observation. Never claim or imply that a failed
+  or unapproved action succeeded.
 
 The tool result is produced only by trusted runtime code after this decision.
 The tool decision is a request to the runtime, not evidence that the tool has

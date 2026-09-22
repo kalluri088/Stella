@@ -209,8 +209,13 @@ def test_fast_path_still_requires_approval_and_denial_blocks_execution() -> (
     assert tool.arguments == []  # denial prevented execution
     assert result.tool_result is not None
     assert result.tool_result.success is False
-    # the denial is still synthesized into an honest final response
-    assert len(llm.messages) == 1
+    # the runtime states the denial outcome directly; the model never
+    # gets a chance to phrase (or fabricate) it
+    assert len(llm.messages) == 0
+    assert result.response == (
+        "The action was not approved, so it was not performed. "
+        "Nothing was changed."
+    )
 
 
 def test_llm_brain_parses_tool_final_flag() -> None:

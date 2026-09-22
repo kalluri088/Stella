@@ -215,7 +215,7 @@ class Stella:
                     if isinstance(decision.arguments, dict)
                     else {}
                 )
-                tool_result = self._execute_tool(
+                tool_result, approval_denied = self._execute_tool(
                     decision.capability, arguments, trace
                 )
                 if tool_result.memory_action is not None:
@@ -261,6 +261,32 @@ class Stella:
                         )
                     )
 
+                if approval_denied:
+                    # The trusted approval provider explicitly refused this
+                    # action, so the runtime reports that outcome
+                    # deterministically: the action was not performed and the
+                    # model is never asked to phrase (or fabricate) it.
+                    response = (
+                        "The action was not approved, so it was not "
+                        "performed. Nothing was changed."
+                    )
+                    return StellaResult(
+                        decision,
+                        response=response,
+                        tool_result=tool_result,
+                        retrieved_memories=retrieved_memories,
+                        memory_write=memory_write,
+                        step_trace=step_trace,
+                        interaction_trace=self._complete_trace(
+                            trace,
+                            decision,
+                            response=response,
+                            memory_write=memory_write,
+                            memory_write_requested=(
+                                memory_write_requested
+                            ),
+                        ),
+                    )
                 if self.max_tool_steps == 1:
                     response = self.llm.chat(
                         self._tool_messages(
@@ -488,7 +514,7 @@ class Stella:
         capability: str | None,
         arguments: dict[str, object],
         trace: InteractionTrace | None = None,
-    ) -> ToolResult:
+    ) -> tuple[ToolResult, bool]:
         approval = None
         approval_required = self.tools.requires_approval(capability)
         approval_decision: bool | None = None
@@ -507,6 +533,9 @@ class Stella:
         if trace is not None and approval_required:
             trace.record(ApprovalEvent(capability, approval_decision))
         result = self.tools.execute(capability, arguments, approval)
+        explicitly_denied = (
+            isinstance(approval, ToolApproval) and approval.approved is False
+        )
         if trace is not None:
             trace.record(
                 ToolResultEvent(
@@ -516,7 +545,7 @@ class Stella:
                     output_chars=len(result.output),
                 )
             )
-        return result
+        return result, explicitly_denied
 
     @staticmethod
     def _complete_trace(

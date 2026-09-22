@@ -330,11 +330,11 @@ class Stella:
 
             step_trace.append(StellaStep(decision))
             if decision.kind is DecisionKind.ANSWER:
-                if (
-                    self.brain.answer_content_is_final
-                    and decision.content
-                    and not observations
-                ):
+                if self.brain.answer_content_is_final and decision.content:
+                    # The Brain protocol already mandates kind=answer content
+                    # to be a complete user-facing final response, whether or
+                    # not a tool observation preceded it. Re-synthesizing it
+                    # spent a whole extra LLM call on identical authority.
                     return StellaResult(
                         decision,
                         response=decision.content,

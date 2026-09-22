@@ -168,7 +168,8 @@ def test_multi_step_chaining_still_redecides() -> None:
         DecisionKind.TOOL,
         DecisionKind.ANSWER,
     ]
-    assert result.response == "synthesized answer"
+    # re-decision answered with final content, so no synthesis call was spent
+    assert result.response == "enough"
 
 
 def test_ask_after_observation_still_works() -> None:
@@ -316,7 +317,7 @@ def test_fast_path_only_applies_to_the_first_tool_call() -> None:
     assert brain.decisions == []
     assert len(tool.arguments) == 2
     assert result.decision.kind is DecisionKind.ANSWER
-    assert result.response == "synthesized answer"
+    assert result.response == "after re-decision"
 
 
 def test_single_step_configuration_keeps_its_existing_path() -> None:

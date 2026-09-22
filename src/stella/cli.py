@@ -39,6 +39,13 @@ from stella.trace import (
     ToolResultEvent,
 )
 
+# input() only provides line editing (arrow keys, word kill) and
+# up/down history when GNU readline is loaded into the process.
+try:  # pragma: no cover - platform builds without readline skip this
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
 
 def run_cli(
     stella: Stella,

@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from stella.brain import Brain, Decision, DecisionKind
@@ -109,6 +111,28 @@ def test_cli_shows_thinking_feedback_without_touching_transcript() -> None:
 
     assert statuses == ["Stella is thinking..."]
     assert outputs == ["Stella: response to hello", "Goodbye!"]
+
+
+def test_cli_import_loads_readline_for_line_editing() -> None:
+    # Importing the CLI module must register GNU readline so that the
+    # default input() prompt supports arrow keys, backspace/delete,
+    # and up/down history. Platform builds without readline are skipped.
+    import importlib
+
+    try:
+        import readline  # noqa: F401
+    except ImportError:
+        pytest.skip("this platform's Python build has no readline")
+
+    import stella.cli
+
+    sys.modules.pop("readline", None)
+    try:
+        importlib.reload(stella.cli)
+        assert "readline" in sys.modules
+    finally:
+        sys.modules.pop("readline", None)
+        importlib.reload(stella.cli)
 
 
 def test_cli_empty_and_whitespace_input_is_harmless() -> None:

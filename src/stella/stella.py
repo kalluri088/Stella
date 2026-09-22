@@ -44,6 +44,7 @@ from stella.trace import (
     FinalResponseEvent,
     InputReceivedEvent,
     InteractionTrace,
+    MemoryActionEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
     ToolResultEvent,
@@ -217,6 +218,15 @@ class Stella:
                 tool_result = self._execute_tool(
                     decision.capability, arguments, trace
                 )
+                if tool_result.memory_action is not None:
+                    action = tool_result.memory_action
+                    trace.record(
+                        MemoryActionEvent(
+                            action=action.action,
+                            count=action.count,
+                            memory_id=action.memory_id,
+                        )
+                    )
                 tool_steps += 1
                 last_tool_result = tool_result
                 step_trace.append(StellaStep(decision, tool_result))
@@ -234,6 +244,7 @@ class Stella:
                 if (
                     memory_write is None
                     and decision.memory_write is not None
+                    and tool_result.memory_action is None
                     and self._is_meaningful_tool_result(tool_result)
                 ):
                     memory_write = self._write_memory(decision.memory_write)

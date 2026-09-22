@@ -15,6 +15,17 @@ from enum import Enum
 from pathlib import Path, PureWindowsPath
 from urllib.parse import SplitResult, urlsplit
 
+from stella.memory import Memory, MemoryItem
+
+
+@dataclass(frozen=True)
+class MemoryAction:
+    """Metadata about one memory read/update/delete performed by a tool."""
+
+    action: str
+    count: int
+    memory_id: int | None = None
+
 
 @dataclass(frozen=True)
 class ToolResult:
@@ -22,6 +33,7 @@ class ToolResult:
 
     success: bool
     output: str
+    memory_action: MemoryAction | None = None
 
 
 class RiskLevel(str, Enum):
@@ -450,6 +462,176 @@ class FileSystemDeleteTool(FileSystemReadTool):
             )
         except (OSError, RuntimeError):
             return ToolResult(success=False, output="File could not be deleted.")
+
+
+class MemoryListTool(Tool):
+    """List the user's stored memories through the trusted memory backend."""
+
+    def __init__(self, memory: Memory) -> None:
+        self.memory = memory
+
+    @property
+    def name(self) -> str:
+        return "memory_list"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Lists every memory currently stored for the user. Takes no "
+            "arguments. The listing is the answer to a recall request; never "
+            "propose a memory write from its output."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {}
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.SENSITIVE
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return isinstance(arguments, dict) and set(arguments) == set()
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+        items = self.memory.retrieve()
+        action = MemoryAction(action="read", count=len(items))
+        if not items:
+            return ToolResult(
+                success=True,
+                output="No stored memories.",
+                memory_action=action,
+            )
+        lines = "\n".join(f"{item.id}: {item.content}" for item in items)
+        return ToolResult(success=True, output=lines, memory_action=action)
+
+
+class MemoryUpdateTool(Tool):
+    """Replace the single best-matching stored memory via retrieve/update."""
+
+    def __init__(self, memory: Memory) -> None:
+        self.memory = memory
+
+    @property
+    def name(self) -> str:
+        return "memory_update"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Updates the one stored memory that best matches a query when "
+            "the user changes a remembered fact. Requires exactly a query "
+            "string and the new content string. The update is already the "
+            "requested change; never propose a memory write alongside it."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {"query": "string", "content": "string"}
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.SENSITIVE
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return (
+            isinstance(arguments, dict)
+            and set(arguments) == {"query", "content"}
+            and all(
+                isinstance(arguments[key], str) and arguments[key].strip()
+                for key in ("query", "content")
+            )
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+        matches = self.memory.retrieve(str(arguments["query"]))
+        if not matches:
+            return ToolResult(
+                success=False,
+                output="No stored memory matches that description.",
+                memory_action=MemoryAction(action="update", count=0),
+            )
+        target = matches[0]
+        replacement = MemoryItem(
+            content=str(arguments["content"]),
+            memory_type=target.memory_type,
+        )
+        updated = (
+            target.id is not None and self.memory.update(target.id, replacement)
+        )
+        return ToolResult(
+            success=updated,
+            output=(
+                f"Updated memory {target.id}."
+                if updated
+                else "The memory could not be updated."
+            ),
+            memory_action=MemoryAction(
+                action="update",
+                count=1 if updated else 0,
+                memory_id=target.id,
+            ),
+        )
+
+
+class MemoryForgetTool(Tool):
+    """Delete stored memories matching a query via retrieve/delete."""
+
+    def __init__(self, memory: Memory) -> None:
+        self.memory = memory
+
+    @property
+    def name(self) -> str:
+        return "memory_forget"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Deletes the stored memories that match a query when the user "
+            "asks to forget something. Requires exactly a query string and "
+            "requires trusted runtime approval."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {"query": "string"}
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.DANGEROUS
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return (
+            isinstance(arguments, dict)
+            and set(arguments) == {"query"}
+            and isinstance(arguments["query"], str)
+            and bool(arguments["query"].strip())
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+        matches = self.memory.retrieve(str(arguments["query"]))
+        deleted = sum(
+            1
+            for item in matches
+            if item.id is not None and self.memory.delete(item.id)
+        )
+        if deleted == 0:
+            return ToolResult(
+                success=False,
+                output="No stored memory matches that description.",
+                memory_action=MemoryAction(action="delete", count=0),
+            )
+        return ToolResult(
+            success=True,
+            output=f"Removed {deleted} matching memories.",
+            memory_action=MemoryAction(action="delete", count=deleted),
+        )
 
 
 class _ValidatedHTTPSConnection(http.client.HTTPSConnection):

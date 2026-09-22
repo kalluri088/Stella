@@ -70,6 +70,15 @@ class MemoryWriteEvent:
     content_chars: int
 
 
+@dataclass(frozen=True)
+class MemoryActionEvent:
+    """A memory list/update/delete performed by a trusted memory tool."""
+
+    action: str
+    count: int
+    memory_id: int | None = None
+
+
 TraceEvent = (
     InputReceivedEvent
     | MemoryRetrievedEvent
@@ -78,6 +87,7 @@ TraceEvent = (
     | ToolResultEvent
     | FinalResponseEvent
     | MemoryWriteEvent
+    | MemoryActionEvent
 )
 
 

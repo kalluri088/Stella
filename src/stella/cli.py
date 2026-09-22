@@ -20,6 +20,9 @@ from stella.tools import (
     FileSystemDeleteTool,
     FileSystemReadTool,
     FileSystemWriteTool,
+    MemoryForgetTool,
+    MemoryListTool,
+    MemoryUpdateTool,
     NetworkReadTool,
     SystemInfoTool,
     ToolApproval,
@@ -30,6 +33,7 @@ from stella.trace import (
     DecisionEvent,
     FinalResponseEvent,
     InputReceivedEvent,
+    MemoryActionEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
     ToolResultEvent,
@@ -143,6 +147,10 @@ def format_trace(result: StellaResult) -> list[str]:
                 )
             elif event.proposed:
                 lines.append(_trace_line("memory", "proposed, not stored"))
+        elif isinstance(event, MemoryActionEvent):
+            lines.append(
+                _trace_line("memory", f"{event.action} {event.count}")
+            )
         elif isinstance(event, FinalResponseEvent):
             if event.needs_more_information:
                 lines.append(
@@ -268,6 +276,9 @@ def create_stella_from_environment() -> Stella:
                 os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
             ),
             NetworkReadTool(),
+            MemoryListTool(memory),
+            MemoryUpdateTool(memory),
+            MemoryForgetTool(memory),
         ]
     )
     return Stella(

@@ -107,6 +107,178 @@ class Tool(ABC):
         """Execute the tool with structured arguments."""
 
 
+# ---------------------------------------------------------------------------
+# Shared workspace-boundary helpers. These are the only path authorities for
+# workspace tools; model-supplied arguments never widen them.
+# ---------------------------------------------------------------------------
+
+# Directories that are never walked, listed, or searched by default. Hidden
+# directories also cover .git and common caches; plus the known junk names.
+_WORKSPACE_SKIP_DIRECTORY_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "build",
+        ".next",
+        ".cache",
+    }
+)
+
+# A workspace scan only opens files up to this size; larger files are skipped.
+WORKSPACE_MAX_SCAN_SIZE = 1_048_576
+
+
+def _workspace_is_within(workspace: Path, path: str) -> bool:
+    """Return whether a model-provided path could stay inside the workspace."""
+
+    candidate = Path(path)
+    windows_candidate = PureWindowsPath(path)
+    return (
+        bool(path.strip())
+        and "\x00" not in path
+        and not candidate.is_absolute()
+        and not windows_candidate.is_absolute()
+        and not windows_candidate.drive
+        and ".." not in candidate.parts
+    )
+
+
+def _resolve_in_workspace(workspace: Path, path: str) -> Path | None:
+    """Resolve a trusted workspace-relative path, refusing symlink escapes."""
+
+    try:
+        resolved = (workspace / path).resolve()
+        resolved.relative_to(workspace)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved
+
+
+# Bounds for one bounded text-file read.
+MAX_READ_CHARACTERS = 8_000  # return at most this many characters
+_READ_PROBE_SIZE = 65_536  # bytes checked before rejecting binary files
+
+
+def _read_bounded_text(
+    workspace: Path,
+    resolved: Path,
+    *,
+    name: str,
+    max_size: int,
+) -> tuple[ToolResult, bool]:
+    """Read one file inside the workspace with strict, announced bounds.
+
+    Returns the tool result and whether truncation was applied. Truncated or
+    partial output always says so; nothing is silently presented as complete.
+    """
+
+    try:
+        if not resolved.exists():
+            return ToolResult(success=False, output="File was not found."), False
+        if not resolved.is_file():
+            return (
+                ToolResult(success=False, output="File is not a regular file."),
+                False,
+            )
+        size = resolved.stat().st_size
+        if size > max_size:
+            return ToolResult(success=False, output="File is too large."), False
+        with resolved.open("rb") as file:
+            raw = file.read(min(size, _READ_PROBE_SIZE))
+        if b"\x00" in raw:
+            return (
+                ToolResult(success=False, output="File is not a text file."),
+                False,
+            )
+        truncated = size > len(raw)
+        if truncated:
+            with resolved.open("rb") as file:
+                raw = file.read(MAX_READ_CHARACTERS * 4)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded = False
+            if truncated:
+                # A multi-byte character can straddle the bounded read
+                # boundary; retry after trimming up to 3 trailing bytes.
+                for trim in range(1, 4):
+                    try:
+                        text = raw[:-trim].decode("utf-8")
+                        decoded = True
+                        break
+                    except UnicodeDecodeError:
+                        continue
+            if not decoded:
+                return (
+                    ToolResult(
+                        success=False, output="File is not valid UTF-8."
+                    ),
+                    False,
+                )
+        if len(text) > MAX_READ_CHARACTERS:
+            text = text[:MAX_READ_CHARACTERS]
+            truncated = True
+        if truncated:
+            text = (
+                f"{text}\n\n[Truncated: showing the first "
+                f"{MAX_READ_CHARACTERS} of {size} characters from {name}. "
+                "The remainder was not read.]"
+            )
+        return ToolResult(success=True, output=text), truncated
+    except FileNotFoundError:
+        return ToolResult(success=False, output="File was not found."), False
+    except (OSError, RuntimeError):
+        return (
+            ToolResult(success=False, output="File could not be read."),
+            False,
+        )
+
+
+def _walk_workspace_files(
+    workspace: Path, rel_prefix: str = ""
+) -> Iterable[tuple[str, Path]]:
+    """Yield (relative path, resolved path) for readable regular files.
+
+    Hidden, skip-listed, and symlinked directories are never descended;
+    results are sorted for deterministic output. Files whose resolved path
+    leaves the workspace (symlink escapes) are skipped.
+    """
+
+    try:
+        entries = sorted(
+            workspace.iterdir(), key=lambda entry: entry.name.casefold()
+        )
+    except OSError:
+        return
+    for entry in entries:
+        name = entry.name
+        relative = f"{rel_prefix}/{name}" if rel_prefix else name
+        try:
+            if entry.is_symlink() or not entry.exists():
+                continue
+            if entry.is_dir():
+                if name.startswith(".") or name.casefold() in _WORKSPACE_SKIP_DIRECTORY_NAMES:
+                    continue
+                yield from _walk_workspace_files(entry, relative)
+                continue
+            if entry.is_file():
+                resolved = entry.resolve()
+                try:
+                    resolved.relative_to(workspace)
+                except ValueError:
+                    continue
+                yield relative, resolved
+        except OSError:
+            continue
+
+
 class EchoTool(Tool):
     """Deterministic example tool for testing."""
 
@@ -237,7 +409,8 @@ class FileSystemReadTool(Tool):
     def description(self) -> str:
         return (
             "Reads a UTF-8 text file below the configured Stella workspace. "
-            "Requires a relative path and cannot access arbitrary locations."
+            "Requires a relative path and cannot access arbitrary locations. "
+            "Long files are truncated and the truncation is announced."
         )
 
     @property
@@ -249,18 +422,11 @@ class FileSystemReadTool(Tool):
         return RiskLevel.SENSITIVE
 
     def validate_arguments(self, arguments: dict[str, object]) -> bool:
-        if (
-            not isinstance(arguments, dict)
-            or set(arguments) != {"path"}
-            or not isinstance(arguments["path"], str)
-        ):
-            return False
-
-        path = arguments["path"]
         return (
-            bool(path.strip())
-            and "\x00" not in path
-            and self._is_relative(path)
+            isinstance(arguments, dict)
+            and set(arguments) == {"path"}
+            and isinstance(arguments["path"], str)
+            and _workspace_is_within(self.workspace, arguments["path"])
         )
 
     @staticmethod
@@ -275,39 +441,22 @@ class FileSystemReadTool(Tool):
         )
 
     def _resolve_in_workspace(self, path: str) -> Path | None:
-        try:
-            resolved = (self.workspace / path).resolve()
-            resolved.relative_to(self.workspace)
-        except (OSError, RuntimeError, ValueError):
-            return None
-        return resolved
+        return _resolve_in_workspace(self.workspace, path)
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
 
-        path = arguments["path"]
-        resolved = self._resolve_in_workspace(path)
+        resolved = self._resolve_in_workspace(arguments["path"])
         if resolved is None:
             return ToolResult(success=False, output="File is outside workspace.")
-
-        try:
-            if not resolved.exists():
-                return ToolResult(success=False, output="File was not found.")
-            if not resolved.is_file():
-                return ToolResult(success=False, output="File is not a regular file.")
-            if resolved.stat().st_size > self.MAX_FILE_SIZE:
-                return ToolResult(success=False, output="File is too large.")
-            return ToolResult(
-                success=True,
-                output=resolved.read_text(encoding="utf-8"),
-            )
-        except FileNotFoundError:
-            return ToolResult(success=False, output="File was not found.")
-        except UnicodeDecodeError:
-            return ToolResult(success=False, output="File is not valid UTF-8.")
-        except (OSError, RuntimeError):
-            return ToolResult(success=False, output="File could not be read.")
+        result, _ = _read_bounded_text(
+            self.workspace,
+            resolved,
+            name=arguments["path"],
+            max_size=self.MAX_FILE_SIZE,
+        )
+        return result
 
 
 class FileSystemWriteTool(FileSystemReadTool):
@@ -462,6 +611,308 @@ class FileSystemDeleteTool(FileSystemReadTool):
             )
         except (OSError, RuntimeError):
             return ToolResult(success=False, output="File could not be deleted.")
+
+
+class WorkspaceListTool(FileSystemReadTool):
+    """List bounded workspace contents with metadata; never reads contents."""
+
+    MAX_DEPTH = 4
+    MAX_OUTPUT_LINES = 100
+    MAX_OUTPUT_CHARACTERS = 6_000
+
+    @property
+    def name(self) -> str:
+        return "workspace_list"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Lists files and folders inside the configured Stella workspace "
+            "with size and last-modified metadata. Optional relative dir "
+            "argument; hidden folders and caches like .git, node_modules and "
+            "__pycache__ are skipped. Use for what-is-here questions."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {"dir": "optional workspace-relative directory"}
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        if not isinstance(arguments, dict):
+            return False
+        if set(arguments) == set():
+            return True
+        if set(arguments) != {"dir"} or not isinstance(arguments["dir"], str):
+            return False
+        return arguments["dir"] == "" or _workspace_is_within(
+            self.workspace, arguments["dir"]
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+
+        directory = str(arguments.get("dir", ""))
+        base = self.workspace if not directory else None
+        if base is None:
+            base = self._resolve_in_workspace(directory)
+        if base is None:
+            return ToolResult(
+                success=False, output="Directory is outside workspace."
+            )
+        if not base.is_dir():
+            return ToolResult(
+                success=False, output="Directory was not found."
+            )
+
+        lines: list[str] = []
+        truncated = False
+        try:
+            for rel_path, resolved in _walk_workspace_tree(
+                base, self.workspace, directory.strip("/")
+            ):
+                metadata = resolved.stat()
+                if resolved.is_dir():
+                    kind, size_text = "dir", ""
+                else:
+                    kind = "file"
+                    size_text = f" ({metadata.st_size} bytes)"
+                modified = dt.datetime.fromtimestamp(
+                    metadata.st_mtime, dt.UTC
+                ).astimezone()
+                lines.append(
+                    f"{rel_path} [{kind}]{size_text} "
+                    f"modified {modified.strftime('%Y-%m-%d %H:%M')}"
+                )
+                if len(lines) >= self.MAX_OUTPUT_LINES:
+                    truncated = True
+                    break
+        except (OSError, RuntimeError):
+            return ToolResult(
+                success=False, output="Workspace could not be listed."
+            )
+
+        if not lines:
+            return ToolResult(
+                success=True, output="No files or folders in this workspace dir."
+            )
+        output = "\n".join(lines)
+        if truncated or len(output) > self.MAX_OUTPUT_CHARACTERS:
+            output = _truncate_text(output, self.MAX_OUTPUT_CHARACTERS)
+            output += (
+                "\n\n[Truncated: the listing was bounded; there may be more "
+                "entries that were not shown.]"
+            )
+        return ToolResult(success=True, output=output)
+
+
+def _walk_workspace_tree(
+    base: Path, workspace: Path, rel_prefix: str = ""
+) -> Iterable[tuple[str, Path]]:
+    """Yield (relative path, path) for dirs and files below base, sorted."""
+
+    try:
+        entries = sorted(
+            base.iterdir(), key=lambda entry: (not entry.is_dir(), entry.name.casefold())
+        )
+    except OSError:
+        return
+    for entry in entries:
+        name = entry.name
+        relative = f"{rel_prefix}/{name}" if rel_prefix else name
+        try:
+            if entry.is_symlink() or not entry.exists():
+                continue
+            resolved = entry.resolve()
+            resolved.relative_to(workspace)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved.is_dir() and (
+            name.startswith(".")
+            or name.casefold() in _WORKSPACE_SKIP_DIRECTORY_NAMES
+        ):
+            continue
+        yield relative, resolved
+        if resolved.is_dir():
+            if rel_prefix.count("/") + 1 >= WorkspaceListTool.MAX_DEPTH:
+                continue
+            yield from _walk_workspace_tree(resolved, workspace, relative)
+
+
+class WorkspaceFindTool(FileSystemReadTool):
+    """Find workspace files whose relative path contains a substring."""
+
+    MAX_OUTPUT_LINES = 50
+    MAX_OUTPUT_CHARACTERS = 4_000
+
+    @property
+    def name(self) -> str:
+        return "workspace_find"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Finds files inside the configured Stella workspace whose "
+            "relative path contains a case-insensitive text pattern. Returns "
+            "matching paths only, never contents. Hidden folders and caches "
+            "like .git or node_modules are skipped."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {"pattern": "case-insensitive text in the path"}
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return (
+            isinstance(arguments, dict)
+            and set(arguments) == {"pattern"}
+            and isinstance(arguments["pattern"], str)
+            and bool(arguments["pattern"].strip())
+            and "\x00" not in arguments["pattern"]
+            and len(arguments["pattern"]) <= 128
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+
+        pattern = str(arguments["pattern"]).casefold()
+        matches: list[str] = []
+        scanned = 0
+        truncated = False
+        for relative, _ in _walk_workspace_files(self.workspace):
+            scanned += 1
+            if pattern in relative.casefold():
+                matches.append(relative)
+                if len(matches) >= self.MAX_OUTPUT_LINES:
+                    truncated = True
+                    break
+        if not matches:
+            return ToolResult(
+                success=True,
+                output=(
+                    f"No workspace paths contain {pattern!r} "
+                    f"({scanned} files scanned)."
+                ),
+            )
+        output = "\n".join(matches)
+        if truncated or len(output) > self.MAX_OUTPUT_CHARACTERS:
+            output = _truncate_text(output, self.MAX_OUTPUT_CHARACTERS) + (
+                "\n\n[Truncated: only the first matches are shown; more "
+                "matches may exist.]"
+            )
+        return ToolResult(success=True, output=output)
+
+
+class WorkspaceSearchTool(FileSystemReadTool):
+    """Search bounded workspace text files for a literal content pattern."""
+
+    MAX_FILES = 2_000
+    MAX_MATCHES = 60
+    LINES_PER_FILE = 5
+    MAX_LINE_CHARS = 200
+    MAX_OUTPUT_CHARACTERS = 6_000
+
+    @property
+    def name(self) -> str:
+        return "workspace_search"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Searches UTF-8 text files inside the configured Stella workspace "
+            "for a case-insensitive literal phrase and returns matching "
+            "path, line number and a short excerpt. Binary, unreadable and "
+            "oversized files are skipped. Hidden folders and caches like .git "
+            "or node_modules are skipped. Use for 'files that mention' and "
+            "'where is X configured or implemented' requests."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {"pattern": "case-insensitive literal text"}
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return (
+            isinstance(arguments, dict)
+            and set(arguments) == {"pattern"}
+            and isinstance(arguments["pattern"], str)
+            and bool(arguments["pattern"].strip())
+            and "\x00" not in arguments["pattern"]
+            and len(arguments["pattern"]) <= 128
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+
+        pattern = str(arguments["pattern"]).casefold()
+        lines: list[str] = []
+        match_count = 0
+        files_scanned = 0
+        skipped = 0
+        truncated = False
+        for relative, resolved in _walk_workspace_files(self.workspace):
+            files_scanned += 1
+            if files_scanned > self.MAX_FILES:
+                truncated = True
+                break
+            try:
+                if resolved.stat().st_size > WORKSPACE_MAX_SCAN_SIZE:
+                    skipped += 1
+                    continue
+                raw = resolved.read_bytes()
+            except (OSError, RuntimeError):
+                skipped += 1
+                continue
+            if b"\x00" in raw:
+                skipped += 1
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                skipped += 1
+                continue
+            file_lines = 0
+            for number, line in enumerate(text.splitlines(), start=1):
+                if pattern not in line.casefold():
+                    continue
+                excerpt = line.strip()
+                if len(excerpt) > self.MAX_LINE_CHARS:
+                    excerpt = excerpt[: self.MAX_LINE_CHARS] + "..."
+                lines.append(f"{relative}:{number}: {excerpt}")
+                file_lines += 1
+                match_count += 1
+                if file_lines >= self.LINES_PER_FILE:
+                    break
+            if match_count >= self.MAX_MATCHES:
+                truncated = True
+                break
+
+        if match_count == 0:
+            return ToolResult(
+                success=True,
+                output=(
+                    f"No workspace text files contain {pattern!r} "
+                    f"({files_scanned} files scanned, {skipped} skipped)."
+                ),
+            )
+        output = "\n".join(lines)
+        if truncated or len(output) > self.MAX_OUTPUT_CHARACTERS:
+            output = _truncate_text(output, self.MAX_OUTPUT_CHARACTERS) + (
+                "\n\n[Truncated: only the first matches are shown; more "
+                "matches may exist.]"
+            )
+        if skipped:
+            output += (
+                f"\n\n[{skipped} non-text, unreadable or oversized files were "
+                "not searched.]"
+            )
+        return ToolResult(success=True, output=output)
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    return text[:limit].rstrip()
 
 
 class MemoryListTool(Tool):

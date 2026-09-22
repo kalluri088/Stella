@@ -27,6 +27,9 @@ from stella.tools import (
     SystemInfoTool,
     ToolApproval,
     ToolDispatcher,
+    WorkspaceFindTool,
+    WorkspaceListTool,
+    WorkspaceSearchTool,
 )
 from stella.trace import (
     ApprovalEvent,
@@ -351,20 +354,18 @@ def create_stella_from_environment() -> Stella:
     else:
         raise SystemExit("STELLA_LLM_PROVIDER must be 'openai' or 'ollama'")
     memory = SQLiteMemory(os.environ.get("STELLA_MEMORY_DB", "stella_memory.db"))
+    workspace = os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
     tools = ToolDispatcher(
         [
             DateTimeTool(),
             SystemInfoTool(),
             EchoTool(),
-            FileSystemReadTool(
-                os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
-            ),
-            FileSystemWriteTool(
-                os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
-            ),
-            FileSystemDeleteTool(
-                os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
-            ),
+            FileSystemReadTool(workspace),
+            FileSystemWriteTool(workspace),
+            FileSystemDeleteTool(workspace),
+            WorkspaceListTool(workspace),
+            WorkspaceFindTool(workspace),
+            WorkspaceSearchTool(workspace),
             NetworkReadTool(),
             MemoryListTool(memory),
             MemoryUpdateTool(memory),

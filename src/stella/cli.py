@@ -47,6 +47,7 @@ def run_cli(
     debug: bool = False,
     debug_fn: Callable[[str], None] | None = None,
     trace: bool = False,
+    status_fn: Callable[[str], None] | None = None,
 ) -> None:
     """Run one interactive Stella session."""
 
@@ -55,6 +56,7 @@ def run_cli(
             input_fn=input_fn,
             output_fn=output_fn,
         )
+    status = status_fn or _print_status
 
     history: list[Message] = []
     while True:
@@ -68,12 +70,21 @@ def run_cli(
             output_fn("Goodbye!")
             return
 
-        result = stella.process(
-            Context(
-                user_input=user_input,
-                conversation_history=list(history),
+        status("Stella is thinking...")
+        try:
+            result = stella.process(
+                Context(
+                    user_input=user_input,
+                    conversation_history=list(history),
+                )
             )
-        )
+        except Exception as error:  # noqa: BLE001 - keep the session alive
+            detail = " ".join(str(error).split()) or type(error).__name__
+            output_fn(
+                f"Stella could not finish that request ({detail[:160]}). "
+                "Nothing was changed; try again or type 'exit' to quit."
+            )
+            continue
         if debug:
             (debug_fn or _print_debug)(format_decision(result.decision))
         if trace:
@@ -185,6 +196,53 @@ def format_startup(stella: Stella) -> list[str]:
     ]
 
 
+def _action_summary(request: ApprovalRequest) -> str:
+    """Describe one approval request in plain user-facing language."""
+
+    arguments = request.arguments
+
+    def quoted(key: str) -> str | None:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return json.dumps(value)
+        return None
+
+    capability = request.capability
+    if capability == "filesystem_write":
+        path = quoted("path")
+        if path is not None and quoted("content") is not None:
+            return f"create a new text file {path} in your Stella workspace"
+    elif capability == "filesystem_delete":
+        path = quoted("path")
+        if path is not None:
+            return (
+                f"delete the file {path} from your Stella workspace "
+                "(this cannot be undone)"
+            )
+    elif capability == "network_read":
+        url = quoted("url")
+        if url is not None:
+            return f"fetch text from this public web address: {url}"
+    elif capability == "memory_update":
+        query = quoted("query")
+        content = quoted("content")
+        if query is not None and content is not None:
+            return f"change the memory matching {query} to {content}"
+    elif capability == "memory_forget":
+        query = quoted("query")
+        if query is not None:
+            return (
+                f"delete stored memories matching {query} "
+                "(this cannot be undone)"
+            )
+    elif capability == "memory_list":
+        return "show everything it has remembered about you"
+    return (
+        f"use the '{capability}' tool with arguments "
+        f"{json.dumps(arguments, sort_keys=True)}"
+    )
+
+
 def cli_approval_provider(
     input_fn: Callable[[str], str],
     output_fn: Callable[[str], None],
@@ -192,13 +250,12 @@ def cli_approval_provider(
     """Create the CLI's explicit, action-specific approval callback."""
 
     def request_approval(request: ApprovalRequest) -> ToolApproval:
-        arguments = json.dumps(request.arguments, sort_keys=True)
         output_fn(
-            "Approval required for action: "
-            f"capability={request.capability!r}, arguments={arguments}"
+            f"Stella would like to {_action_summary(request)}. "
+            "Type 'yes' to allow this; anything else will skip it."
         )
         try:
-            answer = input_fn("Approve this action? [yes/approve/no]: ")
+            answer = input_fn("Approve? [yes/no]: ")
         except EOFError:
             answer = ""
         approved = answer.strip().casefold() in {"yes", "approve"}
@@ -226,6 +283,10 @@ def format_decision(decision: Decision) -> str:
 
 def _print_debug(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def _print_status(message: str) -> None:
+    print(f"({message})", file=sys.stderr)
 
 
 def _display_response(result: StellaResult) -> str | None:
@@ -313,6 +374,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     stella = create_stella_from_environment()
     for line in format_startup(stella):
         print(line)
+    print("Ask Stella anything. Type 'exit' to quit.\n")
     try:
         run_cli(stella, debug=args.debug, trace=args.trace)
     finally:

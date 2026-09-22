@@ -94,6 +94,58 @@ def test_cli_passes_input_to_stella_and_displays_response() -> None:
     assert "Stella: response to hello" in outputs
 
 
+def test_cli_shows_thinking_feedback_without_touching_transcript() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    statuses: list[str] = []
+    inputs = iter(["hello", "exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        status_fn=statuses.append,
+    )
+
+    assert statuses == ["Stella is thinking..."]
+    assert outputs == ["Stella: response to hello", "Goodbye!"]
+
+
+class FlakyStella:
+    """Fails the first turn, then behaves like RecordingStella."""
+
+    def __init__(self) -> None:
+        self.contexts: list[Context] = []
+
+    def process(self, context: Context) -> StellaResult:
+        self.contexts.append(context)
+        if len(self.contexts) == 1:
+            raise ConnectionError("   connection refused\n  details here")
+        return StellaResult(
+            decision=Decision(DecisionKind.ANSWER),
+            response=f"response to {context.user_input}",
+        )
+
+
+def test_cli_recovers_from_turn_errors_without_losing_the_session() -> None:
+    stella = FlakyStella()
+    outputs: list[str] = []
+    inputs = iter(["first", "second", "exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert outputs == [
+        (
+            "Stella could not finish that request (connection refused "
+            "details here). Nothing was changed; try again or type "
+            "'exit' to quit."
+        ),
+        "Stella: response to second",
+        "Goodbye!",
+    ]
+    assert stella.contexts[1].conversation_history == []
+
+
 def test_cli_maintains_conversation_history() -> None:
     stella = RecordingStella()
     inputs = iter(["first", "second", "quit"])
@@ -159,8 +211,86 @@ def test_cli_approval_provider_requires_explicit_confirmation(
     assert result == ToolApproval(request=request, approved=approved)
     assert outputs == [
         (
-            "Approval required for action: "
-            "capability='approval_test', arguments={\"value\": \"x\"}"
+            "Stella would like to use the 'approval_test' tool with "
+            'arguments {"value": "x"}. '
+            "Type 'yes' to allow this; anything else will skip it."
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("capability", "arguments", "summary"),
+    [
+        (
+            "filesystem_write",
+            {"path": "notes.txt", "content": "hi"},
+            "create a new text file \"notes.txt\" in your Stella workspace",
+        ),
+        (
+            "filesystem_delete",
+            {"path": "notes.txt"},
+            (
+                "delete the file \"notes.txt\" from your Stella workspace "
+                "(this cannot be undone)"
+            ),
+        ),
+        (
+            "network_read",
+            {"url": "https://example.com/a.txt"},
+            (
+                "fetch text from this public web address: "
+                "\"https://example.com/a.txt\""
+            ),
+        ),
+        (
+            "memory_forget",
+            {"query": "jasmine tea"},
+            (
+                "delete stored memories matching \"jasmine tea\" "
+                "(this cannot be undone)"
+            ),
+        ),
+        (
+            "memory_update",
+            {"query": "tea", "content": "green tea"},
+            "change the memory matching \"tea\" to \"green tea\"",
+        ),
+        ("memory_list", {}, "show everything it has remembered about you"),
+    ],
+)
+def test_cli_approval_prompts_describe_actions_in_plain_language(
+    capability: str, arguments: dict[str, object], summary: str
+) -> None:
+    outputs: list[str] = []
+    provider = cli_approval_provider(
+        input_fn=lambda _: "no",
+        output_fn=outputs.append,
+    )
+
+    provider(ApprovalRequest(capability, arguments))
+
+    assert outputs == [
+        (
+            f"Stella would like to {summary}. "
+            "Type 'yes' to allow this; anything else will skip it."
+        )
+    ]
+
+
+def test_cli_approval_falls_back_when_arguments_are_unusable() -> None:
+    outputs: list[str] = []
+    provider = cli_approval_provider(
+        input_fn=lambda _: "no",
+        output_fn=outputs.append,
+    )
+
+    provider(ApprovalRequest("filesystem_delete", {"path": 7}))
+
+    assert outputs == [
+        (
+            "Stella would like to use the 'filesystem_delete' tool with "
+            'arguments {"path": 7}. '
+            "Type 'yes' to allow this; anything else will skip it."
         )
     ]
 
@@ -180,8 +310,7 @@ def test_cli_approval_executes_dangerous_tool_only_after_yes() -> None:
 
     assert tool.executions == [{"value": "x"}]
     assert any(
-        output.startswith("Approval required for action:")
-        for output in outputs
+        output.startswith("Stella would like to") for output in outputs
     )
     assert "Stella: The approved action completed." in outputs
 

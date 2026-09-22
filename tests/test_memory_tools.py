@@ -207,8 +207,7 @@ def test_cli_forget_flow_deletes_after_approval() -> None:
 
     assert [item.content for item in memory.retrieve()] == [WIFI]
     assert any(
-        output.startswith("Approval required for action:")
-        for output in outputs
+        output.startswith("Stella would like to") for output in outputs
     )
     assert "  memory    delete 1" in outputs
     assert "Stella: done" in outputs

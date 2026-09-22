@@ -1,6 +1,7 @@
 """Minimal synchronous command-line interface for Stella."""
 
 import argparse
+import datetime as dt
 import json
 import os
 import sys
@@ -12,6 +13,7 @@ from stella.llm import Message
 from stella.memory import SQLiteMemory
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
 from stella.openai_client import OpenAILLMClient
+from stella.reminders import SQLiteReminderStore
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ApprovalRequest,
@@ -25,6 +27,9 @@ from stella.tools import (
     MemoryListTool,
     MemoryUpdateTool,
     NetworkReadTool,
+    ReminderCancelTool,
+    ReminderCreateTool,
+    ReminderListTool,
     SystemInfoTool,
     ToolApproval,
     ToolDispatcher,
@@ -38,9 +43,11 @@ from stella.trace import (
     DecisionEvent,
     FinalResponseEvent,
     InputReceivedEvent,
+    InteractionTrace,
     MemoryActionEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
+    ReminderLifecycleEvent,
     ToolResultEvent,
 )
 
@@ -88,6 +95,9 @@ def run_cli(
             # no history entry, no thinking indicator.
             continue
 
+        # Real interactions are the only scheduling trigger: due reminders
+        # are delivered through the existing bounded proactivity decision.
+        _deliver_due_reminders(stella, output_fn, trace=trace)
         status("Stella is thinking...")
         try:
             result = stella.process(
@@ -124,6 +134,41 @@ def run_cli(
         history.append(Message(role="user", content=user_input))
         if response is not None:
             history.append(Message(role="assistant", content=response))
+
+
+def _deliver_due_reminders(
+    stella: Stella,
+    output_fn: Callable[[str], None],
+    trace: bool = False,
+) -> None:
+    """Run the trusted per-interaction due-reminder check and show results."""
+
+    if not isinstance(stella, Stella):
+        # Minimal test or embedding stubs may not carry the reminder flow.
+        return
+    reminder_trace = InteractionTrace(interaction_id="reminder-check")
+    deliveries = stella.check_due_reminders(
+        dt.datetime.now(dt.UTC), trace=reminder_trace
+    )
+    for delivery in deliveries:
+        if delivery.delivered and delivery.message is not None:
+            output_fn(f"Stella: {delivery.message}")
+    if trace:
+        for event in reminder_trace.events:
+            line = _reminder_lifecycle_line(event)
+            if line is not None:
+                output_fn(line)
+
+
+def _reminder_lifecycle_line(event: object) -> str | None:
+    if not isinstance(event, ReminderLifecycleEvent):
+        return None
+    detail = event.action
+    if event.reminder_id is not None:
+        detail += f" #{event.reminder_id}"
+    if event.outcome:
+        detail += f" ({event.outcome})"
+    return _trace_line("reminder", detail)
 
 
 def format_trace(result: StellaResult) -> list[str]:
@@ -191,6 +236,10 @@ def format_trace(result: StellaResult) -> list[str]:
             if event.size_bytes is not None:
                 detail += f" ({event.size_bytes} bytes)"
             lines.append(_trace_line("action", detail))
+        elif isinstance(event, ReminderLifecycleEvent):
+            line = _reminder_lifecycle_line(event)
+            if line is not None:
+                lines.append(line)
         elif isinstance(event, FinalResponseEvent):
             if event.needs_more_information:
                 lines.append(
@@ -211,6 +260,9 @@ def format_startup(stella: Stella) -> list[str]:
     llm = getattr(getattr(stella, "brain", None), "llm", None)
     base_url = str(getattr(getattr(llm, "client", None), "base_url", "") or "")
     database = getattr(stella.memory, "database_path", None)
+    reminders_database = getattr(
+        getattr(stella, "reminders", None), "database_path", None
+    )
     workspace = None
     for tool in getattr(stella.tools, "_tools", {}).values():
         if hasattr(tool, "workspace"):
@@ -221,6 +273,11 @@ def format_startup(stella: Stella) -> list[str]:
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {database if database is not None else 'in-memory'}",
+        (
+            f"reminders db: {reminders_database}"
+            if reminders_database is not None
+            else "reminders: disabled"
+        ),
         f"workspace: {workspace or 'not configured'}",
     ]
 
@@ -274,6 +331,21 @@ def _action_summary(request: ApprovalRequest) -> str:
             )
     elif capability == "memory_list":
         return "show everything it has remembered about you"
+    elif capability == "reminder_create":
+        content = quoted("content")
+        due_at = quoted("due_at")
+        if content is not None and due_at is not None:
+            return (
+                f"create a reminder for {due_at} that says {content} "
+                "(it will only notify you later, never act)"
+            )
+    elif capability == "reminder_cancel":
+        query = quoted("query")
+        if query is not None:
+            return (
+                f"cancel the pending reminder matching {query} "
+                "(this cannot be undone)"
+            )
     return (
         f"use the '{capability}' tool with arguments "
         f"{json.dumps(arguments, sort_keys=True)}"
@@ -369,6 +441,9 @@ def create_stella_from_environment() -> Stella:
     else:
         raise SystemExit("STELLA_LLM_PROVIDER must be 'openai' or 'ollama'")
     memory = SQLiteMemory(os.environ.get("STELLA_MEMORY_DB", "stella_memory.db"))
+    reminders = SQLiteReminderStore(
+        os.environ.get("STELLA_REMINDERS_DB", "stella_reminders.db")
+    )
     workspace = os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
     tools = ToolDispatcher(
         [
@@ -386,6 +461,9 @@ def create_stella_from_environment() -> Stella:
             MemoryListTool(memory),
             MemoryUpdateTool(memory),
             MemoryForgetTool(memory),
+            ReminderCreateTool(reminders),
+            ReminderListTool(reminders),
+            ReminderCancelTool(reminders),
         ]
     )
     return Stella(
@@ -394,6 +472,7 @@ def create_stella_from_environment() -> Stella:
         tool=tools,
         memory=memory,
         max_tool_steps=2,
+        reminders=reminders,
     )
 
 
@@ -421,3 +500,5 @@ def main(argv: Sequence[str] | None = None) -> None:
     finally:
         if isinstance(stella.memory, SQLiteMemory):
             stella.memory.close()
+        if isinstance(stella.reminders, SQLiteReminderStore):
+            stella.reminders.close()

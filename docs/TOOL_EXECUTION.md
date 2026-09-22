@@ -23,7 +23,9 @@ The structured decision includes a `capability` identifier. The current
 application-approved capabilities are the exact names registered in the
 injected `ToolDispatcher`: `datetime`, `system_info`, `echo`,
 `filesystem_read`, `filesystem_write`, `filesystem_edit`,
-`filesystem_delete`, and `network_read`.
+`filesystem_delete`, `network_read`, the memory tools (`memory_list`,
+`memory_update`, `memory_forget`), and the reminder tools (`reminder_create`,
+`reminder_list`, `reminder_cancel`, described in `REMINDERS.md`).
 Stella looks
 up the requested capability by exact name. Missing, unknown, or mismatched
 capabilities return:

@@ -614,6 +614,7 @@ def test_format_startup_describes_configuration_without_secrets() -> None:
     stella = SimpleNamespace(
         brain=SimpleNamespace(llm=llm),
         memory=SimpleNamespace(database_path="/tmp/stella.db"),
+        reminders=SimpleNamespace(database_path="/tmp/reminders.db"),
         tools=SimpleNamespace(
             _tools={"filesystem_read": SimpleNamespace(workspace="/tmp/ws")}
         ),
@@ -626,6 +627,7 @@ def test_format_startup_describes_configuration_without_secrets() -> None:
         "model:     qwen3:4b",
         "endpoint:  http://127.0.0.1:11434/v1",
         "memory db: /tmp/stella.db",
+        "reminders db: /tmp/reminders.db",
         "workspace: /tmp/ws",
     ]
     assert "SECRET-SENTINEL" not in "\n".join(lines)
@@ -645,5 +647,6 @@ def test_format_startup_degrades_for_minimal_stella() -> None:
         "model:     unknown",
         "endpoint:  default",
         "memory db: in-memory",
+        "reminders: disabled",
         "workspace: not configured",
     ]

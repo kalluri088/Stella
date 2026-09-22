@@ -17,6 +17,10 @@ approval before execution. The current tools remain unchanged:
   `DANGEROUS` and require exact trusted approval;
 - `network_read` is `DANGEROUS` and requires exact trusted approval before an
   external connection;
+- `reminder_create` and `reminder_cancel` are `DANGEROUS` and require exact
+  trusted approval; `reminder_list` is `SENSITIVE`. Reminder approval covers
+  only the store change itself — a created reminder never grants any other
+  tool or action permission (see `REMINDERS.md`);
 - tests also use a private approval-required tool classified as `DANGEROUS`.
 
 The model cannot provide a risk level, `approved` flag, or

@@ -89,6 +89,20 @@ class ActionReceiptEvent:
     size_bytes: int | None = None
 
 
+@dataclass(frozen=True)
+class ReminderLifecycleEvent:
+    """Bounded metadata for one reminder store or delivery transition.
+
+    Only the reminder id, a content length, and the lifecycle step are
+    recorded; reminder content itself never enters the trace.
+    """
+
+    action: str
+    reminder_id: int | None = None
+    content_chars: int = 0
+    outcome: str | None = None
+
+
 TraceEvent = (
     InputReceivedEvent
     | MemoryRetrievedEvent
@@ -99,6 +113,7 @@ TraceEvent = (
     | MemoryWriteEvent
     | MemoryActionEvent
     | ActionReceiptEvent
+    | ReminderLifecycleEvent
 )
 
 

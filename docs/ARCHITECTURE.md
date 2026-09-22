@@ -276,7 +276,10 @@ together, and `NetworkReadTool`. It also registers the memory tools:
 memory. Their outputs stay user-facing: remembered content without internal
 database ids, an honest "No stored memories." when empty, a failure when no
 memory matches, and a disclosed count when several memories matched an
-ambiguous update query.
+ambiguous update query. The Phase 3 reminder tools `reminder_create`
+(`DANGEROUS`), `reminder_list` (`SENSITIVE`), and `reminder_cancel`
+(`DANGEROUS`) manage the user's own one-shot reminders through a trusted
+`stella.reminders` store; see `REMINDERS.md`.
 
 Tools are standalone abstractions. They are invoked by the orchestration layer
 only after a `Brain` returns a tool decision. Stella delegates to the trusted
@@ -297,6 +300,15 @@ The separate `stella.proactivity` module contains the focused one-shot
 `ProactivityDelegation`. It intentionally bypasses ordinary memory, the LLM,
 the Brain, and the tool dispatcher: an event observation cannot grant
 permission, and the result is not notification delivery or an action.
+
+Phase 3 connects persisted reminders to that same evaluator rather than
+adding a second decision system. `Stella.check_due_reminders()` turns each
+due reminder in the trusted `stella.reminders` store into a `DueTaskEvent`
+with an exactly-scoped delegation, delivers the resulting message only after
+the store confirms the terminal `handled` transition (otherwise delivery is
+withheld), and suppresses duplicates in-session and across restarts. The CLI
+performs this check once per user interaction: there is no scheduler,
+daemon, or heartbeat, and a due reminder grants no tool or action authority.
 
 `Stella.handoff_due_task_event()` is the trusted application boundary around
 that evaluator. The application constructs the event and supplies its stable
@@ -447,8 +459,9 @@ The following are intentionally outside the current MVP foundation:
 - File-backed memory formats other than the minimal SQLite table, embeddings, vector databases, or external persistence services
 - Memory migrations, ranking, semantic search, and multi-user data management
 - Plugin registries, permissions, external APIs, subprocesses, or shell execution
-- Personality, generalized event ingress, notification delivery, autonomous
-  loops, or scheduling
+- Personality, generalized event ingress, background notification delivery,
+  autonomous loops, schedulers, daemons, or heartbeats — reminder checks
+  happen only during a real user interaction (see `REMINDERS.md`)
 - Audio capture and output, transcription and vision providers beyond their
   interfaces; video or environment processing; interface rendering; streaming;
   or
@@ -499,6 +512,8 @@ export OPENAI_API_KEY
 export STELLA_MODEL
 # Optional; defaults to ./stella_memory.db
 export STELLA_MEMORY_DB
+# Optional; defaults to ./stella_reminders.db
+export STELLA_REMINDERS_DB
 # Optional; defaults to ./stella_workspace
 export STELLA_WORKSPACE
 uv run stella

@@ -25,6 +25,15 @@ from stella.tools import (
     ToolApproval,
     ToolDispatcher,
 )
+from stella.trace import (
+    ApprovalEvent,
+    DecisionEvent,
+    FinalResponseEvent,
+    InputReceivedEvent,
+    MemoryRetrievedEvent,
+    MemoryWriteEvent,
+    ToolResultEvent,
+)
 
 
 def run_cli(
@@ -33,6 +42,7 @@ def run_cli(
     output_fn: Callable[[str], None] = print,
     debug: bool = False,
     debug_fn: Callable[[str], None] | None = None,
+    trace: bool = False,
 ) -> None:
     """Run one interactive Stella session."""
 
@@ -62,12 +72,109 @@ def run_cli(
         )
         if debug:
             (debug_fn or _print_debug)(format_decision(result.decision))
+        if trace:
+            timeline = format_trace(result)
+            if timeline:
+                output_fn("Stella did")
+                for line in timeline:
+                    output_fn(line)
+                output_fn("")
         response = _display_response(result)
         if response is not None:
             output_fn(f"Stella: {response}")
         history.append(Message(role="user", content=user_input))
         if response is not None:
             history.append(Message(role="assistant", content=response))
+
+
+def format_trace(result: StellaResult) -> list[str]:
+    """Render one turn's metadata-only trace as compact timeline lines."""
+
+    if result.interaction_trace is None:
+        return []
+
+    lines: list[str] = []
+    for event in result.interaction_trace.events:
+        if isinstance(event, InputReceivedEvent):
+            lines.append(
+                _trace_line(
+                    "input",
+                    f"{event.user_input_chars} chars, "
+                    f"{event.conversation_messages} history messages",
+                )
+            )
+        elif isinstance(event, MemoryRetrievedEvent):
+            if event.count:
+                lines.append(
+                    _trace_line("memory", f"retrieved {event.count}")
+                )
+        elif isinstance(event, DecisionEvent):
+            summary = event.kind.upper()
+            if event.capability:
+                summary += f" -> {event.capability}"
+            if event.argument_keys:
+                summary += f" ({', '.join(event.argument_keys)})"
+            if event.memory_write_proposed:
+                summary += " +memory proposal"
+            lines.append(_trace_line("decision", summary))
+        elif isinstance(event, ApprovalEvent):
+            outcome = {
+                True: "granted",
+                False: "denied",
+                None: "not requested",
+            }[event.approved]
+            suffix = f" for {event.capability}" if event.capability else ""
+            lines.append(_trace_line("approval", outcome + suffix))
+        elif isinstance(event, ToolResultEvent):
+            status = "success" if event.success else "failed"
+            lines.append(
+                _trace_line(
+                    "tool",
+                    f"{event.capability or 'unknown'} {status}, "
+                    f"{event.output_chars} chars output",
+                )
+            )
+        elif isinstance(event, MemoryWriteEvent):
+            if event.written:
+                lines.append(
+                    _trace_line(
+                        "memory", f"written ({event.content_chars} chars)"
+                    )
+                )
+            elif event.proposed:
+                lines.append(_trace_line("memory", "proposed, not stored"))
+        elif isinstance(event, FinalResponseEvent):
+            if event.needs_more_information:
+                lines.append(
+                    _trace_line("final", "needs more information")
+                )
+            elif event.max_steps_reached:
+                lines.append(_trace_line("final", "stopped at step limit"))
+    return lines
+
+
+def _trace_line(label: str, detail: str) -> str:
+    return f"  {label:<9} {detail}"
+
+
+def format_startup(stella: Stella) -> list[str]:
+    """Describe the active configuration; never includes secrets."""
+
+    llm = getattr(getattr(stella, "brain", None), "llm", None)
+    base_url = str(getattr(getattr(llm, "client", None), "base_url", "") or "")
+    database = getattr(stella.memory, "database_path", None)
+    workspace = None
+    for tool in getattr(stella.tools, "_tools", {}).values():
+        if hasattr(tool, "workspace"):
+            workspace = str(tool.workspace)
+            break
+    return [
+        f"provider:  {type(llm).__name__ if llm is not None else 'unknown'}",
+        f"model:     {getattr(llm, 'model', None) or 'unknown'}",
+        f"endpoint:  {base_url or 'default'}",
+        f"memory db: {database if database is not None else 'in-memory'}",
+        f"workspace: {workspace or 'not configured'}",
+    ]
 
 
 def cli_approval_provider(
@@ -181,10 +288,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="print each structured Brain decision to stderr",
     )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="render a compact 'Stella did' timeline after each turn",
+    )
     args = parser.parse_args(argv)
     stella = create_stella_from_environment()
+    for line in format_startup(stella):
+        print(line)
     try:
-        run_cli(stella, debug=args.debug)
+        run_cli(stella, debug=args.debug, trace=args.trace)
     finally:
         if isinstance(stella.memory, SQLiteMemory):
             stella.memory.close()

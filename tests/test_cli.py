@@ -1,7 +1,12 @@
 import pytest
 
 from stella.brain import Brain, Decision, DecisionKind
-from stella.cli import cli_approval_provider, run_cli
+from stella.cli import (
+    cli_approval_provider,
+    format_startup,
+    format_trace,
+    run_cli,
+)
 from stella.context import Context
 from stella.llm import LLMClient
 from stella.memory import InMemoryMemory
@@ -14,6 +19,23 @@ from stella.tools import (
     ToolDispatcher,
     ToolResult,
 )
+from stella.trace import (
+    ApprovalEvent,
+    DecisionEvent,
+    FinalResponseEvent,
+    InputReceivedEvent,
+    InteractionTrace,
+    MemoryRetrievedEvent,
+    MemoryWriteEvent,
+    ToolResultEvent,
+)
+
+
+def make_trace(*events) -> InteractionTrace:
+    trace = InteractionTrace()
+    for event in events:
+        trace.record(event)
+    return trace
 
 
 class RecordingStella:
@@ -162,3 +184,172 @@ def test_cli_approval_executes_dangerous_tool_only_after_yes() -> None:
         for output in outputs
     )
     assert "Stella: The approved action completed." in outputs
+
+
+class TraceStella:
+    """Stand-in returning one prepared result with an interaction trace."""
+
+    def __init__(self, result: StellaResult) -> None:
+        self.result = result
+
+    def process(self, context: Context) -> StellaResult:
+        return self.result
+
+
+def test_format_trace_renders_all_seven_event_types() -> None:
+    result = StellaResult(
+        decision=Decision(DecisionKind.ANSWER, "done"),
+        response="done",
+        interaction_trace=make_trace(
+            InputReceivedEvent(24, 2, ("text:user",), 0),
+            MemoryRetrievedEvent(1, (43,)),
+            DecisionEvent("tool", "datetime", ("kind",), 0, False),
+            ApprovalEvent("datetime", True),
+            ToolResultEvent("datetime", ("kind",), True, 42),
+            MemoryWriteEvent(True, True, 43),
+            FinalResponseEvent("answer", True, 10, False, False),
+        ),
+    )
+
+    assert format_trace(result) == [
+        "  input     24 chars, 2 history messages",
+        "  memory    retrieved 1",
+        "  decision  TOOL -> datetime (kind)",
+        "  approval  granted for datetime",
+        "  tool      datetime success, 42 chars output",
+        "  memory    written (43 chars)",
+    ]
+
+
+def test_format_trace_shows_denials_proposals_and_skips_noise() -> None:
+    result = StellaResult(
+        decision=Decision(DecisionKind.ASK, content="why?"),
+        interaction_trace=make_trace(
+            MemoryRetrievedEvent(0, ()),
+            DecisionEvent("answer", None, (), 5, True),
+            ApprovalEvent("filesystem_delete", False),
+            MemoryWriteEvent(True, False, 20),
+            FinalResponseEvent("ask", False, 0, True, False),
+        ),
+    )
+
+    assert format_trace(result) == [
+        "  decision  ANSWER +memory proposal",
+        "  approval  denied for filesystem_delete",
+        "  memory    proposed, not stored",
+        "  final     needs more information",
+    ]
+
+
+def test_format_trace_handles_missing_trace_and_step_limit() -> None:
+    assert format_trace(StellaResult(Decision(DecisionKind.ANSWER))) == []
+    result = StellaResult(
+        decision=Decision(DecisionKind.TOOL),
+        interaction_trace=make_trace(
+            ApprovalEvent(None, None),
+            FinalResponseEvent("tool", False, 0, False, True),
+        ),
+    )
+    assert format_trace(result) == [
+        "  approval  not requested",
+        "  final     stopped at step limit",
+    ]
+
+
+def test_cli_trace_renders_timeline_before_final_response() -> None:
+    stella = TraceStella(
+        StellaResult(
+            decision=Decision(DecisionKind.ANSWER, "done"),
+            response="done",
+            interaction_trace=make_trace(
+                DecisionEvent("answer", None, (), 4, False)
+            ),
+        )
+    )
+    outputs: list[str] = []
+
+    inputs = iter(["hello", "exit"])
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        trace=True,
+    )
+
+    assert outputs == [
+        "Stella did",
+        "  decision  ANSWER",
+        "",
+        "Stella: done",
+        "Goodbye!",
+    ]
+
+
+def test_cli_without_trace_shows_no_timeline() -> None:
+    stella = TraceStella(
+        StellaResult(
+            decision=Decision(DecisionKind.ANSWER, "done"),
+            response="done",
+            interaction_trace=make_trace(
+                DecisionEvent("answer", None, (), 4, False)
+            ),
+        )
+    )
+    outputs: list[str] = []
+
+    inputs = iter(["hello", "exit"])
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+    )
+
+    assert outputs == ["Stella: done", "Goodbye!"]
+
+
+def test_format_startup_describes_configuration_without_secrets() -> None:
+    from types import SimpleNamespace
+
+    llm = SimpleNamespace(
+        model="qwen3:4b",
+        client=SimpleNamespace(
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="SECRET-SENTINEL",
+        ),
+    )
+    stella = SimpleNamespace(
+        brain=SimpleNamespace(llm=llm),
+        memory=SimpleNamespace(database_path="/tmp/stella.db"),
+        tools=SimpleNamespace(
+            _tools={"filesystem_read": SimpleNamespace(workspace="/tmp/ws")}
+        ),
+    )
+
+    lines = format_startup(stella)
+
+    assert lines == [
+        "provider:  SimpleNamespace",
+        "model:     qwen3:4b",
+        "endpoint:  http://127.0.0.1:11434/v1",
+        "memory db: /tmp/stella.db",
+        "workspace: /tmp/ws",
+    ]
+    assert "SECRET-SENTINEL" not in "\n".join(lines)
+
+
+def test_format_startup_degrades_for_minimal_stella() -> None:
+    from types import SimpleNamespace
+
+    stella = SimpleNamespace(
+        brain=None,
+        memory=SimpleNamespace(),
+        tools=SimpleNamespace(_tools={}),
+    )
+
+    assert format_startup(stella) == [
+        "provider:  unknown",
+        "model:     unknown",
+        "endpoint:  default",
+        "memory db: in-memory",
+        "workspace: not configured",
+    ]

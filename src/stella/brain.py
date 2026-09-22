@@ -201,7 +201,10 @@ A kind=tool decision may set "tool_final": true only when that single tool
 result is all the request needs and no further tool call or clarification can
 follow; the runtime then answers directly from that one observation. Omit
 tool_final (or use false) for multi-step plans. It never overrides approval,
-and a failed observation is still reported honestly.
+and a failed observation is still reported honestly. When calling a tool
+directly, add the reserved argument "tool_final": true for the same signal;
+the runtime removes it before the tool runs and it is not part of the tool's
+own schema.
 Risk and approval are determined by trusted application code, not by the
 structured response. Do not include or invent risk or approval fields.
 The filesystem_write capability only creates a new UTF-8 text file inside the
@@ -315,10 +318,16 @@ Behavioral preferences:
 
     @staticmethod
     def _decision_from_tool_call(call: LLMToolCall) -> Decision:
+        arguments = dict(call.arguments)
+        # Reserved cross-channel marker: the model may add "tool_final": true
+        # to a direct tool call's arguments. It is stripped here, before the
+        # trusted dispatcher sees any arguments, so it never reaches a tool.
+        tool_final = arguments.pop("tool_final", None)
         return Decision(
             DecisionKind.TOOL,
             capability=call.name,
-            arguments=call.arguments,
+            arguments=arguments,
+            tool_final=tool_final is True,
         )
 
     def _system_prompt(self) -> str:

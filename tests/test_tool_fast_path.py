@@ -236,6 +236,70 @@ def test_llm_brain_parses_tool_final_flag() -> None:
     assert junk.kind is DecisionKind.DO_NOTHING
 
 
+def test_reserved_tool_final_stripped_from_native_tool_calls() -> None:
+    from stella.llm import LLMToolCall
+
+    armed = LLMBrain._decision_from_tool_call(
+        LLMToolCall(
+            name="system_info",
+            arguments={"kind": "hostname", "tool_final": True},
+        )
+    )
+    assert armed.tool_final is True
+    assert armed.arguments == {"kind": "hostname"}
+
+    unarmed = LLMBrain._decision_from_tool_call(
+        LLMToolCall(
+            name="system_info",
+            arguments={"kind": "hostname", "tool_final": "yes"},
+        )
+    )
+    assert unarmed.tool_final is False
+    assert unarmed.arguments == {"kind": "hostname"}
+
+    plain = LLMBrain._decision_from_tool_call(
+        LLMToolCall(name="echo", arguments={"text": "hi"})
+    )
+    assert plain.tool_final is False
+    assert plain.arguments == {"text": "hi"}
+
+
+def test_tool_call_channel_drives_fast_path_end_to_end() -> None:
+    from stella.llm import LLMResponse, LLMToolCall
+
+    class ToolCallLLM(LLMClient):
+        def __init__(self):
+            self.chat_calls = 0
+
+        def chat(self, messages):
+            self.chat_calls += 1
+            return "synthesized from tool call"
+
+        def chat_with_tools(self, messages, tools, tool_choice=None):
+            return LLMResponse(
+                tool_calls=(
+                    LLMToolCall(
+                        name="echo",
+                        arguments={"message": "hi", "tool_final": True},
+                    ),
+                )
+            )
+
+    llm = ToolCallLLM()
+    tools = ToolDispatcher([EchoTool()])
+    brain = LLMBrain(llm, tools)
+    stella = Stella(brain, llm, tools, InMemoryMemory(), max_tool_steps=2)
+
+    result = stella.process(Context(user_input="echo hi"))
+
+    assert result.response == "synthesized from tool call"
+    assert llm.chat_calls == 1  # synthesis only; no re-decision happened
+    assert result.decision.kind is DecisionKind.ANSWER
+    # the reserved key never reached the tool's strict argument validation
+    assert result.tool_result is not None
+    assert result.tool_result.success is True
+
+
 def test_fast_path_only_applies_to_the_first_tool_call() -> None:
     brain = SequenceBrain(
         [

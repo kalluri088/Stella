@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stella"
+version = "0.1.0"
+description = "Initial Stella project foundation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0",
+]
+
+[project.scripts]
+stella = "stella.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stella"]
+
+[tool.ruff]
+line-length = 88

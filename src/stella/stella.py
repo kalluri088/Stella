@@ -22,7 +22,6 @@ from stella.context import (
 )
 from stella.llm import LLMClient, Message
 from stella.memory import Memory, MemoryItem, MemoryWriteRequest, MemoryWriteResult
-from stella.semantic_memory import SemanticRetriever
 from stella.proactivity import (
     DueTaskEvent,
     ProactivityDecisionKind,
@@ -31,6 +30,7 @@ from stella.proactivity import (
     UserFacingProactivityResult,
 )
 from stella.proactivity import evaluate_due_task_event as evaluate_due_task_event_once
+from stella.semantic_memory import SemanticRetriever
 from stella.tools import (
     ApprovalRequest,
     Tool,
@@ -39,6 +39,7 @@ from stella.tools import (
     ToolResult,
 )
 from stella.trace import (
+    ActionReceiptEvent,
     ApprovalEvent,
     DecisionEvent,
     FinalResponseEvent,
@@ -230,6 +231,16 @@ class Stella:
                             action=action.action,
                             count=action.count,
                             memory_id=action.memory_id,
+                        )
+                    )
+                if tool_result.action_receipt is not None:
+                    receipt = tool_result.action_receipt
+                    trace.record(
+                        ActionReceiptEvent(
+                            capability=decision.capability,
+                            action=receipt.action,
+                            status=receipt.status,
+                            size_bytes=receipt.size_bytes,
                         )
                     )
                 tool_steps += 1

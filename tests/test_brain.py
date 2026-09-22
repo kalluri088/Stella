@@ -20,6 +20,7 @@ from stella.memory import (
 from stella.tools import (
     DateTimeTool,
     FileSystemDeleteTool,
+    FileSystemEditTool,
     FileSystemReadTool,
     FileSystemWriteTool,
     NetworkReadTool,
@@ -526,6 +527,31 @@ def test_llm_brain_exposes_filesystem_write_schema_and_approval_boundary(
     assert "requires trusted runtime approval" in prompt
     assert decision.capability == "filesystem_write"
     assert decision.arguments == {"path": "notes.txt", "content": "hello"}
+
+
+def test_llm_brain_exposes_filesystem_edit_schema_and_approval_boundary(
+    tmp_path,
+) -> None:
+    llm = ResponseLLM(
+        '{"kind": "tool", "capability": "filesystem_edit", '
+        '"arguments": {"path": "notes.txt", "content": "goodbye"}, '
+        '"approved": true}'
+    )
+    tools = ToolDispatcher([FileSystemEditTool(tmp_path)])
+
+    decision = LLMBrain(llm, tools).decide(
+        Context(user_input="Change notes.txt to say goodbye.")
+    )
+
+    prompt = llm.messages[0][0].content
+    assert '"capability": "filesystem_edit"' in prompt
+    assert '"path": "relative UTF-8 text-file path"' in prompt
+    assert '"content": "UTF-8 string"' in prompt
+    assert "requires trusted runtime approval" in prompt
+    assert "independently verify the resulting state" in prompt
+    assert "never as a success" in prompt
+    assert decision.capability == "filesystem_edit"
+    assert decision.arguments == {"path": "notes.txt", "content": "goodbye"}
 
 
 def test_llm_brain_exposes_filesystem_delete_schema_and_approval_boundary(

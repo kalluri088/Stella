@@ -79,6 +79,16 @@ class MemoryActionEvent:
     memory_id: int | None = None
 
 
+@dataclass(frozen=True)
+class ActionReceiptEvent:
+    """A bounded receipt for one mutation attempt and its verification."""
+
+    capability: str | None
+    action: str
+    status: str
+    size_bytes: int | None = None
+
+
 TraceEvent = (
     InputReceivedEvent
     | MemoryRetrievedEvent
@@ -88,6 +98,7 @@ TraceEvent = (
     | FinalResponseEvent
     | MemoryWriteEvent
     | MemoryActionEvent
+    | ActionReceiptEvent
 )
 
 

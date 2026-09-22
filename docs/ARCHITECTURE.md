@@ -319,7 +319,8 @@ After the Brain returns, Stella performs at most one explicit memory write for t
 Each `Stella.process()` result also exposes an `InteractionTrace`. The trace is
 an ordered, in-memory, provider-neutral record of the interaction boundaries:
 bounded input metadata, memory-retrieval counts, redacted Brain decisions,
-approval outcomes, redacted tool results, the final-response summary, and the
+approval outcomes, redacted tool results, bounded action receipts (mutation,
+verification status, and result size), the final-response summary, and the
 memory-write outcome. It stores lengths, kinds, capability names, and argument
 keys rather than raw user text, tool output, memory content, or argument
 values. The trace is observational only: it cannot select decisions, grant
@@ -391,9 +392,16 @@ The implemented flow constructs or receives a `Context`, and `Stella` performs t
    `SENSITIVE`, remains workspace-scoped, and does not require interactive
    approval. `filesystem_write` is classified as `DANGEROUS`, is create-only,
    and requires an exact application approval before execution.
+   `filesystem_edit` is classified as `DANGEROUS`, replaces the full content
+   of one existing regular workspace file, and requires an exact application
+   approval before execution.
    `filesystem_delete` is classified as `DANGEROUS`, only deletes one
    existing regular workspace file, and requires an exact application
    approval before execution.
+   Each filesystem mutation then verifies the resulting state with trusted
+   application code (create/edit re-read the expected bytes, delete confirms
+   absence) and returns a bounded `ActionReceipt`; unverified or inconclusive
+   outcomes are reported as failures, never as success.
    `network_read` is classified as `DANGEROUS`, accepts one public HTTPS
    `text/plain` URL without credentials, query strings, or fragments, and
    requires exact application approval before it connects.
@@ -502,7 +510,7 @@ Add `--debug` when inspecting Brain decisions:
 uv run stella --debug
 ```
 
-`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to `OpenAILLMClient`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the CLI uses `stella_memory.db` in the current working directory. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, and `filesystem_delete` capabilities; if unset, the CLI uses `./stella_workspace`. The CLI reads these variable names but does not contain or expose secret values.
+`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to `OpenAILLMClient`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the CLI uses `stella_memory.db` in the current working directory. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, `filesystem_edit`, and `filesystem_delete` capabilities; if unset, the CLI uses `./stella_workspace`. The CLI reads these variable names but does not contain or expose secret values.
 
 ## Current verification status
 

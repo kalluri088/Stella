@@ -22,6 +22,7 @@ from stella.tools import (
     ToolResult,
 )
 from stella.trace import (
+    ActionReceiptEvent,
     ApprovalEvent,
     DecisionEvent,
     FinalResponseEvent,
@@ -363,6 +364,11 @@ def test_cli_approval_provider_requires_explicit_confirmation(
             "create a new text file \"notes.txt\" in your Stella workspace",
         ),
         (
+            "filesystem_edit",
+            {"path": "notes.txt", "content": "hi"},
+            "replace the contents of \"notes.txt\" in your Stella workspace",
+        ),
+        (
             "filesystem_delete",
             {"path": "notes.txt"},
             (
@@ -508,6 +514,24 @@ def test_format_trace_shows_denials_proposals_and_skips_noise() -> None:
         "  approval  denied for filesystem_delete",
         "  memory    proposed, not stored",
         "  final     needs more information",
+    ]
+
+
+def test_format_trace_renders_action_receipts() -> None:
+    result = StellaResult(
+        decision=Decision(DecisionKind.ANSWER, content="done"),
+        response="done",
+        interaction_trace=make_trace(
+            ActionReceiptEvent("filesystem_write", "create", "verified", 12),
+            ActionReceiptEvent("filesystem_delete", "delete", "unverified"),
+            ActionReceiptEvent("filesystem_edit", "edit", "missing"),
+        ),
+    )
+
+    assert format_trace(result) == [
+        "  action    create verified (12 bytes)",
+        "  action    delete unverified",
+        "  action    edit missing",
     ]
 
 

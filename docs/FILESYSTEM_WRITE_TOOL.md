@@ -34,7 +34,8 @@ LLM proposes filesystem_write + path + content
   -> CLI/application creates ToolApproval
   -> dispatcher verifies exact capability, path, and content
   -> exclusive new-file creation
-  -> ToolResult
+  -> trusted re-read verification of the expected bytes
+  -> ToolResult (+ verified/unverified/inconclusive ActionReceipt)
   -> final LLM response
 ```
 
@@ -62,6 +63,12 @@ is allowed. Invalid structures, non-string values, oversized or unencodable
 content, missing parents, existing destinations, and runtime failures return
 deterministic `ToolResult` values without exposing raw exceptions or stack
 traces.
+
+After a successful write the tool re-reads the file with trusted application
+code and only reports `File created and verified.` when the exact expected
+bytes are present. A contradictory or uninspectable result is reported
+honestly as a failed `ToolResult` with an `unverified` or `inconclusive`
+receipt — a success claim always means the resulting state was verified.
 
 The tool does not scan for secrets. Workspace contents and requested write
 content are treated as user-authorized input for this MVP; applications should
@@ -115,8 +122,9 @@ The API key was not displayed or recorded.
 
 ## Intentionally not implemented
 
-This capability does not provide file overwrite, append, delete, rename,
-directory creation/listing, arbitrary binary or document handling, secret
-scanning, multi-user identity, persistent approval, sandboxing, a generic
-permission engine, shell/process execution, network access, retries, or
-autonomous write loops.
+This capability does not provide file append, rename, directory
+creation/listing, arbitrary binary or document handling, secret scanning,
+multi-user identity, persistent approval, sandboxing, a generic permission
+engine, shell/process execution, network access, retries, or autonomous write
+loops. Overwriting an existing file is not a write; it is the separate
+`filesystem_edit` capability with its own approval and verification.

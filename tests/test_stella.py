@@ -18,6 +18,7 @@ from stella.memory import (
 )
 from stella.stella import Stella
 from stella.tools import (
+    ActionReceipt,
     ApprovalRequest,
     DateTimeTool,
     EchoTool,
@@ -559,14 +560,18 @@ def test_stella_writes_filesystem_only_after_exact_approval(tmp_path) -> None:
 
     result = stella.process(Context(user_input="Write the file."))
 
-    assert result.tool_result == ToolResult(success=True, output="File created.")
+    assert result.tool_result == ToolResult(
+        success=True,
+        output="File created and verified.",
+        action_receipt=ActionReceipt("create", "verified", 16),
+    )
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == (
         "approved content"
     )
     payload = json.loads(llm.messages[0][1].content)
     assert payload["tool_result"] == {
         "success": True,
-        "output": "File created.",
+        "output": "File created and verified.",
     }
 
 
@@ -598,7 +603,11 @@ def test_stella_deletes_filesystem_only_after_exact_approval(tmp_path) -> None:
 
     result = stella.process(Context(user_input="Delete notes.txt"))
 
-    assert result.tool_result == ToolResult(success=True, output="File deleted.")
+    assert result.tool_result == ToolResult(
+        success=True,
+        output="File deleted and verified to be absent.",
+        action_receipt=ActionReceipt("delete", "verified"),
+    )
     assert result.response == "The file was deleted."
     assert not target.exists()
     assert dispatcher.audit_records[0].approval_granted is True

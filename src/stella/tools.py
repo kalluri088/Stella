@@ -28,12 +28,30 @@ class MemoryAction:
 
 
 @dataclass(frozen=True)
+class ActionReceipt:
+    """Bounded trusted summary of one mutation attempt and its verification.
+
+    Statuses are exact: "verified" (state confirmed afterwards), "unverified"
+    (mutation ran but the resulting state did not match), "inconclusive"
+    (the resulting state could not be inspected), "failed" (the mutation
+    itself did not run to completion), "missing" (target absent), and
+    "invalid" (target rejected by the boundary or type checks). A successful
+    result is only ever reported together with a verified receipt.
+    """
+
+    action: str
+    status: str
+    size_bytes: int | None = None
+
+
+@dataclass(frozen=True)
 class ToolResult:
     """The result of executing a tool."""
 
     success: bool
     output: str
     memory_action: MemoryAction | None = None
+    action_receipt: ActionReceipt | None = None
 
 
 class RiskLevel(str, Enum):
@@ -239,6 +257,67 @@ def _read_bounded_text(
             ToolResult(success=False, output="File could not be read."),
             False,
         )
+
+
+def _verify_written_file(
+    resolved: Path, expected: bytes
+) -> tuple[bool | None, int | None]:
+    """Independently read back one mutated file; never raises.
+
+    Returns (verified, observed_size): True only when the stored bytes match
+    exactly, False on any mismatch, and None when the state could not be
+    inspected at all (verification inconclusive).
+    """
+
+    try:
+        with resolved.open("rb") as file:
+            written = file.read(len(expected) + 1)
+    except OSError:
+        return None, None
+    if written != expected:
+        return False, len(written)
+    return True, len(written)
+
+
+def _verify_deleted_file(
+    candidate: Path, resolved: Path
+) -> bool | None:
+    """Confirm one deleted path is actually absent; None if inconclusive."""
+
+    try:
+        return not os.path.lexists(candidate) and not resolved.exists()
+    except OSError:
+        return None
+
+
+def _write_outcome(
+    action: str, verified: bool | None, size_bytes: int | None, verb: str
+) -> ToolResult:
+    """Build the honest shared result for one verified text-file mutation."""
+
+    if verified is True:
+        return ToolResult(
+            success=True,
+            output=f"File {verb} and verified.",
+            action_receipt=ActionReceipt(action, "verified", size_bytes),
+        )
+    if verified is False:
+        return ToolResult(
+            success=False,
+            output=(
+                f"The file was {verb}, but verification did not confirm the "
+                "expected result; the outcome is unverified."
+            ),
+            action_receipt=ActionReceipt(action, "unverified", size_bytes),
+        )
+    return ToolResult(
+        success=False,
+        output=(
+            f"The file was {verb}, but the resulting state could not be "
+            "inspected; verification is inconclusive."
+        ),
+        action_receipt=ActionReceipt(action, "inconclusive", size_bytes),
+    )
 
 
 def _walk_workspace_files(
@@ -470,7 +549,8 @@ class FileSystemWriteTool(FileSystemReadTool):
     def description(self) -> str:
         return (
             "Creates a new UTF-8 text file below the configured Stella "
-            "workspace. Requires a relative path and explicit approval."
+            "workspace and verifies the resulting file before reporting "
+            "success. Requires a relative path and explicit approval."
         )
 
     @property
@@ -514,30 +594,128 @@ class FileSystemWriteTool(FileSystemReadTool):
         content = arguments["content"]
         resolved = self._resolve_in_workspace(path)
         if resolved is None:
-            return ToolResult(success=False, output="File is outside workspace.")
+            return ToolResult(
+                success=False,
+                output="File is outside workspace.",
+                action_receipt=ActionReceipt("create", "invalid"),
+            )
 
         candidate = self.workspace / path
         try:
             if not self.workspace.is_dir():
-                return ToolResult(success=False, output="Workspace unavailable.")
+                return ToolResult(
+                    success=False,
+                    output="Workspace unavailable.",
+                    action_receipt=ActionReceipt("create", "failed"),
+                )
             if os.path.lexists(candidate):
-                return ToolResult(success=False, output="File already exists.")
+                return ToolResult(
+                    success=False,
+                    output="File already exists.",
+                    action_receipt=ActionReceipt("create", "invalid"),
+                )
             if not resolved.parent.is_dir():
                 return ToolResult(
-                    success=False, output="Parent directory unavailable."
+                    success=False,
+                    output="Parent directory unavailable.",
+                    action_receipt=ActionReceipt("create", "failed"),
                 )
 
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
+            expected = content.encode("utf-8")
             descriptor = os.open(resolved, flags, 0o600)
             with os.fdopen(descriptor, "wb") as file:
-                file.write(content.encode("utf-8"))
-            return ToolResult(success=True, output="File created.")
+                file.write(expected)
+            verified, size = _verify_written_file(resolved, expected)
+            return _write_outcome("create", verified, size, "created")
         except FileExistsError:
-            return ToolResult(success=False, output="File already exists.")
+            return ToolResult(
+                success=False,
+                output="File already exists.",
+                action_receipt=ActionReceipt("create", "invalid"),
+            )
         except (OSError, RuntimeError, UnicodeEncodeError):
-            return ToolResult(success=False, output="File could not be created.")
+            return ToolResult(
+                success=False,
+                output="File could not be created.",
+                action_receipt=ActionReceipt("create", "failed"),
+            )
+
+
+class FileSystemEditTool(FileSystemWriteTool):
+    """Replace the content of one existing UTF-8 text file in the workspace."""
+
+    @property
+    def name(self) -> str:
+        return "filesystem_edit"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Replaces the full content of one existing UTF-8 text file "
+            "below the configured Stella workspace and verifies the result "
+            "before reporting success. Requires a relative path and "
+            "explicit approval. It cannot create files or follow symlinks."
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+
+        path = arguments["path"]
+        content = arguments["content"]
+        resolved = self._resolve_in_workspace(path)
+        if resolved is None:
+            return ToolResult(
+                success=False,
+                output="File is outside workspace.",
+                action_receipt=ActionReceipt("edit", "invalid"),
+            )
+
+        candidate = self.workspace / path
+        try:
+            if not self.workspace.is_dir():
+                return ToolResult(
+                    success=False,
+                    output="Workspace unavailable.",
+                    action_receipt=ActionReceipt("edit", "failed"),
+                )
+            if not os.path.lexists(candidate):
+                return ToolResult(
+                    success=False,
+                    output="File was not found.",
+                    action_receipt=ActionReceipt("edit", "missing"),
+                )
+            if candidate.is_symlink():
+                return ToolResult(
+                    success=False,
+                    output="Symbolic links are not supported.",
+                    action_receipt=ActionReceipt("edit", "invalid"),
+                )
+            if not resolved.is_file():
+                return ToolResult(
+                    success=False,
+                    output="File is not a regular file.",
+                    action_receipt=ActionReceipt("edit", "invalid"),
+                )
+
+            flags = os.O_WRONLY | os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            expected = content.encode("utf-8")
+            descriptor = os.open(resolved, flags)
+            with os.fdopen(descriptor, "wb") as file:
+                file.write(expected)
+            verified, size = _verify_written_file(resolved, expected)
+            return _write_outcome("edit", verified, size, "edited")
+        except (OSError, RuntimeError, UnicodeEncodeError):
+            return ToolResult(
+                success=False,
+                output="File could not be edited.",
+                action_receipt=ActionReceipt("edit", "failed"),
+            )
 
 
 class FileSystemDeleteTool(FileSystemReadTool):
@@ -551,7 +729,9 @@ class FileSystemDeleteTool(FileSystemReadTool):
     def description(self) -> str:
         return (
             "Deletes one existing regular file below the configured Stella "
-            "workspace. Requires a relative path and explicit approval."
+            "workspace and verifies the file is actually absent before "
+            "reporting success. Requires a relative path and explicit "
+            "approval."
         )
 
     @property
@@ -585,32 +765,73 @@ class FileSystemDeleteTool(FileSystemReadTool):
         path = arguments["path"]
         resolved = self._resolve_in_workspace(path)
         if resolved is None:
-            return ToolResult(success=False, output="File is outside workspace.")
+            return ToolResult(
+                success=False,
+                output="File is outside workspace.",
+                action_receipt=ActionReceipt("delete", "invalid"),
+            )
 
         candidate = self.workspace / path
         try:
             if not self.workspace.is_dir():
-                return ToolResult(success=False, output="Workspace unavailable.")
+                return ToolResult(
+                    success=False,
+                    output="Workspace unavailable.",
+                    action_receipt=ActionReceipt("delete", "failed"),
+                )
             if candidate.is_symlink():
                 return ToolResult(
-                    success=False, output="Symbolic links are not supported."
+                    success=False,
+                    output="Symbolic links are not supported.",
+                    action_receipt=ActionReceipt("delete", "invalid"),
                 )
             if not resolved.exists():
-                return ToolResult(success=False, output="File was not found.")
+                return ToolResult(
+                    success=False,
+                    output="File was not found.",
+                    action_receipt=ActionReceipt("delete", "missing"),
+                )
             if not resolved.is_file():
                 return ToolResult(
-                    success=False, output="File is not a regular file."
+                    success=False,
+                    output="File is not a regular file.",
+                    action_receipt=ActionReceipt("delete", "invalid"),
                 )
             resolved.unlink()
-            return ToolResult(success=True, output="File deleted.")
+            # Deletion is only reported as success after the exact target
+            # path is independently confirmed absent.
+            if _verify_deleted_file(candidate, resolved) is True:
+                return ToolResult(
+                    success=True,
+                    output="File deleted and verified to be absent.",
+                    action_receipt=ActionReceipt("delete", "verified"),
+                )
+            return ToolResult(
+                success=False,
+                output=(
+                    "The file could not be confirmed as deleted; the "
+                    "outcome is unverified."
+                ),
+                action_receipt=ActionReceipt("delete", "unverified"),
+            )
         except FileNotFoundError:
-            return ToolResult(success=False, output="File was not found.")
+            return ToolResult(
+                success=False,
+                output="File was not found.",
+                action_receipt=ActionReceipt("delete", "missing"),
+            )
         except IsADirectoryError:
             return ToolResult(
-                success=False, output="File is not a regular file."
+                success=False,
+                output="File is not a regular file.",
+                action_receipt=ActionReceipt("delete", "invalid"),
             )
         except (OSError, RuntimeError):
-            return ToolResult(success=False, output="File could not be deleted.")
+            return ToolResult(
+                success=False,
+                output="File could not be deleted.",
+                action_receipt=ActionReceipt("delete", "failed"),
+            )
 
 
 class WorkspaceListTool(FileSystemReadTool):

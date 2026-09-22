@@ -22,7 +22,8 @@ Context
 The structured decision includes a `capability` identifier. The current
 application-approved capabilities are the exact names registered in the
 injected `ToolDispatcher`: `datetime`, `system_info`, `echo`,
-`filesystem_read`, `filesystem_write`, `filesystem_delete`, and `network_read`.
+`filesystem_read`, `filesystem_write`, `filesystem_edit`,
+`filesystem_delete`, and `network_read`.
 Stella looks
 up the requested capability by exact name. Missing, unknown, or mismatched
 capabilities return:
@@ -59,16 +60,33 @@ schemas:
 `echo`: `{"message":"string"}`
 `filesystem_read`: `{"path":"relative UTF-8 text-file path"}`
 `filesystem_write`: `{"path":"relative UTF-8 text-file path", "content":"UTF-8 string"}`
+`filesystem_edit`: `{"path":"relative UTF-8 text-file path", "content":"UTF-8 string"}`
 `filesystem_delete`: `{"path":"relative UTF-8 text-file path"}`
 
 `network_read`: `{"url":"HTTPS URL without credentials, query, or fragment"}`
 ```
 
 The model is instructed to use the listed capabilities only for their
-described operations and not to invent arguments. Filesystem delete is limited
-to one existing regular file, rejects wildcards, and requires trusted
-approval. The dispatcher is a small application-owned collection, not a
-plugin registry or dynamic discovery system.
+described operations and not to invent arguments. Filesystem edit and delete
+are limited to one existing regular file, delete rejects wildcards, and all
+three filesystem mutations require trusted approval. The dispatcher is a small
+application-owned collection, not a plugin registry or dynamic discovery
+system.
+
+Every filesystem mutation independently verifies the resulting state with
+trusted application code before reporting success, and returns a bounded
+`ActionReceipt(action, status, size_bytes)` on its `ToolResult`. Create and
+edit re-read the file and confirm the exact expected bytes are present
+("File created and verified." / "File edited and verified."); delete confirms
+the path is absent ("File deleted and verified to be absent."). If
+verification contradicts the write, the result fails honestly as
+"...verification did not confirm the expected result; the outcome is
+unverified."; if the resulting state cannot be inspected at all, it reports
+verification as inconclusive. Receipt statuses are `verified`, `unverified`,
+`inconclusive`, `failed`, `missing`, and `invalid`. Verification happens
+inside the tool's own `execute()` call as a controlled application flow — it
+is never a separate model decision or a recursive tool step, and an
+unverified receipt reaches the model as a failed `ToolResult`.
 
 Both successful and explicitly failed `ToolResult` values reach the final
 response call. If the tool raises an unexpected `Exception`, Stella converts
@@ -86,9 +104,18 @@ rejects absolute paths, parent traversal, wildcard characters, missing files,
 directories, and symlinks. Its canonical resolved path must remain below the
 configured workspace. It is `DANGEROUS`, so `ToolDispatcher` requires an
 exact application approval matching the validated path before execution. It
-does not recurse or expand globs. Failures return deterministic results such
-as `File was not found.`, `File is not a regular file.`, or `File could not be
+does not recurse or expand globs and verifies the file is actually absent
+before claiming success. Failures return deterministic results such as
+`File was not found.`, `File is not a regular file.`, or `File could not be
 deleted.`.
+
+`FileSystemEditTool` is the bounded edit counterpart of `FileSystemWriteTool`:
+it accepts the same `{path, content}` arguments, requires exact approval as a
+`DANGEROUS` tool, and replaces the full contents of one existing regular
+workspace file. It cannot create files, follow symlinks, or touch paths
+outside the workspace, and it verifies the written bytes before reporting
+`File edited and verified.`. Missing targets honestly return
+`File was not found.` without creating anything.
 
 `NetworkReadTool` requires exactly one HTTPS URL without userinfo, query
 strings, fragments, or a non-default port. It performs a fixed GET with no
@@ -132,7 +159,7 @@ executes the injected tool and coordinates the response.
 
 ## Intentionally out of scope
 
-The current implementation injects seven bounded tools through one
+The current implementation injects a fixed set of bounded tools through one
 `ToolDispatcher`. It does not provide:
 
 - a plugin registry or dynamic tool discovery;

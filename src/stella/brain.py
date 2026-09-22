@@ -232,6 +232,14 @@ The filesystem_write capability only creates a new UTF-8 text file inside the
 configured workspace. It requires exactly a relative path and string content,
 and requires trusted runtime approval. Never provide an approval field; the
 runtime, not the model, authorizes this action.
+The filesystem_edit capability replaces the full content of one existing
+UTF-8 text file inside the configured workspace. It requires exactly a
+relative path and string content, cannot create files, and requires trusted
+runtime approval.
+All three filesystem mutation tools independently verify the resulting state
+before reporting success. Report exactly what the tool observation says: a
+verified result may be reported as done; an unverified, inconclusive, failed,
+missing, or denied result must be reported honestly and never as a success.
 The filesystem_delete capability only deletes one existing regular file inside
 the configured workspace. It requires exactly a relative path, does not accept
 wildcards, and requires trusted runtime approval. Never provide an approval

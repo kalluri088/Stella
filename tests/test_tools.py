@@ -4,11 +4,13 @@ from unittest.mock import patch
 import pytest
 
 from stella.tools import (
+    ActionReceipt,
     ApprovalRequest,
     AuditRecord,
     DateTimeTool,
     EchoTool,
     FileSystemDeleteTool,
+    FileSystemEditTool,
     FileSystemReadTool,
     FileSystemWriteTool,
     NetworkReadTool,
@@ -463,7 +465,11 @@ def test_filesystem_write_tool_creates_new_utf8_text_file(tmp_path) -> None:
 
     assert tool.name == "filesystem_write"
     assert tool.risk_level is RiskLevel.DANGEROUS
-    assert result == ToolResult(success=True, output="File created.")
+    assert result == ToolResult(
+        success=True,
+        output="File created and verified.",
+        action_receipt=ActionReceipt("create", "verified", 12),
+    )
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "Stella notes"
 
 
@@ -530,7 +536,11 @@ def test_filesystem_write_tool_rejects_existing_file_without_overwriting(
         {"path": "notes.txt", "content": "replacement"}
     )
 
-    assert result == ToolResult(success=False, output="File already exists.")
+    assert result == ToolResult(
+        success=False,
+        output="File already exists.",
+        action_receipt=ActionReceipt("create", "invalid"),
+    )
     assert target.read_text(encoding="utf-8") == "original"
 
 
@@ -549,7 +559,11 @@ def test_filesystem_write_tool_rejects_symlink_escape(tmp_path) -> None:
         {"path": "link/new.txt", "content": "outside"}
     )
 
-    assert result == ToolResult(success=False, output="File is outside workspace.")
+    assert result == ToolResult(
+        success=False,
+        output="File is outside workspace.",
+        action_receipt=ActionReceipt("create", "invalid"),
+    )
     assert not (outside / "new.txt").exists()
 
 
@@ -570,7 +584,11 @@ def test_filesystem_write_tool_rejects_existing_symlink_inside_workspace(
         {"path": "link.txt", "content": "replacement"}
     )
 
-    assert result == ToolResult(success=False, output="File already exists.")
+    assert result == ToolResult(
+        success=False,
+        output="File already exists.",
+        action_receipt=ActionReceipt("create", "invalid"),
+    )
     assert target.read_text(encoding="utf-8") == "original"
 
 
@@ -606,7 +624,9 @@ def test_filesystem_write_tool_requires_existing_parent_directory(tmp_path) -> N
     )
 
     assert result == ToolResult(
-        success=False, output="Parent directory unavailable."
+        success=False,
+        output="Parent directory unavailable.",
+        action_receipt=ActionReceipt("create", "failed"),
     )
 
 
@@ -643,7 +663,11 @@ def test_filesystem_write_requires_exact_approved_path_and_content(tmp_path) -> 
     assert missing == ToolResult(success=False, output="Approval required.")
     assert rejected == ToolResult(success=False, output="Approval denied.")
     assert mismatched == ToolResult(success=False, output="Invalid approval.")
-    assert approved == ToolResult(success=True, output="File created.")
+    assert approved == ToolResult(
+        success=True,
+        output="File created and verified.",
+        action_receipt=ActionReceipt("create", "verified", 8),
+    )
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "approved"
 
 
@@ -658,7 +682,9 @@ def test_filesystem_delete_tool_deletes_one_regular_file(tmp_path) -> None:
     assert tool.name == "filesystem_delete"
     assert tool.risk_level is RiskLevel.DANGEROUS
     assert tool.execute({"path": "notes.txt"}) == ToolResult(
-        success=True, output="File deleted."
+        success=True,
+        output="File deleted and verified to be absent.",
+        action_receipt=ActionReceipt("delete", "verified"),
     )
     assert not target.exists()
 
@@ -711,10 +737,14 @@ def test_filesystem_delete_tool_rejects_missing_file_and_directory(tmp_path) -> 
     tool = FileSystemDeleteTool(workspace)
 
     assert tool.execute({"path": "missing.txt"}) == ToolResult(
-        success=False, output="File was not found."
+        success=False,
+        output="File was not found.",
+        action_receipt=ActionReceipt("delete", "missing"),
     )
     assert tool.execute({"path": "folder"}) == ToolResult(
-        success=False, output="File is not a regular file."
+        success=False,
+        output="File is not a regular file.",
+        action_receipt=ActionReceipt("delete", "invalid"),
     )
 
 
@@ -738,10 +768,14 @@ def test_filesystem_delete_tool_rejects_symlink_escape_and_internal_symlink(
     tool = FileSystemDeleteTool(workspace)
 
     assert tool.execute({"path": "outside-link.txt"}) == ToolResult(
-        success=False, output="File is outside workspace."
+        success=False,
+        output="File is outside workspace.",
+        action_receipt=ActionReceipt("delete", "invalid"),
     )
     assert tool.execute({"path": "inside-link.txt"}) == ToolResult(
-        success=False, output="Symbolic links are not supported."
+        success=False,
+        output="Symbolic links are not supported.",
+        action_receipt=ActionReceipt("delete", "invalid"),
     )
     assert outside.exists()
     assert inside.exists()
@@ -780,8 +814,274 @@ def test_filesystem_delete_requires_exact_approved_path(tmp_path) -> None:
     assert missing == ToolResult(success=False, output="Approval required.")
     assert mismatched == ToolResult(success=False, output="Invalid approval.")
     assert rejected == ToolResult(success=False, output="Approval denied.")
-    assert approved == ToolResult(success=True, output="File deleted.")
+    assert approved == ToolResult(
+        success=True,
+        output="File deleted and verified to be absent.",
+        action_receipt=ActionReceipt("delete", "verified"),
+    )
     assert not target.exists()
+
+
+def test_filesystem_edit_tool_replaces_content_and_verifies(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+
+    result = tool.execute({"path": "notes.txt", "content": "goodbye"})
+
+    assert tool.name == "filesystem_edit"
+    assert tool.risk_level is RiskLevel.DANGEROUS
+    assert result == ToolResult(
+        success=True,
+        output="File edited and verified.",
+        action_receipt=ActionReceipt("edit", "verified", 7),
+    )
+    assert target.read_text(encoding="utf-8") == "goodbye"
+
+
+def test_filesystem_edit_tool_reuses_write_argument_validation(tmp_path) -> None:
+    tool = FileSystemEditTool(tmp_path)
+
+    assert tool.argument_schema == FileSystemWriteTool(tmp_path).argument_schema
+    assert tool.validate_arguments({"path": "notes.txt"}) is False
+    assert tool.validate_arguments({"path": "notes.txt", "extra": 1}) is False
+    assert tool.validate_arguments({"path": "../notes.txt", "content": "x"}) is False
+    assert tool.validate_arguments({"path": "notes.txt", "content": "x"}) is True
+
+
+def test_filesystem_edit_tool_rejects_missing_file_without_creating(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = FileSystemEditTool(workspace).execute(
+        {"path": "notes.txt", "content": "replacement"}
+    )
+
+    assert result == ToolResult(
+        success=False,
+        output="File was not found.",
+        action_receipt=ActionReceipt("edit", "missing"),
+    )
+    assert not (workspace / "notes.txt").exists()
+
+
+def test_filesystem_edit_tool_rejects_directory_target(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "folder").mkdir(parents=True)
+
+    result = FileSystemEditTool(workspace).execute(
+        {"path": "folder", "content": "x"}
+    )
+
+    assert result == ToolResult(
+        success=False,
+        output="File is not a regular file.",
+        action_receipt=ActionReceipt("edit", "invalid"),
+    )
+
+
+def test_filesystem_edit_tool_rejects_symlinks_and_escaping(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    outside_link = workspace / "outside-link.txt"
+    inside = workspace / "inside.txt"
+    inside.write_text("keep", encoding="utf-8")
+    inside_link = workspace / "inside-link.txt"
+    try:
+        outside_link.symlink_to(outside)
+        inside_link.symlink_to(inside)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable on this platform")
+    tool = FileSystemEditTool(workspace)
+
+    escaping = tool.execute({"path": "outside-link.txt", "content": "override"})
+    internal = tool.execute({"path": "inside-link.txt", "content": "override"})
+
+    assert escaping == ToolResult(
+        success=False,
+        output="File is outside workspace.",
+        action_receipt=ActionReceipt("edit", "invalid"),
+    )
+    assert internal == ToolResult(
+        success=False,
+        output="Symbolic links are not supported.",
+        action_receipt=ActionReceipt("edit", "invalid"),
+    )
+    assert outside.read_text(encoding="utf-8") == "keep"
+    assert inside.read_text(encoding="utf-8") == "keep"
+
+
+def test_filesystem_edit_tool_rejects_absolute_path(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+
+    result = FileSystemEditTool(workspace).execute(
+        {"path": str(outside), "content": "override"}
+    )
+
+    assert result == ToolResult(success=False, output="Invalid tool arguments.")
+    assert outside.read_text(encoding="utf-8") == "keep"
+
+
+def test_filesystem_edit_requires_exact_approved_path_and_content(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+    dispatcher = ToolDispatcher([tool])
+    arguments = {"path": "notes.txt", "content": "replaced"}
+    request = ApprovalRequest("filesystem_edit", arguments)
+
+    missing = dispatcher.execute("filesystem_edit", arguments)
+    rejected = dispatcher.execute(
+        "filesystem_edit",
+        arguments,
+        ToolApproval(request=request, approved=False),
+    )
+    mismatched = dispatcher.execute(
+        "filesystem_edit",
+        arguments,
+        ToolApproval(
+            request=ApprovalRequest(
+                "filesystem_edit", {"path": "other.txt", "content": "replaced"}
+            ),
+            approved=True,
+        ),
+    )
+    assert target.read_text(encoding="utf-8") == "hello"
+
+    approved = dispatcher.execute(
+        "filesystem_edit",
+        arguments,
+        ToolApproval(request=request, approved=True),
+    )
+
+    assert missing == ToolResult(success=False, output="Approval required.")
+    assert rejected == ToolResult(success=False, output="Approval denied.")
+    assert mismatched == ToolResult(success=False, output="Invalid approval.")
+    assert approved == ToolResult(
+        success=True,
+        output="File edited and verified.",
+        action_receipt=ActionReceipt("edit", "verified", 8),
+    )
+    assert target.read_text(encoding="utf-8") == "replaced"
+
+
+@pytest.mark.parametrize(
+    ("verified", "size", "output", "status"),
+    [
+        (
+            False,
+            3,
+            (
+                "The file was created, but verification did not confirm the "
+                "expected result; the outcome is unverified."
+            ),
+            "unverified",
+        ),
+        (
+            None,
+            None,
+            (
+                "The file was created, but the resulting state could not be "
+                "inspected; verification is inconclusive."
+            ),
+            "inconclusive",
+        ),
+    ],
+)
+def test_filesystem_write_reports_unverified_or_inconclusive_outcomes(
+    tmp_path, monkeypatch, verified, size, output, status
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        "stella.tools._verify_written_file",
+        lambda resolved, expected: (verified, size),
+    )
+
+    result = FileSystemWriteTool(workspace).execute(
+        {"path": "notes.txt", "content": "hello"}
+    )
+
+    assert result == ToolResult(
+        success=False,
+        output=output,
+        action_receipt=ActionReceipt("create", status, size),
+    )
+
+
+def test_filesystem_edit_reports_unverified_outcome(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(
+        "stella.tools._verify_written_file",
+        lambda resolved, expected: (False, 3),
+    )
+
+    result = FileSystemEditTool(workspace).execute(
+        {"path": "notes.txt", "content": "abc"}
+    )
+
+    assert result == ToolResult(
+        success=False,
+        output=(
+            "The file was edited, but verification did not confirm the "
+            "expected result; the outcome is unverified."
+        ),
+        action_receipt=ActionReceipt("edit", "unverified", 3),
+    )
+
+
+def test_filesystem_delete_reports_unverified_when_absence_is_not_confirmed(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("delete me", encoding="utf-8")
+    monkeypatch.setattr(
+        "stella.tools._verify_deleted_file",
+        lambda candidate, resolved: False,
+    )
+
+    result = FileSystemDeleteTool(workspace).execute({"path": "notes.txt"})
+
+    assert result == ToolResult(
+        success=False,
+        output=(
+            "The file could not be confirmed as deleted; the outcome is "
+            "unverified."
+        ),
+        action_receipt=ActionReceipt("delete", "unverified"),
+    )
+
+
+def test_filesystem_delete_removes_only_the_approved_target(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("delete", encoding="utf-8")
+    neighbor = workspace / "keep.txt"
+    neighbor.write_text("keep", encoding="utf-8")
+
+    result = FileSystemDeleteTool(workspace).execute({"path": "notes.txt"})
+
+    assert result.success is True
+    assert not (workspace / "notes.txt").exists()
+    assert neighbor.read_text(encoding="utf-8") == "keep"
 
 
 def test_tool_dispatcher_reports_trusted_filesystem_risk(tmp_path) -> None:

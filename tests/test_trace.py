@@ -3,8 +3,18 @@ from stella.context import Context
 from stella.llm import LLMClient, Message
 from stella.memory import InMemoryMemory, MemoryItem, MemoryWriteRequest
 from stella.stella import Stella
-from stella.tools import RiskLevel, Tool, ToolDispatcher, ToolResult
+from stella.tools import (
+    ApprovalRequest,
+    FileSystemDeleteTool,
+    FileSystemWriteTool,
+    RiskLevel,
+    Tool,
+    ToolApproval,
+    ToolDispatcher,
+    ToolResult,
+)
 from stella.trace import (
+    ActionReceiptEvent,
     ApprovalEvent,
     DecisionEvent,
     FinalResponseEvent,
@@ -251,3 +261,88 @@ def test_trace_records_successful_memory_write_without_content() -> None:
     assert memory.retrieve() == [memory_request.item]
     assert memory_request.item.content not in repr(trace)
     assert trace.events.index(write) < len(trace.events) - 1
+
+
+def test_trace_records_verified_action_receipt_without_file_content(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    arguments = {"path": "notes.txt", "content": "hello secret world"}
+
+    def approve(request: ApprovalRequest) -> ToolApproval:
+        return ToolApproval(request=request, approved=True)
+
+    result = Stella(
+        FixedBrain(
+            Decision(
+                DecisionKind.TOOL,
+                capability="filesystem_write",
+                arguments=arguments,
+            )
+        ),
+        RecordingLLM(),
+        ToolDispatcher([FileSystemWriteTool(workspace)]),
+        InMemoryMemory(),
+        approval_provider=approve,
+    ).process(Context(user_input="Create the file."))
+
+    trace = result.interaction_trace
+    assert trace is not None
+    receipt = next(
+        event for event in trace.events if isinstance(event, ActionReceiptEvent)
+    )
+    assert receipt == ActionReceiptEvent(
+        "filesystem_write", "create", "verified", 18
+    )
+    approval_index = next(
+        index
+        for index, event in enumerate(trace.events)
+        if isinstance(event, ApprovalEvent)
+    )
+    assert approval_index < trace.events.index(receipt)
+    assert "hello secret world" not in repr(trace)
+
+
+def test_trace_records_unverified_action_receipt_honestly(
+    tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(
+        "stella.tools._verify_deleted_file",
+        lambda candidate, resolved: False,
+    )
+
+    def approve(request: ApprovalRequest) -> ToolApproval:
+        return ToolApproval(request=request, approved=True)
+
+    result = Stella(
+        FixedBrain(
+            Decision(
+                DecisionKind.TOOL,
+                capability="filesystem_delete",
+                arguments={"path": "notes.txt"},
+            )
+        ),
+        RecordingLLM(),
+        ToolDispatcher([FileSystemDeleteTool(workspace)]),
+        InMemoryMemory(),
+        approval_provider=approve,
+    ).process(Context(user_input="Delete the file."))
+
+    assert result.tool_result is not None
+    assert result.tool_result.success is False
+    trace = result.interaction_trace
+    assert trace is not None
+    receipt = next(
+        event for event in trace.events if isinstance(event, ActionReceiptEvent)
+    )
+    assert receipt == ActionReceiptEvent(
+        "filesystem_delete", "delete", "unverified", None
+    )
+    tool_event = next(
+        event for event in trace.events if isinstance(event, ToolResultEvent)
+    )
+    assert tool_event.success is False

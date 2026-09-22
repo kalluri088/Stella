@@ -56,12 +56,14 @@ Brain does not write memory or execute tools, and the LLM does not receive a
 Python callback or an operating-system interface.
 
 The current tools are `DateTimeTool`, `SystemInfoTool`, `EchoTool`, the
-workspace-scoped `FileSystemReadTool`, and the dangerous create-only
-`FileSystemWriteTool` and single-file `FileSystemDeleteTool`, plus the
-approval-required, bounded public-HTTPS `NetworkReadTool`. The filesystem
-tools have no shell or arbitrary filesystem scope, and the network tool has no
-general proxy, credential, redirect, or private-address access. The normal CLI
-injects all seven into the application-owned `ToolDispatcher`; the dispatcher
+workspace-scoped `FileSystemReadTool`, the dangerous create-only
+`FileSystemWriteTool`, single-file `FileSystemEditTool` and
+`FileSystemDeleteTool`, plus the approval-required, bounded public-HTTPS
+`NetworkReadTool`. The filesystem tools have no shell or arbitrary filesystem
+scope, each mutation independently verifies the resulting state with trusted
+application code before claiming success, and the network tool has no general
+proxy, credential, redirect, or private-address access. The normal CLI
+injects them all into the application-owned `ToolDispatcher`; the dispatcher
 is a finite exact-name collection, not a plugin registry.
 
 ### Trusted application code versus model-controlled data

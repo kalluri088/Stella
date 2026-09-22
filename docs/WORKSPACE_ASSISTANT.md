@@ -92,5 +92,5 @@ a result was truncated.
 - search reads UTF-8 text files under 1 MiB; others are skipped and counted;
 - listings and result sets are bounded (see above) rather than exhaustive;
 - content search does not rank results; it reports the first matches;
-- write/delete remain the existing approval-gated `filesystem_write` /
-  `filesystem_delete` tools; no new mutation surface was added.
+- this assistant adds read-only tools only; mutations remain the approval-gated
+  `filesystem_write` / `filesystem_edit` / `filesystem_delete` tools.

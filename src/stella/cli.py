@@ -18,6 +18,7 @@ from stella.tools import (
     DateTimeTool,
     EchoTool,
     FileSystemDeleteTool,
+    FileSystemEditTool,
     FileSystemReadTool,
     FileSystemWriteTool,
     MemoryForgetTool,
@@ -32,6 +33,7 @@ from stella.tools import (
     WorkspaceSearchTool,
 )
 from stella.trace import (
+    ActionReceiptEvent,
     ApprovalEvent,
     DecisionEvent,
     FinalResponseEvent,
@@ -184,6 +186,11 @@ def format_trace(result: StellaResult) -> list[str]:
             lines.append(
                 _trace_line("memory", f"{event.action} {event.count}")
             )
+        elif isinstance(event, ActionReceiptEvent):
+            detail = f"{event.action} {event.status}"
+            if event.size_bytes is not None:
+                detail += f" ({event.size_bytes} bytes)"
+            lines.append(_trace_line("action", detail))
         elif isinstance(event, FinalResponseEvent):
             if event.needs_more_information:
                 lines.append(
@@ -234,6 +241,10 @@ def _action_summary(request: ApprovalRequest) -> str:
         path = quoted("path")
         if path is not None and quoted("content") is not None:
             return f"create a new text file {path} in your Stella workspace"
+    elif capability == "filesystem_edit":
+        path = quoted("path")
+        if path is not None and quoted("content") is not None:
+            return f"replace the contents of {path} in your Stella workspace"
     elif capability == "filesystem_delete":
         path = quoted("path")
         if path is not None:
@@ -366,6 +377,7 @@ def create_stella_from_environment() -> Stella:
             EchoTool(),
             FileSystemReadTool(workspace),
             FileSystemWriteTool(workspace),
+            FileSystemEditTool(workspace),
             FileSystemDeleteTool(workspace),
             WorkspaceListTool(workspace),
             WorkspaceFindTool(workspace),

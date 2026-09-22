@@ -16,7 +16,8 @@ LLM decision
   -> exact CLI/application approval
   -> canonical workspace and symlink checks
   -> one-file deletion
-  -> ToolResult
+  -> trusted verification that the path is absent
+  -> ToolResult (+ delete ActionReceipt)
   -> final response
 ```
 
@@ -36,7 +37,11 @@ to another file inside the workspace.
 
 Deletion is not recursive and does not expand wildcards or globs. Errors return
 deterministic `ToolResult` messages without exposing raw exceptions or stack
-traces.
+traces. After unlinking, the tool independently confirms with trusted
+application checks that the path no longer exists and only then reports
+`File deleted and verified to be absent.` with a `verified` receipt. If
+absence cannot be confirmed the result is an honest failure with an
+`unverified` receipt; success is never claimed from the unlink return alone.
 
 ## Risk and approval
 

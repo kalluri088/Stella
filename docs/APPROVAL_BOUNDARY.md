@@ -13,8 +13,8 @@ approval before execution. The current tools remain unchanged:
   approval;
 - `filesystem_read` is `SENSITIVE`, remains explicitly workspace-scoped, and
   executes without interactive approval in this MVP;
-- `filesystem_write` and `filesystem_delete` are `DANGEROUS` and require
-  exact trusted approval;
+- `filesystem_write`, `filesystem_edit`, and `filesystem_delete` are
+  `DANGEROUS` and require exact trusted approval;
 - `network_read` is `DANGEROUS` and requires exact trusted approval before an
   external connection;
 - tests also use a private approval-required tool classified as `DANGEROUS`.
@@ -57,7 +57,8 @@ LLM proposes capability + arguments
   -> Stella requests action-specific approval when required
   -> dispatcher verifies the exact approval
   -> tool execution
-  -> ToolResult
+  -> trusted outcome verification inside the tool
+  -> ToolResult (+ ActionReceipt when the tool mutated state)
 ```
 
 The approval callback is application-controlled. It is not called for safe
@@ -90,10 +91,11 @@ complex arguments, sandboxing, or least-privilege execution. It is not a
 general policy engine.
 
 No shell, network, process, or other dangerous production tool has been added.
-`filesystem_write` is create-only, and `filesystem_delete` deletes only one
-existing regular workspace file; both use this boundary. Future approval must
-be single-action and identity-aware before Stella supports multiple users or
-broader meaningful external side effects.
+`filesystem_write` is create-only, `filesystem_edit` replaces the full
+contents of one existing regular file, and `filesystem_delete` deletes only one
+existing regular workspace file; all three use this boundary. Future approval
+must be single-action and identity-aware before Stella supports multiple users
+or broader meaningful external side effects.
 
 ## Minimal CLI approval interaction
 
@@ -148,3 +150,20 @@ files, and symlinks, and requires an approval whose request exactly matches
 the validated path. The CLI displays that path before accepting only an
 explicit `yes` or `approve`. It never performs recursive deletion or glob
 expansion.
+
+## Verified outcomes
+
+Approval authorizes execution only; it never proves the result. Every
+filesystem mutation independently verifies the resulting state with trusted
+application code before Stella reports success: create and edit re-read the
+file and compare the exact expected bytes, and delete confirms the path is
+absent. A mutation whose verification fails or is inconclusive is returned as
+a failed `ToolResult` with an honest receipt status (`unverified` /
+`inconclusive`) and reaches the model as a failure, never as a success.
+Rejections and failures are likewise deterministic (`File is outside
+workspace.`, `File was not found.`, `Invalid tool arguments.`,
+`Approval required.`/`denied.`/`Invalid approval.`). Verification is
+application flow inside `Tool.execute()`, not a model decision or tool step,
+and neither a verified receipt nor file contents or tool output grant any
+authority for later actions — each dangerous action still requires its own
+exact approval.

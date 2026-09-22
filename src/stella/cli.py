@@ -55,6 +55,7 @@ def run_cli(
         stella.approval_provider = cli_approval_provider(
             input_fn=input_fn,
             output_fn=output_fn,
+            status_fn=status_fn or _print_status,
         )
     status = status_fn or _print_status
 
@@ -62,13 +63,18 @@ def run_cli(
     while True:
         try:
             user_input = input_fn("You: ")
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             output_fn("Goodbye!")
             return
 
         if user_input.strip().casefold() in {"exit", "quit"}:
             output_fn("Goodbye!")
             return
+
+        if not user_input.strip():
+            # Empty or whitespace-only input is harmless: no processing,
+            # no history entry, no thinking indicator.
+            continue
 
         status("Stella is thinking...")
         try:
@@ -78,6 +84,9 @@ def run_cli(
                     conversation_history=list(history),
                 )
             )
+        except KeyboardInterrupt:
+            output_fn("Stella stopped that request. Nothing was changed.")
+            continue
         except Exception as error:  # noqa: BLE001 - keep the session alive
             detail = " ".join(str(error).split()) or type(error).__name__
             output_fn(
@@ -97,6 +106,9 @@ def run_cli(
         response = _display_response(result)
         if response is not None:
             output_fn(f"Stella: {response}")
+        else:
+            # A deliberate no-op should not look like a silent failure.
+            status("Stella has nothing to add.")
         history.append(Message(role="user", content=user_input))
         if response is not None:
             history.append(Message(role="assistant", content=response))
@@ -246,6 +258,7 @@ def _action_summary(request: ApprovalRequest) -> str:
 def cli_approval_provider(
     input_fn: Callable[[str], str],
     output_fn: Callable[[str], None],
+    status_fn: Callable[[str], None] | None = None,
 ) -> Callable[[ApprovalRequest], ToolApproval]:
     """Create the CLI's explicit, action-specific approval callback."""
 
@@ -259,6 +272,10 @@ def cli_approval_provider(
         except EOFError:
             answer = ""
         approved = answer.strip().casefold() in {"yes", "approve"}
+        if approved and status_fn is not None:
+            # Approval returns control to another multi-second model
+            # phase; keep the thinking indicator consistent.
+            status_fn("Stella is thinking...")
         return ToolApproval(request=request, approved=approved)
 
     return request_approval

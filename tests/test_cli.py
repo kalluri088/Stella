@@ -111,6 +111,118 @@ def test_cli_shows_thinking_feedback_without_touching_transcript() -> None:
     assert outputs == ["Stella: response to hello", "Goodbye!"]
 
 
+def test_cli_empty_and_whitespace_input_is_harmless() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    statuses: list[str] = []
+    inputs = iter(["", "   ", "\t ", "hello", "exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        status_fn=statuses.append,
+    )
+
+    assert [context.user_input for context in stella.contexts] == ["hello"]
+    assert statuses == ["Stella is thinking..."]
+    assert outputs == ["Stella: response to hello", "Goodbye!"]
+
+
+class SilentStella:
+    """Returns one deliberate do-nothing result without any response."""
+
+    def __init__(self) -> None:
+        self.contexts: list[Context] = []
+
+    def process(self, context: Context) -> StellaResult:
+        self.contexts.append(context)
+        return StellaResult(decision=Decision(DecisionKind.DO_NOTHING))
+
+
+def test_cli_silent_turn_gets_status_feedback_not_stdout() -> None:
+    stella = SilentStella()
+    outputs: list[str] = []
+    statuses: list[str] = []
+    inputs = iter(["ok", "exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        status_fn=statuses.append,
+    )
+
+    assert statuses == ["Stella is thinking...", "Stella has nothing to add."]
+    assert outputs == ["Goodbye!"]
+
+
+def test_cli_keyboard_interrupt_at_prompt_exits_cleanly() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+
+    def interrupt(_prompt: str) -> str:
+        raise KeyboardInterrupt
+
+    run_cli(stella, input_fn=interrupt, output_fn=outputs.append)
+
+    assert stella.contexts == []
+    assert outputs == ["Goodbye!"]
+
+
+class InterruptingStella:
+    """Raises KeyboardInterrupt once, then behaves like RecordingStella."""
+
+    def __init__(self) -> None:
+        self.contexts: list[Context] = []
+
+    def process(self, context: Context) -> StellaResult:
+        self.contexts.append(context)
+        if len(self.contexts) == 1:
+            raise KeyboardInterrupt
+        return StellaResult(
+            decision=Decision(DecisionKind.ANSWER),
+            response=f"response to {context.user_input}",
+        )
+
+
+def test_cli_keyboard_interrupt_during_turn_is_concise_and_recoverable() -> None:
+    stella = InterruptingStella()
+    outputs: list[str] = []
+    inputs = iter(["first", "second", "exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert outputs == [
+        "Stella stopped that request. Nothing was changed.",
+        "Stella: response to second",
+        "Goodbye!",
+    ]
+    assert stella.contexts[1].conversation_history == []
+
+
+def test_cli_approval_provider_reports_thinking_only_after_approval() -> None:
+    request = ApprovalRequest("approval_test", {"value": "x"})
+
+    approved_statuses: list[str] = []
+    approve = cli_approval_provider(
+        input_fn=lambda _: "yes",
+        output_fn=lambda _: None,
+        status_fn=approved_statuses.append,
+    )
+    assert approve(request).approved is True
+    assert approved_statuses == ["Stella is thinking..."]
+
+    denied_statuses: list[str] = []
+    deny = cli_approval_provider(
+        input_fn=lambda _: "no",
+        output_fn=lambda _: None,
+        status_fn=denied_statuses.append,
+    )
+    assert deny(request).approved is False
+    assert denied_statuses == []
+
+
 class FlakyStella:
     """Fails the first turn, then behaves like RecordingStella."""
 

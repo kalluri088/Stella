@@ -955,7 +955,9 @@ class MemoryListTool(Tool):
                 output="No stored memories.",
                 memory_action=action,
             )
-        lines = "\n".join(f"{item.id}: {item.content}" for item in items)
+        # Content only: internal ids are database details, not something the
+        # user asked for, and they must not reach the response synthesis.
+        lines = "\n".join(item.content for item in items)
         return ToolResult(success=True, output=lines, memory_action=action)
 
 
@@ -1014,13 +1016,18 @@ class MemoryUpdateTool(Tool):
         updated = (
             target.id is not None and self.memory.update(target.id, replacement)
         )
+        if not updated:
+            output = "The memory could not be updated."
+        elif len(matches) > 1:
+            output = (
+                f"Updated the best match among {len(matches)} "
+                "matching memories."
+            )
+        else:
+            output = "Updated the matching memory."
         return ToolResult(
             success=updated,
-            output=(
-                f"Updated memory {target.id}."
-                if updated
-                else "The memory could not be updated."
-            ),
+            output=output,
             memory_action=MemoryAction(
                 action="update",
                 count=1 if updated else 0,

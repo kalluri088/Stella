@@ -273,7 +273,10 @@ the approval-required `FileSystemWriteTool` and `FileSystemDeleteTool`
 together, and `NetworkReadTool`. It also registers the memory tools:
 `memory_list` is `SENSITIVE`, while `memory_update` and `memory_forget` are
 `DANGEROUS` and require exact application approval before they mutate stored
-memory.
+memory. Their outputs stay user-facing: remembered content without internal
+database ids, an honest "No stored memories." when empty, a failure when no
+memory matches, and a disclosed count when several memories matched an
+ambiguous update query.
 
 Tools are standalone abstractions. They are invoked by the orchestration layer
 only after a `Brain` returns a tool decision. Stella delegates to the trusted

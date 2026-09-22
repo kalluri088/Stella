@@ -106,6 +106,38 @@ def test_memory_update_without_a_match_fails() -> None:
     assert result.memory_action == MemoryAction(action="update", count=0)
 
 
+def test_memory_tool_outputs_omit_internal_database_ids() -> None:
+    memory = make_memory()
+    first_id, second_id = (item.id for item in memory.retrieve())
+
+    listed = MemoryListTool(memory).execute({})
+    assert listed.output == f"{TEA}\n{WIFI}"
+
+    updated = MemoryUpdateTool(memory).execute(
+        {"query": "jasmine tea", "content": "The user prefers green tea."}
+    )
+    assert updated.output == "Updated the matching memory."
+    # The trusted audit channel still records which row changed.
+    assert updated.memory_action.memory_id == first_id
+    assert str(second_id) not in listed.output
+
+
+def test_memory_update_discloses_ambiguous_matches() -> None:
+    memory = InMemoryMemory()
+    memory.store(MemoryItem(content="The user prefers jasmine tea at night."))
+    memory.store(MemoryItem(content="The user prefers tea with honey."))
+
+    result = MemoryUpdateTool(memory).execute(
+        {"query": "prefers tea", "content": "The user prefers green tea."}
+    )
+
+    assert result.success
+    assert result.memory_action.count == 1
+    assert result.output == (
+        "Updated the best match among 2 matching memories."
+    )
+
+
 def test_memory_forget_is_dangerous_and_deletes_only_matches() -> None:
     memory = make_memory()
     tool = MemoryForgetTool(memory)

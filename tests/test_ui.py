@@ -374,6 +374,19 @@ def make_dialog() -> tuple[tk.Tk, SetupDialog]:
     return root, SetupDialog(root)
 
 
+def test_setup_dialog_maps_even_though_its_parent_is_withdrawn() -> None:
+    # Clean-install hang: marking the dialog transient to the withdrawn
+    # root made XWayland compositors never map it, so first-run setup
+    # blocked in wait_window with nothing on screen forever.
+    root, dialog = make_dialog()
+    try:
+        pump(root, 1.0)
+        assert dialog._dialog.winfo_ismapped()
+    finally:
+        dialog._dialog.destroy()
+        root.destroy()
+
+
 def test_setup_start_button_requires_a_successful_test(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

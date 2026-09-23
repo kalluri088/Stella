@@ -693,7 +693,10 @@ class SetupDialog:
         self._model_list.bind("<<ListboxSelect>>", self._model_selected)
         self._mode_changed()
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-        dialog.transient(parent)
+        # No transient(): the parent root is withdrawn, and a transient
+        # window of an unmapped parent is never mapped under XWayland
+        # compositors, leaving first-run setup invisible and blocking
+        # wait_window forever.
         dialog.grab_set()
 
     # ----------------------------------------------------------- widgets

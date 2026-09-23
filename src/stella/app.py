@@ -259,6 +259,69 @@ class StellaSettings:
     speech_voice: str = "alloy"
     speech_command: str | None = None
 
+    @staticmethod
+    def _environment_fields() -> dict:
+        """Settings fields that always come from the environment.
+
+        Shared by the environment path and the saved-configuration path so
+        advanced overrides (databases, workspace, voice) keep working no
+        matter how Stella was configured.
+        """
+
+        transcription_mode = os.environ.get(
+            "STELLA_VOICE_TRANSCRIPTION", "auto"
+        ).casefold()
+        speech_mode = os.environ.get("STELLA_VOICE_SPEECH", "auto").casefold()
+        if transcription_mode not in VOICE_MODES:
+            raise SystemExit(
+                "STELLA_VOICE_TRANSCRIPTION must be 'auto', 'openai' or 'off'"
+            )
+        if speech_mode not in VOICE_MODES:
+            raise SystemExit(
+                "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
+            )
+        return {
+            "memory_db": os.environ.get(
+                "STELLA_MEMORY_DB", default_memory_db()
+            ),
+            "reminders_db": os.environ.get(
+                "STELLA_REMINDERS_DB", default_reminders_db()
+            ),
+            "workspace": os.environ.get(
+                "STELLA_WORKSPACE", default_workspace()
+            ),
+            "voice_transcription": transcription_mode,
+            "voice_speech": speech_mode,
+            "transcription_model": os.environ.get(
+                "STELLA_TRANSCRIPTION_MODEL", "whisper-1"
+            ),
+            "transcription_command": os.environ.get(
+                "STELLA_TRANSCRIPTION_COMMAND"
+            ),
+            "speech_model": os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
+            "speech_voice": os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
+            "speech_command": os.environ.get("STELLA_SPEECH_COMMAND"),
+        }
+
+    @classmethod
+    def from_saved(
+        cls,
+        *,
+        provider: str,
+        model: str,
+        ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+        openai_base_url: str | None = None,
+    ) -> StellaSettings:
+        """Settings from the saved first-run configuration."""
+
+        return cls(
+            provider=provider,
+            model=model,
+            ollama_base_url=ollama_base_url,
+            openai_base_url=openai_base_url,
+            **cls._environment_fields(),
+        )
+
     @classmethod
     def from_environment(cls) -> StellaSettings:
         """Read the same environment variables the CLI has always used."""
@@ -276,18 +339,6 @@ class StellaSettings:
             raise SystemExit(
                 "STELLA_LLM_PROVIDER must be 'openai' or 'ollama'"
             )
-        transcription_mode = os.environ.get(
-            "STELLA_VOICE_TRANSCRIPTION", "auto"
-        ).casefold()
-        speech_mode = os.environ.get("STELLA_VOICE_SPEECH", "auto").casefold()
-        if transcription_mode not in VOICE_MODES:
-            raise SystemExit(
-                "STELLA_VOICE_TRANSCRIPTION must be 'auto', 'openai' or 'off'"
-            )
-        if speech_mode not in VOICE_MODES:
-            raise SystemExit(
-                "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
-            )
         return cls(
             provider=provider,
             model=model,
@@ -295,26 +346,7 @@ class StellaSettings:
             ollama_base_url=os.environ.get(
                 "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
             ),
-            memory_db=os.environ.get(
-                "STELLA_MEMORY_DB", default_memory_db()
-            ),
-            reminders_db=os.environ.get(
-                "STELLA_REMINDERS_DB", default_reminders_db()
-            ),
-            workspace=os.environ.get(
-                "STELLA_WORKSPACE", default_workspace()
-            ),
-            voice_transcription=transcription_mode,
-            voice_speech=speech_mode,
-            transcription_model=os.environ.get(
-                "STELLA_TRANSCRIPTION_MODEL", "whisper-1"
-            ),
-            transcription_command=os.environ.get(
-                "STELLA_TRANSCRIPTION_COMMAND"
-            ),
-            speech_model=os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
-            speech_voice=os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
-            speech_command=os.environ.get("STELLA_SPEECH_COMMAND"),
+            **cls._environment_fields(),
         )
 
 
@@ -353,6 +385,11 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             num_ctx=4096,
         )
     elif settings.provider == "openai":
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise SystemExit(
+                "No OpenAI API key is configured. Enter it in Settings, "
+                "or export OPENAI_API_KEY before launching."
+            )
         llm = OpenAILLMClient(
             model=settings.model,
             base_url=settings.openai_base_url,
@@ -1092,18 +1129,25 @@ class StellaBridge:
     def post_apply_settings(self, settings: StellaSettings) -> None:
         def handle() -> None:
             # Build first so a bad configuration cannot destroy the
-            # working session; only then retire the old application.
+            # working session; only then retire the old application and
+            # persist the new choice for the next launch.
             application = build_application(settings)
             old = self._application
             self._application = application
             self._rebind(application)
             if old is not None:
                 old.close()
+            # Imported here: stella.config imports this module, so a
+            # module-level import both ways would be circular.
+            from stella.config import save_configuration
+
+            save_configuration(settings)
             self._emit(
                 "settings",
                 (
                     f"Stella now uses {settings.provider}/"
-                    f"{settings.model} with workspace {settings.workspace}."
+                    f"{settings.model} with workspace {settings.workspace}. "
+                    "These settings are saved for the next launch."
                 ),
             )
 

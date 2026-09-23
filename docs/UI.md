@@ -12,16 +12,24 @@ decision, authorization, or execution logic of its own.
 
 ```bash
 uv sync
-export OPENAI_API_KEY
-export STELLA_MODEL
-# Optional: STELLA_LLM_PROVIDER (openai|ollama), OPENAI_BASE_URL,
-# OLLAMA_BASE_URL, STELLA_MEMORY_DB, STELLA_REMINDERS_DB, STELLA_WORKSPACE
 uv run stella-ui
 ```
 
-A display is required. If the environment is incomplete (for example
-`STELLA_MODEL` is missing), the window reports "Stella cannot start" with the
-same message the CLI prints, instead of a stack trace.
+A display is required. No environment variables are needed: on first launch
+`stella.config.resolve_settings()` finds no saved configuration and the
+window opens a **setup dialog** instead of a broken application. The dialog
+offers Local model (Ollama), OpenAI API, and any OpenAI-compatible API; for
+Ollama it scans the models actually installed (Ollama's `/api/tags`, never a
+hardcoded list), and every choice must pass **Test connection** before
+*Start Stella* unlocks. Completing setup saves the non-secret
+provider/model/endpoint fields to `config.json` (private file mode under the
+Stella data directory), so the next launch goes straight to the chat window.
+
+`STELLA_MODEL`, `STELLA_LLM_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`
+and `OLLAMA_BASE_URL` keep working for advanced users and win over the saved
+file. An API key entered in the UI is never persisted — Stella has no
+secure credential store, so the key lives only in that process's environment
+(set `OPENAI_API_KEY` to keep it across launches).
 
 ## Architecture
 
@@ -42,8 +50,12 @@ drains `UiEvent` values (`turn`, `memories`, `reminders`, `settings`,
 produced by the bridge; failures never surface as raw exceptions.
 
 The CLI (`uv run stella`) builds the identical `StellaApplication` through
-`build_application(StellaSettings.from_environment())` and shares turn
-handling with the UI through `StellaSession`.
+`build_application(settings)` using the same `stella.config.resolve_settings`
+startup path, and shares turn handling with the UI through `StellaSession`.
+`stella.config` also holds the bounded setup probes (Ollama model scan,
+connection test): they perform fixed HTTP requests, treat every response —
+including model names — as data to be sanitized and length-capped before
+display, and can never approve a tool or change permissions.
 
 ## What the UI can do
 
@@ -62,9 +74,13 @@ handling with the UI through `StellaSession`.
 - Action outcomes: each tool result is rendered with the honest status from
   `outcome_status` (verified ✓, unverified ✗, inconclusive ?, failed ✗,
   denied ✗). An unverified action is never shown as verified.
-- Settings: view and change provider/model, base URLs, database paths, and
-  workspace, then rebuild the application through `build_application`. A
-  failed rebuild keeps the working session alive.
+- Settings: change provider/model, the Ollama endpoint, an OpenAI-compatible
+  base URL, and (masked, session-only) an API key, with *Test connection*,
+  *List models* for Ollama, and a live
+  "Provider: … Model: … Status: Connected / Not connected" line. Apply
+  rebuilds the application through `build_application` before anything is
+  saved, so a failed rebuild keeps the working session alive and can never
+  overwrite the last known-good configuration.
 - Voice: press **Listen** to record one explicit utterance, see the transcript
   enter the same conversation path as typed input, and optionally hear the
   final response spoken ("Speak replies", off by default). See `VOICE.md` for

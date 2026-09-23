@@ -8,11 +8,13 @@ dialog denies rather than fabricates authorization.
 """
 
 import datetime as dt
+import os
 import time
 import tkinter as tk
 
 import pytest
 
+from stella import config as stella_config
 from stella.app import (
     StellaApplication,
     StellaBridge,
@@ -34,7 +36,7 @@ from stella.tools import (
     ToolDispatcher,
     ToolResult,
 )
-from stella.ui import StellaWindow
+from stella.ui import SetupDialog, StellaWindow
 from stella.voice import Recorder
 
 
@@ -358,6 +360,292 @@ def test_window_without_voice_keeps_the_mic_button_disabled() -> None:
         window._mic_button.invoke()  # a disabled button must do nothing
         pump(root, 0.2)
         assert window._listening is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+# ------------------------------------------------------- setup wizard
+
+
+def make_dialog() -> tuple[tk.Tk, SetupDialog]:
+    root = tk.Tk()
+    root.withdraw()
+    return root, SetupDialog(root)
+
+
+def test_setup_start_button_requires_a_successful_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, dialog = make_dialog()
+    try:
+        assert str(dialog._finish_button.cget("state")) == "disabled"
+        dialog.finish()
+        assert dialog.result is None
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(False, "nope"),
+        )
+        dialog.test_connection()
+        assert str(dialog._finish_button.cget("state")) == "disabled"
+        dialog.finish()
+        assert dialog.result is None
+        assert "Not connected" in dialog.status.cget("text")
+    finally:
+        dialog._dialog.destroy()
+        root.destroy()
+
+
+def test_setup_finish_saves_only_after_test_and_selection(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    root, dialog = make_dialog()
+    try:
+        dialog._fields["Model"].insert("0", "qwen3:4b")
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(True, "Connected."),
+        )
+        dialog.test_connection()
+        assert str(dialog._finish_button.cget("state")) == "normal"
+        dialog.finish()
+        assert dialog.result is not None
+        assert dialog.result.model == "qwen3:4b"
+        saved = stella_config.load_configuration()
+        assert saved is not None
+        assert saved["provider"] == "ollama"
+        assert saved["model"] == "qwen3:4b"
+    finally:
+        root.destroy()
+
+
+def test_setup_editing_the_model_invalidates_a_previous_test(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    root, dialog = make_dialog()
+    try:
+        dialog._fields["Model"].insert("0", "tested:1")
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(True, "Connected."),
+        )
+        dialog.test_connection()
+        model_field = dialog._fields["Model"]
+        model_field.delete("0", "end")
+        model_field.insert("0", "never-tested:2")
+        dialog.finish()
+        assert dialog.result is None
+        assert not (tmp_path / "xdg" / "stella" / "config.json").exists()
+    finally:
+        dialog._dialog.destroy()
+        root.destroy()
+
+
+def test_setup_refresh_lists_discovered_models_and_selection_fills_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, dialog = make_dialog()
+    try:
+        monkeypatch.setattr(
+            stella_config,
+            "scan_ollama_models",
+            lambda *args, **kwargs: stella_config.ModelScan(
+                True, ("alpha:1", "beta:2"), "Found 2 installed model(s)."
+            ),
+        )
+        dialog.refresh_models()
+        assert dialog._model_list.size() == 2
+        dialog._model_list.selection_set(1)
+        dialog._model_selected(None)
+        assert dialog._fields["Model"].get() == "beta:2"
+    finally:
+        dialog._dialog.destroy()
+        root.destroy()
+
+
+def test_setup_explains_unreachable_ollama(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, dialog = make_dialog()
+    try:
+        monkeypatch.setattr(
+            stella_config,
+            "scan_ollama_models",
+            lambda *args, **kwargs: stella_config.ModelScan(
+                False, (), "Ollama is not reachable. Start it with `ollama serve`."
+            ),
+        )
+        dialog.refresh_models()
+        assert dialog._model_list.size() == 0
+        assert "ollama serve" in dialog.status.cget("text")
+        assert str(dialog._finish_button.cget("state")) == "disabled"
+    finally:
+        dialog._dialog.destroy()
+        root.destroy()
+
+
+def test_setup_api_key_field_is_masked_and_never_persisted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, dialog = make_dialog()
+    try:
+        dialog._mode.set("openai")
+        dialog._mode_changed()
+        assert dialog._fields["API key"].cget("show") == "*"
+        dialog._fields["Model"].insert("0", "gpt-4o-mini")
+        dialog._fields["API key"].insert("0", "sk-dialog-secret-value")
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(True, "Connected."),
+        )
+        dialog.test_connection()
+        # The typed key moved to this process's environment and vanished
+        # from the widget; the saved configuration contains no key material.
+        assert os.environ["OPENAI_API_KEY"] == "sk-dialog-secret-value"
+        assert dialog._fields["API key"].get() == ""
+        dialog.finish()
+        saved = (tmp_path / "xdg" / "stella" / "config.json").read_text(
+            encoding="utf-8"
+        )
+        assert "sk-dialog-secret-value" not in saved
+        assert "api_key" not in saved
+    finally:
+        root.destroy()
+
+
+# -------------------------------------------------- settings tab extras
+
+
+def test_settings_status_shows_provider_and_model() -> None:
+    settings = StellaSettings(provider="ollama", model="qwen3:4b")
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        text = window._connection_status.cget("text")
+        assert "Provider: ollama" in text
+        assert "Model: qwen3:4b" in text
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_test_connection_reports_connected_and_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(True, "Connected."),
+        )
+        window._test_connection()
+        assert "Status: Connected" in window._connection_status.cget("text")
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(False, "refused"),
+        )
+        window._test_connection()
+        assert "Status: Not connected" in window._connection_status.cget("text")
+        assert "refused" in window._settings_status.cget("text")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_test_connection_without_model_is_local_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._settings_fields["Model"].delete("0", "end")
+
+        def fail_probe(**_kwargs):
+            raise AssertionError("must not probe without a model")
+
+        monkeypatch.setattr(stella_config, "test_connection", fail_probe)
+        window._test_connection()
+        assert "Enter a model first." in window._settings_status.cget("text")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_list_models_is_ollama_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = StellaSettings(provider="openai", model="gpt")
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        def fail_scan(*args, **kwargs):
+            raise AssertionError("must not scan a non-Ollama provider")
+
+        monkeypatch.setattr(stella_config, "scan_ollama_models", fail_scan)
+        window._list_models()
+        assert "only available" in window._settings_status.cget("text")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_list_models_fills_the_model_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = StellaSettings(provider="ollama", model="old")
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        monkeypatch.setattr(
+            stella_config,
+            "scan_ollama_models",
+            lambda *args, **kwargs: stella_config.ModelScan(
+                True, ("fresh:1", "other:2"), "Found 2 installed model(s)."
+            ),
+        )
+        window._list_models()
+        assert window._settings_fields["Model"].get() == "fresh:1"
+        assert "Found 2" in window._settings_status.cget("text")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_moves_entered_key_to_environment_and_clears_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._settings_fields["API key"].insert("0", "sk-window-secret")
+
+        window._apply_settings()
+
+        assert os.environ["OPENAI_API_KEY"] == "sk-window-secret"
+        assert window._settings_fields["API key"].get() == ""
+        assert captured[0].model == "test"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_without_a_key_leaves_the_environment_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        monkeypatch.setenv("OPENAI_API_KEY", "untouched")
+        monkeypatch.setattr(bridge, "post_apply_settings", lambda _s: None)
+        window._apply_settings()
+        assert os.environ["OPENAI_API_KEY"] == "untouched"
     finally:
         bridge.stop()
         root.destroy()

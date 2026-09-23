@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### First-run setup and model configuration
+
+- **Setup window on first launch** — with no configuration, `stella-ui`
+  shows a welcome dialog offering Local model (Ollama), OpenAI API, or any
+  OpenAI-compatible API. No environment variables or terminal commands are
+  required.
+- **Real model discovery** — the Local model path lists the models actually
+  installed in Ollama via its own API (with Refresh, empty-state guidance,
+  and clear messages for an unavailable server); Stella never downloads
+  models and never hardcodes a model list.
+- **Test-before-use** — *Start Stella* unlocks only after a successful
+  connection test, and editing the configuration invalidates a previous
+  test. Settings gained the same Test connection and a live
+  "Provider / Model / Status" line, plus masked session-only API key entry.
+- **Saved configuration** — provider, model and endpoints persist in a
+  private `config.json` under the XDG data directory; the CLI shares the
+  same startup path. API keys are deliberately not persisted (no secure
+  credential store); use `OPENAI_API_KEY` to keep one across launches.
+  Environment variables keep working and override the saved file.
+
 ## 1.0.0 — 2026-09-23
 
 First public release of Stella, a local-first desktop assistant for Linux.

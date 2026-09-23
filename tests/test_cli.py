@@ -650,3 +650,48 @@ def test_format_startup_degrades_for_minimal_stella() -> None:
         "reminders: disabled",
         "workspace: not configured",
     ]
+
+
+def test_cli_main_points_unconfigured_users_at_the_setup_window(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # First-run regression: the CLI never dumps a traceback or requires
+    # environment variables; it names the setup window instead.
+    from stella import cli
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_MODEL", raising=False)
+    with pytest.raises(SystemExit) as raised:
+        cli.main([])
+    assert raised.value.code == 2
+    captured = capsys.readouterr()
+    assert "stella-ui" in captured.err
+    assert "STELLA_MODEL" in captured.err
+
+
+def test_cli_main_uses_saved_configuration_without_environment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Startup regression: a saved configuration alone is enough to reach
+    # build_application (patched here; no LLM or display is started).
+    from stella import cli
+    from stella import config as stella_config
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_MODEL", raising=False)
+    stella_config.save_configuration(
+        stella_config.StellaSettings(
+            provider="ollama", model="saved-cli-model"
+        )
+    )
+    seen: list = []
+
+    def fake_build(settings):
+        seen.append(settings)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "build_application", fake_build)
+    with pytest.raises(SystemExit) as raised:
+        cli.main([])
+    assert raised.value.code == 0
+    assert seen[0].model == "saved-cli-model"

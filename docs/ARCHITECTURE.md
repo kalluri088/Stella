@@ -360,8 +360,13 @@ tool audit.
 `OllamaLLMClient`, `LLMBrain`, a `ToolDispatcher` holding the registered
 capabilities, `SQLiteMemory`, and the `SQLiteReminderStore`, then wraps them in
 a `Stella` instance and a `StellaApplication` that owns their lifecycle.
-`StellaSettings.from_environment()` reads the same environment variables for
-either interface. `StellaSession` holds the conversation `Message` history and
+Both interfaces resolve their startup settings through
+`stella.config.resolve_settings()`: an explicit `STELLA_MODEL` (and the other
+provider environment variables) wins, otherwise the non-secret saved
+configuration written by the first-run setup dialog is loaded from
+`config.json`, otherwise the UI opens setup and the CLI reports that none is
+configured. `StellaSettings.from_environment()` remains for the
+environment-variable path. `StellaSession` holds the conversation `Message` history and
 runs one turn through `Stella.process()` with shared error and display rules,
 and the small panel classes (`MemoryPanel`, `ReminderPanel`, `ApprovalBroker`,
 and `VoicePanel`) expose memory, reminder, approval, and voice operations only
@@ -548,27 +553,31 @@ The project uses Python with uv. Runtime code lives under `src/stella`, and the 
 
 ## Running Stella locally
 
-For normal use, install the built package (see the README) and start with a
-model name. With a local Ollama server, no other variable is required:
+For normal use, install the built package (see the README) and just start:
 
 ```bash
-export STELLA_MODEL=qwen3:4b
 stella-ui    # desktop window
 stella       # terminal chat
 ```
 
+No environment variables are required. On first launch `stella-ui` shows a
+setup dialog that detects a local Ollama server, lists the models actually
+installed through Ollama's own API, and records the provider/model/endpoint
+choice (never an API key) in `config.json` under the XDG data directory once
+a connection test succeeds. The CLI uses the same file; with neither a saved
+configuration nor `STELLA_MODEL` it prints a one-line pointer to `stella-ui`.
 From a source checkout, replace the commands with `uv run stella-ui` /
 `uv run stella`. Add `--debug` to inspect Brain decisions and `--trace` for
 the compact action timeline.
 
-`STELLA_MODEL` selects the model passed to the configured client. Provider
-selection is automatic: with `OPENAI_API_KEY` set, Stella uses the
-OpenAI-compatible client; otherwise it defaults to local Ollama at
-`http://127.0.0.1:11434`. `STELLA_LLM_PROVIDER=ollama|openai` overrides the
-choice, `OPENAI_BASE_URL` and `OLLAMA_BASE_URL` point either client at a
-non-default address, and `STELLA_MEMORY_DB`, `STELLA_REMINDERS_DB` and
-`STELLA_WORKSPACE` override the state locations, which default under the XDG
-data directory (`~/.local/share/stella`). Voice mode is configured through
+Environment variables remain the advanced-user path and always win over the
+saved file: `STELLA_MODEL` selects the model, `OPENAI_API_KEY` provides a
+persistent OpenAI key (a key entered in the UI is session-only because there
+is no secure credential store), `STELLA_LLM_PROVIDER=ollama|openai` overrides
+provider selection, `OPENAI_BASE_URL` and `OLLAMA_BASE_URL` point either
+client at a non-default address, and `STELLA_MEMORY_DB`, `STELLA_REMINDERS_DB`
+and `STELLA_WORKSPACE` override the state locations, which default under the
+XDG data directory (`~/.local/share/stella`). Voice mode is configured through
 `STELLA_VOICE_TRANSCRIPTION`, `STELLA_VOICE_SPEECH`,
 `STELLA_TRANSCRIPTION_COMMAND`, `STELLA_SPEECH_COMMAND`,
 `STELLA_TRANSCRIPTION_MODEL`, `STELLA_SPEECH_MODEL`, and

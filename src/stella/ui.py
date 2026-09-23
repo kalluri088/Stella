@@ -7,14 +7,22 @@ trusted Stella core. This module never touches files, databases, tools,
 or the LLM directly, and it never manufactures authorization: approvals
 are produced by the existing dispatcher, and the UI only ever answers the
 exact request the dispatcher raised (closing a dialog denies it).
+
+The one deliberate exception is ``SetupDialog``, shown before any Stella
+application exists: it runs bounded provider probes and saves Stella's
+non-secret configuration file. It never touches tools, memory,
+reminders, or approvals, and a successful setup grants nothing beyond
+"Stella can talk to this model".
 """
 
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from dataclasses import replace
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
+from stella import config
 from stella.app import (
     OutcomeStatus,
     StellaBridge,
@@ -25,6 +33,7 @@ from stella.app import (
     outcome_status,
 )
 from stella.cli import _action_summary
+from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 from stella.tools import ApprovalRequest
 
 
@@ -470,45 +479,123 @@ class StellaWindow:
         )
         self._provider.set(settings.provider)
         self._provider.pack(side="left", padx=6)
-        for label, value in (
-            ("Model", settings.model or ""),
-            ("OpenAI base URL", settings.openai_base_url or ""),
-            ("Ollama base URL", settings.ollama_base_url),
-            ("Memory DB", settings.memory_db),
-            ("Reminders DB", settings.reminders_db),
-            ("Workspace", settings.workspace),
+        self._connection_status = ttk.Label(
+            provider_row, text=self._current_state_text(), wraplength=280
+        )
+        self._connection_status.pack(side="left", padx=6)
+        for label, value, masked in (
+            ("Model", settings.model or "", False),
+            ("API key", "", True),
+            ("OpenAI base URL", settings.openai_base_url or "", False),
+            ("Ollama base URL", settings.ollama_base_url, False),
+            ("Memory DB", settings.memory_db, False),
+            ("Reminders DB", settings.reminders_db, False),
+            ("Workspace", settings.workspace, False),
         ):
             row = ttk.Frame(frame)
             row.pack(fill="x", padx=6, pady=2)
             ttk.Label(row, text=f"{label}:", width=16).pack(side="left")
-            entry = ttk.Entry(row, width=34)
+            entry = ttk.Entry(row, width=34, show="*" if masked else "")
             entry.insert("0", value)
             entry.pack(side="left", fill="x", expand=True)
             self._settings_fields[label] = entry
+        ttk.Label(
+            frame,
+            text=(
+                "The API key applies to this session only and is never "
+                "saved or shown again; to keep it permanently, export "
+                "OPENAI_API_KEY."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         actions = ttk.Frame(frame)
         actions.pack(fill="x", padx=6, pady=6)
         ttk.Button(actions, text="Apply", command=self._apply_settings).pack(
             side="left"
         )
+        ttk.Button(
+            actions, text="Test connection", command=self._test_connection
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            actions, text="List models", command=self._list_models
+        ).pack(side="left")
         self._settings_status = ttk.Label(frame, text="", wraplength=340)
         self._settings_status.pack(padx=6, pady=4, anchor="w")
 
-    def _apply_settings(self) -> None:
+    def _current_state_text(self) -> str:
+        model = self._panel_settings.model or "(not set)"
+        return f"Provider: {self._panel_settings.provider}  Model: {model}"
+
+    def _draft_settings(self) -> StellaSettings:
         fields = self._settings_fields
         # Replace over the panel's settings so voice fields that the panel
         # does not show (modes, models, commands) survive an Apply click.
-        applied = replace(
+        return replace(
             self._panel_settings,
             provider=self._provider.get(),
             model=fields["Model"].get().strip() or None,
             openai_base_url=fields["OpenAI base URL"].get().strip() or None,
-            ollama_base_url=fields["Ollama base URL"].get().strip(),
+            ollama_base_url=fields["Ollama base URL"].get().strip()
+            or DEFAULT_OLLAMA_BASE_URL,
             memory_db=fields["Memory DB"].get().strip(),
             reminders_db=fields["Reminders DB"].get().strip(),
             workspace=fields["Workspace"].get().strip(),
         )
+
+    def _entered_key(self) -> str:
+        return self._settings_fields["API key"].get()
+
+    def _apply_key_to_environment(self) -> None:
+        # Session-scoped on purpose: Stella has no secure credential
+        # store, so the key is never persisted. The build path reads it
+        # from the environment exactly like the CLI always has.
+        key = self._entered_key()
+        if key:
+            os.environ["OPENAI_API_KEY"] = key
+            self._settings_fields["API key"].delete("0", "end")
+
+    def _apply_settings(self) -> None:
+        applied = self._draft_settings()
+        self._apply_key_to_environment()
         self._settings_status.configure(text="Restarting Stella with these settings...")
         self._bridge.post_apply_settings(applied)
+
+    def _test_connection(self) -> None:
+        draft = self._draft_settings()
+        if not draft.model:
+            self._settings_status.configure(text="Enter a model first.")
+            return
+        result = config.test_connection(
+            provider=draft.provider,
+            model=draft.model,
+            ollama_base_url=draft.ollama_base_url,
+            openai_base_url=draft.openai_base_url,
+            api_key=self._entered_key() or None,
+        )
+        self._settings_status.configure(
+            text=result.message if result.message else "Not connected."
+        )
+        self._connection_status.configure(
+            text=(
+                f"{self._current_state_text()}  "
+                f"Status: {'Connected' if result.ok else 'Not connected'}"
+            )
+        )
+
+    def _list_models(self) -> None:
+        draft = self._draft_settings()
+        if draft.provider != "ollama":
+            self._settings_status.configure(
+                text="Model listing is only available for a local Ollama server."
+            )
+            return
+        scan = config.scan_ollama_models(draft.ollama_base_url)
+        self._settings_status.configure(text=scan.message)
+        if scan.models:
+            self._settings_fields["Model"].delete("0", "end")
+            self._settings_fields["Model"].insert(
+                "0", scan.models[0]
+            )
 
     # ---------------------------------------------------------- shutdown
 
@@ -517,17 +604,227 @@ class StellaWindow:
         self._root.destroy()
 
 
+class SetupDialog:
+    """First-run model configuration, before any Stella application exists.
+
+    Offers the three shapes the existing provider layer already supports:
+    a local Ollama server, the OpenAI API, or any OpenAI-compatible
+    endpoint (the same ``openai`` provider with a base URL). The chosen
+    configuration is only saved after a successful connection test, and
+    an entered API key stays in this process's environment: Stella has no
+    secure credential store, so keys are never persisted.
+    """
+
+    MODES = ("ollama", "openai", "compatible")
+
+    def __init__(self, parent: tk.Misc) -> None:
+        self.result: StellaSettings | None = None
+        self._parent = parent
+        self._tested_draft: tuple[object, ...] | None = None
+        dialog = tk.Toplevel(parent)
+        dialog.title("Welcome to Stella")
+        dialog.resizable(False, False)
+        self._dialog = dialog
+        ttk.Label(
+            dialog,
+            text=(
+                "Welcome to Stella.\n\n"
+                "How would you like Stella to run?"
+            ),
+            justify="left",
+        ).pack(padx=12, pady=(12, 4), anchor="w")
+        self._mode = tk.StringVar(value="ollama")
+        choices = ttk.Frame(dialog)
+        choices.pack(fill="x", padx=12)
+        for mode, label in (
+            ("ollama", "Local model (Ollama)"),
+            ("openai", "OpenAI API"),
+            ("compatible", "Other OpenAI-compatible API"),
+        ):
+            ttk.Radiobutton(
+                choices,
+                text=label,
+                value=mode,
+                variable=self._mode,
+                command=self._mode_changed,
+            ).pack(anchor="w")
+        fields = ttk.Frame(dialog)
+        fields.pack(fill="x", padx=12, pady=6)
+        self._fields: dict[str, ttk.Entry] = {}
+        for label in ("Model", "Ollama base URL", "API base URL", "API key"):
+            row = ttk.Frame(fields)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=f"{label}:", width=15).pack(side="left")
+            entry = ttk.Entry(
+                row, width=38, show="*" if label == "API key" else ""
+            )
+            entry.pack(side="left", fill="x", expand=True)
+            self._fields[label] = entry
+        self._fields["Ollama base URL"].insert("0", DEFAULT_OLLAMA_BASE_URL)
+        for label in ("Model", "Ollama base URL", "API base URL"):
+            # Editing the configuration invalidates a previous test, so
+            # the user can never start from a stale success.
+            self._fields[label].bind(
+                "<KeyRelease>", lambda _event: self._mark_untested()
+            )
+        self._model_list = tk.Listbox(fields, height=5, width=55,
+                                      exportselection=False)
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=12, pady=2)
+        self._refresh_button = ttk.Button(
+            buttons, text="Refresh models", command=self.refresh_models
+        )
+        self._refresh_button.pack(side="left")
+        self._test_button = ttk.Button(
+            buttons, text="Test connection", command=self.test_connection
+        )
+        self._test_button.pack(side="left", padx=6)
+        self._finish_button = ttk.Button(
+            buttons, text="Start Stella", command=self.finish, state="disabled"
+        )
+        self._finish_button.pack(side="left")
+        self.status = ttk.Label(
+            dialog,
+            text="Pick a model, then test the connection.",
+            wraplength=420,
+            justify="left",
+        )
+        self.status.pack(padx=12, pady=(2, 12), anchor="w")
+        self._model_list.bind("<<ListboxSelect>>", self._model_selected)
+        self._mode_changed()
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.transient(parent)
+        dialog.grab_set()
+
+    # ----------------------------------------------------------- widgets
+
+    def _mode_changed(self) -> None:
+        mode = self._mode.get()
+        self._show(self._fields["Ollama base URL"], mode == "ollama")
+        self._show(self._fields["API base URL"], mode == "compatible")
+        self._show(self._fields["API key"], mode in {"openai", "compatible"})
+        self._show(self._model_list, mode == "ollama")
+        self._refresh_button.configure(state="normal" if mode == "ollama" else "disabled")
+        self._mark_untested()
+
+    @staticmethod
+    def _show(widget: tk.Misc, visible: bool) -> None:
+        if visible:
+            widget.pack(fill="x" if isinstance(widget, tk.Listbox) else None,
+                        pady=2)
+        else:
+            widget.pack_forget()
+
+    def _mark_untested(self) -> None:
+        # Any change to provider, endpoint, model, or key invalidates a
+        # previous success: only a tested configuration may start Stella.
+        self._tested_draft = None
+        self._finish_button.configure(state="disabled")
+
+    def _model_selected(self, _event: object) -> None:
+        selected = self._model_list.curselection()
+        if selected:
+            name = self._model_list.get(selected[0])
+            self._fields["Model"].delete("0", "end")
+            self._fields["Model"].insert("0", name)
+
+    def _draft(self) -> tuple[str, StellaSettings]:
+        mode = self._mode.get()
+        provider = "ollama" if mode == "ollama" else "openai"
+        openai_base_url = (
+            self._fields["API base URL"].get().strip() or None
+            if mode == "compatible"
+            else None
+        )
+        settings = StellaSettings.from_saved(
+            provider=provider,
+            model=self._fields["Model"].get().strip(),
+            ollama_base_url=self._fields["Ollama base URL"].get().strip()
+            or DEFAULT_OLLAMA_BASE_URL,
+            openai_base_url=openai_base_url,
+        )
+        return mode, settings
+
+    # ------------------------------------------------------------ probes
+
+    def refresh_models(self) -> None:
+        scan = config.scan_ollama_models(
+            self._fields["Ollama base URL"].get().strip()
+            or DEFAULT_OLLAMA_BASE_URL
+        )
+        self._model_list.delete(0, "end")
+        for name in scan.models:
+            self._model_list.insert("end", name)
+        self.status.configure(text=scan.message)
+        self._mark_untested()
+
+    def _draft_signature(self) -> tuple[object, ...]:
+        _mode, draft = self._draft()
+        return (
+            draft.provider,
+            draft.model,
+            draft.ollama_base_url,
+            draft.openai_base_url,
+        )
+
+    def test_connection(self) -> None:
+        mode, draft = self._draft()
+        api_key = self._fields["API key"].get() if mode != "ollama" else ""
+        if mode != "ollama" and not api_key:
+            existing = os.environ.get("OPENAI_API_KEY")
+            if existing:
+                api_key = existing
+                self.status.configure(
+                    text="Using the OPENAI_API_KEY already set in the environment."
+                )
+        result = config.test_connection(
+            provider=draft.provider,
+            model=draft.model or "",
+            ollama_base_url=draft.ollama_base_url,
+            openai_base_url=draft.openai_base_url,
+            api_key=api_key or None,
+        )
+        if result.ok and api_key:
+            # Session-scoped on purpose; never written to the config file.
+            os.environ["OPENAI_API_KEY"] = api_key
+            self._fields["API key"].delete("0", "end")
+        self._tested_draft = self._draft_signature() if result.ok else None
+        self._finish_button.configure(
+            state="normal" if result.ok else "disabled"
+        )
+        self.status.configure(
+            text=result.message if result.ok else f"Not connected: {result.message}"
+        )
+
+    def finish(self) -> None:
+        if (
+            self._tested_draft is None
+            or self._draft_signature() != self._tested_draft
+        ):
+            self._mark_untested()
+            return
+        _mode, draft = self._draft()
+        config.save_configuration(draft)
+        self.result = draft
+        self._dialog.destroy()
+
+    def run(self) -> StellaSettings | None:
+        self._parent.wait_window(self._dialog)
+        return self.result
+
+
 def main() -> None:
     """Launch the Stella desktop window."""
 
-    try:
-        settings = StellaSettings.from_environment()
-    except SystemExit as error:
+    settings = config.resolve_settings()
+    if settings is None:
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Stella cannot start", str(error))
+        settings = SetupDialog(root).run()
+        if settings is None:
+            root.destroy()
+            return
         root.destroy()
-        return
     bridge = StellaBridge(lambda: build_application(settings))
     root = tk.Tk()
     StellaWindow(root, bridge, settings)

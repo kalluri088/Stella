@@ -60,7 +60,7 @@ data. None of them can grant authority. Details:
   - **Local (recommended): [Ollama](https://ollama.com)** running on your
     machine, with any ChatML-capable model pulled, e.g. `qwen3:4b`.
   - **Or an OpenAI-compatible API** (including a local server that speaks
-    that API) via `OPENAI_API_KEY`.
+    that API) — enter the key in the setup window, or set `OPENAI_API_KEY`.
 
 ## Install
 
@@ -83,26 +83,51 @@ This exposes two commands: `stella-ui` (desktop window) and `stella` (CLI).
 
 ## Configure
 
-The only required setting is your model name. With Ollama running locally:
+**No environment variables are required.** On first launch `stella-ui` shows
+a welcome dialog asking how Stella should run:
 
-```bash
-export STELLA_MODEL=qwen3:4b
-```
+1. **Local model (Ollama)** — Stella checks that Ollama is reachable, lists
+   the models you actually have installed (via Ollama's own model API, never
+   a hardcoded list), and lets you pick one. *Refresh* rescans; if nothing is
+   installed it tells you how to add one, e.g. `ollama pull qwen3:4b`
+   (Stella never downloads models for you). If Ollama is not running it says
+   so and how to start it (`ollama serve`).
+2. **OpenAI API** — type your key into the masked field, test the connection,
+   done. The full key is never shown again after entry.
+3. **Other OpenAI-compatible API** — same, plus a base URL field.
 
-That's enough for first run: with no `OPENAI_API_KEY` set, Stella defaults
-to the local Ollama server at `http://127.0.0.1:11434`. If you set
-`OPENAI_API_KEY`, Stella defaults to the OpenAI-compatible provider instead;
-`STELLA_LLM_PROVIDER=ollama|openai` always overrides the choice.
+Every choice ends with **Test connection**; *Start Stella* only unlocks after
+a test succeeded, and the resulting provider/model/endpoint configuration is
+saved under `~/.local/share/stella/config.json` (private file mode, no
+secrets). The next launch goes straight to the chat window. Change provider
+or model later in the window's **Settings** tab, which offers the same
+fields, a *Test connection* button, and a live
+"Provider: … Model: … Status: …" line.
 
-Useful optional settings (all optional):
+**Limitation (deliberate):** Stella has no secure credential store, so an
+API key entered in the UI lives only for that session — it is never written
+to disk. To keep an OpenAI key across launches, set `OPENAI_API_KEY` in your
+environment (an advanced-user option, not a requirement for Ollama users).
+
+### Advanced: environment variables
+
+Environment settings keep working and always win over the saved file — useful
+for scripts, development, and multiple configurations:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
+| `STELLA_MODEL` | Model name; also forces first-run setup to be skipped | unset |
+| `STELLA_LLM_PROVIDER` | `ollama` or `openai` | saved config, else auto |
+| `OPENAI_API_KEY` | OpenAI-compatible API key (persisted across sessions) | unset |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://127.0.0.1:11434` |
 | `OPENAI_BASE_URL` | OpenAI-compatible endpoint | provider default |
 | `STELLA_WORKSPACE` | folder for file actions | `~/.local/share/stella/workspace` |
 | `STELLA_MEMORY_DB` / `STELLA_REMINDERS_DB` | state file locations | under `~/.local/share/stella` |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | voice on/off/auto | `auto` |
+
+The CLI (`stella`) uses the same saved configuration; with no config and no
+`STELLA_MODEL` it prints a short message pointing at `stella-ui` instead of
+failing silently.
 
 Voice is configured last and only if wanted — see `docs/VOICE.md`. A broken
 voice command disables just that voice feature; the rest of Stella keeps
@@ -158,6 +183,8 @@ files are deleted as soon as they are transcribed. Details and examples:
 Everything lives under your XDG data directory
 (`~/.local/share/stella`, or `$XDG_DATA_HOME/stella`):
 
+- `config.json` — your provider/model choice from setup (no secrets,
+  private file mode)
 - `stella_memory.db` — your memory entries
 - `stella_reminders.db` — pending/completed reminders
 - `workspace/` — the only place file actions can touch

@@ -719,6 +719,67 @@ def test_bridge_settings_failure_keeps_the_previous_session() -> None:
         app.build_application = original  # type: ignore[assignment]
 
 
+def test_bridge_settings_success_rebinds_and_persists_configuration(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from stella import config as stella_config
+
+    def replacement(settings: StellaSettings) -> StellaApplication:
+        return StellaApplication(
+            StellaSession(make_recording_stella()), settings
+        )
+
+    original = app.build_application
+    app.build_application = replacement  # type: ignore[assignment]
+    try:
+        bridge = make_bridge(make_recording_stella())
+        bridge.post_apply_settings(
+            StellaSettings(provider="ollama", model="picked-model")
+        )
+        events = wait_for_event(bridge, "settings")
+        assert "picked-model" in events[-1].payload
+        assert "saved for the next launch" in events[-1].payload
+        saved = stella_config.load_configuration()
+        assert saved is not None
+        assert saved["provider"] == "ollama"
+        assert saved["model"] == "picked-model"
+        text = (tmp_path / "xdg" / "stella" / "config.json").read_text(
+            encoding="utf-8"
+        )
+        assert "api_key" not in text
+        bridge.stop()
+    finally:
+        app.build_application = original  # type: ignore[assignment]
+
+
+def test_bridge_settings_failure_does_not_overwrite_saved_configuration(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from stella import config as stella_config
+
+    stella_config.save_configuration(
+        StellaSettings(provider="ollama", model="good-model")
+    )
+
+    def failing(settings: StellaSettings) -> StellaApplication:
+        raise RuntimeError(f"bad model {settings.model}")
+
+    original = app.build_application
+    app.build_application = failing  # type: ignore[assignment]
+    try:
+        bridge = make_bridge(make_recording_stella())
+        bridge.post_apply_settings(StellaSettings(model="broken-model"))
+        wait_for_event(bridge, "error")
+        saved = stella_config.load_configuration()
+        assert saved is not None
+        assert saved["model"] == "good-model"
+        bridge.stop()
+    finally:
+        app.build_application = original  # type: ignore[assignment]
+
+
 # ------------------------------------------------------ security checks
 
 

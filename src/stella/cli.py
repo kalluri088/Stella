@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 
 from stella.app import StellaSession, StellaSettings, build_application
 from stella.brain import Decision
+from stella.config import resolve_settings
 from stella.stella import Stella, StellaResult
 from stella.tools import ApprovalRequest, ToolApproval
 from stella.trace import (
@@ -384,7 +385,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="render a compact 'Stella did' timeline after each turn",
     )
     args = parser.parse_args(argv)
-    application = build_application(StellaSettings.from_environment())
+    settings = resolve_settings()
+    if settings is None:
+        print(
+            "Stella is not configured yet. Run 'stella-ui' once to pick a "
+            "model through the setup window, or set STELLA_MODEL (and "
+            "optionally STELLA_LLM_PROVIDER) as before.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    application = build_application(settings)
     for line in format_startup(application.session.stella):
         print(line)
     print("Ask Stella anything. Type 'exit' to quit.\n")

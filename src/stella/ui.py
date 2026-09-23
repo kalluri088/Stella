@@ -36,6 +36,8 @@ class StellaWindow:
         self._bridge = bridge
         self._root = root
         self._busy = False
+        self._listening = False
+        self._speaking = False
         self._dialogs: list[tk.Toplevel] = []
         self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
@@ -72,6 +74,7 @@ class StellaWindow:
             chat,
             text="Ctrl+Enter sends; Enter adds a new line.",
         ).pack(anchor="w")
+        self._build_voice_row(chat, bridge)
 
         notebook = ttk.Notebook(main)
         notebook.pack(side="left", fill="y", padx=(8, 0))
@@ -97,6 +100,11 @@ class StellaWindow:
         self._chat.see("end")
 
     def _send(self) -> None:
+        if self._listening:
+            self._status.configure(
+                text="Finish or cancel the recording first."
+            )
+            return
         user_input = self._input.get("1.0", "end").strip()
         if not user_input or self._busy:
             return
@@ -105,6 +113,107 @@ class StellaWindow:
         self._busy = True
         self._status.configure(text="Stella is thinking...")
         self._bridge.post_turn(user_input)
+
+    # ------------------------------------------------------------ voice
+
+    def _build_voice_row(self, chat: ttk.Frame, bridge: StellaBridge) -> None:
+        row = ttk.Frame(chat)
+        row.pack(fill="x", pady=(2, 0))
+        mic_ok, speech_ok = bridge.voice_capabilities()
+        self._mic_button = ttk.Button(
+            row, text="Listen", command=self._toggle_listen, width=10
+        )
+        self._mic_button.pack(side="left")
+        self._mic_cancel = ttk.Button(
+            row, text="Cancel", command=self._cancel_listen, width=8,
+            state="disabled",
+        )
+        self._mic_cancel.pack(side="left", padx=4)
+        self._stop_speaking = ttk.Button(
+            row,
+            text="Stop speaking",
+            command=bridge.stop_playback,
+            state="disabled",
+        )
+        self._stop_speaking.pack(side="left", padx=4)
+        self._speak_var = tk.BooleanVar(value=False)
+        self._speak_toggle = ttk.Checkbutton(
+            row,
+            text="Speak replies",
+            variable=self._speak_var,
+            command=self._toggle_speech,
+            state="normal" if speech_ok else "disabled",
+        )
+        self._speak_toggle.pack(side="left", padx=4)
+        if not mic_ok:
+            self._mic_button.configure(state="disabled")
+        ttk.Label(
+            chat,
+            text=(
+                "Voice input is not available here (no capture command or "
+                "transcription provider)."
+                if not mic_ok
+                else "Listening and speaking are explicit; recordings are "
+                "removed right after transcription."
+            ),
+        ).pack(anchor="w")
+
+    def _toggle_listen(self) -> None:
+        if self._busy:
+            return
+        if self._listening:
+            # Optimistically disarm; the transcription events confirm the
+            # outcome. The window never claims to listen while it does not.
+            self._listening = False
+            self._mic_button.configure(text="Listen")
+            self._mic_cancel.configure(state="disabled")
+            self._status.configure(text="Transcribing...")
+            self._bridge.post_listen_stop()
+        else:
+            self._bridge.post_listen_start()
+
+    def _cancel_listen(self) -> None:
+        if not self._listening:
+            return
+        self._listening = False
+        self._mic_button.configure(text="Listen")
+        self._mic_cancel.configure(state="disabled")
+        self._bridge.post_listen_cancel()
+
+    def _toggle_speech(self) -> None:
+        self._bridge.set_speech_enabled(self._speak_var.get())
+
+    def _handle_voice_state(self, state: str) -> None:
+        if state == "listening":
+            self._listening = True
+            self._mic_button.configure(text="Stop")
+            self._mic_cancel.configure(state="normal")
+            self._status.configure(text="Listening...")
+        elif state == "transcribing":
+            self._status.configure(text="Transcribing...")
+        elif state == "speaking":
+            self._speaking = True
+            self._stop_speaking.configure(state="normal")
+            self._status.configure(text="Speaking...")
+        elif state == "idle":
+            self._speaking = False
+            self._stop_speaking.configure(state="disabled")
+            if not self._busy:
+                self._status.configure(text="")
+        else:  # pragma: no cover - unknown states must not appear
+            self._line(f"✗ Stella sent an unexpected voice state: {state}")
+
+    def _handle_voice_error(self, message: str) -> None:
+        # A voice failure never corrupts conversation state: the transcript
+        # simply was not sent, and any playback state is reset.
+        self._listening = False
+        self._speaking = False
+        self._mic_button.configure(text="Listen")
+        self._mic_cancel.configure(state="disabled")
+        self._stop_speaking.configure(state="disabled")
+        self._line(f"✗ {message}")
+        if not self._busy:
+            self._status.configure(text="")
 
     def _handle_turn(self, outcome: TurnOutcome) -> None:
         self._busy = False
@@ -150,6 +259,14 @@ class StellaWindow:
             )
         elif kind == "settings":
             self._line(f"(settings) {payload}")
+        elif kind == "voice_state":
+            self._handle_voice_state(str(payload))
+        elif kind == "voice_transcript":
+            self._line(f"You (voice): {payload}")
+            self._busy = True
+            self._status.configure(text="Stella is thinking...")
+        elif kind == "voice_error":
+            self._handle_voice_error(str(payload))
         elif kind == "error":
             self._line(f"✗ {payload}")
         else:  # pragma: no cover - unknown kinds must not appear

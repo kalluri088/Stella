@@ -18,7 +18,9 @@ from stella.app import (
     StellaBridge,
     StellaSession,
     StellaSettings,
+    VoicePanel,
 )
+from stella.audio import TranscriptionProvider
 from stella.brain import Brain, Decision, DecisionKind
 from stella.context import Context
 from stella.llm import LLMClient
@@ -33,6 +35,7 @@ from stella.tools import (
     ToolResult,
 )
 from stella.ui import StellaWindow
+from stella.voice import Recorder
 
 
 def display_available() -> bool:
@@ -101,7 +104,9 @@ def pump(root: tk.Tk, seconds: float) -> None:
 
 
 def make_window(
-    brain: Brain | None = None, tool: Tool | None = None
+    brain: Brain | None = None,
+    tool: Tool | None = None,
+    voice: VoicePanel | None = None,
 ) -> tuple[tk.Tk, StellaWindow, StellaBridge, InMemoryMemory]:
     memory = InMemoryMemory()
     store = InMemoryReminderStore()
@@ -118,6 +123,7 @@ def make_window(
         return StellaApplication(
             StellaSession(stella, error_footer="try again."),
             StellaSettings(model="test"),
+            voice,
         )
 
     bridge = StellaBridge(factory)
@@ -236,6 +242,86 @@ def test_approval_dialog_close_denies_the_action() -> None:
         pump(root, 0.8)
         assert tool.executions == []
         assert window._dialogs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+# ---------------------------------------------------------------- voice
+
+
+class WindowRecorder(Recorder):
+    def __init__(self) -> None:
+        self.listening = False
+        self.abandoned = 0
+
+    def available(self) -> bool:
+        return True
+
+    def start(self) -> None:
+        self.listening = True
+
+    def stop(self) -> str:
+        self.listening = False
+        return "/tmp/window-capture.wav"
+
+    def cancel(self) -> None:
+        self.listening = False
+        self.abandoned += 1
+
+
+class WindowTranscriber(TranscriptionProvider):
+    def transcribe(self, audio) -> str:
+        return "  speak to the window  "
+
+
+def make_voice_panel() -> VoicePanel:
+    return VoicePanel(WindowRecorder(), None, WindowTranscriber(), None)
+
+
+def test_window_voice_round_trip_uses_the_shared_session() -> None:
+    root, window, bridge, _ = make_window(voice=make_voice_panel())
+    try:
+        assert str(window._mic_button.cget("state")) == "normal"
+
+        window._mic_button.invoke()
+        deadline = time.monotonic() + 5
+        while not window._listening and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert window._mic_button.cget("text") == "Stop"
+        assert window._status.cget("text") == "Listening..."
+
+        window._mic_button.invoke()
+        deadline = time.monotonic() + 5
+        transcript = ""
+        while time.monotonic() < deadline:
+            root.update()
+            transcript = window._chat.get("1.0", "end")
+            if "Stella: window reply" in transcript:
+                break
+            time.sleep(0.02)
+
+        # The transcript appears as user input and the reply followed the
+        # exact typed conversation path — one Stella, one session.
+        assert "You (voice): speak to the window" in transcript
+        assert "Stella: window reply" in transcript
+        assert window._busy is False
+        assert window._listening is False
+        assert window._mic_button.cget("text") == "Listen"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_without_voice_keeps_the_mic_button_disabled() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        assert str(window._mic_button.cget("state")) == "disabled"
+        assert str(window._speak_toggle.cget("state")) == "disabled"
+        window._mic_button.invoke()  # a disabled button must do nothing
+        pump(root, 0.2)
+        assert window._listening is False
     finally:
         bridge.stop()
         root.destroy()

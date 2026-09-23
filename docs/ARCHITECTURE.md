@@ -92,6 +92,16 @@ transcription and follows the same path as today. The transcription provider
 cannot return a decision, tool authorization, memory write, or approval; its
 text is an untrusted observation for the existing Brain and security boundary.
 
+`stella.voice` provides the concrete desktop hardware boundaries: a
+`Recorder`/`Player` pair backed by local subprocesses (`pw-record`/`arecord`
+and `pw-play`/`paplay`/`aplay`), plus `CommandTranscriptionProvider` (a local
+command template, no shell), `OpenAITranscriptionProvider`, and
+`CommandSpeechProvider`/`OpenAISpeechProvider` implementations of the existing
+provider interfaces. The desktop UI's voice mode records one explicit
+utterance per Listen press, transcribes it, and sends the transcript through
+the same `StellaSession.run_turn()` path as typed input; the recording is
+deleted right after transcription and never enters history. See `VOICE.md`.
+
 ### Image input boundary
 
 `stella.vision.VisionProvider` is the provider-neutral interface for one
@@ -139,6 +149,14 @@ or change the existing `StellaResult`.
 Speech rendering is an interface concern after decision and action. The speech
 provider receives no permissions, approvals, tool arguments, memory, or input
 context, and its output is not fed back into Stella's decision path.
+
+In the desktop UI, speech output is an opt-in checkbox (off by default). When
+enabled, the bridge renders only the final response text through a
+`SpeechProvider`, plays the artifact on a separate daemon thread, and removes
+it afterwards. "Stop speaking" cancels the audio subprocess only; the
+understood decision, history entry, and displayed text are untouched, and a
+synthesis or playback failure is reported honestly while the text response
+remains available.
 
 Context is only a data structure at this stage. It does not call an LLM, retrieve memory itself, summarize history, or manage persistence.
 
@@ -349,9 +367,12 @@ a `Stella` instance and a `StellaApplication` that owns their lifecycle.
 `StellaSettings.from_environment()` reads the same environment variables for
 either interface. `StellaSession` holds the conversation `Message` history and
 runs one turn through `Stella.process()` with shared error and display rules,
-and the small panel classes (`MemoryPanel`, `ReminderPanel`, `ApprovalBroker`)
-expose memory, reminder, and approval operations only through the existing
-trusted APIs. Neither interface implements a second orchestration path.
+and the small panel classes (`MemoryPanel`, `ReminderPanel`, `ApprovalBroker`,
+and `VoicePanel`) expose memory, reminder, approval, and voice operations only
+through the existing trusted APIs. `VoicePanel` combines the `stella.voice`
+recorder, player, and provider abstractions; its transcript enters through
+`StellaSession.run_turn()` like any typed message, so voice adds no second
+orchestration path. Neither interface implements a second orchestration path.
 
 `stella.cli` is a thin terminal interface over that layer. It repeatedly reads
 input, delivers due reminders, calls `StellaSession.run_turn()`, displays the
@@ -372,11 +393,15 @@ Manual testing showed that a natural-language response claiming that Stella will
   parts, conversation history, retrieved memories, and structured tool
   observations; it does not fetch or persist information.
 - `TranscriptionProvider` converts one bounded audio observation to text; it
-  does not choose decisions, authorize tools, or write memory.
+  does not choose decisions, authorize tools, or write memory. `stella.voice`
+  supplies local-command and OpenAI implementations plus the desktop
+  `Recorder`/`Player` subprocess boundaries; recordings exist only in a
+  temporary directory that is deleted right after transcription.
 - `VisionProvider` converts one bounded image observation to text; it does not
   choose decisions, authorize tools, or write memory.
 - `SpeechProvider` renders one bounded final response as speech; it does not
-  receive or grant decisions, permissions, memory, or tool authority.
+  receive or grant decisions, permissions, memory, or tool authority. Spoken
+  output is an interface rendering and never re-enters the decision path.
 - `VideoProvider` analyzes one bounded, explicitly supplied clip reference; it
   does not capture media, retain raw media, make decisions, or grant authority.
 - `Memory` stores only explicitly supplied `MemoryItem` objects; `InMemoryMemory` keeps them for one process and `SQLiteMemory` persists them at a configured path. Neither automatically captures conversations, and retrieval does not imply a write.
@@ -475,10 +500,11 @@ The following are intentionally outside the current MVP foundation:
 - Personality, generalized event ingress, background notification delivery,
   autonomous loops, schedulers, daemons, or heartbeats — reminder checks
   happen only during a real user interaction (see `REMINDERS.md`)
-- Audio capture and output, transcription and vision providers beyond their
-  interfaces; video or environment processing; interface rendering; streaming;
-  or
-  provider-specific multimodal integrations
+- Audio capture and output are limited to the explicit one-utterance desktop
+  voice mode in `stella.voice` (see `VOICE.md`); there is no wake word,
+  continuous listening, or streaming. Vision providers remain interfaces only;
+  video or environment processing, or provider-specific multimodal
+  integrations beyond the current voice path are not implemented
 - Plugin loading, dynamic discovery, and permission checks (approval
   presentation now exists in the CLI prompt and the Tkinter UI dialog, both
   served by the trusted `ApprovalBroker`)
@@ -504,7 +530,8 @@ The following are intentionally outside the current MVP foundation:
 │       ├── openai_client.py
 │       ├── stella.py
 │       ├── tools.py
-│       └── ui.py
+│       ├── ui.py
+│       └── voice.py
 └── tests/
     ├── test_app.py
     ├── test_brain.py
@@ -516,7 +543,8 @@ The following are intentionally outside the current MVP foundation:
     ├── test_stella.py
     ├── test_package.py
     ├── test_tools.py
-    └── test_ui.py
+    ├── test_ui.py
+    └── test_voice.py
 ```
 
 The project uses Python with uv. Runtime code lives under `src/stella`, and the independent behavior tests live under `tests`.
@@ -550,15 +578,16 @@ To use the graphical interface instead of the terminal (requires a display):
 uv run stella-ui
 ```
 
-See `UI.md` for what the window offers and its current limits.
+See `UI.md` for what the window offers and its current limits, and `VOICE.md`
+for voice mode configuration and privacy behavior.
 
-`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to the configured client, and `STELLA_LLM_PROVIDER` selects `openai` (default) or `ollama`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed, and `OLLAMA_BASE_URL` when Ollama is served from a non-default address. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the application layer uses `stella_memory.db` in the current working directory. `STELLA_REMINDERS_DB` selects the reminder store path, defaulting to `stella_reminders.db`. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, `filesystem_edit`, and `filesystem_delete` capabilities; if unset, the application layer uses `./stella_workspace`. The interfaces read these variable names through `stella.app` but do not contain or expose secret values.
+`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to the configured client, and `STELLA_LLM_PROVIDER` selects `openai` (default) or `ollama`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed, and `OLLAMA_BASE_URL` when Ollama is served from a non-default address. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the application layer uses `stella_memory.db` in the current working directory. `STELLA_REMINDERS_DB` selects the reminder store path, defaulting to `stella_reminders.db`. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, `filesystem_edit`, and `filesystem_delete` capabilities; if unset, the application layer uses `./stella_workspace`. Voice mode is configured through `STELLA_VOICE_TRANSCRIPTION`, `STELLA_VOICE_SPEECH`, `STELLA_TRANSCRIPTION_COMMAND`, `STELLA_SPEECH_COMMAND`, `STELLA_TRANSCRIPTION_MODEL`, `STELLA_SPEECH_MODEL`, and `STELLA_SPEECH_VOICE`, all optional and local-first; see `VOICE.md`. The interfaces read these variable names through `stella.app` but do not contain or expose secret values.
 
 ## Current verification status
 
 At the time this document was written:
 
-- Pytest: 652 tests passing
+- Pytest: 691 tests passing
 - Ruff: all checks passing
 
 The OpenAI client tests mock the SDK, so the test suite does not make real API calls.

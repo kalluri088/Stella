@@ -65,6 +65,10 @@ handling with the UI through `StellaSession`.
 - Settings: view and change provider/model, base URLs, database paths, and
   workspace, then rebuild the application through `build_application`. A
   failed rebuild keeps the working session alive.
+- Voice: press **Listen** to record one explicit utterance, see the transcript
+  enter the same conversation path as typed input, and optionally hear the
+  final response spoken ("Speak replies", off by default). See `VOICE.md` for
+  providers, privacy behavior, and controls.
 
 ## How approvals stay trusted
 
@@ -89,5 +93,7 @@ core path and reports that nothing was changed.
 - Memory search is the existing deterministic keyword matcher, not semantic.
 - Reminders are user-created one-shots delivered during interaction; there is
   no background delivery.
-- No voice, browser automation, email/calendar, cloud accounts, plugins, or
-  remote integrations.
+- Voice is one explicit utterance per Listen press with local-first providers;
+  there is no wake word, continuous listening, or streaming recognition.
+- No browser automation, email/calendar, cloud accounts, plugins, or remote
+  integrations.

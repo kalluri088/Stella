@@ -15,12 +15,22 @@ import datetime as dt
 import itertools
 import os
 import queue
+import shlex
+import shutil
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from stella.audio import TranscriptionProvider
+from stella.audio_output import SpeechProvider
 from stella.brain import LLMBrain
-from stella.context import Context
+from stella.context import (
+    MAX_INPUT_CONTENT_CHARS,
+    Context,
+    InputModality,
+    InputPart,
+    InputProvenance,
+)
 from stella.llm import Message
 from stella.memory import Memory, MemoryItem, SQLiteMemory
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
@@ -50,6 +60,17 @@ from stella.tools import (
     WorkspaceListTool,
     WorkspaceSearchTool,
 )
+from stella.voice import (
+    CommandSpeechProvider,
+    CommandTranscriptionProvider,
+    OpenAISpeechProvider,
+    OpenAITranscriptionProvider,
+    Player,
+    Recorder,
+    SubprocessPlayer,
+    SubprocessRecorder,
+    VoiceError,
+)
 
 __all__ = [
     "ApprovalBroker",
@@ -62,6 +83,7 @@ __all__ = [
     "StellaSettings",
     "TurnOutcome",
     "UiEvent",
+    "VoicePanel",
     "build_application",
     "display_response",
     "outcome_status",
@@ -184,6 +206,9 @@ class StellaSession:
         return TurnOutcome(result=result, response=response)
 
 
+VOICE_MODES = {"auto", "openai", "off"}
+
+
 @dataclass(frozen=True)
 class StellaSettings:
     """The minimal local configuration a Stella application needs."""
@@ -195,6 +220,13 @@ class StellaSettings:
     memory_db: str = "stella_memory.db"
     reminders_db: str = "stella_reminders.db"
     workspace: str = "./stella_workspace"
+    voice_transcription: str = "auto"
+    voice_speech: str = "auto"
+    transcription_model: str = "whisper-1"
+    transcription_command: str | None = None
+    speech_model: str = "tts-1"
+    speech_voice: str = "alloy"
+    speech_command: str | None = None
 
     @classmethod
     def from_environment(cls) -> StellaSettings:
@@ -207,6 +239,18 @@ class StellaSettings:
         if provider not in {"openai", "ollama"}:
             raise SystemExit(
                 "STELLA_LLM_PROVIDER must be 'openai' or 'ollama'"
+            )
+        transcription_mode = os.environ.get(
+            "STELLA_VOICE_TRANSCRIPTION", "auto"
+        ).casefold()
+        speech_mode = os.environ.get("STELLA_VOICE_SPEECH", "auto").casefold()
+        if transcription_mode not in VOICE_MODES:
+            raise SystemExit(
+                "STELLA_VOICE_TRANSCRIPTION must be 'auto', 'openai' or 'off'"
+            )
+        if speech_mode not in VOICE_MODES:
+            raise SystemExit(
+                "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
             )
         return cls(
             provider=provider,
@@ -222,6 +266,17 @@ class StellaSettings:
             workspace=os.environ.get(
                 "STELLA_WORKSPACE", "./stella_workspace"
             ),
+            voice_transcription=transcription_mode,
+            voice_speech=speech_mode,
+            transcription_model=os.environ.get(
+                "STELLA_TRANSCRIPTION_MODEL", "whisper-1"
+            ),
+            transcription_command=os.environ.get(
+                "STELLA_TRANSCRIPTION_COMMAND"
+            ),
+            speech_model=os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
+            speech_voice=os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
+            speech_command=os.environ.get("STELLA_SPEECH_COMMAND"),
         )
 
 
@@ -231,8 +286,11 @@ class StellaApplication:
 
     session: StellaSession
     settings: StellaSettings
+    voice: VoicePanel | None = None
 
     def close(self) -> None:
+        if self.voice is not None:
+            self.voice.dispose()
         memory = self.session.stella.memory
         if isinstance(memory, SQLiteMemory):
             memory.close()
@@ -295,7 +353,187 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         max_tool_steps=2,
         reminders=reminders,
     )
-    return StellaApplication(StellaSession(stella), settings)
+    return StellaApplication(StellaSession(stella), settings, build_voice(settings))
+
+
+class VoicePanel:
+    """Trusted application-layer orchestration of the voice periphery.
+
+    It owns the recorder, transcriber, speech provider, and player, and
+    turns them into one-shot commands the bridge can post. A transcript
+    leaves this panel only as ordinary text, which the caller then feeds
+    through the exact same ``StellaSession.run_turn`` path as typed input:
+    voice gains no reasoning path, no approval, and no authority here.
+    Recordings are removed as soon as transcription is done.
+    """
+
+    def __init__(
+        self,
+        recorder: Recorder | None,
+        player: Player | None,
+        transcriber: TranscriptionProvider | None,
+        speech_provider: SpeechProvider | None,
+    ) -> None:
+        self._recorder = recorder
+        self._player = player
+        self._transcriber = transcriber
+        self._speech = speech_provider
+        self.speech_enabled = False
+
+    @property
+    def input_available(self) -> bool:
+        return (
+            self._recorder is not None
+            and self._transcriber is not None
+            and self._recorder.available()
+        )
+
+    @property
+    def output_available(self) -> bool:
+        return (
+            self._player is not None
+            and self._speech is not None
+            and self._player.available()
+        )
+
+    def start_listening(self) -> None:
+        if self._recorder is None or self._transcriber is None:
+            raise VoiceError(
+                "Voice input is not available in this configuration."
+            )
+        self._recorder.start()
+
+    def stop_and_transcribe(self) -> str:
+        """Finish one recording and return its transcript, or raise."""
+
+        if self._recorder is None or self._transcriber is None:
+            raise VoiceError(
+                "Voice input is not available in this configuration."
+            )
+        path = self._recorder.stop()
+        try:
+            # The audio part carries only the bounded temporary reference;
+            # raw audio never enters the conversation or history.
+            part = InputPart(
+                modality=InputModality.AUDIO,
+                provenance=InputProvenance.USER,
+                reference=path,
+            )
+            transcript = self._transcriber.transcribe(part)
+        except VoiceError:
+            raise
+        except Exception as error:  # friendly text, never a trace
+            detail = " ".join(str(error).split()) or type(error).__name__
+            raise VoiceError(
+                f"Transcription failed ({detail[:120]}). Nothing was sent "
+                "to Stella."
+            ) from error
+        finally:
+            self._recorder.dispose()
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise VoiceError(
+                "No speech was recognized. Nothing was sent to Stella."
+            )
+        return transcript.strip()[:MAX_INPUT_CONTENT_CHARS]
+
+    def abandon_listening(self) -> None:
+        if self._recorder is not None:
+            self._recorder.cancel()
+
+    def synthesize(self, result: StellaResult) -> str:
+        """Render one existing final response and return its artifact."""
+
+        if self._speech is None:
+            raise VoiceError("Voice output is not available right now.")
+        artifact = Stella.speak(result, self._speech)
+        return artifact.reference
+
+    def play(self, path: str) -> None:
+        if self._player is None:
+            raise VoiceError("Voice output is not available right now.")
+        self._player.play(path)
+
+    def cancel_playback(self) -> None:
+        """Stop audio output only; the Stella decision is untouched."""
+
+        if self._player is not None:
+            self._player.stop()
+
+    def dispose_artifact(self, path: str) -> None:
+        """Remove one played synthesis so no audio outlives its purpose."""
+
+        try:
+            os.remove(path)
+        except OSError as error:
+            del error
+
+    def dispose(self) -> None:
+        if self._recorder is not None:
+            # cancel() also releases the capture process and its files.
+            self._recorder.cancel()
+        provider_dispose = getattr(self._speech, "dispose", None)
+        if provider_dispose is not None:
+            provider_dispose()
+
+
+def build_voice(settings: StellaSettings) -> VoicePanel:
+    """Assemble the local-first voice periphery; never raises at startup."""
+
+    recorder = SubprocessRecorder()
+    player = SubprocessPlayer()
+    transcriber = _build_transcriber(settings)
+    speech = _build_speech_provider(settings)
+    return VoicePanel(recorder, player, transcriber, speech)
+
+
+def _openai_speech_client() -> object:
+    from openai import OpenAI
+
+    # The SDK resolves OPENAI_API_KEY/OPENAI_BASE_URL from the environment,
+    # the same credentials the ordinary LLM client already uses.
+    return OpenAI()
+
+
+def _build_transcriber(
+    settings: StellaSettings,
+) -> TranscriptionProvider | None:
+    if settings.voice_transcription == "off":
+        return None
+    if settings.transcription_command:
+        return CommandTranscriptionProvider(
+            shlex.split(settings.transcription_command)
+        )
+    if settings.voice_transcription in {"auto", "openai"} and os.environ.get(
+        "OPENAI_API_KEY"
+    ):
+        return OpenAITranscriptionProvider(
+            _openai_speech_client(), model=settings.transcription_model
+        )
+    return None
+
+
+def _build_speech_provider(
+    settings: StellaSettings,
+) -> SpeechProvider | None:
+    if settings.voice_speech == "off":
+        return None
+    if settings.speech_command:
+        return CommandSpeechProvider(shlex.split(settings.speech_command))
+    if settings.voice_speech == "auto":
+        for binary in ("espeak-ng", "espeak"):
+            if shutil.which(binary):
+                return CommandSpeechProvider(
+                    [binary, "-w", "{output}", "{text}"]
+                )
+    if settings.voice_speech in {"auto", "openai"} and os.environ.get(
+        "OPENAI_API_KEY"
+    ):
+        return OpenAISpeechProvider(
+            _openai_speech_client(),
+            model=settings.speech_model,
+            voice=settings.speech_voice,
+        )
+    return None
 
 
 class MemoryPanel:
@@ -470,6 +708,8 @@ class StellaBridge:
         self._application: StellaApplication | None = None
         self._memory: MemoryPanel | None = None
         self._reminders: ReminderPanel | None = None
+        self._voice: VoicePanel | None = None
+        self._playback: threading.Thread | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._events: queue.Queue[UiEvent] = queue.Queue()
         self._ready = threading.Event()
@@ -507,6 +747,7 @@ class StellaBridge:
         self._reminders = ReminderPanel(
             getattr(stella, "reminders", None)
         )
+        self._voice = application.voice
 
     def _serve(self) -> None:
         while True:
@@ -566,14 +807,150 @@ class StellaBridge:
 
     def post_turn(self, user_input: str) -> None:
         def handle() -> None:
-            session = self._require_session()
-            for delivery in session.check_due_reminders():
-                if delivery.delivered and delivery.message is not None:
-                    self._emit("reminder_delivered", delivery.message)
-            outcome = session.run_turn(user_input)
-            self._emit("turn", outcome)
+            self._speak_after(self._handle_turn(user_input))
 
         self._post(handle)
+
+    def _handle_turn(self, user_input: str) -> TurnOutcome:
+        session = self._require_session()
+        for delivery in session.check_due_reminders():
+            if delivery.delivered and delivery.message is not None:
+                self._emit("reminder_delivered", delivery.message)
+        outcome = session.run_turn(user_input)
+        self._emit("turn", outcome)
+        return outcome
+
+    # -------------------------------------------------------------- voice
+
+    def voice_capabilities(self) -> tuple[bool, bool]:
+        """(microphone usable, speech output usable) for the UI display.
+
+        This only reads availability metadata (which local commands
+        exist); it opens no device and touches no Stella state.
+        """
+
+        if self._voice is None:
+            return (False, False)
+        return (self._voice.input_available, self._voice.output_available)
+
+    def set_speech_enabled(self, enabled: bool) -> None:
+        """Toggle speaking final responses aloud (a plain display pref)."""
+
+        if self._voice is not None:
+            self._voice.speech_enabled = bool(enabled)
+
+    def post_listen_start(self) -> None:
+        def handle() -> None:
+            panel = self._voice
+            if panel is None:
+                self._emit(
+                    "voice_error",
+                    "Voice input is not available in this configuration.",
+                )
+                return
+            try:
+                panel.start_listening()
+            except VoiceError as error:
+                self._emit("voice_error", str(error))
+            else:
+                # The UI shows "Listening..." only after this event: the
+                # window never claims to listen when nothing is recording.
+                self._emit("voice_state", "listening")
+
+        self._post(handle)
+
+    def post_listen_stop(self) -> None:
+        def handle() -> None:
+            panel = self._voice
+            if panel is None:
+                self._emit(
+                    "voice_error",
+                    "Voice input is not available in this configuration.",
+                )
+                return
+            self._emit("voice_state", "transcribing")
+            try:
+                transcript = panel.stop_and_transcribe()
+            except VoiceError as error:
+                # A failed transcript is never replaced with invented text.
+                self._emit("voice_error", str(error))
+                return
+            self._emit("voice_transcript", transcript)
+            # From here the transcript follows the exact typed-input path.
+            self._speak_after(self._handle_turn(transcript))
+
+        self._post(handle)
+
+    def post_listen_cancel(self) -> None:
+        def handle() -> None:
+            if self._voice is not None:
+                self._voice.abandon_listening()
+            self._emit("voice_state", "idle")
+
+        self._post(handle)
+
+    def stop_playback(self) -> None:
+        """Cancel audio output from the UI thread, deliberately.
+
+        Playback is a peripheral sound process, not Stella state: the
+        worker may be busy elsewhere, and stopping speech must never
+        cancel or alter the decision that already produced the response.
+        """
+
+        if self._voice is not None:
+            self._voice.cancel_playback()
+
+    def _speak_after(self, outcome: TurnOutcome) -> None:
+        panel = self._voice
+        if (
+            panel is None
+            or not panel.speech_enabled
+            or outcome.result is None
+            or outcome.response is None
+            or not panel.output_available
+        ):
+            return
+        try:
+            path = panel.synthesize(outcome.result)
+        except VoiceError as error:
+            # The text response stays visible and untouched.
+            self._emit("voice_error", str(error))
+            return
+        except Exception as error:  # noqa: BLE001 - friendly text, never a trace
+            detail = " ".join(str(error).split()) or type(error).__name__
+            self._emit(
+                "voice_error",
+                f"Stella could not prepare speech ({detail[:120]}). "
+                "The text response is still available.",
+            )
+            return
+        # A new reply may interrupt still-playing audio; that cancels only
+        # playback, never any Stella decision. The join keeps the old
+        # thread's "idle" event ordered before the new "speaking" state.
+        panel.cancel_playback()
+        if self._playback is not None:
+            self._playback.join(timeout=2)
+        self._emit("voice_state", "speaking")
+
+        def play() -> None:
+            try:
+                panel.play(path)
+            except VoiceError as error:
+                self._emit("voice_error", str(error))
+            except BaseException as error:  # noqa: BLE001 - report, never crash
+                detail = " ".join(str(error).split()) or type(error).__name__
+                self._emit(
+                    "voice_error",
+                    f"Stella could not play the response ({detail[:120]}).",
+                )
+            finally:
+                panel.dispose_artifact(path)
+                self._emit("voice_state", "idle")
+
+        self._playback = threading.Thread(
+            target=play, name="stella-playback", daemon=True
+        )
+        self._playback.start()
 
     def post_memories(self, query: str | None = None) -> None:
         def handle() -> None:
@@ -636,8 +1013,12 @@ class StellaBridge:
 
     def stop(self) -> None:
         self.approvals.deny_outstanding()
+        if self._voice is not None:
+            self._voice.cancel_playback()
         self._post(None)
         self._thread.join(timeout=5)
+        if self._playback is not None:
+            self._playback.join(timeout=2)
         if self._application is not None:
             try:
                 self._application.close()

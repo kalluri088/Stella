@@ -9,8 +9,10 @@ production capability.
 `RiskLevel` is application-owned. A tool classified as `DANGEROUS` requires
 approval before execution. The current tools remain unchanged:
 
-- `datetime`, `system_info`, and `echo` are `SAFE` and execute without
-  approval;
+- `datetime` and `system_info` are `SAFE` and execute without approval
+  (the `echo` tool still exists as a test double but is deliberately not
+  registered in the production application, where a model could otherwise
+  "succeed" by echoing the user's own input);
 - `filesystem_read` is `SENSITIVE`, remains explicitly workspace-scoped, and
   executes without interactive approval in this MVP;
 - `filesystem_write`, `filesystem_edit`, and `filesystem_delete` are

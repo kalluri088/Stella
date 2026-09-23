@@ -41,7 +41,6 @@ from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
     ApprovalRequest,
     DateTimeTool,
-    EchoTool,
     FileSystemDeleteTool,
     FileSystemEditTool,
     FileSystemReadTool,
@@ -409,7 +408,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         [
             DateTimeTool(),
             SystemInfoTool(),
-            EchoTool(),
+            # No EchoTool here on purpose: a registered echo capability lets
+            # a confused model "succeed" by echoing the user's own text,
+            # which reads as a fake assistant response ("iawd" dogfood).
             FileSystemReadTool(workspace),
             FileSystemWriteTool(workspace),
             FileSystemEditTool(workspace),

@@ -7,9 +7,11 @@ path cannot forge, bypass, or widen authorization.
 """
 
 import datetime as dt
+import json
 import threading
 import time
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -977,3 +979,99 @@ def test_bridge_wires_the_broker_into_the_stella_core() -> None:
     assert provider.__func__ is bridge.approvals.request.__func__
     assert provider.__self__ is bridge.approvals
     bridge.stop()
+
+
+# ------------------------------------------------- provider honesty (dogfood)
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def make_ollama_app(tmp_path: Path, base_url: str) -> StellaApplication:
+    return build_application(
+        StellaSettings(
+            provider="ollama",
+            model="test-model",
+            ollama_base_url=base_url,
+            memory_db=str(tmp_path / "m.db"),
+            reminders_db=str(tmp_path / "r.db"),
+            workspace=str(tmp_path / "ws"),
+        )
+    )
+
+
+def test_production_application_never_registers_the_echo_test_tool(
+    tmp_path: Path,
+) -> None:
+    # "iawd" dogfood: with echo registered, a confused model could answer
+    # gibberish by echoing the user's own text with a "succeeded" outcome.
+    application = make_ollama_app(tmp_path, "http://127.0.0.1:1/v1")
+    try:
+        capabilities = {
+            str(description["capability"])
+            for description in application.session.stella.tools.describe()
+        }
+        assert "echo" not in capabilities
+        assert "datetime" in capabilities  # real SAFE tools remain
+    finally:
+        application.close()
+
+
+def test_unreachable_ollama_reports_an_honest_error_not_an_echo_success(
+    tmp_path: Path,
+) -> None:
+    # Nothing listens on port 1, so this is exactly a stopped Ollama.
+    application = make_ollama_app(tmp_path, "http://127.0.0.1:1/v1")
+    try:
+        outcome = application.session.run_turn("iawd")
+        assert outcome.response is None
+        assert outcome.result is None
+        assert outcome.error_message is not None
+        assert "could not finish" in outcome.error_message
+        assert "succeeded" not in outcome.error_message
+    finally:
+        application.close()
+
+
+def test_reachable_provider_reply_answers_through_the_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = json.dumps(
+        {
+            "message": {
+                "content": json.dumps(
+                    {"kind": "answer", "content": "provider reply"}
+                )
+            }
+        }
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout=None):
+        return _FakeHTTPResponse(body)
+
+    monkeypatch.setattr(
+        "stella.ollama_client.urllib.request.urlopen", fake_urlopen
+    )
+    application = make_ollama_app(
+        tmp_path, "http://127.0.0.1:11434/v1"
+    )
+    try:
+        outcome = application.session.run_turn("hello")
+        assert outcome.error_message is None
+        assert outcome.response == "provider reply"
+        assert outcome.result is not None
+        assert outcome.result.tool_result is None
+    finally:
+        application.close()

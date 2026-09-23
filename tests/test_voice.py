@@ -428,6 +428,45 @@ def test_subprocess_recorder_stop_without_start_is_an_error() -> None:
         recorder.stop()
 
 
+def test_recorder_stop_failure_removes_its_temp_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Security audit F3: when stop() failed, the temporary directory holding
+    # the captured audio was left behind in /tmp and unreachable later.
+    class SilentProcess:
+        def send_signal(self, signal: int) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    created: list[str] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created.append(path)
+        return path
+
+    monkeypatch.setattr("stella.voice.tempfile.mkdtemp", spy)
+    monkeypatch.setattr(
+        "stella.voice.shutil.which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "stella.voice.subprocess.Popen",
+        lambda *args, **kwargs: SilentProcess(),
+    )
+    recorder = SubprocessRecorder()
+    recorder.start()
+    assert len(created) == 1
+
+    with pytest.raises(VoiceError, match="no recording"):
+        recorder.stop()
+
+    assert not os.path.exists(created[0])
+
+
 def test_subprocess_player_stop_without_playback_is_harmless() -> None:
     SubprocessPlayer().stop()
 
@@ -494,6 +533,23 @@ def test_transcription_crash_is_wrapped_and_cleaned_up() -> None:
     recording_path = recorder.last_path
     with pytest.raises(VoiceError, match="Nothing was sent to Stella"):
         panel.stop_and_transcribe()
+    assert recorder.disposed == 1
+    assert not os.path.exists(recording_path)
+
+
+def test_recorder_stop_failure_is_still_cleaned_up() -> None:
+    # Security audit F3: stop() used to sit outside the try/finally, so a
+    # failed stop left the panel without ever running dispose().
+    recorder = FakeRecorder(
+        stop_error=VoiceError("Stella could not finish the recording.")
+    )
+    panel = make_panel(recorder=recorder, transcriber=FakeTranscriber())
+    panel.start_listening()
+    recording_path = recorder.last_path
+
+    with pytest.raises(VoiceError, match="could not finish"):
+        panel.stop_and_transcribe()
+
     assert recorder.disposed == 1
     assert not os.path.exists(recording_path)
 

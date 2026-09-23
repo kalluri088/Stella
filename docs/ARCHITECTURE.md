@@ -2,15 +2,11 @@
 
 ## What Stella is becoming
 
-Stella is being built as a small, understandable personal assistant foundation. The long-term direction is an assistant that can use language models, conversation context, explicitly stored memory, decisions, and tools in a controlled way.
-
-The current project is an MVP foundation, not a complete assistant. The priority is to establish a few clear, provider-agnostic boundaries before adding autonomous behavior. Each component is intentionally small and can be tested independently.
+Stella is built as a small, understandable personal assistant. The v1 product is a local-first desktop assistant: conversation, user-controlled memory, workspace file actions with independent verification, one-shot reminders, and optional one-utterance voice — all behind the trusted approval boundary. The priority is to keep a few clear, provider-agnostic boundaries rather than add autonomous behavior. Each component is intentionally small and can be tested independently.
 
 ## Current MVP philosophy
 
-The project favors explicit data structures, narrow interfaces, deterministic behavior, and ordinary Python over framework-heavy abstractions. Components should have one clear responsibility. In particular, the current foundation does not hide persistence, retrieval, planning, tool execution, or conversation management behind implicit behavior.
-
-The interfaces are being established before the full response pipeline is built. The current implementations are suitable for unit testing and experimentation, but they do not yet form a complete end-to-end assistant.
+The same explicit data structures, narrow interfaces, deterministic behavior, and ordinary Python over framework-heavy abstractions carry through the whole product. Components have one clear responsibility. In particular, the application does not hide persistence, retrieval, planning, tool execution, or conversation management behind implicit behavior.
 
 ## Current architecture
 
@@ -516,79 +512,74 @@ The following are intentionally outside the current MVP foundation:
 ```text
 .
 ├── README.md
+├── CHANGELOG.md
 ├── pyproject.toml
 ├── uv.lock
 ├── src/
 │   └── stella/
 │       ├── __init__.py
-│       ├── app.py
-│       ├── brain.py
-│       ├── cli.py
-│       ├── context.py
-│       ├── llm.py
-│       ├── memory.py
-│       ├── openai_client.py
-│       ├── stella.py
-│       ├── tools.py
-│       ├── ui.py
-│       └── voice.py
+│       ├── app.py             # shared application layer + settings
+│       ├── audio.py           # recording boundary
+│       ├── audio_output.py    # playback boundary
+│       ├── brain.py           # structured decisions from the LLM
+│       ├── cli.py             # terminal front-end
+│       ├── context.py         # conversation/context assembly
+│       ├── llm.py             # provider-agnostic LLM interface
+│       ├── memory.py          # SQLite + in-memory memory stores
+│       ├── ollama_client.py   # local Ollama client
+│       ├── openai_client.py   # OpenAI-compatible client
+│       ├── proactivity.py     # due-reminder surface during interaction
+│       ├── reminders.py       # one-shot reminder store
+│       ├── semantic_memory.py # provider-neutral semantic retrieval + local fallback
+│       ├── stella.py          # turn orchestration
+│       ├── tools.py           # tools, dispatcher, risk, approval, receipts
+│       ├── trace.py           # compact action timeline
+│       ├── ui.py              # Tkinter desktop front-end
+│       ├── video.py           # one-shot video observation boundary (interface only)
+│       ├── vision.py          # one-shot image observation boundary (interface only)
+│       └── voice.py           # one-utterance voice periphery
 └── tests/
-    ├── test_app.py
-    ├── test_brain.py
-    ├── test_cli.py
-    ├── test_context.py
-    ├── test_llm.py
-    ├── test_memory.py
-    ├── test_openai_client.py
-    ├── test_stella.py
-    ├── test_package.py
-    ├── test_tools.py
-    ├── test_ui.py
-    └── test_voice.py
+    ├── evaluation/            # model-behavior evaluation harness
+    ├── security/              # trust-boundary regression tests
+    └── test_*.py              # one module plus behavior suites
 ```
 
 The project uses Python with uv. Runtime code lives under `src/stella`, and the independent behavior tests live under `tests`.
 
 ## Running Stella locally
 
-Install the environment with uv, set the required environment variables, and run the console entry point:
+For normal use, install the built package (see the README) and start with a
+model name. With a local Ollama server, no other variable is required:
 
 ```bash
-uv sync
-export OPENAI_API_KEY
-export STELLA_MODEL
-# Optional; defaults to ./stella_memory.db
-export STELLA_MEMORY_DB
-# Optional; defaults to ./stella_reminders.db
-export STELLA_REMINDERS_DB
-# Optional; defaults to ./stella_workspace
-export STELLA_WORKSPACE
-uv run stella
+export STELLA_MODEL=qwen3:4b
+stella-ui    # desktop window
+stella       # terminal chat
 ```
 
-Add `--debug` when inspecting Brain decisions:
+From a source checkout, replace the commands with `uv run stella-ui` /
+`uv run stella`. Add `--debug` to inspect Brain decisions and `--trace` for
+the compact action timeline.
 
-```bash
-uv run stella --debug
-```
-
-To use the graphical interface instead of the terminal (requires a display):
-
-```bash
-uv run stella-ui
-```
-
-See `UI.md` for what the window offers and its current limits, and `VOICE.md`
-for voice mode configuration and privacy behavior.
-
-`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to the configured client, and `STELLA_LLM_PROVIDER` selects `openai` (default) or `ollama`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed, and `OLLAMA_BASE_URL` when Ollama is served from a non-default address. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the application layer uses `stella_memory.db` in the current working directory. `STELLA_REMINDERS_DB` selects the reminder store path, defaulting to `stella_reminders.db`. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, `filesystem_edit`, and `filesystem_delete` capabilities; if unset, the application layer uses `./stella_workspace`. Voice mode is configured through `STELLA_VOICE_TRANSCRIPTION`, `STELLA_VOICE_SPEECH`, `STELLA_TRANSCRIPTION_COMMAND`, `STELLA_SPEECH_COMMAND`, `STELLA_TRANSCRIPTION_MODEL`, `STELLA_SPEECH_MODEL`, and `STELLA_SPEECH_VOICE`, all optional and local-first; see `VOICE.md`. The interfaces read these variable names through `stella.app` but do not contain or expose secret values.
+`STELLA_MODEL` selects the model passed to the configured client. Provider
+selection is automatic: with `OPENAI_API_KEY` set, Stella uses the
+OpenAI-compatible client; otherwise it defaults to local Ollama at
+`http://127.0.0.1:11434`. `STELLA_LLM_PROVIDER=ollama|openai` overrides the
+choice, `OPENAI_BASE_URL` and `OLLAMA_BASE_URL` point either client at a
+non-default address, and `STELLA_MEMORY_DB`, `STELLA_REMINDERS_DB` and
+`STELLA_WORKSPACE` override the state locations, which default under the XDG
+data directory (`~/.local/share/stella`). Voice mode is configured through
+`STELLA_VOICE_TRANSCRIPTION`, `STELLA_VOICE_SPEECH`,
+`STELLA_TRANSCRIPTION_COMMAND`, `STELLA_SPEECH_COMMAND`,
+`STELLA_TRANSCRIPTION_MODEL`, `STELLA_SPEECH_MODEL`, and
+`STELLA_SPEECH_VOICE`, all optional and local-first; see `VOICE.md`. The
+interfaces read these variable names through `stella.app` but do not contain
+or expose secret values.
 
 ## Current verification status
 
-At the time this document was written:
-
-- Pytest: 691 tests passing
-- Ruff: all checks passing
+The full pytest suite (unit, security, and evaluation tests) and Ruff pass
+on the release commit; see the release notes for the exact final count.
 
 The OpenAI client tests mock the SDK, so the test suite does not make real API calls.
 

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from stella.tools import (
+    MAX_AUDIT_RECORDS,
     ActionReceipt,
     ApprovalRequest,
     AuditRecord,
@@ -337,6 +338,41 @@ def test_tool_dispatcher_records_tool_failure() -> None:
 
     assert result.success is False
     assert dispatcher.audit_records[0].execution_success is False
+
+
+def test_audit_trail_is_bounded_and_keeps_the_newest_records() -> None:
+    # Security audit F1: an unbounded trail let a long-lived desktop process
+    # accumulate audit state (including argument data) for its whole lifetime.
+    dispatcher = ToolDispatcher([EchoTool()])
+
+    for index in range(MAX_AUDIT_RECORDS + 5):
+        dispatcher.execute("echo", {"message": f"m{index}"})
+
+    records = dispatcher.audit_records
+    assert len(records) == MAX_AUDIT_RECORDS
+    assert records[0].arguments == {"message": "m5"}
+    assert records[-1].arguments == {"message": f"m{MAX_AUDIT_RECORDS + 4}"}
+
+
+def test_long_audit_argument_values_are_summarized_not_retained() -> None:
+    content = "SENTINEL-CONTENT-" + "x" * 500
+    dispatcher = ToolDispatcher([EchoTool()])
+
+    result = dispatcher.execute("echo", {"message": content})
+
+    assert result.success is True  # the tool itself still received everything
+    record = dispatcher.audit_records[0]
+    assert "SENTINEL-CONTENT-" not in repr(record)
+    assert record.arguments == {"message": f"<{len(content)} characters>"}
+
+
+def test_short_audit_argument_values_stay_verbatim() -> None:
+    dispatcher = ToolDispatcher([EchoTool()])
+
+    dispatcher.execute("echo", {"message": "notes.txt"})
+
+    # Paths, queries and ids remain readable so actions stay auditable.
+    assert dispatcher.audit_records[0].arguments == {"message": "notes.txt"}
 
 
 def test_filesystem_read_tool_reads_utf8_text_from_workspace(tmp_path) -> None:

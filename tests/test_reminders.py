@@ -24,7 +24,7 @@ from stella.reminders import (
     SQLiteReminderStore,
     reminder_validation_error,
 )
-from stella.stella import Stella
+from stella.stella import MAX_HANDLED_PROACTIVE_EVENTS, Stella
 from stella.tools import (
     ApprovalRequest,
     EchoTool,
@@ -662,6 +662,29 @@ def test_one_reminders_duplicate_check_cannot_resend_another() -> None:
     assert second_round == ()
 
 
+def test_handled_proactive_event_history_is_bounded() -> None:
+    # Security audit F4: the duplicate-suppression history was an unbounded
+    # set, so a long-lived desktop process retained every event identity.
+    stella = make_stella_for_checks()
+    total = MAX_HANDLED_PROACTIVE_EVENTS + 10
+
+    def event(index: int) -> DueTaskEvent:
+        return DueTaskEvent(
+            f"evt-{index}", "Bounded history", DueTaskStatus.OPEN, True
+        )
+
+    for index in range(total):
+        result = stella.handoff_due_task_event(event(index))
+        assert result.duplicate_suppressed is False
+
+    # The newest identity is still deduplicated after eviction …
+    recent = stella.handoff_due_task_event(event(total - 1))
+    assert recent.duplicate_suppressed is True
+    # … while the oldest evicted identity is no longer remembered.
+    old = stella.handoff_due_task_event(event(0))
+    assert old.duplicate_suppressed is False
+
+
 # ------------------------------------------------------- trace pipeline
 
 
@@ -827,3 +850,23 @@ def test_brain_prompt_explains_reminder_capabilities_and_limits() -> None:
     assert "reminder_create" in system_prompt
     assert "reminder_cancel" in system_prompt
     assert "never authorizes tools" in system_prompt
+
+
+def test_brain_prompt_carries_pinned_runtime_time_and_memory_routing() -> None:
+    # Dogfood findings: without a runtime time reference the model could not
+    # convert "in 2 minutes" into a due time, and it routed first-time facts
+    # to memory_update. The prompt must carry both corrections.
+    from datetime import UTC, datetime
+
+    llm = SpyLLM()
+    brain = LLMBrain(
+        llm,
+        ToolDispatcher([EchoTool()]),
+        clock=lambda: datetime(2026, 9, 23, 14, 30, tzinfo=UTC),
+    )
+
+    brain.decide(Context(user_input="Remind me to stretch in 2 minutes."))
+
+    system_prompt = llm.messages[0][0].content
+    assert "2026-09-23T14:30" in system_prompt
+    assert "memory_write proposal, never in memory_update" in system_prompt

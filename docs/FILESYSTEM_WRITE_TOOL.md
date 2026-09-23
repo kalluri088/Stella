@@ -89,8 +89,8 @@ Focused tests cover valid creation, malformed arguments, traversal and
 absolute paths, nested paths, missing parents, existing files, symlink escape
 and existing-symlink cases, UTF-8 and size limits, trusted risk classification,
 approval states, exact path/content matching, Stella orchestration, and the
-final response path. The full suite currently passes with 159 tests and Ruff
-passes.
+final response path. The full suite and Ruff passed at that milestone
+(test counts are tracked in the release notes, not here).
 
 Real-world `gpt-5.6` CLI validation is recorded below after running against a
 temporary workspace. No API key or secret is recorded.

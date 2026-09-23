@@ -73,11 +73,13 @@ def build(brain, tool=None, llm=None, **kwargs) -> tuple[Stella, object, Recordi
     return stella, tool, llm
 
 
-def tool_decision(capability: str, final: bool) -> Decision:
+def tool_decision(
+    capability: str, final: bool, arguments: dict[str, object] | None = None
+) -> Decision:
     return Decision(
         DecisionKind.TOOL,
         capability=capability,
-        arguments={},
+        arguments=arguments or {},
         tool_final=final,
     )
 
@@ -152,8 +154,8 @@ def test_fast_path_records_second_decision_trace_event() -> None:
 def test_multi_step_chaining_still_redecides() -> None:
     brain = SequenceBrain(
         [
-            tool_decision("record", False),
-            tool_decision("record", False),
+            tool_decision("record", False, {"step": 1}),
+            tool_decision("record", False, {"step": 2}),
             Decision(DecisionKind.ANSWER, content="enough"),
         ]
     )
@@ -162,7 +164,8 @@ def test_multi_step_chaining_still_redecides() -> None:
     result = run(stella)
 
     assert brain.decisions == []  # a fresh decision followed every tool
-    assert tool.arguments == [{}, {}]  # same tool chained across steps
+    # distinct calls to the same tool chained across steps
+    assert tool.arguments == [{"step": 1}, {"step": 2}]
     assert [step.decision.kind for step in result.step_trace] == [
         DecisionKind.TOOL,
         DecisionKind.TOOL,
@@ -216,6 +219,83 @@ def test_fast_path_still_requires_approval_and_denial_blocks_execution() -> (
         "The action was not approved, so it was not performed. "
         "Nothing was changed."
     )
+
+
+def test_duplicate_tool_call_in_one_turn_executes_once_and_synthesizes() -> (
+    None
+):
+    brain = SequenceBrain(
+        [
+            tool_decision("record", False, {"text": "same"}),
+            tool_decision("record", False, {"text": "same"}),
+        ]
+    )
+    stella, tool, llm = build(brain)
+
+    result = run(stella)
+
+    # the repeat proposal must not re-execute or consume another decision
+    assert tool.arguments == [{"text": "same"}]
+    assert brain.decisions == []
+    assert len(llm.messages) == 1  # synthesis from the existing observation
+    assert result.response == "synthesized answer"
+    assert result.decision.kind is DecisionKind.ANSWER
+    assert [step.decision.kind for step in result.step_trace] == [
+        DecisionKind.TOOL,
+        DecisionKind.ANSWER,
+    ]
+
+
+def test_duplicate_dangerous_call_never_prompts_a_second_approval() -> None:
+    calls: list[str] = []
+
+    def provider(request):
+        calls.append(request.capability)
+        return ToolApproval(request, True)
+
+    brain = SequenceBrain(
+        [
+            tool_decision("dangerous_action", False, {"x": 1}),
+            tool_decision("dangerous_action", False, {"x": 1}),
+        ]
+    )
+    tool = DangerousTool()
+    stella, _tool, _llm = build(brain, tool=tool)
+    stella.approval_provider = provider
+
+    result = run(stella)
+
+    # one action, one approval prompt; the verified success is not overwritten
+    assert calls == ["dangerous_action"]
+    assert tool.arguments == [{"x": 1}]
+    assert result.tool_result is not None
+    assert result.tool_result.success is True
+    assert result.response == "synthesized answer"
+
+
+def test_unregistered_capability_after_a_step_cannot_overwrite_the_outcome() -> (
+    None
+):
+    # UI dogfood regression: a verified memory write followed by a hallucinated
+    # second capability must not report the turn as "Tool capability
+    # unavailable. ✗ failed" while the approved action actually succeeded.
+    brain = SequenceBrain(
+        [
+            tool_decision("record", False, {"step": 1}),
+            tool_decision("nonexistent_capability", False),
+        ]
+    )
+    stella, tool, llm = build(brain)
+
+    result = run(stella)
+
+    # the unregistered proposal never reaches the dispatcher at all
+    assert tool.arguments == [{"step": 1}]
+    assert brain.decisions == []
+    assert len(llm.messages) == 1  # synthesis from the real observation
+    assert result.tool_result is not None
+    assert result.tool_result.success is True
+    assert result.response == "synthesized answer"
 
 
 def test_llm_brain_parses_tool_final_flag() -> None:
@@ -309,8 +389,8 @@ def test_tool_call_channel_drives_fast_path_end_to_end() -> None:
 def test_fast_path_only_applies_to_the_first_tool_call() -> None:
     brain = SequenceBrain(
         [
-            tool_decision("record", False),
-            tool_decision("record", True),
+            tool_decision("record", False, {"step": 1}),
+            tool_decision("record", True, {"step": 2}),
             Decision(DecisionKind.ANSWER, content="after re-decision"),
         ]
     )

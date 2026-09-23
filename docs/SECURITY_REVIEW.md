@@ -181,15 +181,18 @@ claim that an action is safe, necessary, or approved is still model output.
 
 ### Filesystem, shell, and network risks
 
-Filesystem tools could expose private files, follow symlinks outside an
-allowed directory, overwrite data, or be abused through path traversal.
-Shell tools could become arbitrary command execution, environment-variable
-exfiltration, or destructive activity. Network tools could contact internal
-services, send credentials or private data, or perform external side effects.
+Bounded filesystem tools now exist and enforce workspace containment with
+canonical path checks; `NetworkReadTool` performs a fixed HTTPS GET with no
+redirects, limited to 1 MiB against resolved public addresses. Shell tools
+still do not exist and remain out of scope. Residual known limitation: path
+validation happens at check time, so a local process already running with the
+user's write access could swap an intermediate directory inside the workspace
+between validation and use (resolve→use TOCTOU). This is documented as a v1
+limitation, not mitigated by a race-free resolver; see
+`FILESYSTEM_READ_TOOL.md`.
 
-These risks are not active in the current MVP because those tools do not
-exist. They become security boundaries immediately when such a tool is
-introduced.
+Any future, more powerful tool (shell, broader network, writes outside the
+workspace) must be treated as a new security boundary when introduced.
 
 ### Secrets and privacy
 

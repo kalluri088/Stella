@@ -12,6 +12,7 @@ exact request the dispatcher raised (closing a dialog denies it).
 from __future__ import annotations
 
 import tkinter as tk
+from dataclasses import replace
 from tkinter import messagebox, ttk
 
 from stella.app import (
@@ -459,6 +460,7 @@ class StellaWindow:
     ) -> None:
         frame = ttk.Frame(notebook)
         notebook.add(frame, text="Settings")
+        self._panel_settings = settings
         self._settings_fields: dict[str, ttk.Entry] = {}
         provider_row = ttk.Frame(frame)
         provider_row.pack(fill="x", padx=6, pady=4)
@@ -493,7 +495,10 @@ class StellaWindow:
 
     def _apply_settings(self) -> None:
         fields = self._settings_fields
-        applied = StellaSettings(
+        # Replace over the panel's settings so voice fields that the panel
+        # does not show (modes, models, commands) survive an Apply click.
+        applied = replace(
+            self._panel_settings,
             provider=self._provider.get(),
             model=fields["Model"].get().strip() or None,
             openai_base_url=fields["OpenAI base URL"].get().strip() or None,

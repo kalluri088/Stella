@@ -33,7 +33,9 @@ It rejects missing or extra fields, non-string or empty paths, absolute paths,
 parent traversal, wildcard characters, missing files, and directories. The
 path is resolved canonically and must remain below the configured workspace.
 Symlink paths are rejected, including symlinks that point elsewhere or point
-to another file inside the workspace.
+to another file inside the workspace. The canonical check happens at
+validation time, not at unlink time; see the documented resolve→use TOCTOU
+limitation in `FILESYSTEM_READ_TOOL.md`.
 
 Deletion is not recursive and does not expand wildcards or globs. Errors return
 deterministic `ToolResult` messages without exposing raw exceptions or stack

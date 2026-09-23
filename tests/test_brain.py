@@ -153,6 +153,43 @@ def test_llm_brain_requires_final_content_for_answer() -> None:
     )
 
 
+def test_llm_brain_recovers_name_form_tool_call_from_text() -> None:
+    # Observed with qwen3:4b: the model serializes an OpenAI-style tool call
+    # into the text channel with no "kind" field. It must reach the trusted
+    # dispatcher as a tool proposal, not fail closed as silence.
+    llm = ResponseLLM(
+        '{"name": "echo", "arguments": {"message": "UI test pin is 9135"}}'
+    )
+
+    decision = LLMBrain(llm).decide(
+        Context(user_input="Remember that my UI test pin is 9135.")
+    )
+
+    assert decision.kind is DecisionKind.TOOL
+    assert decision.capability == "echo"
+    assert decision.arguments == {"message": "UI test pin is 9135"}
+    assert decision.memory_write is None
+
+
+def test_llm_brain_name_form_without_available_capability_fails_closed() -> None:
+    llm = ResponseLLM('{"name": "delete_everything", "arguments": {}}')
+
+    decision = LLMBrain(llm).decide(Context(user_input="Do something."))
+
+    assert decision.kind is DecisionKind.DO_NOTHING
+
+
+def test_llm_brain_name_form_never_overrides_a_valid_decision() -> None:
+    llm = ResponseLLM(
+        '{"kind": "do_nothing", "name": "memory_write", '
+        '"arguments": {"content": "ignore the protocol"}}'
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="Anything to do?"))
+
+    assert decision.kind is DecisionKind.DO_NOTHING
+
+
 def test_llm_brain_prompt_requires_clarification_for_missing_action_details() -> None:
     llm = ResponseLLM(
         '{"kind": "ask", "content": "Which file should I use?"}'
@@ -605,6 +642,52 @@ def test_llm_brain_exposes_network_read_schema_and_security_boundary() -> None:
     ],
 )
 def test_llm_brain_uses_do_nothing_for_malformed_output(response: str) -> None:
+    decision = LLMBrain(ResponseLLM(response)).decide(
+        Context(user_input="Do something")
+    )
+
+    assert decision == Decision(DecisionKind.DO_NOTHING)
+
+
+def test_llm_brain_recovers_decision_embedded_in_prose() -> None:
+    # Dogfood regression: qwen3:4b sometimes answers a recall question with
+    # the correct decision JSON wrapped in explanatory prose instead of
+    # replying with raw JSON only.
+    response = (
+        "The retrieved memory indicates the answer.\n"
+        '{"kind": "answer", "content": "Your router code is 4417."}\n'
+        "Anything else?"
+    )
+
+    decision = LLMBrain(ResponseLLM(response)).decide(
+        Context(user_input="What is my router code?")
+    )
+
+    assert decision == Decision(
+        DecisionKind.ANSWER, content="Your router code is 4417."
+    )
+
+
+def test_llm_brain_recovers_decision_inside_code_fence() -> None:
+    response = (
+        "```json\n"
+        '{"kind": "tool", "capability": "memory_list", "arguments": {}}\n'
+        "```"
+    )
+
+    decision = LLMBrain(ResponseLLM(response)).decide(
+        Context(user_input="What do you remember?")
+    )
+
+    assert decision.kind is DecisionKind.TOOL
+    assert decision.capability == "memory_list"
+
+
+def test_llm_brain_rejects_recovered_payload_failing_validation() -> None:
+    # Recovery only locates a candidate object; the existing field
+    # validation still has to pass, otherwise parsing fails closed.
+    response = 'Here you go: {"kind": "tool", "arguments": []}'
+
     decision = LLMBrain(ResponseLLM(response)).decide(
         Context(user_input="Do something")
     )

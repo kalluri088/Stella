@@ -126,7 +126,8 @@ identity system, or approval UI for other clients.
 
 Focused tests cover `yes`, `approve`, `no`, and arbitrary invalid input, exact
 action display, and execution of a test-only dangerous tool only after an
-approved response. The full suite passed with 137 tests, and Ruff passed.
+approved response. The full suite and Ruff passed at that milestone (test
+counts tracked in the release notes, not here).
 
 A live `gpt-5.6` run used the test-only `approval_test` dangerous capability.
 The model proposed:

@@ -9,6 +9,7 @@ path cannot forge, bypass, or widen authorization.
 import datetime as dt
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,7 @@ from stella.tools import (
     ToolDispatcher,
     ToolResult,
 )
+from stella.voice import VoiceError
 
 NOW = dt.datetime(2026, 5, 1, 12, 0, tzinfo=dt.UTC)
 REAL_NOW = dt.datetime.now(dt.UTC)
@@ -432,6 +434,25 @@ def test_broker_answers_each_request_only_once() -> None:
     assert outcome["approval"].approved is True
 
 
+def test_broker_answer_is_consumed_before_the_requester_wakes() -> None:
+    # Security audit F2: the token must be consumed by the answer itself, not
+    # by the requester thread finishing. Otherwise a second stale UI answer
+    # (or shutdown denial) landing inside the wake-up window could overwrite
+    # the decision the dispatcher is about to observe.
+    broker = ApprovalBroker()
+    thread, outcome = run_broker_request(
+        broker, ApprovalRequest("cap", {"value": "x"})
+    )
+
+    token, _request = wait_for_approval(broker)
+    assert broker.resolve(token, True) is True
+    assert broker.resolve(token, False) is False  # no join in between
+    broker.deny_outstanding()  # must also not touch the answered request
+    thread.join(5)
+
+    assert outcome["approval"].approved is True
+
+
 def test_broker_denies_everything_left_unanswered() -> None:
     broker = ApprovalBroker()
     thread, outcome = run_broker_request(
@@ -725,6 +746,165 @@ def test_build_application_requires_a_model() -> None:
         build_application(StellaSettings(provider="openai", model=None))
 
     assert str(exit_info.value) == "STELLA_MODEL is required"
+
+
+def test_default_state_paths_follow_xdg_not_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Release blocker regression: desktop launchers start Stella from an
+    # arbitrary working directory, so cwd-relative defaults silently lost
+    # memory and reminders across restarts.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    arbitrary_cwd = tmp_path / "arbitrary"
+    arbitrary_cwd.mkdir()
+    monkeypatch.chdir(arbitrary_cwd)
+
+    settings = StellaSettings(model="test")
+
+    data = tmp_path / "xdg" / "stella"
+    assert Path(settings.memory_db) == data / "stella_memory.db"
+    assert Path(settings.reminders_db) == data / "stella_reminders.db"
+    assert Path(settings.workspace) == data / "workspace"
+
+
+def test_from_environment_keeps_explicit_paths_and_xdg_fallbacks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("STELLA_MODEL", "test")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("STELLA_WORKSPACE", str(tmp_path / "my-workspace"))
+
+    settings = StellaSettings.from_environment()
+
+    assert settings.workspace == str(tmp_path / "my-workspace")
+    assert settings.memory_db == str(
+        tmp_path / "xdg" / "stella" / "stella_memory.db"
+    )
+
+
+def test_from_environment_defaults_to_local_ollama_without_a_cloud_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # First-run ergonomics: a local-only user must not have to learn
+    # STELLA_LLM_PROVIDER; the cloud is used only when it is configured.
+    monkeypatch.setenv("STELLA_MODEL", "qwen3:4b")
+    monkeypatch.delenv("STELLA_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    settings = StellaSettings.from_environment()
+
+    assert settings.provider == "ollama"
+
+
+def test_from_environment_defaults_to_openai_when_a_key_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STELLA_MODEL", "gpt-test")
+    monkeypatch.delenv("STELLA_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-a-real-secret")
+
+    settings = StellaSettings.from_environment()
+
+    assert settings.provider == "openai"
+
+
+def test_from_environment_still_honours_an_explicit_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STELLA_MODEL", "test")
+    monkeypatch.setenv("STELLA_LLM_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    settings = StellaSettings.from_environment()
+
+    assert settings.provider == "openai"
+
+
+def test_build_application_creates_missing_state_directories(
+    tmp_path: Path,
+) -> None:
+    settings = StellaSettings(
+        provider="ollama",
+        model="test",
+        ollama_base_url="http://127.0.0.1:9",
+        memory_db=str(tmp_path / "state" / "memory.db"),
+        reminders_db=str(tmp_path / "state" / "reminders.db"),
+        workspace=str(tmp_path / "workspace"),
+        voice_transcription="off",
+        voice_speech="off",
+    )
+
+    application = build_application(settings)
+    try:
+        assert Path(settings.memory_db).is_file()
+        assert Path(settings.workspace).is_dir()
+    finally:
+        application.close()
+
+
+def test_shared_application_error_message_omits_cli_exit_hint(
+    tmp_path: Path,
+) -> None:
+    # UI dogfood regression: the desktop app shares build_application, and
+    # its error line used to tell window users to "type 'exit' to quit".
+    settings = StellaSettings(
+        provider="ollama",
+        model="test",
+        ollama_base_url="http://127.0.0.1:9",
+        memory_db=str(tmp_path / "state" / "memory.db"),
+        reminders_db=str(tmp_path / "state" / "reminders.db"),
+        workspace=str(tmp_path / "workspace"),
+        voice_transcription="off",
+        voice_speech="off",
+    )
+
+    application = build_application(settings)
+    try:
+        outcome = application.session.run_turn("hello")
+    finally:
+        application.close()
+
+    assert outcome.error_message is not None
+    assert "exit" not in outcome.error_message
+    assert "try again" in outcome.error_message
+
+
+def test_misconfigured_voice_commands_never_prevent_startup(
+    tmp_path: Path,
+) -> None:
+    # Release blocker regression: an invalid optional voice command raised
+    # during startup and left every later turn reporting "Stella is not
+    # running in this session", killing chat, memory and reminders too.
+    settings = StellaSettings(
+        provider="ollama",
+        model="test",
+        ollama_base_url="http://127.0.0.1:9",
+        memory_db=str(tmp_path / "state" / "memory.db"),
+        reminders_db=str(tmp_path / "state" / "reminders.db"),
+        workspace=str(tmp_path / "workspace"),
+        transcription_command="stub-transcribe.sh",
+        speech_command="ffmpeg -f lavfi -i sine",
+    )
+
+    application = build_application(settings)
+    try:
+        panel = application.voice
+    finally:
+        application.close()
+
+    assert panel is not None
+    assert panel.input_available is False
+    assert panel.output_available is False
+    with pytest.raises(VoiceError) as input_error:
+        panel.start_listening()
+    assert "transcription command must reference {input}" in str(
+        input_error.value
+    )
+    with pytest.raises(VoiceError) as output_error:
+        panel.synthesize(StellaResult(decision=Decision(DecisionKind.ANSWER)))
+    assert "speech command must reference {text} and {output}" in str(
+        output_error.value
+    )
 
 
 def test_bridge_wires_the_broker_into_the_stella_core() -> None:

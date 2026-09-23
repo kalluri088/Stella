@@ -9,6 +9,7 @@ import socket
 import ssl
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -95,7 +96,12 @@ class ToolApproval:
 
 @dataclass(frozen=True)
 class AuditRecord:
-    """A trusted in-memory record of one tool dispatch attempt."""
+    """A trusted in-memory record of one tool dispatch attempt.
+
+    Argument values are redacted to length summaries above
+    ``MAX_AUDIT_ARGUMENT_CHARS`` so a long-lived process does not retain
+    sensitive payloads (file contents, memory text) in its audit trail.
+    """
 
     capability: str | None
     arguments: dict[str, object]
@@ -104,6 +110,22 @@ class AuditRecord:
     approval_granted: bool | None
     execution_success: bool
     timestamp: str
+
+
+MAX_AUDIT_RECORDS = 256
+MAX_AUDIT_ARGUMENT_CHARS = 120
+
+
+def _audit_argument_value(value: object) -> object:
+    """Keep audit-friendly scalars verbatim; summarize anything larger."""
+
+    if isinstance(value, str):
+        if len(value) <= MAX_AUDIT_ARGUMENT_CHARS:
+            return value
+        return f"<{len(value)} characters>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return f"<{type(value).__name__}>"
 
 
 class Tool(ABC):
@@ -1197,6 +1219,62 @@ class MemoryListTool(Tool):
         return ToolResult(success=True, output=lines, memory_action=action)
 
 
+class MemoryWriteTool(Tool):
+    """Store one new fact when the user explicitly asks to remember it."""
+
+    def __init__(self, memory: Memory) -> None:
+        self.memory = memory
+
+    @property
+    def name(self) -> str:
+        return "memory_write"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Stores one new fact in memory when the user explicitly asks "
+            "Stella to remember it. Requires exactly a content string and "
+            "requires trusted runtime approval. The stored fact is the "
+            "requested change; never propose an additional memory write "
+            "alongside it."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {"content": "string"}
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.DANGEROUS
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return (
+            isinstance(arguments, dict)
+            and set(arguments) == {"content"}
+            and isinstance(arguments["content"], str)
+            and bool(arguments["content"].strip())
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+        stored = self.memory.store(
+            MemoryItem(content=str(arguments["content"]))
+        )
+        return ToolResult(
+            success=stored,
+            output=(
+                "Stored the memory."
+                if stored
+                else "The memory could not be stored."
+            ),
+            memory_action=MemoryAction(
+                action="write",
+                count=1 if stored else 0,
+            ),
+        )
+
+
 class MemoryUpdateTool(Tool):
     """Replace the single best-matching stored memory via retrieve/update."""
 
@@ -1241,7 +1319,11 @@ class MemoryUpdateTool(Tool):
         if not matches:
             return ToolResult(
                 success=False,
-                output="No stored memory matches that description.",
+                output=(
+                    "No stored memory matches that description. "
+                    "memory_update only changes existing memories; a new "
+                    "fact belongs in the memory_write capability instead."
+                ),
                 memory_action=MemoryAction(action="update", count=0),
             )
         target = matches[0]
@@ -1806,13 +1888,18 @@ class ToolDispatcher:
 
     def __init__(self, tools: Iterable[Tool] = ()) -> None:
         self._tools: dict[str, Tool] = {}
-        self._audit_records: list[AuditRecord] = []
+        self._audit_records: deque[AuditRecord] = deque(maxlen=MAX_AUDIT_RECORDS)
         for tool in tools:
             self.register(tool)
 
     @property
     def audit_records(self) -> list[AuditRecord]:
-        """Return a snapshot of trusted dispatch records."""
+        """Return a snapshot of the most recent trusted dispatch records.
+
+        The trail is bounded to ``MAX_AUDIT_RECORDS``; the oldest records are
+        evicted so a long-lived desktop process cannot accumulate unbounded
+        audit state.
+        """
 
         return list(self._audit_records)
 
@@ -1865,7 +1952,11 @@ class ToolDispatcher:
         risk_level = None
         approval_required = False
         approval_granted: bool | None = None
-        audit_arguments = dict(arguments) if isinstance(arguments, dict) else {}
+        audit_arguments = (
+            {key: _audit_argument_value(value) for key, value in arguments.items()}
+            if isinstance(arguments, dict)
+            else {}
+        )
         result: ToolResult
         try:
             if tool is None:

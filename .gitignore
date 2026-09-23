@@ -4,3 +4,8 @@ __pycache__/
 .qoder/
 opencode.json
 .venv/
+.env
+.pytest_cache/
+/dist/
+*.egg-info/
+/stella_workspace/

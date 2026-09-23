@@ -107,6 +107,7 @@ def make_window(
     brain: Brain | None = None,
     tool: Tool | None = None,
     voice: VoicePanel | None = None,
+    settings: StellaSettings | None = None,
 ) -> tuple[tk.Tk, StellaWindow, StellaBridge, InMemoryMemory]:
     memory = InMemoryMemory()
     store = InMemoryReminderStore()
@@ -122,13 +123,15 @@ def make_window(
     def factory() -> StellaApplication:
         return StellaApplication(
             StellaSession(stella, error_footer="try again."),
-            StellaSettings(model="test"),
+            settings or StellaSettings(model="test"),
             voice,
         )
 
     bridge = StellaBridge(factory)
     root = tk.Tk()
-    window = StellaWindow(root, bridge, StellaSettings(model="test"))
+    window = StellaWindow(
+        root, bridge, settings or StellaSettings(model="test")
+    )
     return root, window, bridge, memory
 
 
@@ -145,6 +148,39 @@ def test_window_conversation_round_trip() -> None:
         assert "You: hello window" in transcript
         assert "Stella: window reply" in transcript
         assert window._busy is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_preserves_voice_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Release dogfood fix: Apply used to rebuild StellaSettings from only the
+    # fields the panel shows, silently resetting voice configuration that the
+    # user supplied through the environment.
+    settings = StellaSettings(
+        model="test",
+        voice_transcription="off",
+        voice_speech="off",
+        speech_command="my-tts {text} {output}",
+    )
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        model_field = window._settings_fields["Model"]
+        model_field.delete("0", "end")
+        model_field.insert("0", "new-model")
+
+        window._apply_settings()
+
+        assert len(captured) == 1
+        applied = captured[0]
+        assert applied.model == "new-model"
+        assert applied.voice_transcription == "off"
+        assert applied.voice_speech == "off"
+        assert applied.speech_command == "my-tts {text} {output}"
     finally:
         bridge.stop()
         root.destroy()

@@ -24,7 +24,9 @@ approval.
 It rejects absolute paths, traversal, paths resolving outside the workspace,
 symlinks, directories, and oversized or unencodable content. It opens the
 target without `O_CREAT`, so it cannot create files — missing targets honestly
-return `File was not found.` and nothing is written.
+return `File was not found.` and nothing is written. Path validation is
+canonical at check time; the resolve→use TOCTOU limitation documented in
+`FILESYSTEM_READ_TOOL.md` applies here as well.
 
 ## Verified outcome
 

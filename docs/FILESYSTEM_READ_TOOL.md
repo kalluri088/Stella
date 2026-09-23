@@ -32,9 +32,14 @@ workspace that resolves outside it therefore fails closed with
 `File is outside workspace.`. A nested path that remains inside the workspace
 is allowed.
 
-This is a lexical and canonical-path boundary for the current synchronous
-MVP. It does not attempt to solve every possible filesystem race between
-path checking and opening a file.
+This is a lexical and canonical-path boundary checked at validation time. It
+is not race-free: between the canonical check and the subsequent open, a
+local process already running with the user's own filesystem write access
+inside the workspace could swap an intermediate directory for a symlink
+(classic resolve→use TOCTOU). Exploiting this requires an attacker who
+already has the user's write permissions on the single-user desktop, so a
+dirfd/`O_NOFOLLOW` component-wise resolver is deliberately out of scope for
+v1 and this residual window is a documented limitation instead.
 
 ## File limits and results
 

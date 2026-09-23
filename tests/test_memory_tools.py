@@ -12,6 +12,7 @@ from stella.tools import (
     MemoryForgetTool,
     MemoryListTool,
     MemoryUpdateTool,
+    MemoryWriteTool,
     RiskLevel,
     ToolApproval,
     ToolDispatcher,
@@ -47,6 +48,53 @@ def test_memory_list_rejects_any_arguments() -> None:
     )
 
 
+def test_memory_write_stores_a_new_fact_and_reports_a_write_action() -> None:
+    # Dogfood blocker: the memory_write answer-field route failed ~3/4 of the
+    # time with the local 4B model (wrong tool or a silent do_nothing on an
+    # explicit "remember" command). The tool route gives the model the same
+    # reliable reach it has for file and reminder tools.
+    memory = InMemoryMemory()
+
+    result = MemoryWriteTool(memory).execute({"content": TEA})
+
+    assert result.success
+    assert result.output == "Stored the memory."
+    assert result.memory_action == MemoryAction(action="write", count=1)
+    assert [item.content for item in memory.retrieve()] == [TEA]
+
+
+def test_memory_write_requires_exact_non_empty_content() -> None:
+    tool = MemoryWriteTool(InMemoryMemory())
+
+    assert tool.validate_arguments({"content": "a fact"})
+    assert not tool.validate_arguments({"content": ""})
+    assert not tool.validate_arguments({"content": "   "})
+    assert not tool.validate_arguments({})
+    assert not tool.validate_arguments({"query": "a", "content": "b"})
+    assert not tool.validate_arguments({"content": 7})
+    assert tool.risk_level is RiskLevel.DANGEROUS
+
+
+def test_memory_write_requires_approval_and_denial_stores_nothing() -> None:
+    memory = InMemoryMemory()
+    dispatcher = ToolDispatcher([MemoryWriteTool(memory)])
+    arguments = {"content": TEA}
+
+    assert dispatcher.requires_approval("memory_write") is True
+
+    refused = dispatcher.execute("memory_write", arguments)
+    assert refused.success is False
+    assert refused.output == "Approval required."
+    assert memory.retrieve() == []
+
+    approval = ToolApproval(
+        ApprovalRequest("memory_write", dict(arguments)), True
+    )
+    granted = dispatcher.execute("memory_write", arguments, approval)
+    assert granted.success is True
+    assert [item.content for item in memory.retrieve()] == [TEA]
+
+
 def test_memory_update_replaces_only_the_best_match() -> None:
     memory = make_memory()
     target = memory.retrieve("jasmine tea")[0]
@@ -63,6 +111,18 @@ def test_memory_update_replaces_only_the_best_match() -> None:
     assert "The user prefers green tea." in contents
     assert TEA not in contents
     assert WIFI in contents
+
+
+def test_memory_update_no_match_points_a_new_fact_at_memory_write() -> None:
+    # Dogfood finding: models routed first-time facts to memory_update and
+    # the bare no-match message gave them no way out of the retry loop.
+    result = MemoryUpdateTool(InMemoryMemory()).execute(
+        {"query": "jasmine tea", "content": "The user prefers jasmine tea."}
+    )
+
+    assert result.success is False
+    assert "No stored memory matches" in result.output
+    assert "memory_write" in result.output
 
 
 def test_memory_update_requires_exact_non_empty_arguments() -> None:
@@ -170,6 +230,7 @@ def build_stella(
     tools = ToolDispatcher(
         [
             MemoryListTool(memory),
+            MemoryWriteTool(memory),
             MemoryUpdateTool(memory),
             MemoryForgetTool(memory),
         ]
@@ -265,4 +326,41 @@ def test_cli_forget_flow_deletes_after_approval() -> None:
         output.startswith("Stella would like to") for output in outputs
     )
     assert "  memory    delete 1" in outputs
+    assert "Stella: done" in outputs
+
+
+def test_cli_remember_flow_stores_after_approval() -> None:
+    # Release-blocker regression: explicit "remember" commands previously
+    # depended only on the answer-field route, which the local 4B model
+    # dropped about three quarters of the time. The tool route must store
+    # the fact through the same approval broker as every dangerous action.
+    memory = InMemoryMemory()
+    stella = build_stella(
+        memory,
+        ScriptedBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="memory_write",
+                    arguments={"content": TEA},
+                ),
+                Decision(DecisionKind.ANSWER, content="remembered"),
+            ]
+        ),
+    )
+    outputs: list[str] = []
+    inputs = iter(["remember the tea preference", "yes", "exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        trace=True,
+    )
+
+    assert [item.content for item in memory.retrieve()] == [TEA]
+    assert any(
+        "remember this as a permanent fact" in output for output in outputs
+    )
+    assert "  memory    write 1" in outputs
     assert "Stella: done" in outputs

@@ -148,8 +148,10 @@ class SubprocessRecorder(Recorder):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+            self.dispose()
             raise VoiceError("Stella could not finish the recording.")
         except OSError as error:
+            self.dispose()
             raise VoiceError(
                 f"Stella could not finish the recording ({error})."
             ) from error
@@ -157,6 +159,7 @@ class SubprocessRecorder(Recorder):
         if returncode not in (0, -signal.SIGINT, 2) or not os.path.exists(
             path
         ) or os.path.getsize(path) <= 44:
+            self.dispose()
             raise VoiceError(
                 "The microphone produced no recording. Check that an input "
                 "device is connected and not busy."

@@ -20,6 +20,7 @@ import shutil
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from stella.audio import TranscriptionProvider
 from stella.audio_output import SpeechProvider
@@ -48,6 +49,7 @@ from stella.tools import (
     MemoryForgetTool,
     MemoryListTool,
     MemoryUpdateTool,
+    MemoryWriteTool,
     NetworkReadTool,
     ReminderCancelTool,
     ReminderCreateTool,
@@ -209,6 +211,35 @@ class StellaSession:
 VOICE_MODES = {"auto", "openai", "off"}
 
 
+def default_data_dir() -> Path:
+    """Stella's persistent-state directory following the XDG base spec.
+
+    Desktop launchers start applications from an arbitrary working
+    directory, so state must not be relative to the current directory or
+    restarting would appear to lose memory and reminders.
+    """
+
+    return (
+        Path(
+            os.environ.get("XDG_DATA_HOME")
+            or os.path.expanduser("~/.local/share")
+        )
+        / "stella"
+    )
+
+
+def default_memory_db() -> str:
+    return str(default_data_dir() / "stella_memory.db")
+
+
+def default_reminders_db() -> str:
+    return str(default_data_dir() / "stella_reminders.db")
+
+
+def default_workspace() -> str:
+    return str(default_data_dir() / "workspace")
+
+
 @dataclass(frozen=True)
 class StellaSettings:
     """The minimal local configuration a Stella application needs."""
@@ -217,9 +248,9 @@ class StellaSettings:
     model: str | None = None
     openai_base_url: str | None = None
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
-    memory_db: str = "stella_memory.db"
-    reminders_db: str = "stella_reminders.db"
-    workspace: str = "./stella_workspace"
+    memory_db: str = field(default_factory=default_memory_db)
+    reminders_db: str = field(default_factory=default_reminders_db)
+    workspace: str = field(default_factory=default_workspace)
     voice_transcription: str = "auto"
     voice_speech: str = "auto"
     transcription_model: str = "whisper-1"
@@ -235,7 +266,12 @@ class StellaSettings:
         model = os.environ.get("STELLA_MODEL")
         if not model:
             raise SystemExit("STELLA_MODEL is required")
-        provider = os.environ.get("STELLA_LLM_PROVIDER", "openai").casefold()
+        provider = os.environ.get("STELLA_LLM_PROVIDER")
+        if provider is None:
+            # First-run default: use the cloud only when it is configured,
+            # otherwise fall back to a local Ollama model.
+            provider = "openai" if os.environ.get("OPENAI_API_KEY") else "ollama"
+        provider = provider.casefold()
         if provider not in {"openai", "ollama"}:
             raise SystemExit(
                 "STELLA_LLM_PROVIDER must be 'openai' or 'ollama'"
@@ -259,12 +295,14 @@ class StellaSettings:
             ollama_base_url=os.environ.get(
                 "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
             ),
-            memory_db=os.environ.get("STELLA_MEMORY_DB", "stella_memory.db"),
+            memory_db=os.environ.get(
+                "STELLA_MEMORY_DB", default_memory_db()
+            ),
             reminders_db=os.environ.get(
-                "STELLA_REMINDERS_DB", "stella_reminders.db"
+                "STELLA_REMINDERS_DB", default_reminders_db()
             ),
             workspace=os.environ.get(
-                "STELLA_WORKSPACE", "./stella_workspace"
+                "STELLA_WORKSPACE", default_workspace()
             ),
             voice_transcription=transcription_mode,
             voice_speech=speech_mode,
@@ -321,6 +359,12 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         )
     else:
         raise SystemExit("STELLA_LLM_PROVIDER must be 'openai' or 'ollama'")
+    # Desktop launchers may start us from an arbitrary directory, and the
+    # default state lives under XDG paths that do not exist on first run,
+    # so ensure every configured location exists before opening it.
+    Path(settings.memory_db).parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.reminders_db).parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.workspace).mkdir(parents=True, exist_ok=True)
     memory = SQLiteMemory(settings.memory_db)
     reminders = SQLiteReminderStore(settings.reminders_db)
     workspace = settings.workspace
@@ -338,6 +382,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             WorkspaceSearchTool(workspace),
             NetworkReadTool(),
             MemoryListTool(memory),
+            MemoryWriteTool(memory),
             MemoryUpdateTool(memory),
             MemoryForgetTool(memory),
             ReminderCreateTool(reminders),
@@ -353,7 +398,14 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         max_tool_steps=2,
         reminders=reminders,
     )
-    return StellaApplication(StellaSession(stella), settings, build_voice(settings))
+    # The shared application backs the desktop UI too, so its session must
+    # not quote CLI-only instructions ("type 'exit'") in UI error messages.
+    # The interactive CLI loop builds its own StellaSession with the hint.
+    return StellaApplication(
+        StellaSession(stella, error_footer="try again."),
+        settings,
+        build_voice(settings),
+    )
 
 
 class VoicePanel:
@@ -373,11 +425,15 @@ class VoicePanel:
         player: Player | None,
         transcriber: TranscriptionProvider | None,
         speech_provider: SpeechProvider | None,
+        input_notice: str | None = None,
+        output_notice: str | None = None,
     ) -> None:
         self._recorder = recorder
         self._player = player
         self._transcriber = transcriber
         self._speech = speech_provider
+        self._input_notice = input_notice
+        self._output_notice = output_notice
         self.speech_enabled = False
 
     @property
@@ -399,7 +455,8 @@ class VoicePanel:
     def start_listening(self) -> None:
         if self._recorder is None or self._transcriber is None:
             raise VoiceError(
-                "Voice input is not available in this configuration."
+                self._input_notice
+                or "Voice input is not available in this configuration."
             )
         self._recorder.start()
 
@@ -408,10 +465,11 @@ class VoicePanel:
 
         if self._recorder is None or self._transcriber is None:
             raise VoiceError(
-                "Voice input is not available in this configuration."
+                self._input_notice
+                or "Voice input is not available in this configuration."
             )
-        path = self._recorder.stop()
         try:
+            path = self._recorder.stop()
             # The audio part carries only the bounded temporary reference;
             # raw audio never enters the conversation or history.
             part = InputPart(
@@ -444,7 +502,10 @@ class VoicePanel:
         """Render one existing final response and return its artifact."""
 
         if self._speech is None:
-            raise VoiceError("Voice output is not available right now.")
+            raise VoiceError(
+                self._output_notice
+                or "Voice output is not available right now."
+            )
         artifact = Stella.speak(result, self._speech)
         return artifact.reference
 
@@ -477,13 +538,44 @@ class VoicePanel:
 
 
 def build_voice(settings: StellaSettings) -> VoicePanel:
-    """Assemble the local-first voice periphery; never raises at startup."""
+    """Assemble the local-first voice periphery; never raises at startup.
+
+    A broken optional voice setting disables only that voice capability
+    (the reason surfaces when voice is used) instead of preventing Stella
+    from starting: text chat, memory, actions and reminders must survive
+    a misconfigured transcription or speech command.
+    """
 
     recorder = SubprocessRecorder()
     player = SubprocessPlayer()
-    transcriber = _build_transcriber(settings)
-    speech = _build_speech_provider(settings)
-    return VoicePanel(recorder, player, transcriber, speech)
+    input_notice: str | None = None
+    output_notice: str | None = None
+    try:
+        transcriber = _build_transcriber(settings)
+    except Exception as error:  # noqa: BLE001 - voice is optional
+        transcriber = None
+        detail = " ".join(str(error).split()) or type(error).__name__
+        input_notice = (
+            f"Voice input is unavailable ({detail[:120]}). "
+            "Fix the transcription command and restart Stella."
+        )
+    try:
+        speech = _build_speech_provider(settings)
+    except Exception as error:  # noqa: BLE001 - voice is optional
+        speech = None
+        detail = " ".join(str(error).split()) or type(error).__name__
+        output_notice = (
+            f"Voice output is unavailable ({detail[:120]}). "
+            "Fix the speech command and restart Stella."
+        )
+    return VoicePanel(
+        recorder,
+        player,
+        transcriber,
+        speech,
+        input_notice=input_notice,
+        output_notice=output_notice,
+    )
 
 
 def _openai_speech_client() -> object:
@@ -657,10 +749,16 @@ class ApprovalBroker:
             return None
 
     def resolve(self, token: int, approved: bool) -> bool:
-        """Answer one still-outstanding request; unknown tokens do nothing."""
+        """Answer one still-outstanding request; unknown tokens do nothing.
+
+        The pending entry is removed under the same lock that marks it
+        answered, so each token can be answered exactly once and a later
+        ``resolve`` or ``deny_outstanding`` can never overwrite (or race with)
+        the answer the dispatcher will observe.
+        """
 
         with self._lock:
-            pending = self._waiting.get(token)
+            pending = self._waiting.pop(token, None)
             if pending is None:
                 return False
             pending.approved = approved

@@ -58,6 +58,18 @@ from stella.trace import (
 from stella.video import VideoProvider, VideoSampling
 from stella.vision import VisionProvider
 
+MAX_HANDLED_PROACTIVE_EVENTS = 512
+
+
+def _tool_call_key(capability: str | None, arguments: dict) -> str:
+    """Canonical identity of one tool call for within-turn duplicate checks."""
+
+    return json.dumps(
+        {"capability": capability, "arguments": arguments},
+        sort_keys=True,
+        default=repr,
+    )
+
 
 @dataclass(frozen=True)
 class StellaResult:
@@ -130,7 +142,7 @@ class Stella:
         self.max_tool_steps = max_tool_steps
         self.semantic_retriever = semantic_retriever
         self.reminders = reminders
-        self._handled_proactive_event_ids: set[str] = set()
+        self._handled_proactive_event_ids: dict[str, None] = {}
 
     def process(self, context: Context) -> StellaResult:
         """Process a context according to the brain's decision."""
@@ -185,6 +197,7 @@ class Stella:
         memory_write_denied = False
         tool_steps = 0
         last_tool_result = None
+        executed_call_keys: set[str] = set()
 
         while True:
             decision_context = Context(
@@ -242,144 +255,29 @@ class Stella:
                     if isinstance(decision.arguments, dict)
                     else {}
                 )
-                tool_result, approval_denied = self._execute_tool(
-                    decision.capability, arguments, trace
-                )
-                if tool_result.memory_action is not None:
-                    action = tool_result.memory_action
+                call_key = _tool_call_key(decision.capability, arguments)
+                if call_key in executed_call_keys:
+                    # This exact call already ran during the current turn.
+                    # Executing it again would prompt approval twice for one
+                    # action and let a confused model overwrite the turn's
+                    # verified outcome with a denial message, so end the tool
+                    # loop here and answer from the existing observations.
+                    decision = Decision(DecisionKind.ANSWER)
                     trace.record(
-                        MemoryActionEvent(
-                            action=action.action,
-                            count=action.count,
-                            memory_id=action.memory_id,
+                        DecisionEvent(
+                            kind=decision.kind.value,
+                            capability=None,
+                            argument_keys=(),
+                            content_chars=0,
+                            memory_write_proposed=False,
                         )
                     )
-                if tool_result.action_receipt is not None:
-                    receipt = tool_result.action_receipt
-                    trace.record(
-                        ActionReceiptEvent(
-                            capability=decision.capability,
-                            action=receipt.action,
-                            status=receipt.status,
-                            size_bytes=receipt.size_bytes,
-                        )
-                    )
-                if tool_result.reminder_action is not None:
-                    action = tool_result.reminder_action
-                    trace.record(
-                        ReminderLifecycleEvent(
-                            action=action.action,
-                            reminder_id=action.reminder_id,
-                            content_chars=action.content_chars,
-                            outcome="recorded" if tool_result.success
-                            else "rejected",
-                        )
-                    )
-                tool_steps += 1
-                last_tool_result = tool_result
-                step_trace.append(StellaStep(decision, tool_result))
-                observations = select_tool_observations(
-                    [
-                        *observations,
-                        ToolObservation(
-                            capability=decision.capability,
-                            arguments=dict(arguments),
-                            success=tool_result.success,
-                            output=tool_result.output,
-                        ),
-                    ]
-                )
-                if (
-                    memory_write is None
-                    and decision.memory_write is not None
-                    and tool_result.memory_action is None
-                    and self._is_meaningful_tool_result(tool_result)
-                ):
-                    memory_write, write_denied = self._write_memory(
-                        decision.memory_write,
-                        requires_approval=decision_from_observations,
-                        trace=trace,
-                    )
-                    memory_write_denied = memory_write_denied or write_denied
-                    if write_denied:
-                        # A proposal the runtime refused must not reach
-                        # response synthesis as pending work.
-                        decision = replace(decision, memory_write=None)
-                    trace.record_memory_write(
-                        MemoryWriteEvent(
-                            proposed=True,
-                            written=memory_write is not None
-                            and memory_write.written,
-                            content_chars=(
-                                len(memory_write.item.content)
-                                if memory_write is not None
-                                else 0
-                            ),
-                        )
-                    )
-
-                if approval_denied:
-                    # The trusted approval provider explicitly refused this
-                    # action, so the runtime reports that outcome
-                    # deterministically: the action was not performed and the
-                    # model is never asked to phrase (or fabricate) it.
-                    response = (
-                        "The action was not approved, so it was not "
-                        "performed. Nothing was changed."
-                    )
-                    return StellaResult(
-                        decision,
-                        response=response,
-                        tool_result=tool_result,
-                        retrieved_memories=retrieved_memories,
-                        memory_write=memory_write,
-                        step_trace=step_trace,
-                        interaction_trace=self._complete_trace(
-                            trace,
-                            decision,
-                            response=response,
-                            memory_write=memory_write,
-                            memory_write_requested=(
-                                memory_write_requested
-                            ),
-                        ),
-                    )
-                if self.max_tool_steps == 1:
-                    response = self.llm.chat(
-                        self._tool_messages(
-                            context,
-                            retrieved_memories,
-                            decision,
-                            tool_result,
-                            observations,
-                        )
-                    )
-                    response = self._with_memory_note(
-                        response, memory_write_denied
-                    )
-                    return StellaResult(
-                        decision,
-                        response=response,
-                        tool_result=tool_result,
-                        retrieved_memories=retrieved_memories,
-                        memory_write=memory_write,
-                        step_trace=step_trace,
-                        interaction_trace=self._complete_trace(
-                            trace,
-                            decision,
-                            response=response,
-                            memory_write=memory_write,
-                            memory_write_requested=memory_write_requested,
-                        ),
-                    )
-                if decision.tool_final and tool_steps == 1:
-                    # Targeted fast path: the Brain declared this first tool
-                    # call terminal, so synthesize from the observation
-                    # instead of paying for a middle re-decision call. The
-                    # synthetic ANSWER decision keeps step_trace, result
-                    # metadata, and trace semantics identical to the
-                    # re-decision flow; approval, memory-write gating, and
-                    # tool-output limits already ran above and are unchanged.
+                elif observations and self.tools.get(decision.capability) is None:
+                    # An unregistered capability can never execute, so its
+                    # dispatcher rejection changed nothing. Reported after a
+                    # real step already ran, that no-effect failure would
+                    # overwrite the turn's genuine outcome with internal
+                    # jargon, so end the tool loop here like the guards above.
                     decision = Decision(DecisionKind.ANSWER)
                     trace.record(
                         DecisionEvent(
@@ -391,7 +289,157 @@ class Stella:
                         )
                     )
                 else:
-                    continue
+                    executed_call_keys.add(call_key)
+                    tool_result, approval_denied = self._execute_tool(
+                        decision.capability, arguments, trace
+                    )
+                    if tool_result.memory_action is not None:
+                        action = tool_result.memory_action
+                        trace.record(
+                            MemoryActionEvent(
+                                action=action.action,
+                                count=action.count,
+                                memory_id=action.memory_id,
+                            )
+                        )
+                    if tool_result.action_receipt is not None:
+                        receipt = tool_result.action_receipt
+                        trace.record(
+                            ActionReceiptEvent(
+                                capability=decision.capability,
+                                action=receipt.action,
+                                status=receipt.status,
+                                size_bytes=receipt.size_bytes,
+                            )
+                        )
+                    if tool_result.reminder_action is not None:
+                        action = tool_result.reminder_action
+                        trace.record(
+                            ReminderLifecycleEvent(
+                                action=action.action,
+                                reminder_id=action.reminder_id,
+                                content_chars=action.content_chars,
+                                outcome="recorded" if tool_result.success
+                                else "rejected",
+                            )
+                        )
+                    tool_steps += 1
+                    last_tool_result = tool_result
+                    step_trace.append(StellaStep(decision, tool_result))
+                    observations = select_tool_observations(
+                        [
+                            *observations,
+                            ToolObservation(
+                                capability=decision.capability,
+                                arguments=dict(arguments),
+                                success=tool_result.success,
+                                output=tool_result.output,
+                            ),
+                        ]
+                    )
+                    if (
+                        memory_write is None
+                        and decision.memory_write is not None
+                        and tool_result.memory_action is None
+                        and self._is_meaningful_tool_result(tool_result)
+                    ):
+                        memory_write, write_denied = self._write_memory(
+                            decision.memory_write,
+                            requires_approval=decision_from_observations,
+                            trace=trace,
+                        )
+                        memory_write_denied = memory_write_denied or write_denied
+                        if write_denied:
+                            # A proposal the runtime refused must not reach
+                            # response synthesis as pending work.
+                            decision = replace(decision, memory_write=None)
+                        trace.record_memory_write(
+                            MemoryWriteEvent(
+                                proposed=True,
+                                written=memory_write is not None
+                                and memory_write.written,
+                                content_chars=(
+                                    len(memory_write.item.content)
+                                    if memory_write is not None
+                                    else 0
+                                ),
+                            )
+                        )
+
+                    if approval_denied:
+                        # The trusted approval provider explicitly refused this
+                        # action, so the runtime reports that outcome
+                        # deterministically: the action was not performed and the
+                        # model is never asked to phrase (or fabricate) it.
+                        response = (
+                            "The action was not approved, so it was not "
+                            "performed. Nothing was changed."
+                        )
+                        return StellaResult(
+                            decision,
+                            response=response,
+                            tool_result=tool_result,
+                            retrieved_memories=retrieved_memories,
+                            memory_write=memory_write,
+                            step_trace=step_trace,
+                            interaction_trace=self._complete_trace(
+                                trace,
+                                decision,
+                                response=response,
+                                memory_write=memory_write,
+                                memory_write_requested=(
+                                    memory_write_requested
+                                ),
+                            ),
+                        )
+                    if self.max_tool_steps == 1:
+                        response = self.llm.chat(
+                            self._tool_messages(
+                                context,
+                                retrieved_memories,
+                                decision,
+                                tool_result,
+                                observations,
+                            )
+                        )
+                        response = self._with_memory_note(
+                            response, memory_write_denied
+                        )
+                        return StellaResult(
+                            decision,
+                            response=response,
+                            tool_result=tool_result,
+                            retrieved_memories=retrieved_memories,
+                            memory_write=memory_write,
+                            step_trace=step_trace,
+                            interaction_trace=self._complete_trace(
+                                trace,
+                                decision,
+                                response=response,
+                                memory_write=memory_write,
+                                memory_write_requested=memory_write_requested,
+                            ),
+                        )
+                    if decision.tool_final and tool_steps == 1:
+                        # Targeted fast path: the Brain declared this first tool
+                        # call terminal, so synthesize from the observation
+                        # instead of paying for a middle re-decision call. The
+                        # synthetic ANSWER decision keeps step_trace, result
+                        # metadata, and trace semantics identical to the
+                        # re-decision flow; approval, memory-write gating, and
+                        # tool-output limits already ran above and are unchanged.
+                        decision = Decision(DecisionKind.ANSWER)
+                        trace.record(
+                            DecisionEvent(
+                                kind=decision.kind.value,
+                                capability=None,
+                                argument_keys=(),
+                                content_chars=0,
+                                memory_write_proposed=False,
+                            )
+                        )
+                    else:
+                        continue
 
             if (
                 memory_write is None
@@ -562,13 +610,18 @@ class Stella:
         This handoff never consults the Brain, LLM, memory, or tools.
         """
 
-        if event.event_id in self._handled_proactive_event_ids:
+        handled = self._handled_proactive_event_ids
+        if event.event_id in handled:
             return ProactivityResult(
                 ProactivityDecisionKind.DO_NOTHING,
                 event.event_id,
                 duplicate_suppressed=True,
             )
-        self._handled_proactive_event_ids.add(event.event_id)
+        handled[event.event_id] = None
+        # Insertion-ordered with oldest-first eviction: a long-lived desktop
+        # process must not accumulate event identities without bound.
+        while len(handled) > MAX_HANDLED_PROACTIVE_EVENTS:
+            handled.pop(next(iter(handled)))
         return evaluate_due_task_event_once(event, delegation)
 
     def present_due_task_event(

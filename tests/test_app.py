@@ -1,0 +1,738 @@
+"""Phase 4 application-layer and UI-bridge tests.
+
+These cover the shared ``stella.app`` behaviour the CLI and the Tk window
+are built on: honest outcome mapping, the worker-thread bridge, the
+approval broker's token identity, and the security boundary that the UI
+path cannot forge, bypass, or widen authorization.
+"""
+
+import datetime as dt
+import threading
+import time
+
+import pytest
+
+from stella import app
+from stella.app import (
+    ApprovalBroker,
+    MemoryPanel,
+    ReminderPanel,
+    StellaApplication,
+    StellaBridge,
+    StellaSession,
+    StellaSettings,
+    TurnOutcome,
+    build_application,
+    display_response,
+    outcome_status,
+)
+from stella.brain import Brain, Decision, DecisionKind
+from stella.context import Context
+from stella.llm import LLMClient, Message
+from stella.memory import InMemoryMemory, MemoryItem
+from stella.reminders import InMemoryReminderStore
+from stella.stella import Stella, StellaResult
+from stella.tools import (
+    ActionReceipt,
+    ApprovalRequest,
+    EchoTool,
+    RiskLevel,
+    Tool,
+    ToolApproval,
+    ToolDispatcher,
+    ToolResult,
+)
+
+NOW = dt.datetime(2026, 5, 1, 12, 0, tzinfo=dt.UTC)
+REAL_NOW = dt.datetime.now(dt.UTC)
+
+
+class SpyLLM(LLMClient):
+    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+        return "the action completed"
+
+
+class ScriptedBrain(Brain):
+    def __init__(self, decisions: list[Decision]) -> None:
+        self.decisions = decisions
+
+    def decide(self, context: Context) -> Decision:
+        return self.decisions.pop(0)
+
+
+class ExplodingBrain(Brain):
+    def decide(self, context: Context) -> Decision:
+        raise AssertionError("this turn must not consult the Brain")
+
+
+class DangerousTool(Tool):
+    name = "approval_test"
+    description = "Test-only dangerous action."
+
+    def __init__(self) -> None:
+        self.executions: list[dict[str, object]] = []
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.DANGEROUS
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return arguments == {"value": "x"}
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.executions.append(arguments)
+        return ToolResult(success=True, output="executed")
+
+
+def tool_result(
+    *,
+    success: bool = True,
+    output: str = "ok",
+    receipt_status: str | None = None,
+) -> ToolResult:
+    receipt = (
+        ActionReceipt("write", receipt_status)
+        if receipt_status is not None
+        else None
+    )
+    return ToolResult(
+        success=success, output=output, action_receipt=receipt
+    )
+
+
+# ------------------------------------------------------- pure mapping
+
+
+def test_display_response_prefers_answer_then_tool_then_questions() -> None:
+    def make(**kwargs: object) -> StellaResult:
+        base: dict[str, object] = {
+            "decision": Decision(kind=DecisionKind.ANSWER),
+        }
+        base.update(kwargs)
+        return StellaResult(**base)  # type: ignore[arg-type]
+
+    assert display_response(make(response="hi")) == "hi"
+    assert (
+        display_response(make(tool_result=ToolResult(True, "tool said")))
+        == "tool said"
+    )
+    assert (
+        display_response(make(needs_more_information=True))
+        == "I need more information."
+    )
+    assert display_response(make()) is None
+
+
+@pytest.mark.parametrize(
+    ("result", "kind", "symbol"),
+    [
+        (None, "none", ""),
+        (tool_result(receipt_status="verified"), "verified", "✓"),
+        (tool_result(receipt_status="unverified"), "unverified", "✗"),
+        (tool_result(receipt_status="inconclusive"), "inconclusive", "?"),
+        (tool_result(receipt_status="missing"), "missing", "✗"),
+        (tool_result(receipt_status="invalid"), "invalid", "✗"),
+        (tool_result(), "succeeded", "✓"),
+        (
+            tool_result(success=False, output="boom"),
+            "failed",
+            "✗",
+        ),
+        (
+            tool_result(success=False, output="Approval required."),
+            "denied",
+            "✗",
+        ),
+        (
+            tool_result(success=False, output="Approval denied."),
+            "denied",
+            "✗",
+        ),
+    ],
+)
+def test_outcome_status_preserves_the_trusted_distinction(
+    result: ToolResult | None, kind: str, symbol: str
+) -> None:
+    status = outcome_status(result)
+
+    assert status.kind == kind
+    assert status.symbol == symbol
+
+
+def test_unverified_mutation_never_renders_as_verified_success() -> None:
+    unverified = outcome_status(tool_result(receipt_status="unverified"))
+    verified = outcome_status(tool_result(receipt_status="verified"))
+
+    assert unverified.kind != verified.kind
+    assert unverified.symbol != verified.symbol
+    assert verified.symbol == "✓"
+
+
+# ------------------------------------------------------ StellaSession
+
+
+def make_recording_stella(
+    decisions: list[Decision] | None = None,
+    reminders: InMemoryReminderStore | None = None,
+) -> Stella:
+    brain = ScriptedBrain(
+        decisions
+        if decisions is not None
+        else [Decision(kind=DecisionKind.ANSWER, content="noted")]
+    )
+    return Stella(
+        brain,
+        SpyLLM(),
+        ToolDispatcher([EchoTool()]),
+        InMemoryMemory(),
+        reminders=reminders,
+    )
+
+
+def test_run_turn_answers_and_extends_history() -> None:
+    stella = make_recording_stella()
+    session = StellaSession(stella)
+
+    outcome = session.run_turn("hello")
+
+    assert isinstance(outcome, TurnOutcome)
+    assert outcome.response == "the action completed"
+    assert session.history == [
+        Message(role="user", content="hello"),
+        Message(role="assistant", content="the action completed"),
+    ]
+
+
+def test_run_turn_error_wording_matches_the_cli_and_hides_details() -> None:
+    class ExplodingStella:
+        def process(self, context: Context) -> StellaResult:
+            raise RuntimeError(
+                "secret /home/user/path Traceback-worthy internals here"
+            )
+
+    session = StellaSession(ExplodingStella())  # type: ignore[arg-type]
+
+    outcome = session.run_turn("do something")
+
+    assert outcome.error_message == (
+        "Stella could not finish that request (secret /home/user/path "
+        "Traceback-worthy internals here). Nothing was changed; try again "
+        "or type 'exit' to quit."
+    )
+    assert "Traceback (most recent call last)" not in outcome.error_message
+    assert session.history == []
+
+
+def test_run_turn_reports_interruption_without_changes() -> None:
+    class InterruptingStella:
+        def process(self, context: Context) -> StellaResult:
+            raise KeyboardInterrupt
+
+    outcome = StellaSession(InterruptingStella()).run_turn(  # type: ignore[arg-type]
+        "stop me"
+    )
+
+    assert outcome.interrupted is True
+    assert outcome.result is None
+
+
+def test_session_custom_error_footer_is_used() -> None:
+    class ExplodingStella:
+        def process(self, context: Context) -> StellaResult:
+            raise RuntimeError("nope")
+
+    outcome = StellaSession(
+        ExplodingStella(), error_footer="try again."  # type: ignore[arg-type]
+    ).run_turn("x")
+
+    assert outcome.error_message is not None
+    assert outcome.error_message.endswith("Nothing was changed; try again.")
+
+
+def test_check_due_reminders_delivers_through_the_trusted_flow() -> None:
+    store = InMemoryReminderStore()
+    assert store.create("Water the plants", REAL_NOW + dt.timedelta(hours=1), REAL_NOW)
+    session = StellaSession(make_recording_stella(reminders=store))
+
+    deliveries = session.check_due_reminders(REAL_NOW + dt.timedelta(hours=2))
+
+    assert [delivery.message for delivery in deliveries] == [
+        "Water the plants is due today."
+    ]
+    assert session.check_due_reminders(REAL_NOW + dt.timedelta(hours=3)) == ()
+
+
+# ---------------------------------------------------------- MemoryPanel
+
+
+def make_memory() -> InMemoryMemory:
+    memory = InMemoryMemory()
+    memory.store(MemoryItem("Prefers oat milk"))
+    memory.store(MemoryItem("Lives in Berlin"))
+    return memory
+
+
+def test_memory_panel_exposes_content_strings_not_ids() -> None:
+    panel = MemoryPanel(make_memory())
+
+    rows = panel.refresh()
+
+    assert rows == ("Prefers oat milk", "Lives in Berlin")
+    assert all(isinstance(row, str) for row in rows)
+
+
+def test_memory_panel_search_uses_the_backend_query() -> None:
+    panel = MemoryPanel(make_memory())
+
+    rows = panel.refresh("oat")
+
+    assert rows == ("Prefers oat milk",)
+
+
+def test_memory_panel_forgets_by_visible_position() -> None:
+    memory = make_memory()
+    panel = MemoryPanel(memory)
+    panel.refresh()
+
+    message = panel.forget(0)
+
+    assert message == "That memory was forgotten."
+    assert panel.refresh() == ("Lives in Berlin",)
+    assert [item.content for item in memory.retrieve()] == [
+        "Lives in Berlin"
+    ]
+
+
+def test_memory_panel_forget_without_selection_is_safe() -> None:
+    panel = MemoryPanel(make_memory())
+    panel.refresh()
+
+    assert panel.forget(5) == (
+        "No memory is selected. Pick one from the list first."
+    )
+    assert panel.forget(-1) == (
+        "No memory is selected. Pick one from the list first."
+    )
+    assert len(panel.refresh()) == 2
+
+
+# --------------------------------------------------------- ReminderPanel
+
+
+def test_reminder_panel_matches_the_trusted_tool_wording() -> None:
+    store = InMemoryReminderStore()
+    panel = ReminderPanel(store)
+    due = (REAL_NOW + dt.timedelta(hours=1)).isoformat()
+
+    created = panel.create("Call the dentist", due)
+
+    assert created.success
+    assert created.output == (
+        f"Reminder created (ID 1): Call the dentist at {due}."
+    )
+    assert panel.pending_rows() == (("Call the dentist", due),)
+
+
+def test_reminder_panel_rejects_bad_input_honestly() -> None:
+    store = InMemoryReminderStore()
+    panel = ReminderPanel(store)
+
+    bad_time = panel.create("anything", "sometime tomorrow")
+    empty = panel.create("   ", (REAL_NOW + dt.timedelta(hours=1)).isoformat())
+
+    assert not bad_time.success
+    assert "ISO-8601" in bad_time.output
+    assert not empty.success
+    assert panel.pending_rows() == ()
+    assert store.pending() == ()
+
+
+def test_reminder_panel_cancel_requires_one_clear_match() -> None:
+    store = InMemoryReminderStore()
+    panel = ReminderPanel(store)
+    panel.create("Submit the assignment", (REAL_NOW + dt.timedelta(hours=1)).isoformat())
+    panel.create("Attend the meeting", (REAL_NOW + dt.timedelta(hours=2)).isoformat())
+
+    ambiguous = panel.cancel("the")
+    single = panel.cancel("assignment")
+
+    assert not ambiguous.success
+    assert "nothing was cancelled" in ambiguous.output
+    assert single.success
+    assert len(panel.pending_rows()) == 1
+
+
+def test_reminder_panel_without_a_store_stays_inert() -> None:
+    panel = ReminderPanel(None)
+
+    assert panel.available is False
+    assert panel.pending_rows() == ()
+    result = panel.create("anything", "2099-01-01T00:00:00+00:00")
+
+    assert not result.success
+    assert result.output == (
+        "Reminders are not available in this configuration."
+    )
+
+
+# -------------------------------------------------------- ApprovalBroker
+
+
+def run_broker_request(
+    broker: ApprovalBroker, request: ApprovalRequest
+) -> tuple[threading.Thread, dict[str, ToolApproval]]:
+    outcome: dict[str, ToolApproval] = {}
+    thread = threading.Thread(
+        target=lambda: outcome.setdefault(
+            "approval", broker.request(request)
+        )
+    )
+    thread.start()
+    return thread, outcome
+
+
+def wait_for_approval(
+    broker: ApprovalBroker,
+) -> tuple[int, ApprovalRequest]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        item = broker.next_request()
+        if item is not None:
+            return item
+        time.sleep(0.01)
+    raise AssertionError("no approval request appeared")
+
+
+def test_broker_approves_only_the_dispatchers_own_request_object() -> None:
+    broker = ApprovalBroker()
+    request = ApprovalRequest("cap", {"value": "x"})
+    thread, outcome = run_broker_request(broker, request)
+
+    token, seen = wait_for_approval(broker)
+
+    assert seen is request
+    assert broker.resolve(token, True) is True
+    thread.join(5)
+    approval = outcome["approval"]
+    assert approval.request is request
+    assert approval.approved is True
+
+
+def test_broker_answers_each_request_only_once() -> None:
+    broker = ApprovalBroker()
+    request = ApprovalRequest("cap", {"value": "x"})
+    thread, outcome = run_broker_request(broker, request)
+
+    token, _request = wait_for_approval(broker)
+    assert broker.resolve(token, True) is True
+    thread.join(5)
+
+    assert broker.resolve(token, False) is False
+    assert broker.resolve(999, True) is False
+    assert outcome["approval"].approved is True
+
+
+def test_broker_denies_everything_left_unanswered() -> None:
+    broker = ApprovalBroker()
+    thread, outcome = run_broker_request(
+        broker, ApprovalRequest("cap", {"value": "x"})
+    )
+
+    wait_for_approval(broker)
+    broker.deny_outstanding()
+    thread.join(5)
+
+    assert outcome["approval"].approved is False
+
+
+def test_broker_next_request_without_timeout_does_not_block() -> None:
+    broker = ApprovalBroker()
+
+    started = time.monotonic()
+    assert broker.next_request() is None
+
+    assert time.monotonic() - started < 1
+
+
+# ---------------------------------------------------------------- bridge
+
+
+def make_bridge(
+    stella: Stella, settings: StellaSettings | None = None
+) -> StellaBridge:
+    application = StellaApplication(
+        StellaSession(stella), settings or StellaSettings(model="test")
+    )
+    return StellaBridge(lambda: application)
+
+
+def wait_for_event(bridge: StellaBridge, kind: str) -> list:
+    """Collect events until one of ``kind`` arrives; return all payloads."""
+    events = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        events.extend(bridge.poll())
+        if any(event.kind == kind for event in events):
+            return events
+        time.sleep(0.02)
+    raise AssertionError(f"no {kind!r} event; saw {[e.kind for e in events]}")
+
+
+def test_bridge_runs_a_turn_on_the_worker_thread() -> None:
+    bridge = make_bridge(make_recording_stella())
+
+    bridge.post_turn("hello")
+    events = wait_for_event(bridge, "turn")
+
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
+    assert outcome.response == "the action completed"
+    bridge.stop()
+
+
+def test_bridge_delivers_due_reminders_before_the_turn_event() -> None:
+    store = InMemoryReminderStore()
+    due = REAL_NOW + dt.timedelta(seconds=1)
+    assert store.create("Private errand", due, REAL_NOW)
+    bridge = make_bridge(make_recording_stella(reminders=store))
+
+    time.sleep(1.2)
+    bridge.post_turn("anything")
+    events = wait_for_event(bridge, "turn")
+
+    kinds = [event.kind for event in events]
+    assert kinds.index("reminder_delivered") < kinds.index("turn")
+    delivered = next(e.payload for e in events if e.kind == "reminder_delivered")
+    assert delivered == "Private errand is due today."
+    bridge.stop()
+
+
+def test_bridge_reports_startup_failure_without_a_stack_trace() -> None:
+    def factory() -> StellaApplication:
+        raise RuntimeError("STELLA_MODEL is required")
+
+    bridge = StellaBridge(factory)
+
+    events = wait_for_event(bridge, "error")
+
+    assert "STELLA_MODEL is required" in events[0].payload
+    assert "Traceback (most recent call last)" not in events[0].payload
+
+    bridge.post_turn("hello")
+    events = wait_for_event(bridge, "error")
+
+    assert "not running" in events[0].payload
+    bridge.stop()
+
+
+def test_bridge_stays_alive_after_a_failing_turn() -> None:
+    class FailingStella:
+        def __init__(self) -> None:
+            self.memory = InMemoryMemory()
+
+        def process(self, context: Context) -> StellaResult:
+            raise RuntimeError("provider exploded")
+
+    bridge = make_bridge(FailingStella())  # type: ignore[arg-type]
+
+    bridge.post_turn("do something")
+    events = wait_for_event(bridge, "turn")
+
+    outcome: TurnOutcome = events[-1].payload
+    assert outcome.error_message is not None
+    assert "provider exploded" in outcome.error_message
+    assert "Traceback (most recent call last)" not in outcome.error_message
+    bridge.stop()
+
+
+def bridge_approval_request(
+    bridge: StellaBridge,
+) -> tuple[int, ApprovalRequest]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        item = bridge.next_approval_request()
+        if item is not None:
+            return item
+        time.sleep(0.02)
+    raise AssertionError("no approval request surfaced through the bridge")
+
+
+def test_bridge_denied_approval_executes_nothing() -> None:
+    tool = DangerousTool()
+    stella = Stella(
+        ScriptedBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="approval_test",
+                    arguments={"value": "x"},
+                ),
+                Decision(kind=DecisionKind.ANSWER, content="skipped"),
+            ]
+        ),
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_turn("run the dangerous test action")
+    token, request = bridge_approval_request(bridge)
+    bridge.resolve_approval(token, False)
+    events = wait_for_event(bridge, "turn")
+
+    outcome: TurnOutcome = events[-1].payload
+    assert tool.executions == []
+    assert request.arguments == {"value": "x"}
+    assert outcome.result is not None
+    assert outcome.result.tool_result is not None
+    assert outcome_status(outcome.result.tool_result).kind == "denied"
+    bridge.stop()
+
+
+def test_bridge_allowed_approval_runs_the_original_arguments_only() -> None:
+    tool = DangerousTool()
+    stella = Stella(
+        ScriptedBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="approval_test",
+                    arguments={"value": "x"},
+                ),
+                Decision(kind=DecisionKind.ANSWER, content="done"),
+            ]
+        ),
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_turn("run the dangerous test action")
+    token, _request = bridge_approval_request(bridge)
+    # Answering a stale or invented token must not satisfy the real one.
+    assert bridge.resolve_approval(token + 500, True) is False
+    assert bridge.resolve_approval(token, True) is True
+    events = wait_for_event(bridge, "turn")
+
+    assert tool.executions == [{"value": "x"}]
+    outcome: TurnOutcome = events[-1].payload
+    assert outcome.result is not None
+    bridge.stop()
+
+
+def test_bridge_shutdown_denies_an_unanswered_approval() -> None:
+    tool = DangerousTool()
+    stella = Stella(
+        ScriptedBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="approval_test",
+                    arguments={"value": "x"},
+                ),
+                Decision(kind=DecisionKind.ANSWER, content="after"),
+            ]
+        ),
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_turn("run the dangerous test action")
+    bridge_approval_request(bridge)
+    bridge.stop()
+
+    assert tool.executions == []
+
+
+def test_bridge_reminder_commands_never_execute_dispatcher_tools() -> None:
+    tool = DangerousTool()
+    store = InMemoryReminderStore()
+    stella = Stella(
+        ExplodingBrain(),
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        reminders=store,
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_reminder_add(
+        "File taxes", (REAL_NOW + dt.timedelta(hours=1)).isoformat()
+    )
+    events = wait_for_event(bridge, "reminders")
+    bridge.post_reminders()
+    events.extend(wait_for_event(bridge, "reminders"))
+
+    rows = next(
+        event.payload
+        for event in reversed(events)
+        if event.kind == "reminders"
+    )
+    assert rows == (("File taxes", (REAL_NOW + dt.timedelta(hours=1)).isoformat()),)
+    assert tool.executions == []
+    bridge.stop()
+
+
+def test_bridge_settings_failure_keeps_the_previous_session() -> None:
+    def failing(settings: StellaSettings) -> StellaApplication:
+        raise RuntimeError(f"bad model {settings.model}")
+
+    original = app.build_application
+    app.build_application = failing  # type: ignore[assignment]
+    try:
+        bridge = make_bridge(make_recording_stella())
+        bridge.post_apply_settings(StellaSettings(model="does-not-exist"))
+        events = wait_for_event(bridge, "error")
+        assert "bad model does-not-exist" in events[0].payload
+
+        bridge.post_turn("still works")
+        events = wait_for_event(bridge, "turn")
+        assert events[-1].payload.response == "the action completed"
+        bridge.stop()
+    finally:
+        app.build_application = original  # type: ignore[assignment]
+
+
+# ------------------------------------------------------ security checks
+
+
+def test_a_forged_approval_never_satisfies_the_dispatcher() -> None:
+    tool = DangerousTool()
+    dispatcher = ToolDispatcher([tool])
+
+    forged = dispatcher.execute(
+        "approval_test",
+        {"value": "x"},
+        approval=ToolApproval(
+            request=ApprovalRequest("something_else", {}), approved=True
+        ),
+    )
+    no_approval = dispatcher.execute("approval_test", {"value": "x"})
+
+    assert forged.output == "Invalid approval."
+    assert not forged.success
+    assert no_approval.output == "Approval required."
+    assert tool.executions == []
+
+
+def test_build_application_requires_a_model() -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        build_application(StellaSettings(provider="openai", model=None))
+
+    assert str(exit_info.value) == "STELLA_MODEL is required"
+
+
+def test_bridge_wires_the_broker_into_the_stella_core() -> None:
+    stella = make_recording_stella()
+    bridge = make_bridge(stella)
+
+    provider = stella.approval_provider
+    assert callable(provider)
+    assert provider.__func__ is bridge.approvals.request.__func__
+    assert provider.__self__ is bridge.approvals
+    bridge.stop()

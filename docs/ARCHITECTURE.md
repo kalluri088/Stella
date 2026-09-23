@@ -339,18 +339,26 @@ values. The trace is observational only: it cannot select decisions, grant
 approval, execute tools, write memory, or replace the existing step trace and
 tool audit.
 
-### CLI
+### CLI and shared application layer
 
-`stella.cli` is a thin terminal interface around the core `Stella` class. Its
-entry point builds an `OpenAILLMClient`, `LLMBrain`, a `ToolDispatcher` holding
-`DateTimeTool`, `SystemInfoTool`, `EchoTool`, `FileSystemReadTool`,
-`FileSystemWriteTool`, `FileSystemDeleteTool`, and `NetworkReadTool`, and
-`SQLiteMemory`, then
-repeatedly creates a `Context` and calls
-`Stella.process()`. The CLI keeps the session's `Message` history locally,
-displays answer or tool output, and exits on `exit`, `quit`, or end-of-file. It
-closes the SQLite memory connection when the session ends and does not
-implement a second orchestration path.
+`stella.app` is the shared application layer that both interfaces build on.
+`build_application(StellaSettings)` constructs the `OpenAILLMClient` or
+`OllamaLLMClient`, `LLMBrain`, a `ToolDispatcher` holding the registered
+capabilities, `SQLiteMemory`, and the `SQLiteReminderStore`, then wraps them in
+a `Stella` instance and a `StellaApplication` that owns their lifecycle.
+`StellaSettings.from_environment()` reads the same environment variables for
+either interface. `StellaSession` holds the conversation `Message` history and
+runs one turn through `Stella.process()` with shared error and display rules,
+and the small panel classes (`MemoryPanel`, `ReminderPanel`, `ApprovalBroker`)
+expose memory, reminder, and approval operations only through the existing
+trusted APIs. Neither interface implements a second orchestration path.
+
+`stella.cli` is a thin terminal interface over that layer. It repeatedly reads
+input, delivers due reminders, calls `StellaSession.run_turn()`, displays the
+answer or tool output, and exits on `exit`, `quit`, or end-of-file. It closes
+the SQLite connections when the session ends. The graphical interface in
+`stella.ui` is an equally thin Tkinter client of the same layer; see
+`UI.md`.
 
 For inspection during manual testing, the CLI accepts `--debug`. This prints the structured `Decision` returned by the Brain as JSON to stderr after each processed input. The normal user-facing output is unchanged when the flag is omitted, and the inspection output does not alter execution, tool calls, or memory writes.
 
@@ -378,7 +386,12 @@ Manual testing showed that a natural-language response claiming that Stella will
   classification, and action-specific approval checks. Approval is not
   derived from LLM output.
 - `Stella` retrieves memories before asking the brain to decide, performs at most one explicit requested memory write, and coordinates a bounded synchronous sequence of decisions and tool executions; it does not create decisions, persist tool traces, or run background loops.
-- `CLI` collects terminal input and displays results; it does not make decisions, call providers directly for conversation handling, or bypass `Stella`.
+- `CLI` and `UI` collect input and display results through the shared
+  `stella.app` layer; they do not make decisions, call providers directly for
+  conversation handling, bypass `Stella`, or manufacture approvals.
+- `stella.app` builds and wires the trusted components and exposes shared
+  session, memory, reminder, and approval-broker behavior to both interfaces;
+  it adds no decision path of its own.
 
 Memory participates in both sides of the response path, but only explicitly. Stella reads matching items before decision-making and writes one item only when the returned decision contains a `MemoryWriteRequest`. Ordinary conversation and retrieved memories are not written automatically.
 
@@ -466,7 +479,9 @@ The following are intentionally outside the current MVP foundation:
   interfaces; video or environment processing; interface rendering; streaming;
   or
   provider-specific multimodal integrations
-- Plugin loading, dynamic discovery, permission checks, and approval UI
+- Plugin loading, dynamic discovery, and permission checks (approval
+  presentation now exists in the CLI prompt and the Tkinter UI dialog, both
+  served by the trusted `ApprovalBroker`)
 - Filesystem operations beyond the current narrow workspace tools, shell
   execution, and unrestricted network access
 
@@ -480,6 +495,7 @@ The following are intentionally outside the current MVP foundation:
 ├── src/
 │   └── stella/
 │       ├── __init__.py
+│       ├── app.py
 │       ├── brain.py
 │       ├── cli.py
 │       ├── context.py
@@ -487,8 +503,10 @@ The following are intentionally outside the current MVP foundation:
 │       ├── memory.py
 │       ├── openai_client.py
 │       ├── stella.py
-│       └── tools.py
+│       ├── tools.py
+│       └── ui.py
 └── tests/
+    ├── test_app.py
     ├── test_brain.py
     ├── test_cli.py
     ├── test_context.py
@@ -497,7 +515,8 @@ The following are intentionally outside the current MVP foundation:
     ├── test_openai_client.py
     ├── test_stella.py
     ├── test_package.py
-    └── test_tools.py
+    ├── test_tools.py
+    └── test_ui.py
 ```
 
 The project uses Python with uv. Runtime code lives under `src/stella`, and the independent behavior tests live under `tests`.
@@ -525,13 +544,21 @@ Add `--debug` when inspecting Brain decisions:
 uv run stella --debug
 ```
 
-`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to `OpenAILLMClient`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the CLI uses `stella_memory.db` in the current working directory. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, `filesystem_edit`, and `filesystem_delete` capabilities; if unset, the CLI uses `./stella_workspace`. The CLI reads these variable names but does not contain or expose secret values.
+To use the graphical interface instead of the terminal (requires a display):
+
+```bash
+uv run stella-ui
+```
+
+See `UI.md` for what the window offers and its current limits.
+
+`OPENAI_API_KEY` is required by the OpenAI client. `STELLA_MODEL` selects the model passed to the configured client, and `STELLA_LLM_PROVIDER` selects `openai` (default) or `ollama`. `OPENAI_BASE_URL` may also be set when a non-default OpenAI-compatible endpoint is needed, and `OLLAMA_BASE_URL` when Ollama is served from a non-default address. `STELLA_MEMORY_DB` selects the SQLite database path; if it is unset, the application layer uses `stella_memory.db` in the current working directory. `STELLA_REMINDERS_DB` selects the reminder store path, defaulting to `stella_reminders.db`. `STELLA_WORKSPACE` selects the directory available to the workspace-scoped `filesystem_read`, `filesystem_write`, `filesystem_edit`, and `filesystem_delete` capabilities; if unset, the application layer uses `./stella_workspace`. The interfaces read these variable names through `stella.app` but do not contain or expose secret values.
 
 ## Current verification status
 
 At the time this document was written:
 
-- Pytest: 217 tests passing
+- Pytest: 652 tests passing
 - Ruff: all checks passing
 
 The OpenAI client tests mock the SDK, so the test suite does not make real API calls.

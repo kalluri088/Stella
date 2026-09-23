@@ -166,8 +166,8 @@ def test_cli_selects_ollama_provider(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with (
-        patch("stella.cli.SQLiteMemory"),
-        patch("stella.cli.OllamaLLMClient") as ollama_client,
+        patch("stella.app.SQLiteMemory"),
+        patch("stella.app.OllamaLLMClient") as ollama_client,
     ):
         stella = create_stella_from_environment()
 
@@ -186,8 +186,8 @@ def test_cli_honours_custom_ollama_base_url(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://192.0.2.1:11434/v1")
 
     with (
-        patch("stella.cli.SQLiteMemory"),
-        patch("stella.cli.OllamaLLMClient") as ollama_client,
+        patch("stella.app.SQLiteMemory"),
+        patch("stella.app.OllamaLLMClient") as ollama_client,
     ):
         create_stella_from_environment()
 

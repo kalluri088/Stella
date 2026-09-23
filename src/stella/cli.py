@@ -3,40 +3,13 @@
 import argparse
 import datetime as dt
 import json
-import os
 import sys
 from collections.abc import Callable, Sequence
 
-from stella.brain import Decision, LLMBrain
-from stella.context import Context
-from stella.llm import Message
-from stella.memory import SQLiteMemory
-from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
-from stella.openai_client import OpenAILLMClient
-from stella.reminders import SQLiteReminderStore
+from stella.app import StellaSession, StellaSettings, build_application
+from stella.brain import Decision
 from stella.stella import Stella, StellaResult
-from stella.tools import (
-    ApprovalRequest,
-    DateTimeTool,
-    EchoTool,
-    FileSystemDeleteTool,
-    FileSystemEditTool,
-    FileSystemReadTool,
-    FileSystemWriteTool,
-    MemoryForgetTool,
-    MemoryListTool,
-    MemoryUpdateTool,
-    NetworkReadTool,
-    ReminderCancelTool,
-    ReminderCreateTool,
-    ReminderListTool,
-    SystemInfoTool,
-    ToolApproval,
-    ToolDispatcher,
-    WorkspaceFindTool,
-    WorkspaceListTool,
-    WorkspaceSearchTool,
-)
+from stella.tools import ApprovalRequest, ToolApproval
 from stella.trace import (
     ActionReceiptEvent,
     ApprovalEvent,
@@ -77,8 +50,7 @@ def run_cli(
             status_fn=status_fn or _print_status,
         )
     status = status_fn or _print_status
-
-    history: list[Message] = []
+    session = StellaSession(stella)
     while True:
         try:
             user_input = input_fn("You: ")
@@ -99,23 +71,14 @@ def run_cli(
         # are delivered through the existing bounded proactivity decision.
         _deliver_due_reminders(stella, output_fn, trace=trace)
         status("Stella is thinking...")
-        try:
-            result = stella.process(
-                Context(
-                    user_input=user_input,
-                    conversation_history=list(history),
-                )
-            )
-        except KeyboardInterrupt:
+        outcome = session.run_turn(user_input)
+        if outcome.interrupted:
             output_fn("Stella stopped that request. Nothing was changed.")
             continue
-        except Exception as error:  # noqa: BLE001 - keep the session alive
-            detail = " ".join(str(error).split()) or type(error).__name__
-            output_fn(
-                f"Stella could not finish that request ({detail[:160]}). "
-                "Nothing was changed; try again or type 'exit' to quit."
-            )
+        if outcome.error_message is not None:
+            output_fn(outcome.error_message)
             continue
+        result = outcome.result
         if debug:
             (debug_fn or _print_debug)(format_decision(result.decision))
         if trace:
@@ -125,15 +88,12 @@ def run_cli(
                 for line in timeline:
                     output_fn(line)
                 output_fn("")
-        response = _display_response(result)
+        response = outcome.response
         if response is not None:
             output_fn(f"Stella: {response}")
         else:
             # A deliberate no-op should not look like a silent failure.
             status("Stella has nothing to add.")
-        history.append(Message(role="user", content=user_input))
-        if response is not None:
-            history.append(Message(role="assistant", content=response))
 
 
 def _deliver_due_reminders(
@@ -403,77 +363,10 @@ def _print_status(message: str) -> None:
     print(f"({message})", file=sys.stderr)
 
 
-def _display_response(result: StellaResult) -> str | None:
-    if result.response is not None:
-        return result.response
-    if result.tool_result is not None:
-        return result.tool_result.output
-    if result.needs_more_information:
-        return "I need more information."
-    return None
-
-
 def create_stella_from_environment() -> Stella:
     """Build the CLI's LLM-backed Stella instance from environment variables."""
 
-    model = os.environ.get("STELLA_MODEL")
-    if not model:
-        raise SystemExit("STELLA_MODEL is required")
-
-    provider = os.environ.get("STELLA_LLM_PROVIDER", "openai").casefold()
-    if provider == "ollama":
-        # The compatibility endpoint ignores per-request options on Ollama
-        # 0.33.x; native /api/chat is the only way to apply num_ctx=4096,
-        # which keeps the model fully on GPU (measured ~3x faster turns).
-        llm = OllamaLLMClient(
-            model=model,
-            base_url=os.environ.get(
-                "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
-            ),
-            native=True,
-            num_ctx=4096,
-        )
-    elif provider == "openai":
-        llm = OpenAILLMClient(
-            model=model,
-            base_url=os.environ.get("OPENAI_BASE_URL"),
-        )
-    else:
-        raise SystemExit("STELLA_LLM_PROVIDER must be 'openai' or 'ollama'")
-    memory = SQLiteMemory(os.environ.get("STELLA_MEMORY_DB", "stella_memory.db"))
-    reminders = SQLiteReminderStore(
-        os.environ.get("STELLA_REMINDERS_DB", "stella_reminders.db")
-    )
-    workspace = os.environ.get("STELLA_WORKSPACE", "./stella_workspace")
-    tools = ToolDispatcher(
-        [
-            DateTimeTool(),
-            SystemInfoTool(),
-            EchoTool(),
-            FileSystemReadTool(workspace),
-            FileSystemWriteTool(workspace),
-            FileSystemEditTool(workspace),
-            FileSystemDeleteTool(workspace),
-            WorkspaceListTool(workspace),
-            WorkspaceFindTool(workspace),
-            WorkspaceSearchTool(workspace),
-            NetworkReadTool(),
-            MemoryListTool(memory),
-            MemoryUpdateTool(memory),
-            MemoryForgetTool(memory),
-            ReminderCreateTool(reminders),
-            ReminderListTool(reminders),
-            ReminderCancelTool(reminders),
-        ]
-    )
-    return Stella(
-        brain=LLMBrain(llm, tools),
-        llm=llm,
-        tool=tools,
-        memory=memory,
-        max_tool_steps=2,
-        reminders=reminders,
-    )
+    return build_application(StellaSettings.from_environment()).session.stella
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -491,14 +384,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="render a compact 'Stella did' timeline after each turn",
     )
     args = parser.parse_args(argv)
-    stella = create_stella_from_environment()
-    for line in format_startup(stella):
+    application = build_application(StellaSettings.from_environment())
+    for line in format_startup(application.session.stella):
         print(line)
     print("Ask Stella anything. Type 'exit' to quit.\n")
     try:
-        run_cli(stella, debug=args.debug, trace=args.trace)
+        run_cli(application.session.stella, debug=args.debug, trace=args.trace)
     finally:
-        if isinstance(stella.memory, SQLiteMemory):
-            stella.memory.close()
-        if isinstance(stella.reminders, SQLiteReminderStore):
-            stella.reminders.close()
+        application.close()

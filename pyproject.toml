@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 stella = "stella.cli:main"
+stella-ui = "stella.ui:main"
 
 [dependency-groups]
 dev = [

@@ -40,6 +40,31 @@ rather than played. Honest residue: an abandoned cloud transcription or
 speech request is given up on without closing its socket (the SDK exposes no
 per-request cancel), and its result is never used.
 
+## Chunked speech
+
+A multi-sentence reply is spoken sentence by sentence (A9). The final response
+is split deterministically with the standard library (`sentence_chunks` in
+`stella/audio_output.py`: terminal punctuation and blank-line paragraph breaks,
+with abbreviation, initial and decimal guards, and tiny fragments absorbed into
+their neighbour). The worker thread synthesizes one chunk at a time while a
+playback thread plays and removes each artifact as it arrives — because local
+synthesis runs faster than real time, the first sentence starts speaking after
+one sentence of rendering instead of after the whole reply. A single-sentence
+reply takes the ordinary whole-file path unchanged.
+
+The consequences users should know:
+
+- **Stop speaking** ends the whole spoken reply — the sentence playing now and
+  the sentences only queued — never just the current one; the underlying
+  decision is still untouched.
+- **Cancel** silences a chunked reply the same way: the in-flight synthesis is
+  abandoned, queued audio is discarded, and nothing further reaches a speaker.
+- If synthesis fails mid-reply, the sentences already rendered are still
+  spoken, one honest error line reports the rest, and the text response stays
+  fully available.
+- Chunk order is reply order; every artifact is removed once heard, and a
+  newer reply retires the previous reply's unplayed queue.
+
 ## UI states
 
 The status line distinguishes "Listening...", "Transcribing...",
@@ -54,7 +79,8 @@ actually running, and speech is only claimed after a transcript was produced.
   listening, no wake word, no background recording.
 - **Cancel** — while listening, abort the current recording without
   transcribing it; while transcribing, abandon the transcription in flight.
-- **Stop speaking** — end the current playback; the turn is unaffected.
+- **Stop speaking** — end the current spoken reply (playing sentence and
+  queued ones); the turn is unaffected.
 - **Speak replies** — toggle speech output; it defaults to off.
 
 The microphone and speech buttons are disabled when the corresponding
@@ -120,6 +146,7 @@ decision path.
 - `espeak` output is a fixed robotic voice and follows the text's language as
   best it can; there is no voice selection beyond `STELLA_SPEECH_VOICE` on the
   OpenAI path.
-- Playback is one subprocess per artifact and sequential; stopping is immediate
-  but there is no queue management.
+- Playback is one subprocess per chunk and strictly sequential; a chunked
+  reply keeps at most a few synthesized sentences ahead of the speakers.
+  There is still no mixing, ducking, or overlap between artifacts.
 - Voice mode is desktop-UI only; the CLI remains text-only.

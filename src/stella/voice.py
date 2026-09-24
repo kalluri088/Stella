@@ -417,6 +417,7 @@ class CommandSpeechProvider(SpeechProvider):
         self._template = list(template)
         self._timeout = timeout
         self._directory = tempfile.mkdtemp(prefix="stella-speech-")
+        self._counter = 0
         self._process: subprocess.Popen[str] | None = None
         self._cancel_requested = False
         self._lock = threading.Lock()
@@ -432,7 +433,12 @@ class CommandSpeechProvider(SpeechProvider):
 
     def speak(self, output: SpeechOutput) -> SpeechArtifact:
         bounded = output.text[:MAX_SPEECH_TEXT_CHARS]
-        path = os.path.join(self._directory, f"reply-{os.getpid()}.wav")
+        # One fresh file per call: an earlier artifact may still be queued
+        # for or occupying playback when the next sentence is synthesized.
+        self._counter += 1
+        path = os.path.join(
+            self._directory, f"reply-{self._counter}-{os.getpid()}.wav"
+        )
         argv = [
             part.replace("{text}", bounded).replace("{output}", path)
             for part in self._template

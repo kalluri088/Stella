@@ -20,11 +20,11 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from stella.audio import TranscriptionProvider
-from stella.audio_output import SpeechProvider
+from stella.audio_output import SpeechProvider, sentence_chunks
 from stella.brain import LLMBrain
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
@@ -1236,6 +1236,11 @@ class ReminderScheduler:
         self._thread.join(timeout=2)
 
 
+# Closes a chunked reply's play queue; no generated artifact path can
+# contain a NUL, so this sentinel string can never collide with one.
+_END_OF_SPEECH = "\x00stella-end-of-speech"
+
+
 class StellaBridge:
     """Serialise all UI requests onto one worker thread that owns Stella.
 
@@ -1264,6 +1269,8 @@ class StellaBridge:
         self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
         self._playback: threading.Thread | None = None
+        self._speech_interrupt: threading.Event | None = None
+        self._speech_consumer: threading.Thread | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._turn_cancel = threading.Event()
         self._events: queue.Queue[UiEvent] = queue.Queue()
@@ -1392,8 +1399,19 @@ class StellaBridge:
 
         self._turn_cancel.set()
         self.approvals.deny_outstanding()
+        self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
+
+    def _interrupt_speech(self) -> None:
+        """Retire the current chunked reply's audio, never its decision.
+
+        Callable from any thread: an :class:`threading.Event` is
+        thread-safe, and it only stops sound that has not been heard yet.
+        """
+
+        if self._speech_interrupt is not None:
+            self._speech_interrupt.set()
 
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
@@ -1515,8 +1533,12 @@ class StellaBridge:
         Playback is a peripheral sound process, not Stella state: the
         worker may be busy elsewhere, and stopping speech must never
         cancel or alter the decision that already produced the response.
+        For a chunked reply this silences the whole reply — the sound
+        playing now and the sentences only queued — because "stop
+        speaking" was never a request to pause until the next sentence.
         """
 
+        self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
 
@@ -1533,6 +1555,13 @@ class StellaBridge:
         if self._should_cancel():
             # A cancelled turn never grows a voice: the user asked to
             # stop, so nothing is synthesized and nothing is played.
+            return
+        chunks = sentence_chunks(outcome.response)
+        if len(chunks) > 1:
+            # A9: the first sentence should be speaking while the rest
+            # is still being synthesized; whole-file speech made the
+            # user wait for every character before hearing any.
+            self._speak_chunks(panel, outcome.result, chunks)
             return
         try:
             path = panel.synthesize(outcome.result, self._should_cancel)
@@ -1584,6 +1613,128 @@ class StellaBridge:
             target=play, name="stella-playback", daemon=True
         )
         self._playback.start()
+
+    def _speak_chunks(
+        self, panel: VoicePanel, result: StellaResult, chunks: list[str]
+    ) -> None:
+        """Speak one multi-sentence reply chunk by chunk.
+
+        The worker thread stays the producer: it synthesizes one
+        sentence at a time — chunk k+1 renders while chunk k plays,
+        because local speech is faster than real time — while a
+        consumer thread plays and disposes each artifact in order. An
+        interrupt event ("Stop speaking", a cancel, shutdown, or a
+        newer reply) drains the queue unsaid; the decision and its text
+        are never touched.
+        """
+
+        # Retire any previous chunked consumer before this reply can
+        # contend for the one-at-a-time player. There is never a
+        # previous producer to retire: it is this very thread.
+        self._interrupt_speech()
+        interrupt = threading.Event()
+        self._speech_interrupt = interrupt
+
+        def stopped() -> bool:
+            return self._should_cancel() or interrupt.is_set()
+
+        outbox: queue.Queue[str] = queue.Queue(maxsize=3)
+
+        def consume() -> None:
+            while True:
+                item = outbox.get()
+                if item == _END_OF_SPEECH:
+                    break
+                if interrupt.is_set():
+                    panel.dispose_artifact(item)
+                    continue
+                try:
+                    panel.play(item)
+                except VoiceError as error:
+                    # One honest report, then the rest goes unsaid: a
+                    # failing player will not recover mid-reply.
+                    self._emit("voice_error", str(error))
+                    interrupt.set()
+                except BaseException as error:  # noqa: BLE001 - report, never crash
+                    detail = " ".join(str(error).split()) or type(error).__name__
+                    self._emit(
+                        "voice_error",
+                        f"Stella could not play the response ({detail[:120]}).",
+                    )
+                    interrupt.set()
+                finally:
+                    panel.dispose_artifact(item)
+            self._emit("voice_state", "idle")
+
+        try:
+            first = panel.synthesize(
+                replace(result, response=chunks[0]), stopped
+            )
+        except ProviderRequestCancelled:
+            # Cancelled mid-synthesis: silence is the requested outcome.
+            return
+        except VoiceError as error:
+            self._emit("voice_error", str(error))
+            return
+        except Exception as error:  # noqa: BLE001 - friendly text, never a trace
+            detail = " ".join(str(error).split()) or type(error).__name__
+            self._emit(
+                "voice_error",
+                f"Stella could not prepare speech ({detail[:120]}). "
+                "The text response is still available.",
+            )
+            return
+        if stopped():
+            # Discard the tail: nothing of a cancelled reply reaches
+            # a speaker.
+            panel.dispose_artifact(first)
+            return
+        # A new reply may interrupt still-playing audio; that cancels only
+        # playback, never any Stella decision. The joins keep the old
+        # threads' "idle" events ordered before the new "speaking" state.
+        panel.cancel_playback()
+        if self._playback is not None:
+            self._playback.join(timeout=2)
+        if self._speech_consumer is not None:
+            self._speech_consumer.join(timeout=2)
+        self._emit("voice_state", "speaking")
+        outbox.put(first)
+        self._speech_consumer = threading.Thread(
+            target=consume, name="stella-speech-playback", daemon=True
+        )
+        self._speech_consumer.start()
+        try:
+            for chunk in chunks[1:]:
+                if stopped():
+                    break
+                try:
+                    path = panel.synthesize(
+                        replace(result, response=chunk), stopped
+                    )
+                except ProviderRequestCancelled:
+                    break
+                except VoiceError as error:
+                    # Sentences already heard stay heard; the text
+                    # response remains fully available either way.
+                    self._emit("voice_error", str(error))
+                    break
+                except Exception as error:  # noqa: BLE001 - friendly text
+                    detail = " ".join(str(error).split()) or type(error).__name__
+                    self._emit(
+                        "voice_error",
+                        f"Stella could not prepare speech ({detail[:120]}). "
+                        "The text response is still available.",
+                    )
+                    break
+                if stopped():
+                    panel.dispose_artifact(path)
+                    break
+                outbox.put(path)
+        finally:
+            # The consumer exits only on this sentinel, so every
+            # synthesized artifact is either played and disposed or
+            # drained and disposed.
+            outbox.put(_END_OF_SPEECH)
 
     def post_memories(self, query: str | None = None) -> None:
         def handle() -> None:
@@ -1709,12 +1860,15 @@ class StellaBridge:
             self._scheduler.stop()
             self._scheduler = None
         self.approvals.deny_outstanding()
+        self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
         self._post(None)
         self._thread.join(timeout=5)
         if self._playback is not None:
             self._playback.join(timeout=2)
+        if self._speech_consumer is not None:
+            self._speech_consumer.join(timeout=2)
         if self._application is not None:
             try:
                 self._application.close()

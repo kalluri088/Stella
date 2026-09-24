@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Speech starts speaking while the reply is still being written out
+
+- **Sentence by sentence** — a multi-sentence spoken reply is now
+  synthesized one sentence at a time and played from a queue: the
+  first sentence reaches the speakers after roughly one sentence of
+  rendering instead of after the whole reply (measured ~10.7 s →
+  ~1–2 s first-audio on local synthesis, which renders faster than
+  real time). Single-sentence replies behave exactly as before.
+- **Stop speaking means stop** — the button (and **Cancel**) now
+  silences the entire spoken reply: the sentence playing and the
+  sentences only queued, which are discarded unplayed. The underlying
+  decision is still never touched.
+- **Honest partial speech** — if synthesis fails mid-reply, the
+  sentences already rendered are still spoken, one error line says
+  the rest could not be prepared, and the text response remains fully
+  available. Every played or drained artifact is deleted; command
+  providers now name each synthesis uniquely so queued audio can never
+  overwrite a sentence still playing.
+
 ### Persona writes became reversible
 
 - **Every replacement keeps a snapshot** — before an approved

@@ -127,6 +127,20 @@ working and helping me, even if not the fastest."
   transcription/speech request is given up on without a socket
   close (no per-request cancel exists); Tier-2 barge-in (continuous
   mic + VAD) remains out of scope.
+- **A9. Chunked speech synthesis — done.** Whole-file speech made the
+  user wait out every character of a reply before hearing any: a
+  multi-sentence answer cost one full synthesis (measured ~10.7 s
+  first-audio on local Kokoro). Now `sentence_chunks`
+  (`stella/audio_output.py`, stdlib `re`, abbreviation/decimal guards)
+  splits the final response, `_speak_chunks` synthesizes sentence by
+  sentence on the worker while a consumer thread plays and disposes
+  each artifact — first audio lands after one sentence of rendering
+  (~1–2 s), because synthesis is faster than real time. **Stop
+  speaking** ends the whole spoken reply (playing + queued), a cancel
+  drains and discards the queue, mid-reply synthesis failures speak
+  what they have plus one honest error line, and single-sentence
+  replies take the byte-identical legacy path. Token-level streaming
+  and barge-in stay out of scope.
 
 ## Stage B — sharper judgment and scale
 

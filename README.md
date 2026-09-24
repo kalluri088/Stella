@@ -195,7 +195,7 @@ With the local Ollama setup, nothing ever leaves your machine.
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, wake words, autonomous agents, cloud accounts…)
-- `tests/` — 969 tests; every "done" claim in this README is checked by one
+- `tests/` — 982 tests; every "done" claim in this README is checked by one
 
 ## Found a problem?
 

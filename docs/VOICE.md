@@ -32,6 +32,14 @@ playback fails, the text response remains fully available. Playback can be
 stopped with **Stop speaking**; that cancels the audio only and never alters
 the underlying Stella decision or its history entry.
 
+The whole voice periphery is cancellable. **Cancel** during "Transcribing..."
+abandons the capture and a running local transcription command within about a
+second, reporting that nothing was sent. **Cancel** during a turn also
+silences spoken audio, and speech synthesized around a cancel is discarded
+rather than played. Honest residue: an abandoned cloud transcription or
+speech request is given up on without closing its socket (the SDK exposes no
+per-request cancel), and its result is never used.
+
 ## UI states
 
 The status line distinguishes "Listening...", "Transcribing...",
@@ -44,7 +52,8 @@ actually running, and speech is only claimed after a transcript was produced.
 
 - **Listen / Stop** — start or stop one explicit recording. No continuous
   listening, no wake word, no background recording.
-- **Cancel** — abort the current recording without transcribing it.
+- **Cancel** — while listening, abort the current recording without
+  transcribing it; while transcribing, abandon the transcription in flight.
 - **Stop speaking** — end the current playback; the turn is unaffected.
 - **Speak replies** — toggle speech output; it defaults to off.
 

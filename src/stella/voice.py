@@ -54,6 +54,35 @@ class VoiceError(RuntimeError):
     """One friendly, user-facing voice failure. Never carries a trace."""
 
 
+def _cancel_process_tree(process: subprocess.Popen) -> None:
+    """Best-effort SIGINT → terminate → kill ladder for one command.
+
+    Runs on the cancelling thread and is bounded to about a second: a
+    well-behaved command exits on the first signal, and anything that
+    ignores the polite ones is killed. ``cancel_requested`` on the
+    provider turns the resulting non-zero exit into an honest
+    "cancelled" error rather than a "failed" one.
+    """
+
+    steps = (
+        (lambda: process.send_signal(signal.SIGINT), 0.25),
+        (process.terminate, 0.25),
+        (process.kill, 0.5),
+    )
+    for action, wait_seconds in steps:
+        try:
+            action()
+        except OSError:
+            pass  # already gone (or unkillable): the wait below decides
+        try:
+            process.wait(timeout=wait_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+        except OSError:
+            return
+
+
 class Recorder(ABC):
     """One explicit start/stop recording session. Never continuous."""
 
@@ -266,6 +295,24 @@ class CommandTranscriptionProvider(TranscriptionProvider):
             )
         self._template = list(template)
         self._timeout = timeout
+        self._process: subprocess.Popen[str] | None = None
+        self._cancel_requested = False
+        self._lock = threading.Lock()
+
+    def cancel(self) -> None:
+        """Abort a running transcription command (A8: cancel reaches voice).
+
+        Safe to call from any thread while :meth:`transcribe` blocks on the
+        worker thread; it touches only this command's own process.
+        """
+
+        with self._lock:
+            process = self._process
+            # Mark intent first: a killed command must report honestly that
+            # it was cancelled, not that it failed.
+            self._cancel_requested = True
+        if process is not None:
+            _cancel_process_tree(process)
 
     def transcribe(self, audio: InputPart) -> str:
         if audio.modality is not InputModality.AUDIO:
@@ -274,12 +321,12 @@ class CommandTranscriptionProvider(TranscriptionProvider):
             raise VoiceError("the recording has no readable reference.")
         argv = [part.replace("{input}", audio.reference) for part in self._template]
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 argv,
-                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self._timeout,
-                check=False,
             )
         except FileNotFoundError as error:
             raise VoiceError(
@@ -289,11 +336,34 @@ class CommandTranscriptionProvider(TranscriptionProvider):
             raise VoiceError(
                 f"Local transcription failed ({error})."
             ) from error
+        with self._lock:
+            self._process = process
+        timed_out = False
+        try:
+            stdout, _stderr = process.communicate(timeout=self._timeout)
         except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            stdout, _stderr = process.communicate()
+        except OSError as error:
+            raise VoiceError(
+                f"Local transcription failed ({error})."
+            ) from error
+        finally:
+            with self._lock:
+                self._process = None
+                cancelled = self._cancel_requested
+                # One intent lives for one run: a cancel that arrived
+                # before the spawn still discards this result (honest,
+                # never invented), and the next run starts unmarked.
+                self._cancel_requested = False
+        if timed_out:
             raise VoiceError("Local transcription took too long.")
-        if completed.returncode != 0:
+        if cancelled:
+            raise VoiceError("Local transcription was cancelled.")
+        if process.returncode != 0:
             raise VoiceError("Local transcription failed.")
-        return completed.stdout
+        return stdout
 
 
 class OpenAITranscriptionProvider(TranscriptionProvider):
@@ -347,6 +417,18 @@ class CommandSpeechProvider(SpeechProvider):
         self._template = list(template)
         self._timeout = timeout
         self._directory = tempfile.mkdtemp(prefix="stella-speech-")
+        self._process: subprocess.Popen[str] | None = None
+        self._cancel_requested = False
+        self._lock = threading.Lock()
+
+    def cancel(self) -> None:
+        """Abort a running synthesis command; touches only its own process."""
+
+        with self._lock:
+            process = self._process
+            self._cancel_requested = True
+        if process is not None:
+            _cancel_process_tree(process)
 
     def speak(self, output: SpeechOutput) -> SpeechArtifact:
         bounded = output.text[:MAX_SPEECH_TEXT_CHARS]
@@ -356,12 +438,12 @@ class CommandSpeechProvider(SpeechProvider):
             for part in self._template
         ]
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 argv,
-                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self._timeout,
-                check=False,
             )
         except FileNotFoundError as error:
             raise VoiceError(
@@ -369,9 +451,27 @@ class CommandSpeechProvider(SpeechProvider):
             ) from error
         except OSError as error:
             raise VoiceError(f"Local speech failed ({error}).") from error
+        with self._lock:
+            self._process = process
+        timed_out = False
+        try:
+            process.communicate(timeout=self._timeout)
         except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            process.communicate()
+        except OSError as error:
+            raise VoiceError(f"Local speech failed ({error}).") from error
+        finally:
+            with self._lock:
+                self._process = None
+                cancelled = self._cancel_requested
+                self._cancel_requested = False
+        if timed_out:
             raise VoiceError("Local speech took too long.")
-        if completed.returncode != 0 or not os.path.exists(path):
+        if cancelled:
+            raise VoiceError("Local speech was cancelled.")
+        if process.returncode != 0 or not os.path.exists(path):
             raise VoiceError("Local speech failed.")
         return SpeechArtifact(reference=path)
 

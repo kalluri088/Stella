@@ -32,7 +32,7 @@ from stella.audio import TranscriptionProvider
 from stella.audio_output import SpeechArtifact, SpeechOutput, SpeechProvider
 from stella.brain import Brain, Decision, DecisionKind
 from stella.context import Context, InputModality, InputPart, InputProvenance
-from stella.llm import LLMClient, Message
+from stella.llm import LLMClient, Message, ProviderRequestCancelled
 from stella.memory import InMemoryMemory
 from stella.stella import Stella, StellaResult
 from stella.tools import (
@@ -1028,3 +1028,372 @@ def test_tts_output_is_not_an_authority_source() -> None:
     turn = next(event for event in events if event.kind == "turn")
     assert turn.payload.response == "the action completed"
     bridge.stop()
+
+
+# ------------------------------------------------- A8: cancellable periphery
+
+
+SLOW_COMMAND_SOURCE = "import time; time.sleep(30); print('too late')"
+
+
+def _two_answers() -> list[Decision]:
+    # ScriptedBrain pops its decisions, so two-turn tests need two.
+    return [
+        Decision(kind=DecisionKind.ANSWER, content="noted"),
+        Decision(kind=DecisionKind.ANSWER, content="noted"),
+    ]
+
+
+def _audio_part() -> InputPart:
+    return InputPart(
+        modality=InputModality.AUDIO,
+        provenance=InputProvenance.USER,
+        reference="/tmp/whatever.wav",
+    )
+
+
+def test_transcription_command_cancel_kills_the_running_command() -> None:
+    provider = CommandTranscriptionProvider(
+        [sys.executable, "-c", SLOW_COMMAND_SOURCE, "{input}"], timeout=30
+    )
+    errors: dict[str, BaseException] = {}
+
+    def run() -> None:
+        try:
+            provider.transcribe(_audio_part())
+        except BaseException as error:  # noqa: BLE001 - inspected below
+            errors["error"] = error
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.4)  # let the command actually spawn
+    started = time.monotonic()
+    provider.cancel()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    # Abandonment is measured in fractions of a second, not the timeout.
+    assert time.monotonic() - started < 2
+    assert isinstance(errors.get("error"), VoiceError)
+    assert "cancelled" in str(errors["error"])
+
+
+def test_speech_command_cancel_kills_the_running_command() -> None:
+    provider = CommandSpeechProvider(
+        [sys.executable, "-c", SLOW_COMMAND_SOURCE, "{text}", "{output}"],
+        timeout=30,
+    )
+    errors: dict[str, BaseException] = {}
+
+    def run() -> None:
+        try:
+            provider.speak(SpeechOutput(text="hello"))
+        except BaseException as error:  # noqa: BLE001 - inspected below
+            errors["error"] = error
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.4)
+    started = time.monotonic()
+    provider.cancel()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert time.monotonic() - started < 2
+    assert isinstance(errors.get("error"), VoiceError)
+    assert "cancelled" in str(errors["error"])
+    provider.dispose()
+
+
+def test_cancel_intent_before_spawn_still_discards_the_result() -> None:
+    # A cancel that lands between queueing and spawning must never be
+    # silently erased by the run it was meant to stop.
+    provider = CommandTranscriptionProvider(
+        [sys.executable, "-c", "print('spoken')", "{input}"], timeout=30
+    )
+    provider.cancel()  # no process yet: only the intent is recorded
+    with pytest.raises(VoiceError, match="cancelled"):
+        provider.transcribe(_audio_part())
+    # The intent lives for exactly one run: the next one is normal.
+    assert provider.transcribe(_audio_part()).strip() == "spoken"
+
+
+class HangingTranscriber(TranscriptionProvider):
+    """Stands in for a transcription call that does not return."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def transcribe(self, audio: InputPart) -> str:
+        self.entered.set()
+        self.release.wait(10)
+        return "too late"
+
+
+class CancellingTranscriber(HangingTranscriber):
+    """Like the command providers: cancel() releases the blocked call."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancels = 0
+
+    def cancel(self) -> None:
+        self.cancels += 1
+        self.release.set()
+
+
+def test_panel_transcription_cancel_kills_recorder_and_command() -> None:
+    recorder = FakeRecorder()
+    transcriber = CancellingTranscriber()
+    panel = make_panel(recorder=recorder, transcriber=transcriber)
+    recorder.start()
+
+    # An already-set flag: the very first poll abandons the call.
+    with pytest.raises(ProviderRequestCancelled):
+        panel.stop_and_transcribe(lambda: True)
+
+    assert recorder.cancelled == 1
+    assert transcriber.cancels == 1
+
+
+def test_panel_transcription_without_a_cancel_is_unchanged() -> None:
+    # should_cancel=None must run the exact plain path: no helper thread,
+    # no new failure modes, the same transcript as before A8.
+    recorder = FakeRecorder()
+    panel = make_panel(recorder=recorder, transcriber=FakeTranscriber())
+    recorder.start()
+
+    assert panel.stop_and_transcribe() == "hello voice"
+
+
+def test_panel_synthesis_cancel_abandons_without_an_artifact() -> None:
+    class HangingSpeech(FakeSpeech):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def speak(self, output: SpeechOutput) -> SpeechArtifact:
+            self.entered.set()
+            self.release.wait(10)
+            return super().speak(output)
+
+    speech = HangingSpeech()
+    panel = make_panel(speech=speech)
+    result = StellaResult(
+        decision=Decision(kind=DecisionKind.ANSWER), response="spoken words"
+    )
+
+    with pytest.raises(ProviderRequestCancelled):
+        panel.synthesize(result, lambda: True)
+
+    assert speech.spoken == []
+    speech.release.set()
+    panel.dispose()
+
+
+def make_voice_bridge_with_transcriber(
+    transcriber: TranscriptionProvider,
+) -> tuple[StellaBridge, FakeRecorder]:
+    recorder = FakeRecorder()
+    panel = make_panel(recorder=recorder, transcriber=transcriber)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    return bridge, recorder
+
+
+def test_cancel_during_transcribing_reports_honestly_and_starts_no_turn() -> (
+    None
+):
+    transcriber = HangingTranscriber()
+    bridge, recorder = make_voice_bridge_with_transcriber(transcriber)
+    try:
+        bridge.post_listen_start()
+        wait_for_voice_state(bridge, "listening")
+        bridge.post_listen_stop()
+        wait_for_voice_state(bridge, "transcribing")
+        assert transcriber.entered.wait(2)
+
+        bridge.cancel_current_turn()
+        events = wait_for_event(bridge, "voice_error")
+
+        error = next(
+            event.payload for event in events if event.kind == "voice_error"
+        )
+        assert "cancelled at your request" in error
+        assert "Nothing was sent" in error
+        # No turn ever started for a cancelled transcript.
+        assert not any(event.kind == "turn" for event in events)
+        assert recorder.cancelled == 1
+    finally:
+        transcriber.release.set()
+        bridge.stop()
+
+
+def test_cancel_raised_during_transcription_survives_into_the_turn() -> None:
+    class SelfCancellingTranscriber(TranscriptionProvider):
+        """Returns a transcript while flagging a cancel (the race)."""
+
+        def __init__(self) -> None:
+            self.bridge: StellaBridge | None = None
+
+        def transcribe(self, audio: InputPart) -> str:
+            assert self.bridge is not None
+            self.bridge.cancel_current_turn()
+            return "words that arrived too late"
+
+    transcriber = SelfCancellingTranscriber()
+    recorder = FakeRecorder()
+    panel = make_panel(recorder=recorder, transcriber=transcriber)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    transcriber.bridge = bridge
+    try:
+        # The transcript wins the race, so the turn starts anyway — but
+        # the cancel raised during transcription must not be erased: the
+        # turn ends cancelled instead of answering as if nothing happened.
+        bridge.post_listen_start()
+        wait_for_voice_state(bridge, "listening")
+        bridge.post_listen_stop()
+        events = wait_for_event(bridge, "turn")
+        outcome = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+
+        assert outcome.cancelled is True
+        assert outcome.response is None
+    finally:
+        bridge.stop()
+
+
+def test_cancel_stops_spoken_audio_without_touching_the_finished_turn() -> (
+    None
+):
+    hold = threading.Event()
+    player = FakePlayer(hold=hold)
+    panel = make_panel(speech=FakeSpeech(), player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    try:
+        bridge.post_turn("hello")
+        events = wait_for_voice_state(bridge, "speaking")
+        # The finished turn stands on its own: Cancel only silences.
+        turn = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+        assert turn.response == "the action completed"
+        assert turn.cancelled is False
+        stops_before = player.stops
+
+        bridge.cancel_current_turn()
+
+        deadline = time.monotonic() + 2
+        while player.stops == stops_before and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert player.stops > stops_before
+        hold.set()
+        # The playback thread still cleans up after the stopped audio.
+        wait_for_voice_state(bridge, "idle")
+    finally:
+        hold.set()
+        bridge.stop()
+
+
+def test_cancel_mid_synthesis_stays_silent_and_never_plays() -> None:
+    class HangingSpeech(FakeSpeech):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def speak(self, output: SpeechOutput) -> SpeechArtifact:
+            self.entered.set()
+            self.release.wait(10)
+            return super().speak(output)
+
+    speech = HangingSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_answer_stella(decisions=_two_answers()), panel
+    )
+    try:
+        bridge.post_turn("hello")
+        events = wait_for_event(bridge, "turn")
+        assert speech.entered.wait(2)
+
+        bridge.cancel_current_turn()
+        # The abandoned synthesis must end in silence: no error line, no
+        # speaking state, no playback — the user asked to stop.
+        time.sleep(0.6)  # comfortably past the 0.25 s abandon poll
+        while True:
+            drained = bridge.poll()
+            if not drained:
+                break
+            events.extend(drained)
+        assert not any(
+            event.kind == "voice_state" and event.payload == "speaking"
+            for event in events
+        )
+        assert not any(event.kind == "voice_error" for event in events)
+
+        # The follow-up turn behaves exactly like a normal one.
+        speech.release.set()
+        bridge.post_turn("still there?")
+        events = wait_for_voice_state(bridge, "idle")
+        turn = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+        assert turn.response == "the action completed"
+        # Only turn 2 ever reached a speaker.
+        assert len(player.played) == 1
+    finally:
+        speech.release.set()
+        bridge.stop()
+
+
+def test_cancel_just_after_synthesis_discards_the_artifact() -> None:
+    class LateCancellingSpeech(FakeSpeech):
+        """The artifact lands at the same moment as the cancel."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.bridge: StellaBridge | None = None
+
+        def speak(self, output: SpeechOutput) -> SpeechArtifact:
+            artifact = super().speak(output)
+            if self.bridge is not None:
+                # One-shot: only turn 1 cancels at this instant, so the
+                # follow-up turn can prove the normal behaviour remains.
+                self.bridge.cancel_current_turn()
+                self.bridge = None
+            return artifact
+
+    speech = LateCancellingSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_answer_stella(decisions=_two_answers()), panel
+    )
+    speech.bridge = bridge
+    try:
+        bridge.post_turn("hello")
+        events = wait_for_event(bridge, "turn")
+        assert not any(
+            event.kind == "voice_state" and event.payload == "speaking"
+            for event in events
+        )
+
+        # The discard must be complete before anything else runs: a
+        # follow-up turn serializes the worker and behaves normally.
+        bridge.post_turn("hello again")
+        events = wait_for_voice_state(bridge, "idle")
+
+        # Discard the tail: turn 1's audio never reached a speaker…
+        assert len(player.played) == 1
+        # …and its file was removed rather than left behind (the directory
+        # is empty again only because turn 2's playback cleaned up too).
+        assert os.listdir(speech.directory) == []
+    finally:
+        bridge.stop()

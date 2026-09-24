@@ -151,6 +151,10 @@ Normal users never need any of these.
   second), but never an action that has started executing — that step
   lands first. A cancelled turn is discarded and never remembered as
   having happened. (In the terminal, Ctrl+C does the same job.)
+- A voice turn is cancellable end to end: **Cancel** next to Listen drops
+  a recording that is still being transcribed (nothing is sent to Stella),
+  and **Cancel** also silences audio that is being spoken. Speech
+  produced around a cancel is discarded, never played.
 - The tabs manage **Memories**, **Reminders**, **History** and **Settings**.
 
 ## Where your data lives

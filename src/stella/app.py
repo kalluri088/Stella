@@ -34,7 +34,12 @@ from stella.context import (
     InputProvenance,
 )
 from stella.history import SQLiteActionHistory
-from stella.llm import Message
+from stella.llm import (
+    CancelCheck,
+    Message,
+    ProviderRequestCancelled,
+    run_cancellable,
+)
 from stella.memory import Memory, MemoryItem, SQLiteMemory
 from stella.minilm_embedding import (
     MiniLMEmbeddingProvider,
@@ -818,54 +823,96 @@ class VoicePanel:
             )
         self._recorder.start()
 
-    def stop_and_transcribe(self) -> str:
-        """Finish one recording and return its transcript, or raise."""
+    def stop_and_transcribe(
+        self, should_cancel: CancelCheck | None = None
+    ) -> str:
+        """Finish one recording and return its transcript, or raise.
 
-        if self._recorder is None or self._transcriber is None:
+        ``should_cancel`` (A8) makes the whole pre-turn window — finishing
+        the capture and running transcription — abandonable: on a cancel
+        the capture process and a cancellable transcription command are
+        killed, and :class:`ProviderRequestCancelled` is raised. A
+        cancelled transcript is never replaced with invented text.
+        """
+
+        recorder, transcriber = self._recorder, self._transcriber
+        if recorder is None or transcriber is None:
             raise VoiceError(
                 self._input_notice
                 or "Voice input is not available in this configuration."
             )
-        try:
-            path = self._recorder.stop()
-            # The audio part carries only the bounded temporary reference;
-            # raw audio never enters the conversation or history.
-            part = InputPart(
-                modality=InputModality.AUDIO,
-                provenance=InputProvenance.USER,
-                reference=path,
-            )
-            transcript = self._transcriber.transcribe(part)
-        except VoiceError:
-            raise
-        except Exception as error:  # friendly text, never a trace
-            detail = " ".join(str(error).split()) or type(error).__name__
-            raise VoiceError(
-                f"Transcription failed ({detail[:120]}). Nothing was sent "
-                "to Stella."
-            ) from error
-        finally:
-            self._recorder.dispose()
-        if not isinstance(transcript, str) or not transcript.strip():
-            raise VoiceError(
-                "No speech was recognized. Nothing was sent to Stella."
-            )
-        return transcript.strip()[:MAX_INPUT_CONTENT_CHARS]
+
+        def work() -> str:
+            try:
+                path = recorder.stop()
+                # The audio part carries only the bounded temporary
+                # reference; raw audio never enters the conversation.
+                part = InputPart(
+                    modality=InputModality.AUDIO,
+                    provenance=InputProvenance.USER,
+                    reference=path,
+                )
+                transcript = transcriber.transcribe(part)
+            except VoiceError:
+                raise
+            except Exception as error:  # friendly text, never a trace
+                detail = " ".join(str(error).split()) or type(error).__name__
+                raise VoiceError(
+                    f"Transcription failed ({detail[:120]}). Nothing was "
+                    "sent to Stella."
+                ) from error
+            finally:
+                recorder.dispose()
+            if not isinstance(transcript, str) or not transcript.strip():
+                raise VoiceError(
+                    "No speech was recognized. Nothing was sent to Stella."
+                )
+            return transcript.strip()[:MAX_INPUT_CONTENT_CHARS]
+
+        def abort() -> None:
+            # Best-effort transport stops only: killing the capture
+            # process and (for command providers) the running transcription
+            # command. Cloud providers expose no handle and are abandoned.
+            recorder.cancel()
+            cancel_command = getattr(transcriber, "cancel", None)
+            if cancel_command is not None:
+                cancel_command()
+
+        return run_cancellable(work, should_cancel, on_cancel=abort)
 
     def abandon_listening(self) -> None:
         if self._recorder is not None:
             self._recorder.cancel()
 
-    def synthesize(self, result: StellaResult) -> str:
-        """Render one existing final response and return its artifact."""
+    def synthesize(
+        self, result: StellaResult, should_cancel: CancelCheck | None = None
+    ) -> str:
+        """Render one existing final response and return its artifact.
 
-        if self._speech is None:
+        ``should_cancel`` (A8) abandons a running synthesis: a command
+        provider's process is killed and :class:`ProviderRequestCancelled`
+        is raised, so no artifact is ever handed to playback.
+        """
+
+        speech = self._speech
+        if speech is None:
             raise VoiceError(
                 self._output_notice
                 or "Voice output is not available right now."
             )
-        artifact = Stella.speak(result, self._speech)
-        return artifact.reference
+
+        def work() -> str:
+            artifact = Stella.speak(result, speech)
+            return artifact.reference
+
+        def abort() -> None:
+            # Cloud providers expose no handle; their partial artifact
+            # stays in the provider temp dir and is swept at shutdown.
+            cancel_command = getattr(speech, "cancel", None)
+            if cancel_command is not None:
+                cancel_command()
+
+        return run_cancellable(work, should_cancel, on_cancel=abort)
 
     def play(self, path: str) -> None:
         if self._player is None:
@@ -1323,6 +1370,10 @@ class StellaBridge:
 
     def post_turn(self, user_input: str) -> None:
         def handle() -> None:
+            # Clear at submission: this turn owns the flag from here on,
+            # and a cancel that arrived for an earlier turn can never be
+            # blamed on (or erased by) this one mid-flight.
+            self._turn_cancel.clear()
             self._speak_after(self._handle_turn(user_input))
 
         self._post(handle)
@@ -1331,21 +1382,24 @@ class StellaBridge:
         """Ask the running turn to stop at its next safe point.
 
         Callable from any thread (the UI button presses it while the
-        worker is busy): it only sets a flag and denies any outstanding
+        worker is busy): it only sets a flag, denies any outstanding
         approval — the canonical safe answer the broker already uses when
-        the application exits. It never approves, executes, or interrupts
+        the application exits — and stops any spoken audio, because a
+        user who cancels should hear silence within a tick, not the tail
+        of a discarded turn. It never approves, executes, or interrupts
         an action that is already in flight.
         """
 
         self._turn_cancel.set()
         self.approvals.deny_outstanding()
+        if self._voice is not None:
+            self._voice.cancel_playback()
 
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
 
     def _handle_turn(self, user_input: str) -> TurnOutcome:
         session = self._require_session()
-        self._turn_cancel.clear()
         self._check_due_reminders()
         outcome = session.run_turn(user_input, should_cancel=self._should_cancel)
         self._emit("turn", outcome)
@@ -1424,9 +1478,19 @@ class StellaBridge:
                     "Voice input is not available in this configuration.",
                 )
                 return
+            self._turn_cancel.clear()
             self._emit("voice_state", "transcribing")
             try:
-                transcript = panel.stop_and_transcribe()
+                transcript = panel.stop_and_transcribe(self._should_cancel)
+            except ProviderRequestCancelled:
+                # The user stopped the voice input itself: nothing was
+                # sent, nothing was invented, and no turn starts.
+                self._emit(
+                    "voice_error",
+                    "Voice input was cancelled at your request. Nothing "
+                    "was sent to Stella.",
+                )
+                return
             except VoiceError as error:
                 # A failed transcript is never replaced with invented text.
                 self._emit("voice_error", str(error))
@@ -1466,8 +1530,16 @@ class StellaBridge:
             or not panel.output_available
         ):
             return
+        if self._should_cancel():
+            # A cancelled turn never grows a voice: the user asked to
+            # stop, so nothing is synthesized and nothing is played.
+            return
         try:
-            path = panel.synthesize(outcome.result)
+            path = panel.synthesize(outcome.result, self._should_cancel)
+        except ProviderRequestCancelled:
+            # Cancelled mid-synthesis: silence is the requested outcome,
+            # not a failure to report.
+            return
         except VoiceError as error:
             # The text response stays visible and untouched.
             self._emit("voice_error", str(error))
@@ -1479,6 +1551,11 @@ class StellaBridge:
                 f"Stella could not prepare speech ({detail[:120]}). "
                 "The text response is still available.",
             )
+            return
+        if self._should_cancel():
+            # Discard the tail: an artifact finished a moment before the
+            # cancel was noticed must never reach a speaker.
+            panel.dispose_artifact(path)
             return
         # A new reply may interrupt still-playing audio; that cancels only
         # playback, never any Stella decision. The join keeps the old

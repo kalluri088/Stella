@@ -549,6 +549,66 @@ def test_window_without_voice_keeps_the_mic_button_disabled() -> None:
         root.destroy()
 
 
+class HangingWindowTranscriber(TranscriptionProvider):
+    """Freezes the pre-turn window so the affordance can be observed."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def transcribe(self, audio) -> str:
+        self.entered.set()
+        self.release.wait(10)
+        return "too late"
+
+
+def test_window_can_cancel_during_transcribing() -> None:
+    transcriber = HangingWindowTranscriber()
+    panel = VoicePanel(WindowRecorder(), None, transcriber, None)
+    root, window, bridge, _ = make_window(voice=panel)
+    try:
+        window._mic_button.invoke()
+        deadline = time.monotonic() + 5
+        while not window._listening and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+
+        window._mic_button.invoke()  # Stop → the transcribing window opens
+        deadline = time.monotonic() + 5
+        while not window._transcribing and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert window._transcribing is True
+        assert transcriber.entered.wait(2)
+        # A8: the mic Cancel button is the affordance for this window.
+        assert str(window._mic_cancel.cget("state")) == "normal"
+
+        window._mic_cancel.invoke()
+
+        deadline = time.monotonic() + 5
+        transcript = ""
+        while time.monotonic() < deadline:
+            root.update()
+            transcript = window._chat.get("1.0", "end")
+            if "cancelled at your request" in transcript:
+                break
+            time.sleep(0.02)
+
+        # The honest report, and nothing else: no invented transcript, no
+        # turn, and the affordance disarms after its one shot.
+        assert "cancelled at your request" in transcript
+        assert "Nothing was sent" in transcript
+        assert "You (voice)" not in transcript
+        assert "Stella:" not in transcript
+        assert window._transcribing is False
+        assert str(window._mic_cancel.cget("state")) == "disabled"
+        assert window._busy is False
+    finally:
+        transcriber.release.set()
+        bridge.stop()
+        root.destroy()
+
+
 # ------------------------------------------------------- setup wizard
 
 

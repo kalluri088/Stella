@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Cancel reaches the whole voice periphery
+
+- **The transcribing window is cancellable** — pressing **Cancel**
+  while "Transcribing..." is shown abandons the capture and a running
+  local transcription command within about a second (the command
+  providers grew a `cancel()` handle with a SIGINT → terminate → kill
+  ladder, mirroring the player), and honestly reports that nothing was
+  sent: a cancelled transcript is never replaced with invented text
+  and no turn starts.
+- **Cancel means silence** — `cancel_current_turn` now also stops
+  playback, and speech synthesized around a cancel is discarded
+  (its file deleted) rather than played. A cancel raised during
+  transcription survives into the turn instead of being erased: the
+  turn ends cancelled at its next safe point.
+- **Unchanged by design** — tools and approvals stay atomic
+  (cancel never interrupts an executing action), the CLI path is
+  untouched, and an abandoned cloud transcription/speech request is
+  given up on without a socket close — the honest limit of an SDK
+  call that exposes no per-request cancel.
+
 ### Real embedding recall (opt-in)
 
 - **Three embedding providers, one honest boundary** — semantic recall

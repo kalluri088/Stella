@@ -122,8 +122,10 @@ display, and can never approve a tool or change permissions.
   shortly after launch (never during startup) — deny and nothing changes.
 - Voice: press **Listen** to record one explicit utterance, see the transcript
   enter the same conversation path as typed input, and optionally hear the
-  final response spoken ("Speak replies", off by default). See `VOICE.md` for
-  providers, privacy behavior, and controls.
+  final response spoken ("Speak replies", off by default). A voice turn is
+  cancellable end to end: **Cancel** beside Listen works while transcribing,
+  and **Cancel** beside Send also silences any spoken audio. See `VOICE.md`
+  for providers, privacy behavior, and controls.
 
 ## How approvals stay trusted
 
@@ -155,8 +157,12 @@ core path and reports that nothing was changed.
   It cannot abort an executing action mid-way — the running step lands
   first — and server-side generation for an abandoned Ollama request
   stops best-effort, not with a guarantee.
-- Voice transcription is a blocking segment that Cancel does not
-  interrupt; cancel lands before or after the transcript, never during.
+- Cancel reaches the whole voice periphery: a running local transcription
+  or synthesis command is killed within about a second, playback stops,
+  and audio finished around a cancel is discarded instead of played.
+  Honest residue: an abandoned cloud transcription or speech request is
+  given up without closing its socket (the result is never used), and a
+  partial cloud speech file is cleaned up when Stella exits.
 - Voice is one explicit utterance per Listen press with local-first providers;
   there is no wake word, continuous listening, or streaming recognition.
 - No browser automation, email/calendar, cloud accounts, plugins, or remote

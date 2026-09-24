@@ -107,7 +107,26 @@ working and helping me, even if not the fastest."
   disconnect best-effort only (`stream: True` would be the
   guaranteed fix, deliberately not taken on), an executing action
   still lands first, and voice transcription remains a
-  non-cancellable blocking segment.
+  non-cancellable blocking segment (resolved by A8 below).
+- **A8. Voice turns are cancellable end-to-end — done.** A7 stopped
+  at the conversation; the voice periphery around it is now covered
+  too. The pre-turn window ("Transcribing...") is abandonable:
+  `VoicePanel.stop_and_transcribe` and `synthesize` wrap their work
+  in `run_cancellable`, and the command providers expose a
+  `cancel()` handle (SIGINT → terminate → kill on the tracked
+  `Popen`, like the player's) that the abort path uses, so a local
+  whisper/piper command dies within about a second instead of
+  running to its 120 s timeout. `cancel_current_turn` also stops
+  playback, so Cancel means silence in a poll tick; speech that
+  finishes around a cancel is discarded, never played. The
+  lost-cancel race is fixed by clearing the flag at submission
+  instead of at turn start, so a cancel raised during transcription
+  survives into the turn and ends it cancelled. The mic **Cancel**
+  button carries the new affordance. Honest limits kept: tools and
+  approvals stay atomic-by-design; an abandoned cloud
+  transcription/speech request is given up on without a socket
+  close (no per-request cancel exists); Tier-2 barge-in (continuous
+  mic + VAD) remains out of scope.
 
 ## Stage B — sharper judgment and scale
 

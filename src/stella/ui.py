@@ -58,6 +58,7 @@ class StellaWindow:
         self._root = root
         self._busy = False
         self._listening = False
+        self._transcribing = False
         self._speaking = False
         self._turn_started: float | None = None
         self._cancelling = False
@@ -232,6 +233,13 @@ class StellaWindow:
             self._bridge.post_listen_start()
 
     def _cancel_listen(self) -> None:
+        if self._transcribing:
+            # The pre-turn window (A8): the same button now stops work in
+            # flight — the flag is what the transcription poll checks.
+            # One shot: re-arming waits for the next explicit Listen.
+            self._mic_cancel.configure(state="disabled")
+            self._bridge.cancel_current_turn()
+            return
         if not self._listening:
             return
         self._listening = False
@@ -245,10 +253,15 @@ class StellaWindow:
     def _handle_voice_state(self, state: str) -> None:
         if state == "listening":
             self._listening = True
+            self._transcribing = False
             self._mic_button.configure(text="Stop")
             self._mic_cancel.configure(state="normal")
             self._status.configure(text="Listening...")
         elif state == "transcribing":
+            # A8: the pre-turn window is cancellable too — the mic Cancel
+            # button carries on, now stopping the transcription itself.
+            self._transcribing = True
+            self._mic_cancel.configure(state="normal")
             self._status.configure(text="Transcribing...")
         elif state == "speaking":
             self._speaking = True
@@ -266,6 +279,7 @@ class StellaWindow:
         # A voice failure never corrupts conversation state: the transcript
         # simply was not sent, and any playback state is reset.
         self._listening = False
+        self._transcribing = False
         self._speaking = False
         self._mic_button.configure(text="Listen")
         self._mic_cancel.configure(state="disabled")
@@ -365,6 +379,8 @@ class StellaWindow:
             self._handle_voice_state(str(payload))
         elif kind == "voice_transcript":
             self._line(f"You (voice): {payload}")
+            self._transcribing = False
+            self._mic_cancel.configure(state="disabled")
             self._busy = True
             self._begin_turn_timer()
             self._status.configure(text="Stella is working · 0 s")

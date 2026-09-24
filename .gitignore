@@ -9,3 +9,4 @@ opencode.json
 /dist/
 *.egg-info/
 /stella_workspace/
+/SECURITY-AUDIT.md

@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 from stella.app import StellaSettings, default_data_dir
+from stella.llama_server import DEFAULT_LLAMA_SERVER_BINARY
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 
 PROBE_TIMEOUT_SECONDS = 5.0
@@ -74,7 +76,7 @@ def load_configuration() -> dict[str, object] | None:
     model = raw.get("model")
     if (
         not isinstance(provider, str)
-        or provider not in {"ollama", "openai"}
+        or provider not in {"ollama", "openai", "llama"}
         or not isinstance(model, str)
         or not model.strip()
     ):
@@ -202,18 +204,47 @@ def test_connection(
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
     openai_base_url: str | None = None,
     api_key: str | None = None,
+    llama_binary: str = DEFAULT_LLAMA_SERVER_BINARY,
     timeout: float = PROBE_TIMEOUT_SECONDS,
 ) -> ConnectionTest:
     """Verify the chosen provider answers, without persisting anything.
 
     For Ollama this confirms the endpoint is alive and the model is in
     the installed list. For OpenAI-compatible endpoints it lists models,
-    which authenticates the key without running any completion.
+    which authenticates the key without running any completion. The
+    llama provider has no server to probe before it exists (Stella owns
+    and starts it), so the test checks the two things a launch needs.
     """
 
     model = model.strip()
     if not model:
         return ConnectionTest(ok=False, message="No model is selected yet.")
+    if provider == "llama":
+        if not os.path.isfile(model):
+            return ConnectionTest(
+                ok=False,
+                message=(
+                    f"No GGUF model file at {model}. For the llama "
+                    "provider the model is the full path to a downloaded "
+                    ".gguf file."
+                ),
+            )
+        if shutil.which(llama_binary) is None:
+            return ConnectionTest(
+                ok=False,
+                message=(
+                    f"The {llama_binary} command was not found. Install "
+                    "llama.cpp or set STELLA_LLAMA_SERVER_BINARY to its "
+                    "full path."
+                ),
+            )
+        return ConnectionTest(
+            ok=True,
+            message=(
+                "Ready to launch: model file and llama-server were found. "
+                "Stella starts the brain itself when these settings apply."
+            ),
+        )
     if provider == "ollama":
         scan = scan_ollama_models(ollama_base_url, timeout=timeout)
         if not scan.reachable:

@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### Stella now runs her own llama.cpp brain
+
+- **Provider `llama`** — point Stella at a downloaded `.gguf` file
+  (Settings tab, or `STELLA_LLM_PROVIDER=llama` with the path in
+  `STELLA_MODEL`) and she launches `llama-server` as her own child
+  process with the measured high-quality launch line — no systemd
+  unit, no manual server, nothing left running behind her.
+- **Honest lifecycle** — startup waits for the server's own health
+  endpoint and reports the server's last output when it refuses to
+  come up; a port someone else already answers on is refused rather
+  than quietly shared; shutdown sends the server its own clean
+  SIGINT path first and escalates only if ignored (live: 4–19 s to
+  ready, ~2.9 GB VRAM, gone on close).
+- **Test connection** for the llama provider truthfully checks what a
+  launch needs — the model file and the server command — since no
+  server exists until Stella starts one.
+
+### The window got a real look
+
+- **Dark, calm theme** — one palette across the chat window, the
+  approval dialogs and the first-run setup wizard: deep slate surfaces,
+  a themed font picked from what the system has, and consistent
+  buttons, tabs, lists and fields.
+- **Speech bubbles** — your messages render as right-aligned bubbles,
+  Stella's replies as left ones with a highlighted name; reminders,
+  errors and quiet system notes each have their own readable style
+  instead of one undifferentiated block of text.
+- **Clearer chrome** — a window header, an accent-colored Send button,
+  an italic status line, and approval dialogs that read as a heading,
+  the exact action, the diff preview, and two obvious answers.
+- **Nothing semantic moved** — every word the transcript, status line
+  and dialogs assert is the same text through the same bridge
+  contracts; this is presentation only.
+
+### Speech starts speaking while the reply is still being written out
+
+- **Sentence by sentence** — a multi-sentence spoken reply is now
+  synthesized one sentence at a time and played from a queue: the
+  first sentence reaches the speakers after roughly one sentence of
+  rendering instead of after the whole reply (measured ~10.7 s →
+  ~1–2 s first-audio on local synthesis, which renders faster than
+  real time). Single-sentence replies behave exactly as before.
+- **Stop speaking means stop** — the button (and **Cancel**) now
+  silences the entire spoken reply: the sentence playing and the
+  sentences only queued, which are discarded unplayed. The underlying
+  decision is still never touched.
+- **Honest partial speech** — if synthesis fails mid-reply, the
+  sentences already rendered are still spoken, one error line says
+  the rest could not be prepared, and the text response remains fully
+  available. Every played or drained artifact is deleted; command
+  providers now name each synthesis uniquely so queued audio can never
+  overwrite a sentence still playing.
+
 ### Persona writes became reversible
 
 - **Every replacement keeps a snapshot** — before an approved

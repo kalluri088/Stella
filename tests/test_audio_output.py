@@ -2,9 +2,11 @@ import pytest
 
 from stella.audio_output import (
     MAX_SPEECH_TEXT_CHARS,
+    MIN_SPEECH_CHUNK_CHARS,
     SpeechArtifact,
     SpeechOutput,
     SpeechProvider,
+    sentence_chunks,
 )
 from stella.brain import Brain, Decision, DecisionKind
 from stella.context import Context
@@ -83,3 +85,78 @@ def test_non_final_result_cannot_be_sent_to_speech() -> None:
         Stella.speak(result, provider)
 
     assert provider.outputs == []
+
+
+# ------------------------------------------------------- sentence chunking
+
+
+def test_chunks_split_on_terminal_punctuation_and_keep_delimiters() -> None:
+    assert sentence_chunks(
+        "Here is the plan. It has two steps! Want me to run them?"
+    ) == ["Here is the plan.", "It has two steps!", "Want me to run them?"]
+
+
+def test_chunks_never_split_abbreviations_initials_or_decimals() -> None:
+    chunks = sentence_chunks(
+        "Call Dr. Rao about the 3.5 build. J. Smith agreed etc. "
+        "The U.S. reply is final. Nothing else remains."
+    )
+
+    assert chunks == [
+        "Call Dr. Rao about the 3.5 build.",
+        "J. Smith agreed etc. The U.S. reply is final.",
+        "Nothing else remains.",
+    ]
+
+
+def test_digits_ending_a_period_like_run_do_not_split() -> None:
+    # "exactly 5." reads like a decimal to a naive splitter and stays
+    # unsplit; the conservative cost is one longer chunk, never bad text.
+    assert sentence_chunks(
+        "We saw exactly 5. Nothing more happened after that."
+    ) == ["We saw exactly 5. Nothing more happened after that."]
+
+
+def test_blank_lines_break_paragraphs_and_wrapping_does_not_matter() -> None:
+    assert sentence_chunks(
+        "First paragraph line.\nWrapped line here.\n\n"
+        "Second paragraph text."
+    ) == [
+        "First paragraph line.",
+        "Wrapped line here.",
+        "Second paragraph text.",
+    ]
+
+
+def test_tiny_fragments_absorb_into_their_neighbour() -> None:
+    assert sentence_chunks("Hi. Let me check the rest of this for you.") == [
+        "Hi. Let me check the rest of this for you."
+    ]
+    assert sentence_chunks(
+        "Call Dr. Rao about the 3.5 build. That is honest. Really. "
+        "Nothing else remains."
+    ) == [
+        "Call Dr. Rao about the 3.5 build.",
+        "That is honest. Really.",
+        "Nothing else remains.",
+    ]
+
+
+def test_a_reply_without_a_split_point_is_exactly_one_chunk() -> None:
+    assert sentence_chunks("the action completed") == ["the action completed"]
+    assert sentence_chunks("   ") == []
+    assert sentence_chunks("") == []
+
+
+def test_chunks_conserve_the_reply_modulo_whitespace_and_stay_bounded() -> (
+    None
+):
+    text = (
+        "A whole sentence here. A second one follows!\n\n"
+        "Third paragraph here with a closing quote.\" "
+        + "x" * MIN_SPEECH_CHUNK_CHARS
+    )
+    chunks = sentence_chunks(text)
+
+    assert " ".join(chunks).split() == text.split()
+    assert all(len(chunk) <= MAX_SPEECH_TEXT_CHARS for chunk in chunks)

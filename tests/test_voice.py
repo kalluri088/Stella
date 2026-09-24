@@ -427,6 +427,29 @@ def test_speech_command_writes_a_playable_artifact() -> None:
     assert not os.path.exists(artifact.reference)
 
 
+def test_speech_command_artifacts_never_collide_with_older_ones() -> None:
+    # Chunked speech renders several sentences while earlier ones are
+    # still queued or playing; every call must own a fresh file.
+    provider = CommandSpeechProvider(
+        [
+            sys.executable,
+            "-c",
+            "import sys; open(sys.argv[1], 'wb').write(b'RIFF')",
+            "{output}",
+            "{text}",
+        ],
+        timeout=30,
+    )
+    first = provider.speak(SpeechOutput(text="first sentence"))
+    second = provider.speak(SpeechOutput(text="second sentence"))
+    try:
+        assert first.reference != second.reference
+        assert os.path.exists(first.reference)
+        assert os.path.exists(second.reference)
+    finally:
+        provider.dispose()
+
+
 def test_speech_command_without_output_file_fails_honestly() -> None:
     provider = CommandSpeechProvider(
         [sys.executable, "-c", "pass", "{output}", "{text}"], timeout=30
@@ -845,6 +868,224 @@ def test_playback_cancellation_stops_audio_but_not_the_decision() -> None:
     hold.set()
     idle = wait_for_voice_state(bridge, "idle")
     assert any(event.kind == "voice_state" for event in idle)
+    bridge.stop()
+
+
+# ---------------------------------------------------------- chunked speech
+
+_CHUNKED_REPLY = (
+    "First sentence here. Second sentence here. Third one is here too."
+)
+_CHUNKS = [
+    "First sentence here.",
+    "Second sentence here.",
+    "Third one is here too.",
+]
+
+
+def _chunked_decision() -> Decision:
+    return Decision(kind=DecisionKind.ANSWER, content=_CHUNKED_REPLY)
+
+
+class FinalAnswerBrain(ScriptedBrain):
+    """Answers verbatim, so tests control the exact spoken text."""
+
+    answer_content_is_final = True
+
+
+def make_chunked_stella(decisions: list[Decision]) -> Stella:
+    return Stella(
+        FinalAnswerBrain(decisions),
+        SpyLLM(),
+        ToolDispatcher([EchoTool()]),
+        InMemoryMemory(),
+    )
+
+
+def test_chunked_reply_synthesizes_and_plays_every_sentence_in_order() -> None:
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_chunked_stella([_chunked_decision()]), panel
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    # Each sentence is a speech request of its own, in reply order…
+    assert speech.spoken == _CHUNKS
+    # …each lands in a distinct artifact, played in order…
+    assert len(player.played) == 3
+    assert len(set(player.played)) == 3
+    # …and every artifact is removed once heard.
+    assert all(not os.path.exists(path) for path in player.played)
+    states = [event.payload for event in events if event.kind == "voice_state"]
+    assert states == ["speaking", "idle"]
+    assert not any(event.kind == "voice_error" for event in events)
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == _CHUNKED_REPLY
+    bridge.stop()
+
+
+def test_stop_playback_silences_the_remaining_chunks() -> None:
+    hold = threading.Event()
+    player = FakePlayer(hold=hold)
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_chunked_stella([_chunked_decision()]), panel
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "speaking")
+    turn = next(event.payload for event in events if event.kind == "turn")
+
+    bridge.stop_playback()
+    hold.set()
+    wait_for_voice_state(bridge, "idle")
+
+    # "Stop speaking" now ends the whole reply: only the sentence already
+    # playing was ever heard; the queued ones were disposed, not played.
+    assert len(player.played) == 1
+    assert os.listdir(speech.directory) == []
+    # The decision that produced the reply is untouched by a sound stop.
+    assert turn.response == _CHUNKED_REPLY
+    assert not turn.cancelled
+    assert not turn.interrupted
+    bridge.stop()
+
+
+def test_cancel_during_a_chunked_reply_ends_in_silence() -> None:
+    class SlowLaterSpeech(FakeSpeech):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def speak(self, output: SpeechOutput) -> SpeechArtifact:
+            if len(self.spoken) == 1:
+                self.entered.set()
+                assert self.release.wait(10)
+            return super().speak(output)
+
+    hold = threading.Event()
+    speech = SlowLaterSpeech()
+    player = FakePlayer(hold=hold)
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_chunked_stella([_chunked_decision()]), panel
+    )
+    try:
+        bridge.post_turn("hello")
+        first = wait_for_voice_state(bridge, "speaking")
+        turn = next(event.payload for event in first if event.kind == "turn")
+        assert speech.entered.wait(2)
+
+        bridge.cancel_current_turn()
+        time.sleep(0.6)  # past the abandon poll of the in-flight synthesis
+        hold.set()
+        speech.release.set()
+        events = wait_for_voice_state(bridge, "idle")
+
+        # A cancel is silence: the first sentence stops, nothing further
+        # reaches a speaker, and no error line pretends otherwise.
+        assert len(player.played) == 1
+        states = [
+            event.payload for event in events if event.kind == "voice_state"
+        ]
+        assert states == ["idle"]
+        assert not any(event.kind == "voice_error" for event in events)
+        assert turn.response == _CHUNKED_REPLY
+    finally:
+        speech.release.set()
+        bridge.stop()
+
+
+def test_mid_reply_synthesis_failure_speaks_what_it_has() -> None:
+    class FailSecondSpeech(FakeSpeech):
+        def speak(self, output: SpeechOutput) -> SpeechArtifact:
+            if self.spoken:
+                self.spoken.append(output.text)
+                raise VoiceError("Local speech failed.")
+            return super().speak(output)
+
+    speech = FailSecondSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_chunked_stella([_chunked_decision()]), panel
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    # Honest partial speech: what rendered was heard, the failure is
+    # reported once, and the third sentence was never attempted.
+    assert speech.spoken == _CHUNKS[:2]
+    assert len(player.played) == 1
+    errors = [event.payload for event in events if event.kind == "voice_error"]
+    assert errors == ["Local speech failed."]
+    assert os.listdir(speech.directory) == []
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == _CHUNKED_REPLY
+    bridge.stop()
+
+
+def test_a_new_reply_retires_the_previous_reply_queue() -> None:
+    hold = threading.Event()
+    player = FakePlayer(hold=hold)
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_chunked_stella(
+            [
+                _chunked_decision(),
+                Decision(
+                    kind=DecisionKind.ANSWER,
+                    content=(
+                        "A different reply entirely. "
+                        "And its second sentence here."
+                    ),
+                ),
+            ]
+        ),
+        panel,
+    )
+
+    bridge.post_turn("one")
+    events = wait_for_voice_state(bridge, "speaking")
+    bridge.post_turn("two")
+    # Wait until the second reply is already synthesizing (its first
+    # chunk proves its predecessor was retired) before releasing the
+    # held playback; otherwise the first queue could drain by itself.
+    deadline = time.monotonic() + 5
+    while len(speech.spoken) < 4 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(speech.spoken) >= 4
+    hold.set()
+
+    states: list[str] = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        events.extend(bridge.poll())
+        states = [
+            event.payload for event in events if event.kind == "voice_state"
+        ]
+        if states.count("idle") == 2:
+            break
+        time.sleep(0.02)
+
+    # The first consumer's unplayed queue drains (its "idle" lands before
+    # the second "speaking"), and only its first sentence was ever heard.
+    assert states == ["speaking", "idle", "speaking", "idle"]
+    assert len(player.played) == 3
+    assert os.listdir(speech.directory) == []
     bridge.stop()
 
 

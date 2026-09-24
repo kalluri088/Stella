@@ -270,6 +270,50 @@ def test_connection_test_requires_a_model():
     assert "No model" in result.message
 
 
+def test_connection_test_llama_needs_a_real_gguf_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(config.shutil, "which", lambda _: "/bin/llama-server")
+    result = config.test_connection(
+        provider="llama", model=str(tmp_path / "missing.gguf")
+    )
+    assert not result.ok
+    assert "No GGUF model file" in result.message
+
+
+def test_connection_test_llama_needs_the_server_command(tmp_path, monkeypatch):
+    model = tmp_path / "brain.gguf"
+    model.write_bytes(b"not really a gguf")
+    monkeypatch.setattr(config.shutil, "which", lambda _: None)
+    result = config.test_connection(provider="llama", model=str(model))
+    assert not result.ok
+    assert "STELLA_LLAMA_SERVER_BINARY" in result.message
+
+
+def test_connection_test_llama_reports_launch_readiness(
+    tmp_path, monkeypatch
+):
+    model = tmp_path / "brain.gguf"
+    model.write_bytes(b"not really a gguf")
+    monkeypatch.setattr(
+        config.shutil, "which", lambda _: "/bin/llama-server"
+    )
+    result = config.test_connection(provider="llama", model=str(model))
+    assert result.ok
+    assert "Ready to launch" in result.message
+
+
+def test_saved_configuration_accepts_the_llama_provider(tmp_path):
+    settings = StellaSettings.from_saved(
+        provider="llama", model=str(tmp_path / "brain.gguf")
+    )
+    config.save_configuration(settings)
+    raw = config.load_configuration()
+    assert raw is not None
+    assert raw["provider"] == "llama"
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.provider == "llama"
+
+
 def test_connection_test_openai_without_key(monkeypatch):
     result = config.test_connection(
         provider="openai", model="gpt-4o-mini", api_key=None

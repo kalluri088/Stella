@@ -20,11 +20,11 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from stella.audio import TranscriptionProvider
-from stella.audio_output import SpeechProvider
+from stella.audio_output import SpeechProvider, sentence_chunks
 from stella.brain import LLMBrain
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
@@ -34,6 +34,12 @@ from stella.context import (
     InputProvenance,
 )
 from stella.history import SQLiteActionHistory
+from stella.llama_server import (
+    DEFAULT_LLAMA_SERVER_BINARY,
+    DEFAULT_LLAMA_SERVER_PORT,
+    LlamaBrainServer,
+    LlamaServerLLMClient,
+)
 from stella.llm import (
     CancelCheck,
     Message,
@@ -408,6 +414,8 @@ class StellaSettings:
     model: str | None = None
     openai_base_url: str | None = None
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
+    llama_binary: str = DEFAULT_LLAMA_SERVER_BINARY
+    llama_port: int = DEFAULT_LLAMA_SERVER_PORT
     memory_db: str = field(default_factory=default_memory_db)
     reminders_db: str = field(default_factory=default_reminders_db)
     history_db: str = field(default_factory=default_history_db)
@@ -454,6 +462,18 @@ class StellaSettings:
             raise SystemExit(
                 "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
             )
+        raw_port = os.environ.get(
+            "STELLA_LLAMA_SERVER_PORT", str(DEFAULT_LLAMA_SERVER_PORT)
+        )
+        try:
+            llama_port = int(raw_port)
+        except ValueError:
+            llama_port = -1
+        if not 0 < llama_port < 65536:
+            raise SystemExit(
+                "STELLA_LLAMA_SERVER_PORT must be a TCP port between "
+                "1 and 65535"
+            )
         return {
             "memory_db": os.environ.get(
                 "STELLA_MEMORY_DB", default_memory_db()
@@ -476,6 +496,10 @@ class StellaSettings:
             "workspace": os.environ.get(
                 "STELLA_WORKSPACE", default_workspace()
             ),
+            "llama_binary": os.environ.get(
+                "STELLA_LLAMA_SERVER_BINARY", DEFAULT_LLAMA_SERVER_BINARY
+            ),
+            "llama_port": llama_port,
             "voice_transcription": transcription_mode,
             "voice_speech": speech_mode,
             "transcription_model": os.environ.get(
@@ -541,9 +565,9 @@ class StellaSettings:
             # otherwise fall back to a local Ollama model.
             provider = "openai" if os.environ.get("OPENAI_API_KEY") else "ollama"
         provider = provider.casefold()
-        if provider not in {"openai", "ollama"}:
+        if provider not in {"openai", "ollama", "llama"}:
             raise SystemExit(
-                "STELLA_LLM_PROVIDER must be 'openai' or 'ollama'"
+                "STELLA_LLM_PROVIDER must be 'openai', 'ollama' or 'llama'"
             )
         return cls(
             provider=provider,
@@ -569,8 +593,13 @@ class StellaApplication:
     settings: StellaSettings
     voice: VoicePanel | None = None
     proposals: ReflectionStore | None = None
+    brain_server: LlamaBrainServer | None = None
 
     def close(self) -> None:
+        # The brain process is Stella's child: closing the application
+        # stops it, so no llama-server is ever left running unsupervised.
+        if self.brain_server is not None:
+            self.brain_server.stop()
         if self.voice is not None:
             self.voice.dispose()
         memory = self.session.stella.memory
@@ -624,6 +653,11 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     """Construct the trusted Stella core exactly like the CLI does."""
     if not settings.model:
         raise SystemExit("STELLA_MODEL is required")
+    # For the llama provider the model is a GGUF path and the brain is a
+    # child process Stella owns; it is constructed here but started only
+    # once everything else exists, so a failure anywhere below can never
+    # leave a server running.
+    brain_server: LlamaBrainServer | None = None
     if settings.provider == "ollama":
         # The compatibility endpoint ignores per-request options on Ollama
         # 0.33.x; native /api/chat is the only way to apply num_ctx=4096,
@@ -644,8 +678,23 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             model=settings.model,
             base_url=settings.openai_base_url,
         )
+    elif settings.provider == "llama":
+        brain_server = LlamaBrainServer(
+            model_path=settings.model,
+            binary=settings.llama_binary,
+            port=settings.llama_port,
+        )
+        # llama-server always serves exactly the one loaded model, so the
+        # request-time model name is a formality; the GGUF path identifies
+        # it honestly.
+        llm = LlamaServerLLMClient(
+            model=settings.model,
+            base_url=brain_server.base_url,
+        )
     else:
-        raise SystemExit("STELLA_LLM_PROVIDER must be 'openai' or 'ollama'")
+        raise SystemExit(
+            "STELLA_LLM_PROVIDER must be 'openai', 'ollama' or 'llama'"
+        )
     # Desktop launchers may start us from an arbitrary directory, and the
     # default state lives under XDG paths that do not exist on first run,
     # so ensure every configured location exists before opening it.
@@ -717,6 +766,12 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # The shared application backs the desktop UI too, so its session must
     # not quote CLI-only instructions ("type 'exit'") in UI error messages.
     # The interactive CLI loop builds its own StellaSession with the hint.
+    voice = build_voice(settings)
+    # Last possible moment to spawn the brain: nothing after this can
+    # fail and strand the process (stop() also runs inside a failed
+    # start(), and close() owns it afterwards).
+    if brain_server is not None:
+        brain_server.start()
     return StellaApplication(
         StellaSession(
             stella,
@@ -724,8 +779,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             transcripts=(transcripts if settings.transcripts_enabled else None),
         ),
         settings,
-        build_voice(settings),
+        voice,
         proposals=proposals,
+        brain_server=brain_server,
     )
 
 
@@ -1236,6 +1292,11 @@ class ReminderScheduler:
         self._thread.join(timeout=2)
 
 
+# Closes a chunked reply's play queue; no generated artifact path can
+# contain a NUL, so this sentinel string can never collide with one.
+_END_OF_SPEECH = "\x00stella-end-of-speech"
+
+
 class StellaBridge:
     """Serialise all UI requests onto one worker thread that owns Stella.
 
@@ -1264,6 +1325,8 @@ class StellaBridge:
         self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
         self._playback: threading.Thread | None = None
+        self._speech_interrupt: threading.Event | None = None
+        self._speech_consumer: threading.Thread | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._turn_cancel = threading.Event()
         self._events: queue.Queue[UiEvent] = queue.Queue()
@@ -1392,8 +1455,19 @@ class StellaBridge:
 
         self._turn_cancel.set()
         self.approvals.deny_outstanding()
+        self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
+
+    def _interrupt_speech(self) -> None:
+        """Retire the current chunked reply's audio, never its decision.
+
+        Callable from any thread: an :class:`threading.Event` is
+        thread-safe, and it only stops sound that has not been heard yet.
+        """
+
+        if self._speech_interrupt is not None:
+            self._speech_interrupt.set()
 
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
@@ -1515,8 +1589,12 @@ class StellaBridge:
         Playback is a peripheral sound process, not Stella state: the
         worker may be busy elsewhere, and stopping speech must never
         cancel or alter the decision that already produced the response.
+        For a chunked reply this silences the whole reply — the sound
+        playing now and the sentences only queued — because "stop
+        speaking" was never a request to pause until the next sentence.
         """
 
+        self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
 
@@ -1533,6 +1611,13 @@ class StellaBridge:
         if self._should_cancel():
             # A cancelled turn never grows a voice: the user asked to
             # stop, so nothing is synthesized and nothing is played.
+            return
+        chunks = sentence_chunks(outcome.response)
+        if len(chunks) > 1:
+            # A9: the first sentence should be speaking while the rest
+            # is still being synthesized; whole-file speech made the
+            # user wait for every character before hearing any.
+            self._speak_chunks(panel, outcome.result, chunks)
             return
         try:
             path = panel.synthesize(outcome.result, self._should_cancel)
@@ -1584,6 +1669,128 @@ class StellaBridge:
             target=play, name="stella-playback", daemon=True
         )
         self._playback.start()
+
+    def _speak_chunks(
+        self, panel: VoicePanel, result: StellaResult, chunks: list[str]
+    ) -> None:
+        """Speak one multi-sentence reply chunk by chunk.
+
+        The worker thread stays the producer: it synthesizes one
+        sentence at a time — chunk k+1 renders while chunk k plays,
+        because local speech is faster than real time — while a
+        consumer thread plays and disposes each artifact in order. An
+        interrupt event ("Stop speaking", a cancel, shutdown, or a
+        newer reply) drains the queue unsaid; the decision and its text
+        are never touched.
+        """
+
+        # Retire any previous chunked consumer before this reply can
+        # contend for the one-at-a-time player. There is never a
+        # previous producer to retire: it is this very thread.
+        self._interrupt_speech()
+        interrupt = threading.Event()
+        self._speech_interrupt = interrupt
+
+        def stopped() -> bool:
+            return self._should_cancel() or interrupt.is_set()
+
+        outbox: queue.Queue[str] = queue.Queue(maxsize=3)
+
+        def consume() -> None:
+            while True:
+                item = outbox.get()
+                if item == _END_OF_SPEECH:
+                    break
+                if interrupt.is_set():
+                    panel.dispose_artifact(item)
+                    continue
+                try:
+                    panel.play(item)
+                except VoiceError as error:
+                    # One honest report, then the rest goes unsaid: a
+                    # failing player will not recover mid-reply.
+                    self._emit("voice_error", str(error))
+                    interrupt.set()
+                except BaseException as error:  # noqa: BLE001 - report, never crash
+                    detail = " ".join(str(error).split()) or type(error).__name__
+                    self._emit(
+                        "voice_error",
+                        f"Stella could not play the response ({detail[:120]}).",
+                    )
+                    interrupt.set()
+                finally:
+                    panel.dispose_artifact(item)
+            self._emit("voice_state", "idle")
+
+        try:
+            first = panel.synthesize(
+                replace(result, response=chunks[0]), stopped
+            )
+        except ProviderRequestCancelled:
+            # Cancelled mid-synthesis: silence is the requested outcome.
+            return
+        except VoiceError as error:
+            self._emit("voice_error", str(error))
+            return
+        except Exception as error:  # noqa: BLE001 - friendly text, never a trace
+            detail = " ".join(str(error).split()) or type(error).__name__
+            self._emit(
+                "voice_error",
+                f"Stella could not prepare speech ({detail[:120]}). "
+                "The text response is still available.",
+            )
+            return
+        if stopped():
+            # Discard the tail: nothing of a cancelled reply reaches
+            # a speaker.
+            panel.dispose_artifact(first)
+            return
+        # A new reply may interrupt still-playing audio; that cancels only
+        # playback, never any Stella decision. The joins keep the old
+        # threads' "idle" events ordered before the new "speaking" state.
+        panel.cancel_playback()
+        if self._playback is not None:
+            self._playback.join(timeout=2)
+        if self._speech_consumer is not None:
+            self._speech_consumer.join(timeout=2)
+        self._emit("voice_state", "speaking")
+        outbox.put(first)
+        self._speech_consumer = threading.Thread(
+            target=consume, name="stella-speech-playback", daemon=True
+        )
+        self._speech_consumer.start()
+        try:
+            for chunk in chunks[1:]:
+                if stopped():
+                    break
+                try:
+                    path = panel.synthesize(
+                        replace(result, response=chunk), stopped
+                    )
+                except ProviderRequestCancelled:
+                    break
+                except VoiceError as error:
+                    # Sentences already heard stay heard; the text
+                    # response remains fully available either way.
+                    self._emit("voice_error", str(error))
+                    break
+                except Exception as error:  # noqa: BLE001 - friendly text
+                    detail = " ".join(str(error).split()) or type(error).__name__
+                    self._emit(
+                        "voice_error",
+                        f"Stella could not prepare speech ({detail[:120]}). "
+                        "The text response is still available.",
+                    )
+                    break
+                if stopped():
+                    panel.dispose_artifact(path)
+                    break
+                outbox.put(path)
+        finally:
+            # The consumer exits only on this sentinel, so every
+            # synthesized artifact is either played and disposed or
+            # drained and disposed.
+            outbox.put(_END_OF_SPEECH)
 
     def post_memories(self, query: str | None = None) -> None:
         def handle() -> None:
@@ -1682,8 +1889,20 @@ class StellaBridge:
             # Build first so a bad configuration cannot destroy the
             # working session; only then retire the old application and
             # persist the new choice for the next launch.
-            application = build_application(settings)
             old = self._application
+            # One llama brain binds one port: when the replacement wants
+            # the same port, the retiring brain must release it first.
+            # The old session keeps running otherwise; if the build then
+            # fails, its turns honestly report the stopped brain until
+            # the settings are fixed and applied again.
+            if (
+                old is not None
+                and old.brain_server is not None
+                and settings.provider == "llama"
+                and old.settings.llama_port == settings.llama_port
+            ):
+                old.brain_server.stop()
+            application = build_application(settings)
             self._application = application
             self._rebind(application)
             if old is not None:
@@ -1709,12 +1928,15 @@ class StellaBridge:
             self._scheduler.stop()
             self._scheduler = None
         self.approvals.deny_outstanding()
+        self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
         self._post(None)
         self._thread.join(timeout=5)
         if self._playback is not None:
             self._playback.join(timeout=2)
+        if self._speech_consumer is not None:
+            self._speech_consumer.join(timeout=2)
         if self._application is not None:
             try:
                 self._application.close()

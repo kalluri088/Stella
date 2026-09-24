@@ -66,7 +66,7 @@ uv tool install ./stella-1.1.0-py3-none-any.whl
 From source:
 
 ```bash
-git clone https://github.com/RumKid/Stella && cd Stella
+git clone https://github.com/kalluri088/Stella && cd Stella
 uv build
 uv tool install ./dist/stella-1.1.0-py3-none-any.whl
 ```

@@ -7,6 +7,8 @@ name = "stella"
 version = "1.1.0"
 description = "Local-first desktop assistant for Linux: chat, user-controlled memory, approved file actions, and one-shot reminders"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "openai>=1.0",

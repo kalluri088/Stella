@@ -70,8 +70,14 @@ def run_cli(
     trace: bool = False,
     status_fn: Callable[[str], None] | None = None,
     persona_proposals: ReflectionStore | None = None,
+    session: StellaSession | None = None,
 ) -> None:
-    """Run one interactive Stella session."""
+    """Run one interactive Stella session.
+
+    ``session`` should be the application's own session: it is the only
+    one carrying the opt-in transcript recorder. Without it, a fresh
+    (unrecorded) session is built — the historical behavior.
+    """
 
     if isinstance(stella, Stella) and stella.approval_provider is None:
         stella.approval_provider = cli_approval_provider(
@@ -83,7 +89,8 @@ def run_cli(
     # that an approval provider exists; anything left pending waits.
     drain_persona_proposals(stella, persona_proposals, notify=output_fn)
     status = status_fn or _print_status
-    session = StellaSession(stella)
+    if session is None:
+        session = StellaSession(stella)
     while True:
         try:
             user_input = input_fn("You: ")
@@ -621,6 +628,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             debug=getattr(args, "debug", False),
             trace=getattr(args, "trace", False),
             persona_proposals=application.proposals,
+            session=application.session,
         )
     finally:
         application.close()

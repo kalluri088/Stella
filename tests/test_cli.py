@@ -3,6 +3,7 @@ import sys
 import pytest
 
 from stella import cli
+from stella.app import StellaSession
 from stella.brain import Brain, Decision, DecisionKind
 from stella.cli import (
     cli_approval_provider,
@@ -13,6 +14,7 @@ from stella.cli import (
 from stella.context import Context
 from stella.llm import LLMClient
 from stella.memory import InMemoryMemory
+from stella.persona import TranscriptRecorder
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
@@ -297,6 +299,29 @@ def test_cli_maintains_conversation_history() -> None:
     assert stella.contexts[1].conversation_history[0].role == "user"
     assert stella.contexts[1].conversation_history[1].content == "response to first"
     assert stella.contexts[1].conversation_history[1].role == "assistant"
+
+
+def test_run_cli_records_through_the_application_session(tmp_path) -> None:
+    # The CLI must use the application's session, not a private one, or
+    # the opt-in transcript never sees a turn (live-pass regression).
+    stella = RecordingStella()
+    session = StellaSession(
+        stella, transcripts=TranscriptRecorder(tmp_path / "transcript.db")
+    )
+    inputs = iter(["hello", "exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=lambda _: None,
+        session=session,
+    )
+
+    rows = session.transcripts.rows_since()
+    assert [(row.role, row.text) for row in rows] == [
+        ("user", "hello"),
+        ("assistant", "response to hello"),
+    ]
 
 
 def test_cli_exit_stops_without_processing_input() -> None:

@@ -77,6 +77,10 @@ can grant themselves permission.
 - A language model — Stella ships none of her own:
   - **Local (recommended):** [Ollama](https://ollama.com) with a chat model
     pulled, e.g. `ollama pull qwen3:4b`. Nothing leaves your machine.
+  - **Or a local llama.cpp brain:** point Stella at a downloaded `.gguf`
+    file and she starts and stops `llama-server` herself — no server to
+    manage (provider `llama`, needs llama.cpp's `llama-server` on `PATH`
+    or `STELLA_LLAMA_SERVER_BINARY`).
   - **Or any OpenAI-compatible API** (including a local server).
 
 ## Install
@@ -124,11 +128,13 @@ development, or running several configurations side by side:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `STELLA_MODEL` | Model name; also skips first-run setup | unset |
-| `STELLA_LLM_PROVIDER` | `ollama` or `openai` | saved config, else auto |
+| `STELLA_MODEL` | Model name (for `llama`: full path to a `.gguf` file); also skips first-run setup | unset |
+| `STELLA_LLM_PROVIDER` | `ollama`, `openai` or `llama` (Stella-owned llama-server) | saved config, else auto |
 | `OPENAI_API_KEY` | API key that persists across sessions | unset |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://127.0.0.1:11434` |
 | `OPENAI_BASE_URL` | OpenAI-compatible endpoint | provider default |
+| `STELLA_LLAMA_SERVER_BINARY` | `llama-server` command for the `llama` provider | `llama-server` |
+| `STELLA_LLAMA_SERVER_PORT` | Port for the Stella-owned brain | `8080` |
 | `STELLA_WORKSPACE` | Folder file actions may touch | `~/.local/share/stella/workspace` |
 | `STELLA_MEMORY_DB` / `STELLA_REMINDERS_DB` / `STELLA_HISTORY_DB` | State file locations | under `~/.local/share/stella` |
 | `STELLA_PERSONA_DIR` | Persona file location | `~/.config/stella` |
@@ -195,7 +201,7 @@ With the local Ollama setup, nothing ever leaves your machine.
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, wake words, autonomous agents, cloud accounts…)
-- `tests/` — 982 tests; every "done" claim in this README is checked by one
+- `tests/` — 1010 tests; every "done" claim in this README is checked by one
 
 ## Found a problem?
 

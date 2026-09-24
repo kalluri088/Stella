@@ -1031,7 +1031,10 @@ class StellaWindow:
         provider_row.pack(fill="x", padx=6, pady=4)
         ttk.Label(provider_row, text="Provider:").pack(side="left")
         self._provider = ttk.Combobox(
-            provider_row, values=["openai", "ollama"], state="readonly", width=12
+            provider_row,
+            values=["openai", "ollama", "llama"],
+            state="readonly",
+            width=12,
         )
         self._provider.set(settings.provider)
         self._provider.pack(side="left", padx=6)
@@ -1185,6 +1188,7 @@ class StellaWindow:
             ollama_base_url=draft.ollama_base_url,
             openai_base_url=draft.openai_base_url,
             api_key=self._entered_key() or None,
+            llama_binary=draft.llama_binary,
         )
         self._settings_status.configure(
             text=result.message if result.message else "Not connected."

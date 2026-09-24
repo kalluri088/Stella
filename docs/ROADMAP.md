@@ -141,6 +141,22 @@ working and helping me, even if not the fastest."
   what they have plus one honest error line, and single-sentence
   replies take the byte-identical legacy path. Token-level streaming
   and barge-in stay out of scope.
+- **A10. Stella owns its llama.cpp brain — done.** The systemd-topology
+  research found the real gap: the measured brain launch line had no
+  supervisor. `stella/llama_server.py` now spawns `llama-server` as a
+  Stella child — the report 09 Round C flags (with the one honest
+  amendment that `-c` is shared across slots, so 16384 keeps every
+  slot at the ~5.3 k tokens Stella's real prompt needs), waits on
+  `/health`, refuses to bind a port someone else already answers on,
+  and stops with the SIGINT → terminate → kill ladder; closing the
+  application closes the brain (live smoke: ready in 4–19 s, 2.86 GB
+  VRAM, correct turn, child gone after close). Provider `llama` is
+  selectable everywhere (`STELLA_LLM_PROVIDER=llama`, Settings, saved
+  config) and the model is the full GGUF path; the client reuses the
+  proven Ollama compatibility path against `/v1`. Applying llama
+  settings frees the shared port before the replacement binds it,
+  while the build-first safety net (a bad config cannot destroy the
+  working session) stands for every other change.
 
 ## Stage B — sharper judgment and scale
 

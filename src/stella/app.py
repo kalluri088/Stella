@@ -34,6 +34,12 @@ from stella.context import (
     InputProvenance,
 )
 from stella.history import SQLiteActionHistory
+from stella.llama_server import (
+    DEFAULT_LLAMA_SERVER_BINARY,
+    DEFAULT_LLAMA_SERVER_PORT,
+    LlamaBrainServer,
+    LlamaServerLLMClient,
+)
 from stella.llm import (
     CancelCheck,
     Message,
@@ -408,6 +414,8 @@ class StellaSettings:
     model: str | None = None
     openai_base_url: str | None = None
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
+    llama_binary: str = DEFAULT_LLAMA_SERVER_BINARY
+    llama_port: int = DEFAULT_LLAMA_SERVER_PORT
     memory_db: str = field(default_factory=default_memory_db)
     reminders_db: str = field(default_factory=default_reminders_db)
     history_db: str = field(default_factory=default_history_db)
@@ -454,6 +462,18 @@ class StellaSettings:
             raise SystemExit(
                 "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
             )
+        raw_port = os.environ.get(
+            "STELLA_LLAMA_SERVER_PORT", str(DEFAULT_LLAMA_SERVER_PORT)
+        )
+        try:
+            llama_port = int(raw_port)
+        except ValueError:
+            llama_port = -1
+        if not 0 < llama_port < 65536:
+            raise SystemExit(
+                "STELLA_LLAMA_SERVER_PORT must be a TCP port between "
+                "1 and 65535"
+            )
         return {
             "memory_db": os.environ.get(
                 "STELLA_MEMORY_DB", default_memory_db()
@@ -476,6 +496,10 @@ class StellaSettings:
             "workspace": os.environ.get(
                 "STELLA_WORKSPACE", default_workspace()
             ),
+            "llama_binary": os.environ.get(
+                "STELLA_LLAMA_SERVER_BINARY", DEFAULT_LLAMA_SERVER_BINARY
+            ),
+            "llama_port": llama_port,
             "voice_transcription": transcription_mode,
             "voice_speech": speech_mode,
             "transcription_model": os.environ.get(
@@ -541,9 +565,9 @@ class StellaSettings:
             # otherwise fall back to a local Ollama model.
             provider = "openai" if os.environ.get("OPENAI_API_KEY") else "ollama"
         provider = provider.casefold()
-        if provider not in {"openai", "ollama"}:
+        if provider not in {"openai", "ollama", "llama"}:
             raise SystemExit(
-                "STELLA_LLM_PROVIDER must be 'openai' or 'ollama'"
+                "STELLA_LLM_PROVIDER must be 'openai', 'ollama' or 'llama'"
             )
         return cls(
             provider=provider,
@@ -569,8 +593,13 @@ class StellaApplication:
     settings: StellaSettings
     voice: VoicePanel | None = None
     proposals: ReflectionStore | None = None
+    brain_server: LlamaBrainServer | None = None
 
     def close(self) -> None:
+        # The brain process is Stella's child: closing the application
+        # stops it, so no llama-server is ever left running unsupervised.
+        if self.brain_server is not None:
+            self.brain_server.stop()
         if self.voice is not None:
             self.voice.dispose()
         memory = self.session.stella.memory
@@ -624,6 +653,11 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     """Construct the trusted Stella core exactly like the CLI does."""
     if not settings.model:
         raise SystemExit("STELLA_MODEL is required")
+    # For the llama provider the model is a GGUF path and the brain is a
+    # child process Stella owns; it is constructed here but started only
+    # once everything else exists, so a failure anywhere below can never
+    # leave a server running.
+    brain_server: LlamaBrainServer | None = None
     if settings.provider == "ollama":
         # The compatibility endpoint ignores per-request options on Ollama
         # 0.33.x; native /api/chat is the only way to apply num_ctx=4096,
@@ -644,8 +678,23 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             model=settings.model,
             base_url=settings.openai_base_url,
         )
+    elif settings.provider == "llama":
+        brain_server = LlamaBrainServer(
+            model_path=settings.model,
+            binary=settings.llama_binary,
+            port=settings.llama_port,
+        )
+        # llama-server always serves exactly the one loaded model, so the
+        # request-time model name is a formality; the GGUF path identifies
+        # it honestly.
+        llm = LlamaServerLLMClient(
+            model=settings.model,
+            base_url=brain_server.base_url,
+        )
     else:
-        raise SystemExit("STELLA_LLM_PROVIDER must be 'openai' or 'ollama'")
+        raise SystemExit(
+            "STELLA_LLM_PROVIDER must be 'openai', 'ollama' or 'llama'"
+        )
     # Desktop launchers may start us from an arbitrary directory, and the
     # default state lives under XDG paths that do not exist on first run,
     # so ensure every configured location exists before opening it.
@@ -717,6 +766,12 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # The shared application backs the desktop UI too, so its session must
     # not quote CLI-only instructions ("type 'exit'") in UI error messages.
     # The interactive CLI loop builds its own StellaSession with the hint.
+    voice = build_voice(settings)
+    # Last possible moment to spawn the brain: nothing after this can
+    # fail and strand the process (stop() also runs inside a failed
+    # start(), and close() owns it afterwards).
+    if brain_server is not None:
+        brain_server.start()
     return StellaApplication(
         StellaSession(
             stella,
@@ -724,8 +779,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             transcripts=(transcripts if settings.transcripts_enabled else None),
         ),
         settings,
-        build_voice(settings),
+        voice,
         proposals=proposals,
+        brain_server=brain_server,
     )
 
 
@@ -1833,8 +1889,20 @@ class StellaBridge:
             # Build first so a bad configuration cannot destroy the
             # working session; only then retire the old application and
             # persist the new choice for the next launch.
-            application = build_application(settings)
             old = self._application
+            # One llama brain binds one port: when the replacement wants
+            # the same port, the retiring brain must release it first.
+            # The old session keeps running otherwise; if the build then
+            # fails, its turns honestly report the stopped brain until
+            # the settings are fixed and applied again.
+            if (
+                old is not None
+                and old.brain_server is not None
+                and settings.provider == "llama"
+                and old.settings.llama_port == settings.llama_port
+            ):
+                old.brain_server.stop()
+            application = build_application(settings)
             self._application = application
             self._rebind(application)
             if old is not None:

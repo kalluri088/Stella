@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Stella now runs her own llama.cpp brain
+
+- **Provider `llama`** — point Stella at a downloaded `.gguf` file
+  (Settings tab, or `STELLA_LLM_PROVIDER=llama` with the path in
+  `STELLA_MODEL`) and she launches `llama-server` as her own child
+  process with the measured high-quality launch line — no systemd
+  unit, no manual server, nothing left running behind her.
+- **Honest lifecycle** — startup waits for the server's own health
+  endpoint and reports the server's last output when it refuses to
+  come up; a port someone else already answers on is refused rather
+  than quietly shared; shutdown sends the server its own clean
+  SIGINT path first and escalates only if ignored (live: 4–19 s to
+  ready, ~2.9 GB VRAM, gone on close).
+- **Test connection** for the llama provider truthfully checks what a
+  launch needs — the model file and the server command — since no
+  server exists until Stella starts one.
+
 ### The window got a real look
 
 - **Dark, calm theme** — one palette across the chat window, the

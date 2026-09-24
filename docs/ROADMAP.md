@@ -111,6 +111,48 @@ working and helping me, even if not the fastest."
 
 ## Stage B — sharper judgment and scale
 
+- **B0. System-1 decision router (Laya) — design sketch only, no
+  code.** A small non-autoregressive classifier (Laya 0.3.20,
+  421M) consulted *before* the language-model Brain, so cheap
+  always-on awareness informs (never replaces) the expensive
+  decision.
+  - *Slot.* One advisory call at a new safe point in
+    `Stella.process`, immediately before `self.brain.decide`:
+    `SystemOneRouter.route(state) -> RoutingHint | None`. A hint
+    (act probability, per-tool relevance scores) may only
+    pre-shape what the Brain sees — context emphasis, tool-list
+    ordering — and can never dispatch a tool, approve anything,
+    or substitute for the `Decision`. Any error, timeout, absent
+    router or untrustworthy calibration falls back to the exact
+    current path (fail-closed); router process death disables
+    routing only, following the voice-degradation precedent. The
+    model-proposes/app-decides trust model is untouched.
+  - *Runtime facts (benchmarked on the real rig;
+    `~/STELLA-BENCHMARK-REPORT.md` Part 3).* 31 ms per event on
+    GPU, ~1.6 s on CPU and 4–5 s under load, because the RL-agent
+    config runs the ModernBERT-large encoder up to 6 prefix
+    forwards per event — so the router is only viable as a
+    GPU-resident sidecar (~2.5 GB VRAM of a 6 GB card) and
+    worthless off-GPU. It cannot co-reside with a full-GPU
+    FreeToken server (that one's floor is ~2.9 GB fixed); the
+    validated coexistence stack is llama.cpp `-cmoe` for the
+    brain (2.8 GB GPU, experts in RAM) with Laya on GPU, holding
+    ~41 ms sustained under full-stack load. No custom serving
+    layer: a `pip install laya` process holds the model.
+  - *Interface.* `agent.predict(state, {question: {type:
+    choice|score|noul, instructions, criteria}})` returns
+    per-question answers with calibrated confidence and
+    `act_probability` — Stella authors its own routing questions
+    rather than inheriting fixed act/route heads.
+  - *Gated behind prerequisite experiments (measure before
+    building).* (1) Brain-swap baseline: gpt-oss-20b with
+    `reasoning_effort: low` — part of the "hello takes 300 s"
+    pain is a qwen3:4b thinking-mode artifact, and A7 already
+    bounds the wait; see how much shrinks before a router earns
+    its VRAM. (2) Re-validate VRAM coexistence with whatever
+    ships as the brain config. (3) Routing-question conformance
+    and calibration on Stella-shaped inputs — ties directly into
+    the B4 provider conformance suite.
 - **B1. Argument-aware risk classification.** *Explicitly deferred by
   the user.* Today risk is per-capability and hard-coded; a classifier
   would have to be proven not to weaken the exact-match approval

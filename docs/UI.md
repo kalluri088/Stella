@@ -106,9 +106,14 @@ display, and can never approve a tool or change permissions.
   saved, so a failed rebuild keeps the working session alive and can never
   overwrite the last known-good configuration. Two extra checkboxes —
   *Record transcripts for persona reflection* (off by default; see
-  `PERSONA.md`) and *Semantic memory recall (local word-shape index)* (off
+  `PERSONA.md`) and *Semantic memory recall (embedding index)* (off
   by default; see `ARCHITECTURE.md`) — turn the two optional local files
-  (transcript, semantic index) on or off. The semantic index duplicates
+  (transcript, semantic index) on or off. Beside the recall checkbox a
+  small choice selects the embedding provider: *Local word-shape (no
+  model)* (the default), *Ollama embedding model*, or *MiniLM
+  (stella[embed] extra)*; picking a provider whose backend is missing
+  fails the rebuild honestly and keeps the working session. The semantic
+  index duplicates
   every stored memory's text into its own file; while unchecked, that
   file is never created.
 - Persona: chat style changes go through the normal `persona_edit`

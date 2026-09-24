@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+
 from stella.memory import (
     InMemoryMemory,
     MemoryItem,
@@ -17,11 +22,13 @@ from stella.semantic_memory import (
 
 
 class FakeEmbeddingProvider(EmbeddingProvider):
-    def __init__(self) -> None:
-        self.calls: list[str] = []
+    method = "fake-embedding"
 
-    def embed(self, text: str) -> SemanticVector:
-        self.calls.append(text)
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def embed(self, text: str, *, query: bool = False) -> SemanticVector:
+        self.calls.append((text, query))
         return (float(len(text)), 1.0)
 
 
@@ -29,11 +36,19 @@ class RecordingSemanticIndex(SemanticIndex):
     def __init__(self, scope: MemoryScope) -> None:
         super().__init__(scope)
         self.indexed: list[tuple[MemoryItem, SemanticVector]] = []
+        self.indexed_methods: list[str] = []
+        self.searched_methods: list[str] = []
         self.matches: list[SemanticMatch] = []
         self.cleared = 0
 
-    def _upsert(self, item: MemoryItem, vector: SemanticVector) -> bool:
+    def _upsert(
+        self,
+        item: MemoryItem,
+        vector: SemanticVector,
+        provider_method: str,
+    ) -> bool:
         self.indexed.append((item, vector))
+        self.indexed_methods.append(provider_method)
         return True
 
     def _search(
@@ -41,7 +56,9 @@ class RecordingSemanticIndex(SemanticIndex):
         vector: SemanticVector,
         memory_type: MemoryType | None,
         limit: int,
+        provider_method: str,
     ) -> list[SemanticMatch]:
+        self.searched_methods.append(provider_method)
         return list(self.matches)
 
     def _clear(self) -> bool:
@@ -68,8 +85,25 @@ def test_semantic_retriever_separates_embedding_index_and_retrieval() -> None:
 
     assert retriever.index_memory(item) is True
     assert index.indexed == [(item, (float(len(item.content)), 1.0))]
+    assert index.indexed_methods == ["fake-embedding"]
     assert retriever.retrieve("What does the user prefer?") == index.matches
-    assert provider.calls == [item.content, "What does the user prefer?"]
+    assert index.searched_methods == ["fake-embedding"]
+    assert provider.calls == [
+        (item.content, False),
+        ("What does the user prefer?", True),
+    ]
+
+
+def test_retriever_requires_a_labelled_provider() -> None:
+    unlabeled = FakeEmbeddingProvider()
+    unlabeled.method = ""
+
+    try:
+        SemanticRetriever(unlabeled, RecordingSemanticIndex(MemoryScope.USER))
+    except ValueError as error:
+        assert "non-empty label" in str(error)
+    else:
+        raise AssertionError("an unlabelled provider must not be retrievable")
 
 
 def test_semantic_index_rejects_mismatched_scope_and_invalid_metadata() -> None:
@@ -79,10 +113,18 @@ def test_semantic_index_rejects_mismatched_scope_and_invalid_metadata() -> None:
     assert index.upsert(
         MemoryItem(content="Other owner", id=1, scope=MemoryScope.STELLA),
         valid_vector,
+        "fake-embedding",
     ) is False
     assert index.upsert(
         MemoryItem(content="Invalid type", id=2, memory_type="unknown"),
         valid_vector,
+        "fake-embedding",
+    ) is False
+    # An unlabelled provider identity is refused like any other invalid input.
+    assert index.upsert(
+        MemoryItem(content="User fact", id=3, scope=MemoryScope.USER),
+        valid_vector,
+        "",
     ) is False
     assert index.indexed == []
     assert index.clear() is True
@@ -115,15 +157,22 @@ def test_semantic_search_filters_scope_and_type_and_bounds_results() -> None:
         SemanticMatch(other_scope, 1.0),
     ]
 
-    assert index.search((1.0,), limit=2) == [
+    assert index.search((1.0,), limit=2, provider_method="fake-embedding") == [
         SemanticMatch(user_semantic, 0.9),
         SemanticMatch(user_episodic, 0.8),
     ]
     assert index.search(
-        (1.0,), memory_type=MemoryType.EPISODIC
+        (1.0,),
+        memory_type=MemoryType.EPISODIC,
+        provider_method="fake-embedding",
     ) == [SemanticMatch(user_episodic, 0.8)]
-    assert index.search((1.0,), memory_type="unknown") == []  # type: ignore[arg-type]
-    assert index.search((1.0,), limit=0) == []
+    assert index.search(
+        (1.0,), memory_type="unknown", provider_method="fake-embedding"
+    ) == []  # type: ignore[arg-type]
+    assert index.search((1.0,), limit=0, provider_method="fake-embedding") == []
+    # A search without a provider identity would silently compare against
+    # vectors from an unknown model, so it is refused outright.
+    assert index.search((1.0,), provider_method="") == []
 
 
 def test_semantic_retriever_rejects_empty_invalid_queries_without_embedding() -> None:
@@ -269,6 +318,94 @@ def test_local_backend_persists_vectors_and_metadata(tmp_path) -> None:
         assert matches[0].item.created_at == 12
     finally:
         second_index.close()
+
+
+def test_search_never_compares_vectors_from_a_different_model(
+    tmp_path,
+) -> None:
+    database_path = str(tmp_path / "mixed-provider.db")
+    index = SQLiteSemanticIndex(database_path, MemoryScope.USER)
+    provider = FakeEmbeddingProvider()
+    item = MemoryItem(content="The user prefers tea.", id=1, scope=MemoryScope.USER)
+
+    try:
+        assert SemanticRetriever(provider, index).index_memory(item) is True
+        # Same dimension, different provider: the row is filtered out by
+        # identity, so cross-model cosine is never even attempted.
+        other = FakeEmbeddingProvider()
+        other.method = "other-embedding"
+        assert SemanticRetriever(other, index).retrieve("tea") == []
+        # A different dimension is likewise never multiplied against the
+        # stored vector.
+        assert (
+            SemanticRetriever(LocalHashEmbeddingProvider(), index).retrieve(
+                "tea"
+            )
+            == []
+        )
+        # The embedding's own provider still finds its row.
+        found = SemanticRetriever(provider, index).retrieve("tea")
+        assert [match.item for match in found] == [item]
+    finally:
+        index.close()
+
+
+def test_legacy_rows_without_provider_identity_are_skipped_then_healed(
+    tmp_path,
+) -> None:
+    database_path = str(tmp_path / "legacy-semantic.db")
+    provider = LocalHashEmbeddingProvider()
+    item = MemoryItem(
+        content="The user prefers tea.",
+        id=1,
+        memory_type=MemoryType.SEMANTIC,
+        scope=MemoryScope.USER,
+    )
+    # Recreate the pre-B2.1 schema exactly: no provider or dimension
+    # columns, one row that predates provider identity entirely.
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """
+        CREATE TABLE semantic_vectors (
+            memory_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            memory_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            created_at INTEGER,
+            vector TEXT NOT NULL,
+            PRIMARY KEY (memory_id, scope)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO semantic_vectors
+            (memory_id, content, memory_type, scope, created_at, vector)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            item.id,
+            item.content,
+            item.memory_type.value,
+            item.scope.value,
+            item.created_at,
+            json.dumps(list(provider.embed(item.content))),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    index = SQLiteSemanticIndex(database_path, MemoryScope.USER)
+    retriever = SemanticRetriever(provider, index)
+    try:
+        # The identity-less row cannot participate in any search.
+        assert retriever.retrieve("prefers tea") == []
+        # Rewriting it (what reconciliation does per item) heals it.
+        assert retriever.index_memory(item) is True
+        matches = retriever.retrieve("prefers tea")
+        assert [match.item.content for match in matches] == [item.content]
+    finally:
+        index.close()
 
 
 def test_reconcile_rebuilds_the_index_from_the_authoritative_memory_store(

@@ -36,7 +36,12 @@ from stella.context import (
 from stella.history import SQLiteActionHistory
 from stella.llm import Message
 from stella.memory import Memory, MemoryItem, SQLiteMemory
+from stella.minilm_embedding import (
+    MiniLMEmbeddingProvider,
+    minilm_extra_available,
+)
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
+from stella.ollama_embedding import OllamaEmbeddingProvider
 from stella.openai_client import OpenAILLMClient
 from stella.persona import (
     PersonaLoader,
@@ -45,6 +50,7 @@ from stella.persona import (
 )
 from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.semantic_memory import (
+    EmbeddingProvider,
     LocalHashEmbeddingProvider,
     SemanticRetriever,
     SQLiteSemanticIndex,
@@ -327,6 +333,27 @@ def semantic_env_override() -> bool | None:
     return _env_toggle("STELLA_SEMANTIC_MEMORY")
 
 
+SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
+
+
+def semantic_provider_env_override() -> str | None:
+    """The STELLA_SEMANTIC_PROVIDER override, or None when it says nothing.
+
+    The embedding provider is an explicit choice; an invalid name fails
+    loudly rather than silently falling back to another model's vectors.
+    """
+
+    raw = os.environ.get("STELLA_SEMANTIC_PROVIDER", "").strip().casefold()
+    if not raw:
+        return None
+    if raw not in SEMANTIC_PROVIDERS:
+        raise SystemExit(
+            "STELLA_SEMANTIC_PROVIDER must be "
+            + ", ".join(sorted(SEMANTIC_PROVIDERS))
+        )
+    return raw
+
+
 def default_data_dir() -> Path:
     """Stella's persistent-state directory following the XDG base spec.
 
@@ -383,6 +410,8 @@ class StellaSettings:
     transcripts_enabled: bool = False
     semantic_db: str = field(default_factory=default_semantic_db)
     semantic_memory_enabled: bool = False
+    semantic_provider: str = "local-hash"
+    semantic_embed_model: str = "nomic-embed-text"
     workspace: str = field(default_factory=default_workspace)
     voice_transcription: str = "auto"
     voice_speech: str = "auto"
@@ -391,6 +420,13 @@ class StellaSettings:
     speech_model: str = "tts-1"
     speech_voice: str = "alloy"
     speech_command: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.semantic_provider not in SEMANTIC_PROVIDERS:
+            raise SystemExit(
+                "semantic_provider must be "
+                + ", ".join(sorted(SEMANTIC_PROVIDERS))
+            )
 
     @staticmethod
     def _environment_fields() -> dict:
@@ -429,6 +465,9 @@ class StellaSettings:
             "semantic_db": os.environ.get(
                 "STELLA_SEMANTIC_DB", default_semantic_db()
             ),
+            "semantic_embed_model": os.environ.get(
+                "STELLA_EMBED_MODEL", "nomic-embed-text"
+            ),
             "workspace": os.environ.get(
                 "STELLA_WORKSPACE", default_workspace()
             ),
@@ -455,11 +494,13 @@ class StellaSettings:
         openai_base_url: str | None = None,
         transcripts_enabled: bool = False,
         semantic_memory_enabled: bool = False,
+        semantic_provider: str = "local-hash",
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
         transcript_override = transcripts_env_override()
         semantic_override = semantic_env_override()
+        provider_override = semantic_provider_env_override()
         return cls(
             provider=provider,
             model=model,
@@ -474,6 +515,10 @@ class StellaSettings:
                 semantic_memory_enabled
                 if semantic_override is None
                 else semantic_override
+            ),
+            semantic_provider=(
+                semantic_provider if provider_override is None
+                else provider_override
             ),
             **cls._environment_fields(),
         )
@@ -504,6 +549,9 @@ class StellaSettings:
             ),
             transcripts_enabled=transcripts_env_override() is True,
             semantic_memory_enabled=semantic_env_override() is True,
+            semantic_provider=(
+                semantic_provider_env_override() or "local-hash"
+            ),
             **cls._environment_fields(),
         )
 
@@ -541,9 +589,34 @@ class StellaApplication:
             retriever.index.close()
 
 
+def _build_embedding_provider(
+    settings: StellaSettings,
+) -> EmbeddingProvider:
+    """Instantiate the explicitly chosen embedding provider.
+
+    Every provider is constructed lazily-cheap here; a selected-but-
+    unusable backend fails loudly at this point rather than silently
+    embedding with a different model.
+    """
+
+    if settings.semantic_provider == "ollama":
+        return OllamaEmbeddingProvider(
+            model=settings.semantic_embed_model,
+            base_url=settings.ollama_base_url,
+        )
+    if settings.semantic_provider == "minilm":
+        if not minilm_extra_available():
+            raise SystemExit(
+                "semantic provider 'minilm' needs the optional extra: "
+                "install stella[embed] (CPU-only torch suffices) or "
+                "choose another STELLA_SEMANTIC_PROVIDER"
+            )
+        return MiniLMEmbeddingProvider()
+    return LocalHashEmbeddingProvider()
+
+
 def build_application(settings: StellaSettings) -> StellaApplication:
     """Construct the trusted Stella core exactly like the CLI does."""
-
     if not settings.model:
         raise SystemExit("STELLA_MODEL is required")
     if settings.provider == "ollama":
@@ -592,7 +665,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         Path(settings.semantic_db).parent.mkdir(parents=True, exist_ok=True)
         semantic_index = SQLiteSemanticIndex(settings.semantic_db, memory.scope)
         semantic_retriever = SemanticRetriever(
-            LocalHashEmbeddingProvider(), semantic_index
+            _build_embedding_provider(settings), semantic_index
         )
         # One rebuild at startup heals anything changed while Stella was
         # away. A failure here is not fatal and not silent: every later

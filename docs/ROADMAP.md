@@ -170,6 +170,19 @@ working and helping me, even if not the fastest."
   index is healed by full reconciliation (startup plus after every
   in-turn memory mutation) with failures reported honestly, and no
   silent ranking magic entered anywhere.
+- **B2.1. Real embedding recall — done.** The provider is now a choice:
+  `local-hash` stays the zero-dependency default (behavior identical),
+  while `ollama` (any Ollama embedding model via `STELLA_EMBED_MODEL`,
+  stdlib HTTP only) and `minilm` (`all-MiniLM-L6-v2` on CPU through the
+  optional `stella[embed]` extra) add real embedding models. Neither is
+  ever auto-activated. Index rows carry their provider label and vector
+  dimension and search only compares within one model, so vectors from
+  different models can never be mixed; switching providers is healed by
+  the existing reconcile. The Ollama provider applies nomic's
+  `search_document:`/`search_query:` prefixes client-side (measured:
+  Ollama passes input verbatim), and an unreachable backend returns no
+  vector — the turn degrades to keyword recall with an honest
+  `SemanticSearchUnavailableEvent`, never a fake similarity.
 - **B3. Memory-scale policies.** As stored memory grows: bounded
   retrieval windows, dedupe guidance, and forgetting tools that stay
   approval-gated.

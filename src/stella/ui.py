@@ -36,6 +36,17 @@ from stella.app import (
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 from stella.tools import ActionPreview, ApprovalRequest, action_summary
 
+# Display labels for the semantic embedding choice; the menu is the only
+# writer of the variable, and the reverse map carries the selection back.
+_SEMANTIC_PROVIDER_LABELS = {
+    "local-hash": "Local word-shape (no model)",
+    "ollama": "Ollama embedding model",
+    "minilm": "MiniLM (stella[embed] extra)",
+}
+_SEMANTIC_PROVIDER_BY_LABEL = {
+    label: value for value, label in _SEMANTIC_PROVIDER_LABELS.items()
+}
+
 
 class StellaWindow:
     """One Tk window driven entirely by posted bridge commands."""
@@ -668,16 +679,31 @@ class StellaWindow:
         )
         ttk.Checkbutton(
             frame,
-            text="Semantic memory recall (local word-shape index)",
+            text="Semantic memory recall (embedding index)",
             variable=self._semantic_var,
         ).pack(padx=6, pady=(4, 0), anchor="w")
+        provider_row = ttk.Frame(frame)
+        provider_row.pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(provider_row, text="Embedding:").pack(side="left")
+        initial_label = _SEMANTIC_PROVIDER_LABELS[
+            settings.semantic_provider
+        ]
+        self._semantic_provider_var = tk.StringVar(value=initial_label)
+        ttk.OptionMenu(
+            provider_row,
+            self._semantic_provider_var,
+            initial_label,
+            *_SEMANTIC_PROVIDER_LABELS.values(),
+        ).pack(side="left")
         ttk.Label(
             frame,
             text=(
-                "Stores approved memories are additionally indexed by a "
-                "deterministic local word-shape embedding so related "
-                "phrasings can still be found; matches are always labeled "
-                "as weaker hints, never as understanding."
+                "Stored approved memories are additionally indexed by the "
+                "chosen embedding so related phrasings can still be found; "
+                "matches are always labeled as weaker hints, never as "
+                "understanding. Ollama uses a local embedding model "
+                "(STELLA_EMBED_MODEL); MiniLM needs the stella[embed] extra "
+                "and runs on CPU."
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
@@ -724,6 +750,9 @@ class StellaWindow:
             workspace=fields["Workspace"].get().strip(),
             transcripts_enabled=self._transcripts_var.get(),
             semantic_memory_enabled=self._semantic_var.get(),
+            semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
+                self._semantic_provider_var.get()
+            ],
         )
 
     def _entered_key(self) -> str:

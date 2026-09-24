@@ -218,11 +218,25 @@ approval state; they only enrich what the Brain is shown, never what it may
 do. The existing `Memory` implementations remain the source of explicit
 storage, lifecycle, lexical retrieval, and scope enforcement.
 
-`LocalHashEmbeddingProvider` is the current local provider. It uses stable
+The default provider is `LocalHashEmbeddingProvider`. It uses stable
 SHA-256 feature hashing over normalized words and character trigrams to create
-small deterministic vectors. It is deliberately lightweight and offline; it
-is not a learned language model and should not be described as understanding
-general synonyms. `SQLiteSemanticIndex` is the optional persistent backend. It
+small deterministic vectors. It is deliberately lightweight, offline and
+dependency-free; it is not a learned language model and should not be described
+as understanding general synonyms. Two real-model providers can be selected
+instead (`STELLA_SEMANTIC_PROVIDER` or the Settings choice), and neither is ever
+auto-activated: `ollama` embeds through a local Ollama server
+(`OllamaEmbeddingProvider`, stdlib HTTP only, no new dependencies) and applies
+nomic's `search_document:`/`search_query:` prefixes client-side, because Ollama
+passes the input verbatim; `minilm` runs `all-MiniLM-L6-v2` on CPU via
+sentence-transformers, installed only as the optional extra `stella[embed]` and
+loaded lazily on first embed. Every provider labels itself (`method`) and
+every index row stores that label plus the vector dimension; search computes
+cosine only against rows from the same provider and dimension, so vectors from
+different models are never mixed in one comparison. A provider that cannot
+reach its backend returns no vector, which is reported honestly
+(`SemanticSearchUnavailableEvent` in the trace) and degrades the turn to plain
+keyword recall — never to fabricated similarity.
+`SQLiteSemanticIndex` is the optional persistent backend. It
 stores vectors and the authorized memory metadata in a separate SQLite table
 and performs a bounded linear cosine scan, which is appropriate for Stella's
 current local scale.
@@ -235,8 +249,9 @@ supplements (`MAX_SEMANTIC_SUPPLEMENT`) may fill the remaining space. Stella
 enforces the cap itself rather than trusting the backend, and items already
 retrieved lexically are never duplicated. The two score scales are never
 compared with each other. Instead every retrieved memory carries reported
-provenance (`RetrievalSource`: `keyword` with the lexical score, or
-`local-hash-embedding` with the rounded cosine score), and the Brain payload
+provenance (`RetrievalSource`: `keyword` with the lexical score, or the active
+provider's label — `local-hash-embedding`, `ollama-embedding` or
+`minilm-embedding` — with the rounded cosine score), and the Brain payload
 surfaces it so the model can describe a semantic hit at most as "this may be
 related" — never as understanding.
 
@@ -249,7 +264,10 @@ heals changes made while Stella was down (one reconcile at startup). Stella
 reconciles after every successful memory mutation in a turn. Failures are
 reported honestly — a `MemoryIndexSyncEvent(ok=False)` in the trace plus a
 plain note on the response — and never change a memory write's own outcome,
-because the memory store remains the ground truth.
+because the memory store remains the ground truth. Reconcile is also the
+provider-change migration: switching the embedding provider rewrites every row
+with the new label and dimension, and rows from another model are skipped by
+search until that rebuild heals them.
 
 ### Brain and Decision
 
@@ -550,7 +568,9 @@ The following are intentionally outside the current MVP foundation:
 │       ├── context.py         # conversation/context assembly
 │       ├── llm.py             # provider-agnostic LLM interface
 │       ├── memory.py          # SQLite + in-memory memory stores
+│       ├── minilm_embedding.py # optional CPU sentence-transformers provider
 │       ├── ollama_client.py   # local Ollama client
+│       ├── ollama_embedding.py # Ollama /api/embed provider
 │       ├── openai_client.py   # OpenAI-compatible client
 │       ├── proactivity.py     # due-reminder surface during interaction
 │       ├── reminders.py       # one-shot reminder store

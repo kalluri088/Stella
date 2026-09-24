@@ -102,6 +102,18 @@ class MemoryIndexSyncEvent:
 
 
 @dataclass(frozen=True)
+class SemanticSearchUnavailableEvent:
+    """The embedding provider produced no vector for a query this turn.
+
+    Recorded so "no semantic supplements" is never mistaken for "nothing
+    was semantically relevant": the recall degraded to keyword results
+    because the embedding itself was unavailable.
+    """
+
+    provider_method: str
+
+
+@dataclass(frozen=True)
 class ReminderLifecycleEvent:
     """Bounded metadata for one reminder store or delivery transition.
 
@@ -126,6 +138,7 @@ TraceEvent = (
     | MemoryActionEvent
     | ActionReceiptEvent
     | MemoryIndexSyncEvent
+    | SemanticSearchUnavailableEvent
     | ReminderLifecycleEvent
 )
 

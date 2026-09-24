@@ -349,10 +349,12 @@ Each retrieved memory is an object with content, memory_type, scope,
 relevant_to_current_request, and retrieval. The flag is a deterministic
 match against the current request, computed by trusted runtime code before
 this decision. retrieval records how the memory was found: method "keyword"
-(term overlap, scored in shared terms) or "local-hash-embedding" (a
-similarity score from a deterministic local word/trigram index). A
-local-hash-embedding match is a weaker hint than a keyword match: it means
-the words look alike, never that anything understood the meaning, so
+(term overlap, scored in shared terms) or an embedding method —
+"local-hash-embedding" (a deterministic word/trigram index) or a configured
+local embedding model such as "ollama-embedding" or "minilm-embedding" (a
+vector similarity score). An embedding match is a weaker hint than a
+keyword match, at any provider: it means the text resembles the query in a
+numeric space, never that anything read or understood either text, so
 describe it at most as "this may be related" and never as understanding.
 When no retrieval method was recorded, method is "none". Let memories
 flagged relevant to the current request inform the decision itself, not

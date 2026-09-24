@@ -60,6 +60,10 @@ def _valid_memory_id(memory_id: int | None) -> bool:
     )
 
 
+def _valid_provider_method(method: object) -> bool:
+    return isinstance(method, str) and bool(method.strip())
+
+
 @dataclass(frozen=True)
 class SemanticMatch:
     """A semantic index result with an index-provided score."""
@@ -69,10 +73,20 @@ class SemanticMatch:
 
 
 class EmbeddingProvider(ABC):
-    """Provider-neutral interface for turning text into a vector."""
+    """Provider-neutral interface for turning text into a vector.
+
+    Every provider carries a ``method`` label — reported as retrieval
+    provenance and stored on index rows so vectors from different models
+    are never compared — and honors the ``query`` flag: embedding a
+    retrieval query may differ from embedding a stored document (for
+    example nomic-embed-text requires its prompt prefixes). Providers that
+    are query-insensitive simply ignore the flag.
+    """
+
+    method: str = ""
 
     @abstractmethod
-    def embed(self, text: str) -> SemanticVector:
+    def embed(self, text: str, *, query: bool = False) -> SemanticVector:
         """Return a bounded vector for text without granting authority."""
 
 
@@ -84,8 +98,17 @@ class SemanticIndex(ABC):
             raise TypeError("scope must be a MemoryScope")
         self.scope = scope
 
-    def upsert(self, item: MemoryItem, vector: SemanticVector) -> bool:
-        """Index one existing memory item if its metadata is trusted-compatible."""
+    def upsert(
+        self,
+        item: MemoryItem,
+        vector: SemanticVector,
+        provider_method: str,
+    ) -> bool:
+        """Index one existing memory item if its metadata is trusted-compatible.
+
+        ``provider_method`` labels which embedding produced the vector;
+        rows are only ever compared against vectors from the same method.
+        """
 
         if (
             not _valid_memory_id(item.id)
@@ -94,17 +117,25 @@ class SemanticIndex(ABC):
             or not isinstance(item.scope, MemoryScope)
             or item.scope is not self.scope
             or not _valid_vector(vector)
+            or not _valid_provider_method(provider_method)
         ):
             return False
-        return self._upsert(item, vector)
+        return self._upsert(item, vector, provider_method)
 
     def search(
         self,
         vector: SemanticVector,
         memory_type: MemoryType | None = None,
         limit: int = DEFAULT_SEMANTIC_LIMIT,
+        *,
+        provider_method: str,
     ) -> list[SemanticMatch]:
-        """Search only this scope and optional memory type, with a hard limit."""
+        """Search only this scope and optional memory type, with a hard limit.
+
+        Only rows embedded by ``provider_method`` at this vector's
+        dimension participate — mixed-model cosine is rejected, not
+        silently attempted.
+        """
 
         if (
             not _valid_vector(vector)
@@ -112,10 +143,11 @@ class SemanticIndex(ABC):
             or not isinstance(limit, int)
             or isinstance(limit, bool)
             or limit <= 0
+            or not _valid_provider_method(provider_method)
         ):
             return []
 
-        matches = self._search(vector, memory_type, limit)
+        matches = self._search(vector, memory_type, limit, provider_method)
         return [
             match
             for match in matches
@@ -136,7 +168,12 @@ class SemanticIndex(ABC):
         return self._clear()
 
     @abstractmethod
-    def _upsert(self, item: MemoryItem, vector: SemanticVector) -> bool:
+    def _upsert(
+        self,
+        item: MemoryItem,
+        vector: SemanticVector,
+        provider_method: str,
+    ) -> bool:
         """Implement storage in a concrete semantic index."""
 
     @abstractmethod
@@ -145,6 +182,7 @@ class SemanticIndex(ABC):
         vector: SemanticVector,
         memory_type: MemoryType | None,
         limit: int,
+        provider_method: str,
     ) -> list[SemanticMatch]:
         """Implement retrieval in a concrete semantic index."""
 
@@ -162,6 +200,8 @@ class SemanticRetriever:
         index: SemanticIndex,
         max_results: int = DEFAULT_SEMANTIC_LIMIT,
     ) -> None:
+        if not _valid_provider_method(provider.method):
+            raise ValueError("provider.method must be a non-empty label")
         if not isinstance(max_results, int) or isinstance(max_results, bool):
             raise TypeError("max_results must be an integer")
         if max_results <= 0:
@@ -180,7 +220,45 @@ class SemanticRetriever:
             or not isinstance(item.scope, MemoryScope)
         ):
             return False
-        return self.index.upsert(item, self.provider.embed(item.content))
+        return self.index.upsert(
+            item,
+            self.provider.embed(item.content),
+            self.provider.method,
+        )
+
+    def embed_query(self, query: str) -> SemanticVector:
+        """Embed a search query; an empty vector means no embedding exists.
+
+        Exposed separately from :meth:`retrieve` so callers can tell an
+        unavailable provider (empty vector) apart from an index with no
+        matches, instead of reporting silence as irrelevance.
+        """
+
+        if not isinstance(query, str) or not query.strip():
+            return ()
+        return self.provider.embed(query, query=True)
+
+    def search_vector(
+        self,
+        vector: SemanticVector,
+        memory_type: MemoryType | None = None,
+        limit: int | None = None,
+    ) -> list[SemanticMatch]:
+        """Search the index with an already-embedded query vector."""
+
+        if memory_type is not None and not isinstance(memory_type, MemoryType):
+            return []
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
+        ):
+            return []
+        effective_limit = min(limit or self.max_results, self.max_results)
+        return self.index.search(
+            vector,
+            memory_type,
+            effective_limit,
+            provider_method=self.provider.method,
+        )
 
     def retrieve(
         self,
@@ -190,17 +268,8 @@ class SemanticRetriever:
     ) -> list[SemanticMatch]:
         """Embed a query and retrieve bounded, scope-filtered matches."""
 
-        if not isinstance(query, str) or not query.strip():
-            return []
-        if memory_type is not None and not isinstance(memory_type, MemoryType):
-            return []
-        if limit is not None and (
-            not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0
-        ):
-            return []
-        effective_limit = min(limit or self.max_results, self.max_results)
-        return self.index.search(
-            self.provider.embed(query), memory_type, effective_limit
+        return self.search_vector(
+            self.embed_query(query), memory_type, limit
         )
 
 
@@ -240,7 +309,14 @@ def _cosine_similarity(left: SemanticVector, right: SemanticVector) -> float:
 
 
 class LocalHashEmbeddingProvider(EmbeddingProvider):
-    """Deterministic local feature-hashing embeddings with no model download."""
+    """Deterministic local feature-hashing embeddings with no model download.
+
+    Query-insensitive by design: the same word/trigram shape is produced
+    for a query and a document, so the ``query`` flag is accepted and
+    ignored.
+    """
+
+    method = "local-hash-embedding"
 
     def __init__(
         self,
@@ -252,7 +328,7 @@ class LocalHashEmbeddingProvider(EmbeddingProvider):
             raise ValueError("dimension must be at least 16")
         self.dimension = dimension
 
-    def embed(self, text: str) -> SemanticVector:
+    def embed(self, text: str, *, query: bool = False) -> SemanticVector:
         if not isinstance(text, str):
             return ()
         vector = [0.0] * self.dimension
@@ -285,23 +361,50 @@ class SQLiteSemanticIndex(SemanticIndex):
                 scope TEXT NOT NULL,
                 created_at INTEGER,
                 vector TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT '',
+                dimension INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (memory_id, scope)
             )
             """
         )
+        # Indexes written before providers existed lack the identity
+        # columns; they are added empty and healed by the next
+        # reconciliation, which rewrites every row with its provider.
+        columns = {
+            row[1]
+            for row in self._connection.execute(
+                "PRAGMA table_info(semantic_vectors)"
+            )
+        }
+        if "provider" not in columns:
+            self._connection.execute(
+                "ALTER TABLE semantic_vectors ADD COLUMN provider TEXT"
+            )
+        if "dimension" not in columns:
+            self._connection.execute(
+                "ALTER TABLE semantic_vectors ADD COLUMN dimension INTEGER"
+            )
         self._connection.commit()
 
-    def _upsert(self, item: MemoryItem, vector: SemanticVector) -> bool:
+    def _upsert(
+        self,
+        item: MemoryItem,
+        vector: SemanticVector,
+        provider_method: str,
+    ) -> bool:
         self._connection.execute(
             """
             INSERT INTO semantic_vectors
-                (memory_id, content, memory_type, scope, created_at, vector)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (memory_id, content, memory_type, scope, created_at,
+                 vector, provider, dimension)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(memory_id, scope) DO UPDATE SET
                 content = excluded.content,
                 memory_type = excluded.memory_type,
                 created_at = excluded.created_at,
-                vector = excluded.vector
+                vector = excluded.vector,
+                provider = excluded.provider,
+                dimension = excluded.dimension
             """,
             (
                 item.id,
@@ -310,6 +413,8 @@ class SQLiteSemanticIndex(SemanticIndex):
                 item.scope.value,
                 item.created_at,
                 json.dumps(vector, separators=(",", ":")),
+                provider_method,
+                len(vector),
             ),
         )
         self._connection.commit()
@@ -320,14 +425,17 @@ class SQLiteSemanticIndex(SemanticIndex):
         vector: SemanticVector,
         memory_type: MemoryType | None,
         limit: int,
+        provider_method: str,
     ) -> list[SemanticMatch]:
         rows = self._connection.execute(
             """
             SELECT memory_id, content, memory_type, scope, created_at, vector
             FROM semantic_vectors
             WHERE scope = ?
+              AND provider = ?
+              AND dimension = ?
             """,
-            (self.scope.value,),
+            (self.scope.value, provider_method, len(vector)),
         )
         matches: list[SemanticMatch] = []
         for memory_id, content, item_type, scope, created_at, raw_vector in rows:

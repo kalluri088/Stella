@@ -19,7 +19,7 @@ from stella.semantic_memory import (
 )
 from stella.stella import MAX_SEMANTIC_SUPPLEMENT, Stella
 from stella.tools import MemoryAction, Tool, ToolDispatcher, ToolResult
-from stella.trace import MemoryIndexSyncEvent
+from stella.trace import MemoryIndexSyncEvent, SemanticSearchUnavailableEvent
 
 
 class ScriptedBrain(Brain):
@@ -45,22 +45,45 @@ class RecordingLLM(LLMClient):
         return "answer"
 
 
+class _StubProvider:
+    """Carries only the identity Stella reports through provenance."""
+
+    def __init__(self, method: str) -> None:
+        self.method = method
+
+
 class StubRetriever:
-    """Return a fixed match list (ignoring its own limit) and record calls."""
+    """Stand-in for a configured retriever: fixed matches, recorded calls.
 
-    def __init__(self, matches: list[SemanticMatch]) -> None:
-        self.matches = matches
-        self.index = _StubIndex()
-        self.calls: list[tuple[str, int | None]] = []
-        self.indexed: list[MemoryItem] = []
+    ``available=False`` reproduces an embedding provider that produced no
+    vector (a server that is down, a model that will not load).
+    """
 
-    def retrieve(
+    def __init__(
         self,
-        query: str,
+        matches: list[SemanticMatch],
+        method: str = "local-hash-embedding",
+        available: bool = True,
+    ) -> None:
+        self.matches = matches
+        self.provider = _StubProvider(method)
+        self.index = _StubIndex()
+        self.calls: list[tuple[object, int | None]] = []
+        self.indexed: list[MemoryItem] = []
+        self._available = available
+
+    def embed_query(self, query: str) -> tuple:
+        # A fixed truthy sentinel: fusion only ever passes the vector on to
+        # search_vector, whose call is what the tests assert on.
+        return () if not self._available else ("stub-vector",)
+
+    def search_vector(
+        self,
+        vector,
         memory_type: MemoryType | None = None,
         limit: int | None = None,
     ) -> list[SemanticMatch]:
-        self.calls.append((query, limit))
+        self.calls.append((vector, limit))
         return list(self.matches)
 
     def index_memory(self, item: MemoryItem) -> bool:
@@ -177,7 +200,7 @@ def test_supplement_recall_runs_even_when_keywords_hit() -> None:
 
     stella.process(Context(user_input="tea in the morning"))
 
-    assert stub.calls == [("tea in the morning", MAX_SEMANTIC_SUPPLEMENT)]
+    assert stub.calls == [(("stub-vector",), MAX_SEMANTIC_SUPPLEMENT)]
 
 
 def test_supplements_are_capped_even_if_the_backend_returns_more() -> None:
@@ -241,6 +264,52 @@ def test_fused_recall_reports_honest_provenance_per_memory() -> None:
     # The two scales are reported separately and never cross-compared.
     assert isinstance(keyword_source.score, int)
     assert isinstance(supplement_source.score, float)
+
+
+def test_supplement_provenance_carries_the_active_provider_label() -> None:
+    # The method name is the provider's, not a hard-coded string: an
+    # Ollama-backed match is reported as an Ollama-backed match.
+    memory, _ = stored_keyword("The user prefers tea in the morning.")
+    supplement = SemanticMatch(
+        item=MemoryItem(content="The user likes green tea.", id=10),
+        score=0.72,
+    )
+    brain = ScriptedBrain([Decision(DecisionKind.ANSWER)])
+    stub = StubRetriever([supplement], method="ollama-embedding")
+    stella = make_stella(memory, brain, semantic_retriever=stub)
+
+    stella.process(Context(user_input="completely unmatched phrasing qwx"))
+
+    assert brain.contexts[0].retrieval_sources[10].method == (
+        "ollama-embedding"
+    )
+
+
+def test_unavailable_embedding_degrades_to_keyword_recall_honestly() -> None:
+    memory, keyword = stored_keyword("The user prefers tea in the morning.")
+    supplement = SemanticMatch(
+        item=MemoryItem(content="The user likes green tea.", id=10),
+        score=0.6,
+    )
+    stub = StubRetriever([supplement], available=False)
+    stella = make_stella(memory, ScriptedBrain([Decision(DecisionKind.ANSWER)]),
+                         semantic_retriever=stub)
+
+    result = stella.process(Context(user_input="tea in the morning"))
+
+    # No supplements when there is no embedding — but the keyword recall
+    # is intact and the degradation is recorded, not passed off as "no
+    # semantic match existed".
+    assert result.retrieved_memories == [keyword]
+    assert stub.calls == []
+    events = [
+        event
+        for event in result.interaction_trace.events
+        if isinstance(event, SemanticSearchUnavailableEvent)
+    ]
+    assert events == [
+        SemanticSearchUnavailableEvent(provider_method="local-hash-embedding")
+    ]
 
 
 def test_lexical_miss_is_fused_from_the_real_local_index(tmp_path) -> None:

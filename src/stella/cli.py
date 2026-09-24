@@ -51,6 +51,7 @@ from stella.trace import (
     MemoryRetrievedEvent,
     MemoryWriteEvent,
     ReminderLifecycleEvent,
+    SemanticSearchUnavailableEvent,
     ToolResultEvent,
 )
 
@@ -244,6 +245,13 @@ def format_trace(result: StellaResult) -> list[str]:
         elif isinstance(event, MemoryIndexSyncEvent):
             status = "refreshed" if event.ok else "REFRESH FAILED"
             lines.append(_trace_line("memory", f"semantic index {status}"))
+        elif isinstance(event, SemanticSearchUnavailableEvent):
+            lines.append(
+                _trace_line(
+                    "memory",
+                    f"semantic search unavailable ({event.provider_method})",
+                )
+            )
         elif isinstance(event, FinalResponseEvent):
             if event.needs_more_information:
                 lines.append(

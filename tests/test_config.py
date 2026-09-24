@@ -88,6 +88,7 @@ def test_configuration_stores_only_non_secret_fields():
         "openai_base_url",
         "transcripts_enabled",
         "semantic_memory_enabled",
+        "semantic_provider",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):

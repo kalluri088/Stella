@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Self
 
@@ -34,6 +35,8 @@ from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import Context
 from stella.llm import LLMClient, LLMResponse, Message, run_cancellable
 from stella.memory import InMemoryMemory, MemoryItem, SQLiteMemory
+from stella.minilm_embedding import MiniLMEmbeddingProvider
+from stella.ollama_embedding import OllamaEmbeddingProvider
 from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella, StellaResult
 from stella.tools import (
@@ -1258,9 +1261,87 @@ def test_build_application_reconciles_the_index_at_startup(
     assert Path(settings.semantic_db).is_file()
 
 
-def test_from_environment_defaults_to_local_ollama_without_a_cloud_key(
+def test_semantic_provider_choice_follows_the_saved_then_env_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("STELLA_SEMANTIC_PROVIDER", raising=False)
+
+    # Default everywhere: the zero-dependency local hash.
+    assert StellaSettings().semantic_provider == "local-hash"
+    assert (
+        StellaSettings.from_saved(provider="ollama", model="m").semantic_provider
+        == "local-hash"
+    )
+    # The saved choice is respected...
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", semantic_provider="ollama"
+        ).semantic_provider
+        == "ollama"
+    )
+    # ...and the environment overrides it, exactly like the enable toggle.
+    monkeypatch.setenv("STELLA_SEMANTIC_PROVIDER", "minilm")
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", semantic_provider="ollama"
+        ).semantic_provider
+        == "minilm"
+    )
+    monkeypatch.setenv("STELLA_MODEL", "m")
+    assert StellaSettings.from_environment().semantic_provider == "minilm"
+    monkeypatch.setenv("STELLA_EMBED_MODEL", "custom-embedder")
+    assert (
+        StellaSettings.from_environment().semantic_embed_model
+        == "custom-embedder"
+    )
+    # An unknown provider name fails loudly instead of silently swapping
+    # in another model's vector space.
+    monkeypatch.setenv("STELLA_SEMANTIC_PROVIDER", "openai")
+    with pytest.raises(SystemExit):
+        StellaSettings.from_environment()
+
+
+def _provider_settings(tmp_path: Path, semantic_provider: str) -> StellaSettings:
+    settings = _semantic_settings(tmp_path, True)
+    return replace(settings, semantic_provider=semantic_provider)
+
+
+def test_build_application_uses_the_selected_embedding_provider(
+    tmp_path: Path,
+) -> None:
+    # Construction must not touch the network: the provider only answers
+    # when a real query or memory mutation asks it to.
+    settings = _provider_settings(tmp_path, "ollama")
+
+    application = build_application(settings)
+    try:
+        retriever = application.session.stella.semantic_retriever
+        assert retriever is not None
+        provider = retriever.provider
+        assert isinstance(provider, OllamaEmbeddingProvider)
+        assert provider.method == "ollama-embedding"
+        assert provider.embed_url == "http://127.0.0.1:9/api/embed"
+    finally:
+        application.close()
+
+
+def test_build_application_requires_the_extra_for_minilm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _provider_settings(tmp_path, "minilm")
+
+    monkeypatch.setattr(app, "minilm_extra_available", lambda: False)
+    with pytest.raises(SystemExit, match="stella\\[embed\\]"):
+        build_application(settings)
+
+    monkeypatch.setattr(app, "minilm_extra_available", lambda: True)
+    application = build_application(settings)
+    try:
+        retriever = application.session.stella.semantic_retriever
+        assert retriever is not None
+        assert isinstance(retriever.provider, MiniLMEmbeddingProvider)
+    finally:
+        application.close()
     # First-run ergonomics: a local-only user must not have to learn
     # STELLA_LLM_PROVIDER; the cloud is used only when it is configured.
     monkeypatch.setenv("STELLA_MODEL", "qwen3:4b")

@@ -69,6 +69,7 @@ from stella.trace import (
     MemoryRetrievedEvent,
     MemoryWriteEvent,
     ReminderLifecycleEvent,
+    SemanticSearchUnavailableEvent,
     ToolResultEvent,
 )
 from stella.video import VideoProvider, VideoSampling
@@ -217,22 +218,37 @@ class Stella:
         # memory carries its own provenance instead.
         semantic_supplements: list[SemanticMatch] = []
         if self.semantic_retriever is not None:
-            supplement_matches = self.semantic_retriever.retrieve(
-                context.user_input, limit=MAX_SEMANTIC_SUPPLEMENT
+            query_vector = self.semantic_retriever.embed_query(
+                context.user_input
             )
-            # The cap is enforced here rather than trusted from the backend,
-            # so one bounded supplement set holds for any retriever.
-            for match in supplement_matches[:MAX_SEMANTIC_SUPPLEMENT]:
-                if (
-                    match.item.id is not None
-                    and any(
-                        existing.id == match.item.id
-                        for existing in retrieved_memories
+            if query_vector or not context.user_input.strip():
+                supplement_matches = self.semantic_retriever.search_vector(
+                    query_vector, limit=MAX_SEMANTIC_SUPPLEMENT
+                )
+                # The cap is enforced here rather than trusted from the
+                # backend, so one bounded supplement set holds for any
+                # retriever.
+                for match in supplement_matches[:MAX_SEMANTIC_SUPPLEMENT]:
+                    if (
+                        match.item.id is not None
+                        and any(
+                            existing.id == match.item.id
+                            for existing in retrieved_memories
+                        )
+                    ) or match.item in retrieved_memories:
+                        continue
+                    retrieved_memories.append(match.item)
+                    semantic_supplements.append(match)
+            else:
+                # An empty vector for a real query means the embedding
+                # provider produced nothing (a server that is down, a model
+                # that will not load) — recorded as degradation, never as
+                # "nothing was relevant".
+                trace.record(
+                    SemanticSearchUnavailableEvent(
+                        provider_method=self.semantic_retriever.provider.method
                     )
-                ) or match.item in retrieved_memories:
-                    continue
-                retrieved_memories.append(match.item)
-                semantic_supplements.append(match)
+                )
         semantic_ids = {
             match.item.id
             for match in semantic_supplements
@@ -250,7 +266,7 @@ class Stella:
                 )
                 retrieval_sources[item.id] = RetrievalSource(
                     memory_id=item.id,
-                    method="local-hash-embedding",
+                    method=self.semantic_retriever.provider.method,
                     score=round(match.score, 3),
                 )
             else:

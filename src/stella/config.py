@@ -37,6 +37,7 @@ _CONFIG_FIELDS = (
     "openai_base_url",
     "transcripts_enabled",
     "semantic_memory_enabled",
+    "semantic_provider",
 )
 
 
@@ -323,4 +324,5 @@ def resolve_settings() -> StellaSettings | None:
         ),
         transcripts_enabled=raw.get("transcripts_enabled") is True,
         semantic_memory_enabled=raw.get("semantic_memory_enabled") is True,
+        semantic_provider=raw.get("semantic_provider", "local-hash"),
     )

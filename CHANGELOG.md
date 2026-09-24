@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Real embedding recall (opt-in)
+
+- **Three embedding providers, one honest boundary** — semantic recall
+  keeps `local-hash` (the zero-dependency word-shape index) as its
+  default, and can now be switched (Settings choice or
+  `STELLA_SEMANTIC_PROVIDER`) to a real embedding model: `ollama`
+  embeds through a local Ollama server (`STELLA_EMBED_MODEL`, default
+  `nomic-embed-text`, stdlib HTTP — no new dependency) or `minilm` runs
+  `all-MiniLM-L6-v2` on CPU via the optional `stella[embed]` extra.
+  A missing extra or backend fails its own use honestly and never
+  auto-switches the choice. Ollama's nomic prefixes
+  (`search_document:`/`search_query:`) are applied client-side, because
+  measurements confirmed Ollama passes embedding input verbatim.
+- **No cross-model vector mixing** — every index row now records its
+  provider label and vector dimension, and search computes cosine only
+  against rows from the same model; legacy and foreign rows are skipped
+  until the next reconcile rewrites them (reconciliation is also the
+  provider-switch migration).
+- **Unavailable is not irrelevant** — when the embedding backend cannot
+  answer a query, the turn proceeds on keyword recall and the trace
+  records a `SemanticSearchUnavailableEvent` (visible with
+  `STELLA_TRACE=1`); fusion supplements carry the active provider's
+  label in their provenance, so `"ollama-embedding"` and
+  `"local-hash-embedding"` hits are always told apart.
+
 ### Semantic memory recall (opt-in)
 
 - **Keyword-dominant fused recall** — a new Settings checkbox (or

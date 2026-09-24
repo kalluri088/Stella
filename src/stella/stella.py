@@ -117,9 +117,7 @@ class Stella:
         llm: LLMClient,
         tool: Tool | ToolDispatcher,
         memory: Memory,
-        approval_provider: Callable[
-            [ApprovalRequest], ToolApproval | None
-        ]
+        approval_provider: Callable[..., ToolApproval | None]
         | None = None,
         max_tool_steps: int = 1,
         semantic_retriever: SemanticRetriever | None = None,
@@ -731,7 +729,17 @@ class Stella:
             and self.approval_provider is not None
         ):
             request = ApprovalRequest(capability or "", dict(arguments))
-            approval = self.approval_provider(request)
+            # The dispatcher computes an optional display preview from
+            # the already-validated arguments. It is passed to the
+            # provider for review only: authorization stays with the
+            # exact ApprovalRequest, and providers that take just the
+            # request keep working because a plain ``None`` preview is
+            # never forwarded.
+            preview = self.tools.preview(capability, arguments)
+            if preview is None:
+                approval = self.approval_provider(request)
+            else:
+                approval = self.approval_provider(request, preview)
             if isinstance(approval, ToolApproval) and isinstance(
                 approval.approved, bool
             ):

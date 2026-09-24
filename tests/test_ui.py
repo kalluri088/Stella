@@ -30,6 +30,7 @@ from stella.memory import InMemoryMemory, MemoryItem
 from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella
 from stella.tools import (
+    ActionPreview,
     EchoTool,
     RiskLevel,
     Tool,
@@ -96,6 +97,15 @@ class DangerousTool(Tool):
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.executions.append(arguments)
         return ToolResult(success=True, output="executed")
+
+
+class PreviewingDangerousTool(DangerousTool):
+    """A dangerous tool that also offers a display-only preview."""
+
+    def preview(self, request) -> ActionPreview:
+        return ActionPreview(
+            detail_lines=("- old line", "+ new line"), truncated=True
+        )
 
 
 def pump(root: tk.Tk, seconds: float) -> None:
@@ -303,6 +313,30 @@ def test_approval_dialog_close_denies_the_action() -> None:
         dialog.event_generate("<Escape>")
         pump(root, 0.8)
         assert tool.executions == []
+        assert window._dialogs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_approval_dialog_shows_read_only_preview_then_answers_request() -> None:
+    tool = PreviewingDangerousTool()
+    root, window, bridge, _ = make_window(
+        brain=ToolThenAnswerBrain(), tool=tool
+    )
+    try:
+        dialog = _wait_for_approval_dialog(root, window, bridge)
+        box = dialog.preview_box
+        content = box.get("1.0", "end")
+        assert "- old line" in content
+        assert "+ new line" in content
+        assert "[preview truncated]" in content
+        # Review material is display-only: the user could not have typed
+        # into it, and the answer still binds solely to the request.
+        assert box.cget("state") == "disabled"
+        dialog.allow_button.invoke()
+        pump(root, 0.8)
+        assert tool.executions == [{"value": "x"}]
         assert window._dialogs == []
     finally:
         bridge.stop()

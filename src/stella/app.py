@@ -39,6 +39,7 @@ from stella.openai_client import OpenAILLMClient
 from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
+    ActionPreview,
     ApprovalRequest,
     DateTimeTool,
     FileSystemDeleteTool,
@@ -764,12 +765,20 @@ class ApprovalBroker:
         self._waiting: dict[int, _PendingApproval] = {}
         self._outstanding = queue.Queue()
 
-    def request(self, request: ApprovalRequest) -> ToolApproval:
+    def request(
+        self,
+        request: ApprovalRequest,
+        preview: ActionPreview | None = None,
+    ) -> ToolApproval:
         token = next(self._tokens)
-        pending = _PendingApproval(request)
+        pending = _PendingApproval(request, preview)
         with self._lock:
             self._waiting[token] = pending
-        self._outstanding.put((token, request))
+        # The preview travels beside the request, never inside it: the
+        # ToolApproval below is still produced solely from the original
+        # dispatcher request, so a preview can never change what the
+        # answer authorizes.
+        self._outstanding.put((token, request, preview))
         pending.answered.wait()
         with self._lock:
             self._waiting.pop(token, None)
@@ -777,7 +786,7 @@ class ApprovalBroker:
 
     def next_request(
         self, timeout: float | None = None
-    ) -> tuple[int, ApprovalRequest] | None:
+    ) -> tuple[int, ApprovalRequest, ActionPreview | None] | None:
         """Pop one outstanding request; None timeout means non-blocking."""
 
         try:
@@ -817,6 +826,7 @@ class ApprovalBroker:
 @dataclass
 class _PendingApproval:
     request: ApprovalRequest
+    preview: ActionPreview | None = None
     answered: threading.Event = field(default_factory=threading.Event)
     approved: bool = False
 
@@ -970,7 +980,7 @@ class StellaBridge:
 
     def next_approval_request(
         self, timeout: float | None = None
-    ) -> tuple[int, ApprovalRequest] | None:
+    ) -> tuple[int, ApprovalRequest, ActionPreview | None] | None:
         return self.approvals.next_request(timeout)
 
     def resolve_approval(self, token: int, approved: bool) -> bool:

@@ -5,6 +5,7 @@ import pytest
 
 from stella.tools import (
     MAX_AUDIT_RECORDS,
+    MAX_PREVIEW_LINES,
     ActionReceipt,
     ApprovalRequest,
     AuditRecord,
@@ -1449,3 +1450,305 @@ def test_tool_dispatcher_rejects_non_boolean_approval() -> None:
 
     assert result == ToolResult(success=False, output="Invalid approval.")
     assert tool.executions == []
+
+
+# ---------------------------------------------------------------- previews
+
+
+def test_filesystem_edit_preview_shows_unified_diff(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest(
+            "filesystem_edit",
+            {"path": "notes.txt", "content": "alpha\ngamma\n"},
+        )
+    )
+
+    assert preview is not None
+    assert preview.truncated is False
+    assert "--- notes.txt (current)" in preview.detail_lines
+    assert "+++ notes.txt (new)" in preview.detail_lines
+    assert "-beta" in preview.detail_lines
+    assert "+gamma" in preview.detail_lines
+
+
+def test_filesystem_edit_preview_flags_long_diff_as_truncated(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    current = "\n".join(f"old {index}" for index in range(80))
+    content = "\n".join(f"new {index}" for index in range(80))
+    (workspace / "big.txt").write_text(current, encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest("filesystem_edit", {"path": "big.txt", "content": content})
+    )
+
+    assert preview is not None
+    assert len(preview.detail_lines) == MAX_PREVIEW_LINES
+    assert preview.truncated is True
+
+
+def test_filesystem_edit_preview_reports_missing_file(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = FileSystemEditTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest(
+            "filesystem_edit", {"path": "gone.txt", "content": "anything"}
+        )
+    )
+
+    assert preview is not None
+    assert preview.detail_lines == (
+        "no file exists at this path - this edit would fail.",
+    )
+
+
+def test_preview_rejects_outside_workspace_path(tmp_path) -> None:
+    # A preview must never read (or report on) anything outside the
+    # workspace: escaping paths fail validation before any disk access.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SECRET CONTENT", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = FileSystemEditTool(workspace)
+    dispatcher = ToolDispatcher([tool])
+
+    assert (
+        tool.preview(
+            ApprovalRequest(
+                "filesystem_edit",
+                {"path": "../outside.txt", "content": "x"},
+            )
+        )
+        is None
+    )
+    assert (
+        tool.preview(
+            ApprovalRequest(
+                "filesystem_edit", {"path": str(outside), "content": "x"}
+            )
+        )
+        is None
+    )
+    assert (
+        dispatcher.preview(
+            "filesystem_edit", {"path": "../outside.txt", "content": "x"}
+        )
+        is None
+    )
+
+
+def test_filesystem_edit_preview_is_honest_about_oversized_files(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "huge.txt").write_text("x" * 9_000, encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest(
+            "filesystem_edit", {"path": "huge.txt", "content": "replacement"}
+        )
+    )
+
+    assert preview is not None
+    # A clipped "before" half would make any diff misleading.
+    assert preview.detail_lines == (
+        (
+            "current file is too large to preview fully; "
+            "the edit replaces the whole file."
+        ),
+    )
+    assert preview.truncated is True
+
+
+def test_filesystem_edit_preview_reports_identical_content(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "same.txt").write_text("same\n", encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest(
+            "filesystem_edit", {"path": "same.txt", "content": "same\n"}
+        )
+    )
+
+    assert preview is not None
+    assert preview.detail_lines == (
+        "new content is identical to the current file.",
+    )
+
+
+def test_filesystem_write_preview_lists_new_content(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = FileSystemWriteTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest(
+            "filesystem_write", {"path": "new.txt", "content": "hello\nworld"}
+        )
+    )
+
+    assert preview is not None
+    assert preview.detail_lines == ("+ hello", "+ world")
+    assert preview.truncated is False
+
+
+def test_filesystem_write_preview_warns_when_file_exists(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "taken.txt").write_text("existing", encoding="utf-8")
+    tool = FileSystemWriteTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest(
+            "filesystem_write", {"path": "taken.txt", "content": "more"}
+        )
+    )
+
+    assert preview is not None
+    assert preview.detail_lines[0] == (
+        "a file already exists at this path — this write would fail."
+    )
+
+
+def test_filesystem_write_preview_truncates_long_content(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = FileSystemWriteTool(workspace)
+    content = "\n".join(f"line {index}" for index in range(70))
+
+    preview = tool.preview(
+        ApprovalRequest("filesystem_write", {"path": "long.txt", "content": content})
+    )
+
+    assert preview is not None
+    assert len(preview.detail_lines) == MAX_PREVIEW_LINES
+    assert preview.truncated is True
+
+
+def test_filesystem_delete_preview_shows_excerpt_and_warning(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "doomed.txt").write_text("one\ntwo\n", encoding="utf-8")
+    tool = FileSystemDeleteTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest("filesystem_delete", {"path": "doomed.txt"})
+    )
+
+    assert preview is not None
+    assert preview.detail_lines[0] == (
+        "this removes the file completely and cannot be undone."
+    )
+    assert "beginning of the content that would be lost:" in preview.detail_lines
+    assert "- one" in preview.detail_lines
+    assert "- two" in preview.detail_lines
+
+
+def test_filesystem_delete_preview_reports_missing_file(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = FileSystemDeleteTool(workspace)
+
+    preview = tool.preview(
+        ApprovalRequest("filesystem_delete", {"path": "ghost.txt"})
+    )
+
+    assert preview is not None
+    assert preview.detail_lines[-1] == (
+        "no file exists at this path - the delete would report not found."
+    )
+
+
+def test_network_read_preview_shows_validated_url_without_dns() -> None:
+    tool = NetworkReadTool()
+
+    # The preview must not resolve anything: execution re-validates every
+    # address itself, and a second resolve here would be a rebinding race.
+    with patch("socket.getaddrinfo", side_effect=AssertionError("no DNS")):
+        preview = tool.preview(
+            ApprovalRequest(
+                "network_read", {"url": "https://example.com/notes.txt"}
+            )
+        )
+
+    assert preview is not None
+    assert preview.detail_lines[0] == "address: https://example.com/notes.txt"
+    assert any("no redirects" in line for line in preview.detail_lines)
+
+
+def test_network_read_preview_rejects_invalid_urls() -> None:
+    tool = NetworkReadTool()
+
+    assert (
+        tool.preview(ApprovalRequest("network_read", {"url": "http://example.com/"}))
+        is None
+    )
+    assert tool.preview(ApprovalRequest("network_read", {"url": "nonsense"})) is None
+
+
+def test_dispatcher_preview_only_for_validated_requests(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("old\n", encoding="utf-8")
+    dispatcher = ToolDispatcher([FileSystemEditTool(workspace)])
+
+    assert (
+        dispatcher.preview("filesystem_edit", {"path": "notes.txt", "content": "new\n"})
+        is not None
+    )
+    # Unknown capability, invalid arguments, and escaping paths all get
+    # no preview at all — validation gates every disk access.
+    assert dispatcher.preview("nonexistent", {"path": "notes.txt"}) is None
+    assert dispatcher.preview("filesystem_edit", {"path": "notes.txt"}) is None
+    assert (
+        dispatcher.preview("filesystem_edit", {"path": "../out.txt", "content": "x"})
+        is None
+    )
+
+
+def test_dispatcher_execution_and_verification_ignore_previews(
+    tmp_path,
+) -> None:
+    # Producing a preview changes nothing about authorization: the
+    # dispatcher still requires its own exact approved request.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("old\n", encoding="utf-8")
+    tool = FileSystemEditTool(workspace)
+    dispatcher = ToolDispatcher([tool])
+    arguments = {"path": "notes.txt", "content": "new\n"}
+
+    assert dispatcher.preview("filesystem_edit", arguments) is not None
+    denied = dispatcher.execute("filesystem_edit", arguments)
+    assert denied.success is False
+    assert denied.output == "Approval required."
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "old\n"
+
+    request = ApprovalRequest("filesystem_edit", dict(arguments))
+    wrong = ApprovalRequest("filesystem_edit", {"path": "other.txt", "content": "x"})
+    forged = dispatcher.execute(
+        "filesystem_edit",
+        arguments,
+        ToolApproval(request=wrong, approved=True),
+    )
+    assert forged.success is False
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "old\n"
+    allowed = dispatcher.execute(
+        "filesystem_edit", arguments, ToolApproval(request=request, approved=True)
+    )
+    assert allowed.success is True
+    assert (workspace / "notes.txt").read_text(encoding="utf-8") == "new\n"

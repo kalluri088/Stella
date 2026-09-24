@@ -4,6 +4,7 @@ from stella.llm import LLMClient, Message
 from stella.memory import InMemoryMemory, MemoryItem, MemoryWriteRequest
 from stella.stella import Stella
 from stella.tools import (
+    ActionPreview,
     ApprovalRequest,
     FileSystemDeleteTool,
     FileSystemWriteTool,
@@ -270,7 +271,9 @@ def test_trace_records_verified_action_receipt_without_file_content(
     workspace.mkdir()
     arguments = {"path": "notes.txt", "content": "hello secret world"}
 
-    def approve(request: ApprovalRequest) -> ToolApproval:
+    def approve(
+        request: ApprovalRequest, preview: ActionPreview | None = None
+    ) -> ToolApproval:
         return ToolApproval(request=request, approved=True)
 
     result = Stella(
@@ -315,7 +318,9 @@ def test_trace_records_unverified_action_receipt_honestly(
         lambda candidate, resolved: False,
     )
 
-    def approve(request: ApprovalRequest) -> ToolApproval:
+    def approve(
+        request: ApprovalRequest, preview: ActionPreview | None = None
+    ) -> ToolApproval:
         return ToolApproval(request=request, approved=True)
 
     result = Stella(

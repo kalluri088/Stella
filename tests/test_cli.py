@@ -14,6 +14,7 @@ from stella.llm import LLMClient
 from stella.memory import InMemoryMemory
 from stella.stella import Stella, StellaResult
 from stella.tools import (
+    ActionPreview,
     ApprovalRequest,
     RiskLevel,
     Tool,
@@ -353,6 +354,28 @@ def test_cli_approval_provider_requires_explicit_confirmation(
             "Type 'yes' to allow this; anything else will skip it."
         )
     ]
+
+
+def test_cli_approval_provider_prints_preview_without_changing_the_answer() -> None:
+    outputs: list[str] = []
+    provider = cli_approval_provider(
+        input_fn=lambda _: "yes",
+        output_fn=outputs.append,
+    )
+    request = ApprovalRequest("approval_test", {"value": "x"})
+    preview = ActionPreview(detail_lines=("- old", "+ new"), truncated=True)
+
+    result = provider(request, preview)
+
+    assert result == ToolApproval(request=request, approved=True)
+    assert outputs[0] == (
+        "Stella would like to use the 'approval_test' tool with "
+        'arguments {"value": "x"}. '
+        "Type 'yes' to allow this; anything else will skip it."
+    )
+    assert "    - old" in outputs
+    assert "    + new" in outputs
+    assert "    [preview truncated]" in outputs
 
 
 @pytest.mark.parametrize(

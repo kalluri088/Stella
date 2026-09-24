@@ -1,8 +1,10 @@
 """Minimal provider-agnostic tool abstractions."""
 
 import datetime as dt
+import difflib
 import http.client
 import ipaddress
+import json
 import os
 import platform
 import socket
@@ -95,6 +97,123 @@ class ToolApproval:
 
 
 @dataclass(frozen=True)
+class ActionPreview:
+    """An app-computed, display-only view of what one request would do.
+
+    A preview is never an authorization token: ``ApprovalRequest``/
+    ``ToolApproval`` equality and dispatcher verification are unchanged
+    by its presence. It is built only by application code (the "before"
+    half read from disk, the "after" half being the exact validated
+    arguments), so the model cannot influence what the user reviews.
+    """
+
+    detail_lines: tuple[str, ...] = ()
+    truncated: bool = False
+
+
+# Bounds for one approval preview. Previews must never become a way to
+# stream whole documents into a dialog; an honest "too large to preview"
+# always beats a silently clipped one.
+MAX_PREVIEW_LINES = 60
+MAX_PREVIEW_CHARS = 4_000
+_PREVIEW_READ_BYTES = 8_192
+
+
+def _preview_file_text(resolved: Path) -> tuple[str | None, bool]:
+    """Return at most ``_PREVIEW_READ_BYTES`` of decoded text.
+
+    Result is (text, was_truncated); text is None when the target is not
+    a readable regular UTF-8 text file. Never raises.
+    """
+
+    try:
+        if not resolved.is_file():
+            return None, False
+        with resolved.open("rb") as file:
+            raw = file.read(_PREVIEW_READ_BYTES + 1)
+    except OSError:
+        return None, False
+    truncated = len(raw) > _PREVIEW_READ_BYTES
+    if truncated:
+        raw = raw[:_PREVIEW_READ_BYTES]
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None, False
+    return text[:MAX_PREVIEW_CHARS], truncated or len(text) > MAX_PREVIEW_CHARS
+
+
+def action_summary(request: ApprovalRequest) -> str:
+    """Describe one approval request in plain user-facing language."""
+
+    arguments = request.arguments
+
+    def quoted(key: str) -> str | None:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return json.dumps(value)
+        return None
+
+    capability = request.capability
+    if capability == "filesystem_write":
+        path = quoted("path")
+        if path is not None and quoted("content") is not None:
+            return f"create a new text file {path} in your Stella workspace"
+    elif capability == "filesystem_edit":
+        path = quoted("path")
+        if path is not None and quoted("content") is not None:
+            return f"replace the contents of {path} in your Stella workspace"
+    elif capability == "filesystem_delete":
+        path = quoted("path")
+        if path is not None:
+            return (
+                f"delete the file {path} from your Stella workspace "
+                "(this cannot be undone)"
+            )
+    elif capability == "network_read":
+        url = quoted("url")
+        if url is not None:
+            return f"fetch text from this public web address: {url}"
+    elif capability == "memory_write":
+        content = quoted("content")
+        if content is not None:
+            return f"remember this as a permanent fact: {content}"
+    elif capability == "memory_update":
+        query = quoted("query")
+        content = quoted("content")
+        if query is not None and content is not None:
+            return f"change the memory matching {query} to {content}"
+    elif capability == "memory_forget":
+        query = quoted("query")
+        if query is not None:
+            return (
+                f"delete stored memories matching {query} "
+                "(this cannot be undone)"
+            )
+    elif capability == "memory_list":
+        return "show everything it has remembered about you"
+    elif capability == "reminder_create":
+        content = quoted("content")
+        due_at = quoted("due_at")
+        if content is not None and due_at is not None:
+            return (
+                f"create a reminder for {due_at} that says {content} "
+                "(it will only notify you later, never act)"
+            )
+    elif capability == "reminder_cancel":
+        query = quoted("query")
+        if query is not None:
+            return (
+                f"cancel the pending reminder matching {query} "
+                "(this cannot be undone)"
+            )
+    return (
+        f"use the '{capability}' tool with arguments "
+        f"{json.dumps(arguments, sort_keys=True)}"
+    )
+
+
+@dataclass(frozen=True)
 class AuditRecord:
     """A trusted in-memory record of one tool dispatch attempt.
 
@@ -160,6 +279,15 @@ class Tool(ABC):
     @abstractmethod
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         """Execute the tool with structured arguments."""
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        """Return a display-only preview for one approval prompt.
+
+        Only the trusted application calls this, and only with an
+        already-validated request; the default is no preview at all.
+        """
+
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +808,29 @@ class FileSystemWriteTool(FileSystemReadTool):
                 action_receipt=ActionReceipt("create", "failed"),
             )
 
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        path = request.arguments.get("path")
+        content = request.arguments.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            return None
+        if self._resolve_in_workspace(path) is None:
+            return None
+        lines: list[str] = []
+        if os.path.lexists(self.workspace / path):
+            lines.append(
+                "a file already exists at this path — "
+                "this write would fail."
+            )
+        body = content.splitlines()
+        lines.extend(f"+ {line}" for line in body[:MAX_PREVIEW_LINES])
+        truncated = (
+            len(body) > MAX_PREVIEW_LINES
+            or len(content) > MAX_PREVIEW_CHARS
+        )
+        return ActionPreview(
+            detail_lines=tuple(lines), truncated=truncated
+        )
+
 
 class FileSystemEditTool(FileSystemWriteTool):
     """Replace the content of one existing UTF-8 text file in the workspace."""
@@ -753,6 +904,63 @@ class FileSystemEditTool(FileSystemWriteTool):
                 output="File could not be edited.",
                 action_receipt=ActionReceipt("edit", "failed"),
             )
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        path = request.arguments.get("path")
+        content = request.arguments.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            return None
+        resolved = self._resolve_in_workspace(path)
+        if resolved is None:
+            return None
+        current, truncated = _preview_file_text(resolved)
+        if current is None:
+            if not resolved.exists():
+                return ActionPreview(
+                    detail_lines=(
+                        (
+                            "no file exists at this path - "
+                            "this edit would fail."
+                        ),
+                    )
+                )
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        "current contents cannot be previewed "
+                        "(binary or unreadable file)."
+                    ),
+                )
+            )
+        if truncated:
+            # A clipped "before" half would make any diff misleading, so
+            # the preview says so honestly instead of showing one.
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        "current file is too large to preview fully; "
+                        "the edit replaces the whole file."
+                    ),
+                ),
+                truncated=True,
+            )
+        diff_lines = list(
+            difflib.unified_diff(
+                current.splitlines(),
+                content.splitlines(),
+                fromfile=f"{path} (current)",
+                tofile=f"{path} (new)",
+                lineterm="",
+            )
+        )
+        if not diff_lines:
+            return ActionPreview(
+                detail_lines=("new content is identical to the current file.",)
+            )
+        return ActionPreview(
+            detail_lines=tuple(diff_lines[:MAX_PREVIEW_LINES]),
+            truncated=len(diff_lines) > MAX_PREVIEW_LINES,
+        )
 
 
 class FileSystemDeleteTool(FileSystemReadTool):
@@ -869,6 +1077,43 @@ class FileSystemDeleteTool(FileSystemReadTool):
                 output="File could not be deleted.",
                 action_receipt=ActionReceipt("delete", "failed"),
             )
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        path = request.arguments.get("path")
+        if not isinstance(path, str):
+            return None
+        resolved = self._resolve_in_workspace(path)
+        if resolved is None:
+            return None
+        lines = [
+            "this removes the file completely and cannot be undone."
+        ]
+        current, truncated = _preview_file_text(resolved)
+        if current is None:
+            if not resolved.exists():
+                lines.append(
+                    "no file exists at this path - "
+                    "the delete would report not found."
+                )
+            elif not resolved.is_file():
+                lines.append(
+                    "this path is not a regular file - "
+                    "the delete would be refused."
+                )
+            else:
+                lines.append(
+                    "contents cannot be previewed (binary or unreadable)."
+                )
+        else:
+            lines.append(
+                "beginning of the content that would be lost:"
+            )
+            lines.extend(
+                f"- {line}" for line in current.splitlines()[:10]
+            )
+            if truncated:
+                lines.append("(larger than the preview limit)")
+        return ActionPreview(detail_lines=tuple(lines))
 
 
 class WorkspaceListTool(FileSystemReadTool):
@@ -1700,6 +1945,23 @@ class NetworkReadTool(Tool):
             return False
         return self._parse_url(arguments["url"]) is not None
 
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        # Deliberately no DNS here: execution re-validates every resolved
+        # address, and resolving twice would introduce a rebinding race
+        # of the preview's own making.
+        url = request.arguments.get("url")
+        if not isinstance(url, str) or self._parse_url(url) is None:
+            return None
+        return ActionPreview(
+            detail_lines=(
+                f"address: {url}",
+                (
+                    "one public HTTPS text/plain fetch; no redirects,"
+                    " bounded size, read-only."
+                ),
+            )
+        )
+
     @classmethod
     def _parse_url(cls, value: str) -> SplitResult | None:
         if (
@@ -1939,6 +2201,29 @@ class ToolDispatcher:
         """Return whether trusted risk requires approval before execution."""
 
         return self.risk_level(capability) is RiskLevel.DANGEROUS
+
+    def preview(
+        self, capability: str | None, arguments: dict[str, object]
+    ) -> ActionPreview | None:
+        """Build the approval-prompt preview for one request.
+
+        The preview participates in no authorization: it is computed
+        here, by application code, only for arguments that already pass
+        the tool's own validation, so an invalid or workspace-escaping
+        request can never make a preview read (or report on) anything.
+        """
+
+        tool = self.get(capability)
+        if tool is None:
+            return None
+        try:
+            if not tool.validate_arguments(arguments):
+                return None
+            return tool.preview(
+                ApprovalRequest(capability or "", dict(arguments))
+            )
+        except Exception:  # noqa: BLE001 - a missing preview is never fatal
+            return None
 
     def execute(
         self,

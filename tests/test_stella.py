@@ -18,6 +18,7 @@ from stella.memory import (
 )
 from stella.stella import Stella
 from stella.tools import (
+    ActionPreview,
     ActionReceipt,
     ApprovalRequest,
     DateTimeTool,
@@ -486,7 +487,7 @@ def test_stella_dispatches_network_read_and_sends_untrusted_result_to_llm(
         llm,
         ToolDispatcher([NetworkReadTool()]),
         InMemoryMemory(),
-        approval_provider=lambda approval_request: ToolApproval(
+        approval_provider=lambda approval_request, _preview=None: ToolApproval(
             request=request, approved=True
         ),
     )
@@ -541,7 +542,9 @@ def test_stella_writes_filesystem_only_after_exact_approval(tmp_path) -> None:
     dispatcher = ToolDispatcher([FileSystemWriteTool(workspace)])
     arguments = {"path": "notes.txt", "content": "approved content"}
 
-    def approve(request: ApprovalRequest) -> ToolApproval:
+    def approve(
+        request: ApprovalRequest, preview: ActionPreview | None = None
+    ) -> ToolApproval:
         return ToolApproval(request=request, approved=True)
 
     stella = Stella(
@@ -584,7 +587,9 @@ def test_stella_deletes_filesystem_only_after_exact_approval(tmp_path) -> None:
     dispatcher = ToolDispatcher([FileSystemDeleteTool(workspace)])
     llm = RecordingLLM(response="The file was deleted.")
 
-    def approve(request: ApprovalRequest) -> ToolApproval:
+    def approve(
+        request: ApprovalRequest, preview: ActionPreview | None = None
+    ) -> ToolApproval:
         return ToolApproval(request=request, approved=True)
 
     stella = Stella(

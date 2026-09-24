@@ -27,6 +27,7 @@ from stella.proactivity import (
 )
 from stella.stella import Stella
 from stella.tools import (
+    ActionPreview,
     ApprovalRequest,
     FileSystemDeleteTool,
     FileSystemEditTool,
@@ -463,7 +464,9 @@ def test_written_file_contents_cannot_authorize_a_following_delete(
         [FileSystemWriteTool(workspace), FileSystemDeleteTool(workspace)]
     )
 
-    def approve(request: ApprovalRequest) -> ToolApproval:
+    def approve(
+        request: ApprovalRequest, preview: ActionPreview | None = None
+    ) -> ToolApproval:
         return ToolApproval(
             request=request, approved=request.capability == "filesystem_write"
         )
@@ -588,7 +591,9 @@ def test_unverified_mutation_reaches_the_model_as_a_failure(
         ]
     )
 
-    def approve(request: ApprovalRequest) -> ToolApproval:
+    def approve(
+        request: ApprovalRequest, preview: ActionPreview | None = None
+    ) -> ToolApproval:
         return ToolApproval(request=request, approved=True)
 
     result = Stella(

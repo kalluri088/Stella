@@ -318,7 +318,8 @@ def bridge_approval_request(
     while time.monotonic() < deadline:
         item = bridge.next_approval_request()
         if item is not None:
-            return item
+            token, request, _preview = item
+            return token, request
         time.sleep(0.02)
     raise AssertionError("no approval request surfaced through the bridge")
 

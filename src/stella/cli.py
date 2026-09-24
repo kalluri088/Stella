@@ -10,7 +10,12 @@ from stella.app import StellaSession, StellaSettings, build_application
 from stella.brain import Decision
 from stella.config import resolve_settings
 from stella.stella import Stella, StellaResult
-from stella.tools import ApprovalRequest, ToolApproval
+from stella.tools import (
+    ActionPreview,
+    ApprovalRequest,
+    ToolApproval,
+    action_summary,
+)
 from stella.trace import (
     ActionReceiptEvent,
     ApprovalEvent,
@@ -243,88 +248,28 @@ def format_startup(stella: Stella) -> list[str]:
     ]
 
 
-def _action_summary(request: ApprovalRequest) -> str:
-    """Describe one approval request in plain user-facing language."""
-
-    arguments = request.arguments
-
-    def quoted(key: str) -> str | None:
-        value = arguments.get(key)
-        if isinstance(value, str) and value.strip():
-            return json.dumps(value)
-        return None
-
-    capability = request.capability
-    if capability == "filesystem_write":
-        path = quoted("path")
-        if path is not None and quoted("content") is not None:
-            return f"create a new text file {path} in your Stella workspace"
-    elif capability == "filesystem_edit":
-        path = quoted("path")
-        if path is not None and quoted("content") is not None:
-            return f"replace the contents of {path} in your Stella workspace"
-    elif capability == "filesystem_delete":
-        path = quoted("path")
-        if path is not None:
-            return (
-                f"delete the file {path} from your Stella workspace "
-                "(this cannot be undone)"
-            )
-    elif capability == "network_read":
-        url = quoted("url")
-        if url is not None:
-            return f"fetch text from this public web address: {url}"
-    elif capability == "memory_write":
-        content = quoted("content")
-        if content is not None:
-            return f"remember this as a permanent fact: {content}"
-    elif capability == "memory_update":
-        query = quoted("query")
-        content = quoted("content")
-        if query is not None and content is not None:
-            return f"change the memory matching {query} to {content}"
-    elif capability == "memory_forget":
-        query = quoted("query")
-        if query is not None:
-            return (
-                f"delete stored memories matching {query} "
-                "(this cannot be undone)"
-            )
-    elif capability == "memory_list":
-        return "show everything it has remembered about you"
-    elif capability == "reminder_create":
-        content = quoted("content")
-        due_at = quoted("due_at")
-        if content is not None and due_at is not None:
-            return (
-                f"create a reminder for {due_at} that says {content} "
-                "(it will only notify you later, never act)"
-            )
-    elif capability == "reminder_cancel":
-        query = quoted("query")
-        if query is not None:
-            return (
-                f"cancel the pending reminder matching {query} "
-                "(this cannot be undone)"
-            )
-    return (
-        f"use the '{capability}' tool with arguments "
-        f"{json.dumps(arguments, sort_keys=True)}"
-    )
-
-
 def cli_approval_provider(
     input_fn: Callable[[str], str],
     output_fn: Callable[[str], None],
     status_fn: Callable[[str], None] | None = None,
-) -> Callable[[ApprovalRequest], ToolApproval]:
+) -> Callable[..., ToolApproval]:
     """Create the CLI's explicit, action-specific approval callback."""
 
-    def request_approval(request: ApprovalRequest) -> ToolApproval:
+    def request_approval(
+        request: ApprovalRequest,
+        preview: ActionPreview | None = None,
+    ) -> ToolApproval:
         output_fn(
-            f"Stella would like to {_action_summary(request)}. "
+            f"Stella would like to {action_summary(request)}. "
             "Type 'yes' to allow this; anything else will skip it."
         )
+        # The preview is app-computed display, never authority: answering
+        # still approves exactly the ApprovalRequest below.
+        if preview is not None:
+            for line in preview.detail_lines:
+                output_fn(f"    {line}")
+            if preview.truncated:
+                output_fn("    [preview truncated]")
         try:
             answer = input_fn("Approve? [yes/no]: ")
         except EOFError:

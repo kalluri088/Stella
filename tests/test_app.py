@@ -37,6 +37,7 @@ from stella.memory import InMemoryMemory, MemoryItem
 from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella, StellaResult
 from stella.tools import (
+    ActionPreview,
     ActionReceipt,
     ApprovalRequest,
     EchoTool,
@@ -99,6 +100,13 @@ class DangerousTool(Tool):
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         self.executions.append(arguments)
         return ToolResult(success=True, output="executed")
+
+
+class PreviewingDangerousTool(DangerousTool):
+    """A dangerous tool that also offers a display-only preview."""
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview:
+        return ActionPreview(detail_lines=("+ preview line",))
 
 
 def tool_result(
@@ -415,7 +423,8 @@ def wait_for_approval(
     while time.monotonic() < deadline:
         item = broker.next_request()
         if item is not None:
-            return item
+            token, request, _preview = item
+            return token, request
         time.sleep(0.01)
     raise AssertionError("no approval request appeared")
 
@@ -488,6 +497,39 @@ def test_broker_next_request_without_timeout_does_not_block() -> None:
     assert broker.next_request() is None
 
     assert time.monotonic() - started < 1
+
+
+def test_broker_carries_a_preview_without_touching_the_token() -> None:
+    broker = ApprovalBroker()
+    request = ApprovalRequest("cap", {"value": "x"})
+    preview = ActionPreview(detail_lines=("+ new line",), truncated=True)
+    outcome: dict[str, ToolApproval] = {}
+    thread = threading.Thread(
+        target=lambda: outcome.setdefault(
+            "approval", broker.request(request, preview)
+        )
+    )
+    thread.start()
+
+    item = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        item = broker.next_request()
+        if item is not None:
+            break
+        time.sleep(0.01)
+    assert item is not None
+    token, seen, seen_preview = item
+    assert seen is request
+    assert seen_preview is preview
+    assert broker.resolve(token, True) is True
+    thread.join(5)
+
+    # The preview travels beside the request; what the answer authorizes
+    # remains exactly the dispatcher's own ApprovalRequest and nothing else.
+    approval = outcome["approval"]
+    assert approval == ToolApproval(request=request, approved=True)
+    assert not hasattr(approval, "preview")
 
 
 # ---------------------------------------------------------------- bridge
@@ -748,7 +790,8 @@ def bridge_approval_request(
     while time.monotonic() < deadline:
         item = bridge.next_approval_request()
         if item is not None:
-            return item
+            token, request, _preview = item
+            return token, request
         time.sleep(0.02)
     raise AssertionError("no approval request surfaced through the bridge")
 
@@ -815,6 +858,45 @@ def test_bridge_allowed_approval_runs_the_original_arguments_only() -> None:
     assert tool.executions == [{"value": "x"}]
     outcome: TurnOutcome = events[-1].payload
     assert outcome.result is not None
+    bridge.stop()
+
+
+def test_bridge_surfaces_preview_beside_the_approval_request() -> None:
+    tool = PreviewingDangerousTool()
+    stella = Stella(
+        ScriptedBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="approval_test",
+                    arguments={"value": "x"},
+                ),
+                Decision(kind=DecisionKind.ANSWER, content="done"),
+            ]
+        ),
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_turn("run the dangerous test action")
+    item = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        item = bridge.next_approval_request()
+        if item is not None:
+            break
+        time.sleep(0.02)
+    assert item is not None
+    token, _request, preview = item
+    assert preview is not None
+    assert preview.detail_lines == ("+ preview line",)
+    bridge.resolve_approval(token, True)
+    wait_for_event(bridge, "turn")
+
+    # Display-only: the preview never replaced or altered the approval.
+    assert tool.executions == [{"value": "x"}]
     bridge.stop()
 
 

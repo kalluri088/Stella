@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
-from stella.cli import _action_summary
 from stella.context import Context
 from stella.llm import LLMClient, Message
 from stella.memory import InMemoryMemory, MemoryItem
@@ -35,6 +34,7 @@ from stella.tools import (
     Tool,
     ToolApproval,
     ToolDispatcher,
+    action_summary,
 )
 from stella.trace import InteractionTrace, ReminderLifecycleEvent
 
@@ -741,13 +741,13 @@ def test_reminder_tool_actions_are_recorded_in_the_turn_trace() -> None:
 
 
 def test_action_summary_describes_reminder_mutations() -> None:
-    create = _action_summary(
+    create = action_summary(
         ApprovalRequest(
             "reminder_create",
             {"content": "Call the dentist", "due_at": "2026-05-01T20:00:00+00:00"},
         )
     )
-    cancel = _action_summary(
+    cancel = action_summary(
         ApprovalRequest("reminder_cancel", {"query": "dentist"})
     )
 

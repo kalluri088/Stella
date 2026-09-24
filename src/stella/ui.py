@@ -32,9 +32,8 @@ from stella.app import (
     build_application,
     outcome_status,
 )
-from stella.cli import _action_summary
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
-from stella.tools import ApprovalRequest
+from stella.tools import ActionPreview, ApprovalRequest, action_summary
 
 
 class StellaWindow:
@@ -289,11 +288,14 @@ class StellaWindow:
             pending = self._bridge.next_approval_request()
             if pending is None:
                 return
-            token, request = pending
-            self._show_approval(token, request)
+            token, request, preview = pending
+            self._show_approval(token, request, preview)
 
     def _show_approval(
-        self, token: int, request: ApprovalRequest
+        self,
+        token: int,
+        request: ApprovalRequest,
+        preview: ActionPreview | None = None,
     ) -> None:
         dialog = tk.Toplevel(self._root)
         dialog.title("Stella needs approval")
@@ -311,10 +313,40 @@ class StellaWindow:
         ttk.Label(dialog, text="Stella wants to:").pack(padx=10, pady=(10, 0))
         ttk.Label(
             dialog,
-            text=_action_summary(request),
+            text=action_summary(request),
             wraplength=420,
             justify="left",
         ).pack(padx=10, pady=6)
+        if preview is not None and preview.detail_lines:
+            # App-computed display of what the exact validated arguments
+            # mean (current file content, diff, target). Review material
+            # only: the Allow/Cancel answer still binds solely to the
+            # dispatcher's ApprovalRequest, never to this text.
+            box = tk.Text(
+                dialog,
+                height=min(14, len(preview.detail_lines) + 1),
+                width=72,
+                font="TkFixedFont",
+                state="disabled",
+                wrap="none",
+            )
+            box.configure(foreground="#333333")
+            box.tag_configure("added", foreground="#1a7f37")
+            box.tag_configure("removed", foreground="#b3261e")
+            box.pack(padx=10, pady=(0, 4))
+            dialog.preview_box = box
+            lines = list(preview.detail_lines)
+            if preview.truncated:
+                lines.append("[preview truncated]")
+            box.configure(state="normal")
+            for line in lines:
+                tag = ""
+                if line.startswith("+"):
+                    tag = "added"
+                elif line.startswith("-"):
+                    tag = "removed"
+                box.insert("end", line + "\n", (tag,) if tag else ())
+            box.configure(state="disabled")
         buttons = ttk.Frame(dialog)
         buttons.pack(pady=10)
         cancel_button = ttk.Button(

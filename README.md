@@ -24,6 +24,15 @@ checked that it did.
   fetch a web page for you to read (after asking, with the URL shown).
 - **Talk and listen** — press the mic button, speak; replies can be spoken
   back. There is no always-on listening and no wake word.
+- **Personality** — a written persona (`~/.config/stella/persona.md`) you
+  create with `stella persona` or a preset (`snark`, `warm`, `terse`), and
+  can change in chat: she proposes a diff, you approve it. Ask to "be
+  drier" and that is what happens — nothing persona-related writes itself
+  behind your back.
+- **Learn her style (opt-in)** — with transcript recording on,
+  `stella reflect` turns your observed friction ("too long", cancelled
+  rambles) into at most two style proposals, surfaced as approval
+  prompts. Reflection never writes on its own. See `docs/PERSONA.md`.
 - **Show her work** — a History tab lists what she recently did, kept
   between launches (names and outcomes only, never file contents). While a
   turn is running you see it working with elapsed seconds, and a Cancel
@@ -104,6 +113,9 @@ development, or running several configurations side by side:
 | `OPENAI_BASE_URL` | OpenAI-compatible endpoint | provider default |
 | `STELLA_WORKSPACE` | Folder file actions may touch | `~/.local/share/stella/workspace` |
 | `STELLA_MEMORY_DB` / `STELLA_REMINDERS_DB` / `STELLA_HISTORY_DB` | State file locations | under `~/.local/share/stella` |
+| `STELLA_PERSONA_DIR` | Persona file location | `~/.config/stella` |
+| `STELLA_TRANSCRIPTS` | Transcript recording on/off (`1`/`0`; overrides the saved setting) | off |
+| `STELLA_TRANSCRIPT_DB` | Transcript file location | `~/.local/share/stella/stella_transcript.db` |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 
 Normal users never need any of these.
@@ -124,7 +136,10 @@ Normal users never need any of these.
 
 All in `~/.local/share/stella` (or `$XDG_DATA_HOME/stella`): the config
 file, your memories, your reminders, the action history, and her workspace
-folder — plain files you own. No telemetry, no accounts, no cloud sync.
+folder — plain files you own. Her persona files are yours too, under
+`~/.config/stella`. The conversation transcript (used only for style
+reflection) is off by default and, when you turn it on, is one bounded
+local file. No telemetry, no accounts, no cloud sync.
 With the local Ollama setup, nothing ever leaves your machine.
 
 ## Honest limits (no marketing here)
@@ -146,9 +161,11 @@ With the local Ollama setup, nothing ever leaves your machine.
 
 - `docs/ARCHITECTURE.md` — how the pieces fit together
 - `docs/APPROVAL_BOUNDARY.md` — why approvals cannot be tricked
+- `docs/PERSONA.md` — personality as data: trust tiers, filters, and the
+  opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, wake words, autonomous agents, cloud accounts…)
-- `tests/` — 828 tests; every "done" claim in this README is checked by one
+- `tests/` — 898 tests; every "done" claim in this README is checked by one
 
 ## Found a problem?
 

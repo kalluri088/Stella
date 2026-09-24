@@ -17,6 +17,7 @@ from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
     ApprovalRequest,
+    PersonaEditTool,
     RiskLevel,
     Tool,
     ToolApproval,
@@ -947,3 +948,80 @@ def test_onboarding_is_silent_when_a_persona_already_exists(
         output_fn=CollectingOutput(),
     )
     assert (persona_dir / "persona.md").read_text(encoding="utf-8") == "keep me"
+
+
+# ----------------------------------------------------------- stella reflect
+
+
+def test_reflect_reports_transcripts_off_without_building_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace as dataclass_replace
+
+    from stella.app import StellaSettings
+
+    output = CollectingOutput()
+    monkeypatch.setattr(
+        cli,
+        "resolve_settings",
+        lambda: dataclass_replace(
+            StellaSettings(provider="ollama", model="m"),
+            transcripts_enabled=False,
+        ),
+    )
+
+    def must_not_build(settings):
+        raise AssertionError("reflect must not build with transcripts off")
+
+    monkeypatch.setattr(cli, "build_application", must_not_build)
+    assert cli.run_persona_reflection(output_fn=output) == 0
+    assert "Transcript recording is off" in output.text
+    assert "Nothing was written" not in output.text
+
+
+def test_main_reflect_subcommand_routes_to_the_reflection_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        cli, "run_persona_reflection", lambda: calls.append(1) or 0
+    )
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["reflect"])
+    assert raised.value.code == 0
+    assert calls == [1]
+
+
+def test_run_cli_drains_persona_proposals_after_approvals_exist(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from stella.persona import PersonaPaths, ReflectionStore
+
+    paths = PersonaPaths(tmp_path)
+    store = ReflectionStore(tmp_path / "t.db")
+    store.queue_proposal(
+        {
+            "path": str(paths.addons),
+            "content": "- drier replies\n",
+            "summary": "reflection: drier",
+        },
+        evidence_lines=1,
+    )
+    dispatcher = ToolDispatcher([PersonaEditTool(tmp_path)])
+    stella = Stella(
+        brain=FixedToolBrain(),
+        llm=RecordingLLM(),
+        tool=dispatcher,
+        memory=InMemoryMemory(),
+    )
+    # Answer "yes" to the single approval prompt the drain raises.
+    answers = iter(["yes"])
+    run_cli(
+        stella,
+        input_fn=lambda prompt="": next(answers, "exit"),
+        output_fn=CollectingOutput(),
+        persona_proposals=store,
+    )
+    assert paths.addons.read_text(encoding="utf-8") == "- drier replies\n"
+    assert store.pending() == []
+    store.close()

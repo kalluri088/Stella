@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Personality (data, never code)
+
+- **A written persona** — `~/.config/stella/persona.md` (and
+  `persona.addons.md` for learned style notes) is composed into the
+  system prompt *below* a fixed app-owned invariant: Stella is an AI
+  assistant and no persona text — hers or yours — can override that or
+  the rules and approvals beneath it. With no persona file, the prompt is
+  byte-for-byte what it always was. `stella persona` opens the file in
+  your `$EDITOR`; `stella persona preset snark|warm|terse` writes a
+  starter instead of a blank page (refuses to clobber without
+  `--force`); first CLI launch after setup asks three questions, drafts a
+  persona with your model, and writes it only if you say yes.
+- **`persona_edit` — style changes go through approval** — asking Stella
+  in chat to "be drier" can only take effect via a `DANGEROUS` tool call:
+  path locked to exactly one of the two persona files (realpath-checked),
+  a unified diff in the approval dialog, exact-match approval, and a
+  verified-byte receipt afterwards. Learned style notes pass a
+  forbidden-content filter (authority words are discarded, with the count
+  reported, not hidden) and hard caps of 20 bullets / ~1 KB.
+- **Opt-in transcripts and `stella reflect`** — a new Settings checkbox
+  (or `STELLA_TRANSCRIPTS=1`) records a bounded local transcript (newest
+  2 000 rows, turn text and cancellations, never read back into chat;
+  off by default). `stella reflect` derives only observable signals
+  (cancels during long replies, your own style pushback — praise is
+  deliberately not a signal), asks for at most two style edits, and
+  **writes nothing**: candidates are re-checked app-side (authority
+  lines, agreement-only drift, evidence, consolidation at cap), queued
+  in the same database, and surfaced as real `persona_edit` approval
+  prompts at the next CLI or window session. With recording off or no
+  signals it says so and exits. `docs/PERSONA.md` has the full trust
+  model.
+
 ### Responsive cancellation
 
 - **Cancel interrupts a provider request in flight** — pressing Cancel

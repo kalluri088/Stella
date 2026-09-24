@@ -9,7 +9,12 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 
-from stella.app import StellaSession, StellaSettings, build_application
+from stella.app import (
+    StellaSession,
+    StellaSettings,
+    build_application,
+    drain_persona_proposals,
+)
 from stella.brain import Decision
 from stella.config import resolve_settings
 from stella.llm import Message
@@ -20,6 +25,9 @@ from stella.persona import (
     PERSONA_SKELETON,
     PRESET_TEMPLATES,
     PersonaPaths,
+    PersonaReflection,
+    ReflectionStore,
+    TranscriptRecorder,
     ensure_persona_directory,
     persona_directory,
     write_persona_text,
@@ -61,6 +69,7 @@ def run_cli(
     debug_fn: Callable[[str], None] | None = None,
     trace: bool = False,
     status_fn: Callable[[str], None] | None = None,
+    persona_proposals: ReflectionStore | None = None,
 ) -> None:
     """Run one interactive Stella session."""
 
@@ -70,6 +79,9 @@ def run_cli(
             output_fn=output_fn,
             status_fn=status_fn or _print_status,
         )
+    # Queued `stella reflect` proposals become real approval prompts now
+    # that an approval provider exists; anything left pending waits.
+    drain_persona_proposals(stella, persona_proposals, notify=output_fn)
     status = status_fn or _print_status
     session = StellaSession(stella)
     while True:
@@ -471,6 +483,63 @@ def run_persona_onboarding(
         output_fn("No persona saved; Stella keeps the default voice.")
 
 
+def run_persona_reflection(output_fn: Callable[[str], None] = print) -> int:
+    """One offline reflection pass over recorded transcripts (cron-safe).
+
+    Reads only what the opt-in transcript database holds, proposes at
+    most two addons edits, and queues them as approval material: this
+    command never writes a persona file.
+    """
+
+    settings = resolve_settings()
+    if settings is None:
+        output_fn(
+            "Stella is not configured yet, so there are no transcripts "
+            "to reflect on. Run 'stella-ui' once first."
+        )
+        return 0
+    if not settings.transcripts_enabled:
+        output_fn(
+            "Transcript recording is off, so there is no observed "
+            "behavior to learn from. Turn it on in Settings (or "
+            "with STELLA_TRANSCRIPTS=1) and use Stella for a while."
+        )
+        return 0
+    application = build_application(settings)
+    try:
+        transcripts = application.session.transcripts
+        if not isinstance(transcripts, TranscriptRecorder):  # pragma: no cover
+            output_fn("The transcript store is unavailable; nothing ran.")
+            return 1
+        reflection = PersonaReflection(
+            PersonaPaths(persona_directory()),
+            transcripts,
+            application.proposals,
+            application.session.stella.llm,
+        )
+        outcome = reflection.run()
+        for line in outcome.signals:
+            output_fn(f"signal: {line}")
+        if outcome.reason is not None:
+            output_fn(f"{outcome.reason.capitalize()}.")
+        if outcome.queued:
+            output_fn(
+                f"Queued {outcome.queued} persona style proposal(s); you "
+                "will be asked to approve them in your next Stella "
+                "session. Nothing was written."
+            )
+        if outcome.rejected:
+            output_fn(
+                f"Rejected {outcome.rejected} candidate edit(s) that "
+                "failed the style, cap, or authority checks."
+            )
+        if not outcome.queued and outcome.reason is None and not outcome.rejected:
+            output_fn("The model proposed no style edits this run.")
+        return 0
+    finally:
+        application.close()
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Dispatch the stella command: chat by default, persona subcommands."""
 
@@ -518,11 +587,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="replace an existing persona.md",
     )
+    commands.add_parser(
+        "reflect",
+        help=(
+            "review recorded transcripts and queue persona style "
+            "proposals for the next session (never writes anything)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.command == "persona":
         if args.persona_command == "preset":
             raise SystemExit(apply_persona_preset(args.name, force=args.force))
         raise SystemExit(open_persona_editor())
+    if args.command == "reflect":
+        raise SystemExit(run_persona_reflection())
     settings = resolve_settings()
     if settings is None:
         print(
@@ -542,6 +620,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             application.session.stella,
             debug=getattr(args, "debug", False),
             trace=getattr(args, "trace", False),
+            persona_proposals=application.proposals,
         )
     finally:
         application.close()

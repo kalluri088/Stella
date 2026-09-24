@@ -1126,6 +1126,44 @@ def test_from_environment_keeps_explicit_paths_and_xdg_fallbacks(
     )
 
 
+def test_transcript_recording_is_opt_in_across_settings_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("STELLA_TRANSCRIPTS", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    # Default everywhere: recording is off unless the user says otherwise.
+    assert StellaSettings().transcripts_enabled is False
+    saved = StellaSettings.from_saved(provider="ollama", model="m")
+    assert saved.transcripts_enabled is False
+    assert Path(saved.transcripts_db) == (
+        tmp_path / "xdg" / "stella" / "stella_transcript.db"
+    )
+    # The saved checkbox value is respected...
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", transcripts_enabled=True
+        ).transcripts_enabled
+        is True
+    )
+    # ...and the environment can force either way.
+    monkeypatch.setenv("STELLA_TRANSCRIPTS", "off")
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", transcripts_enabled=True
+        ).transcripts_enabled
+        is False
+    )
+    monkeypatch.setenv("STELLA_TRANSCRIPTS", "1")
+    monkeypatch.setenv("STELLA_MODEL", "m")
+    assert StellaSettings.from_environment().transcripts_enabled is True
+    monkeypatch.setenv("STELLA_TRANSCRIPT_DB", str(tmp_path / "custom.db"))
+    assert (
+        StellaSettings.from_environment().transcripts_db
+        == str(tmp_path / "custom.db")
+    )
+
+
 def test_from_environment_defaults_to_local_ollama_without_a_cloud_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

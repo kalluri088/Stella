@@ -35,6 +35,7 @@ _CONFIG_FIELDS = (
     "model",
     "ollama_base_url",
     "openai_base_url",
+    "transcripts_enabled",
 )
 
 
@@ -319,4 +320,5 @@ def resolve_settings() -> StellaSettings | None:
             os.environ.get("OPENAI_BASE_URL")
             or endpoint(raw.get("openai_base_url"))
         ),
+        transcripts_enabled=raw.get("transcripts_enabled") is True,
     )

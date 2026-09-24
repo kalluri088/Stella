@@ -38,7 +38,11 @@ from stella.llm import Message
 from stella.memory import Memory, MemoryItem, SQLiteMemory
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
 from stella.openai_client import OpenAILLMClient
-from stella.persona import PersonaLoader
+from stella.persona import (
+    PersonaLoader,
+    ReflectionStore,
+    TranscriptRecorder,
+)
 from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
@@ -198,10 +202,14 @@ class StellaSession:
         self,
         stella: Stella,
         error_footer: str = "try again or type 'exit' to quit.",
+        transcripts: TranscriptRecorder | None = None,
     ) -> None:
         self.stella = stella
         self.history: list[Message] = []
         self._error_footer = error_footer
+        # Opt-in observer for `stella reflect`: it records, it never
+        # influences a turn. None (the default) means no recording.
+        self.transcripts = transcripts
 
     def check_due_reminders(
         self, now: dt.datetime | None = None
@@ -238,6 +246,7 @@ class StellaSession:
                 else self.stella.process(context, should_cancel=should_cancel)
             )
         except KeyboardInterrupt:
+            self._record_turn(user_input, cancelled=True)
             return timed(interrupted=True)
         except Exception as error:  # noqa: BLE001 - keep the session alive
             detail = " ".join(str(error).split()) or type(error).__name__
@@ -252,15 +261,47 @@ class StellaSession:
             # A cancelled turn is discarded whole: nothing is appended to
             # the conversation history, so the next turn never "remembers"
             # an answer that was never given.
+            self._record_turn(user_input, cancelled=True)
             return timed(result=result, cancelled=True)
         response = display_response(result)
         self.history.append(Message(role="user", content=user_input))
         if response is not None:
             self.history.append(Message(role="assistant", content=response))
+        self._record_turn(user_input, response=response)
         return timed(result=result, response=response)
+
+    def _record_turn(
+        self,
+        user_input: str,
+        response: str | None = None,
+        cancelled: bool = False,
+    ) -> None:
+        if self.transcripts is None:
+            return
+        self.transcripts.record_turn(
+            user_input, response=response, cancelled=cancelled
+        )
 
 
 VOICE_MODES = {"auto", "openai", "off"}
+TRANSCRIPT_ENV_ON = {"1", "true", "on", "yes"}
+TRANSCRIPT_ENV_OFF = {"0", "false", "off", "no"}
+
+
+def transcripts_env_override() -> bool | None:
+    """The STELLA_TRANSCRIPTS override, or None when it says nothing.
+
+    Recording conversation text is opt-in: the environment variable only
+    ever overrides the saved choice, it never turns recording on by
+    default.
+    """
+
+    raw = os.environ.get("STELLA_TRANSCRIPTS", "").strip().casefold()
+    if raw in TRANSCRIPT_ENV_ON:
+        return True
+    if raw in TRANSCRIPT_ENV_OFF:
+        return False
+    return None
 
 
 def default_data_dir() -> Path:
@@ -292,6 +333,10 @@ def default_history_db() -> str:
     return str(default_data_dir() / "stella_action_history.db")
 
 
+def default_transcripts_db() -> str:
+    return str(default_data_dir() / "stella_transcript.db")
+
+
 def default_workspace() -> str:
     return str(default_data_dir() / "workspace")
 
@@ -307,6 +352,8 @@ class StellaSettings:
     memory_db: str = field(default_factory=default_memory_db)
     reminders_db: str = field(default_factory=default_reminders_db)
     history_db: str = field(default_factory=default_history_db)
+    transcripts_db: str = field(default_factory=default_transcripts_db)
+    transcripts_enabled: bool = False
     workspace: str = field(default_factory=default_workspace)
     voice_transcription: str = "auto"
     voice_speech: str = "auto"
@@ -347,6 +394,9 @@ class StellaSettings:
             "history_db": os.environ.get(
                 "STELLA_HISTORY_DB", default_history_db()
             ),
+            "transcripts_db": os.environ.get(
+                "STELLA_TRANSCRIPT_DB", default_transcripts_db()
+            ),
             "workspace": os.environ.get(
                 "STELLA_WORKSPACE", default_workspace()
             ),
@@ -371,14 +421,19 @@ class StellaSettings:
         model: str,
         ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
         openai_base_url: str | None = None,
+        transcripts_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
+        override = transcripts_env_override()
         return cls(
             provider=provider,
             model=model,
             ollama_base_url=ollama_base_url,
             openai_base_url=openai_base_url,
+            transcripts_enabled=(
+                transcripts_enabled if override is None else override
+            ),
             **cls._environment_fields(),
         )
 
@@ -406,6 +461,7 @@ class StellaSettings:
             ollama_base_url=os.environ.get(
                 "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
             ),
+            transcripts_enabled=transcripts_env_override() is True,
             **cls._environment_fields(),
         )
 
@@ -417,6 +473,7 @@ class StellaApplication:
     session: StellaSession
     settings: StellaSettings
     voice: VoicePanel | None = None
+    proposals: ReflectionStore | None = None
 
     def close(self) -> None:
         if self.voice is not None:
@@ -430,6 +487,10 @@ class StellaApplication:
         history = self.session.stella.tools.history
         if isinstance(history, SQLiteActionHistory):
             history.close()
+        if isinstance(self.session.transcripts, TranscriptRecorder):
+            self.session.transcripts.close()
+        if self.proposals is not None:
+            self.proposals.close()
 
 
 def build_application(settings: StellaSettings) -> StellaApplication:
@@ -465,10 +526,16 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     Path(settings.memory_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.reminders_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.history_db).parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.transcripts_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.workspace).mkdir(parents=True, exist_ok=True)
     memory = SQLiteMemory(settings.memory_db)
     reminders = SQLiteReminderStore(settings.reminders_db)
     history = SQLiteActionHistory(settings.history_db, MAX_AUDIT_RECORDS)
+    # Recording conversation text is strictly opt-in; the proposal queue
+    # beside it is always available so a queued edit survives turning
+    # recording back off.
+    transcripts = TranscriptRecorder(settings.transcripts_db)
+    proposals = ReflectionStore(settings.transcripts_db)
     workspace = settings.workspace
     tools = ToolDispatcher(
         [
@@ -510,10 +577,57 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # not quote CLI-only instructions ("type 'exit'") in UI error messages.
     # The interactive CLI loop builds its own StellaSession with the hint.
     return StellaApplication(
-        StellaSession(stella, error_footer="try again."),
+        StellaSession(
+            stella,
+            error_footer="try again.",
+            transcripts=(transcripts if settings.transcripts_enabled else None),
+        ),
         settings,
         build_voice(settings),
+        proposals=proposals,
     )
+
+
+def drain_persona_proposals(
+    stella: Stella,
+    store: ReflectionStore | None,
+    notify: Callable[[str], None] | None = None,
+) -> int:
+    """Surface queued reflection proposals as real approvals, one by one.
+
+    A proposal is only a stored persona_edit argument set: answering it
+    travels the exact same dispatcher path as a mid-conversation tool
+    call (exact-match approval, validation, verified receipt, audit
+    trail), and a denial or a missing approval provider changes nothing.
+    """
+
+    if store is None:
+        return 0
+    dispatcher = getattr(stella, "tools", None)
+    provider = getattr(stella, "approval_provider", None)
+    if provider is None or dispatcher is None:
+        # No approver is present (batch or stub context): proposals stay
+        # queued for the next interactive session.
+        return 0
+    handled = 0
+    for proposal in store.pending():
+        arguments = dict(proposal.arguments)
+        request = ApprovalRequest("persona_edit", arguments)
+        preview = dispatcher.preview("persona_edit", arguments)
+        approval = provider(request, preview)
+        result = dispatcher.execute(
+            "persona_edit", arguments, approval=approval
+        )
+        store.resolve(
+            proposal.id,
+            approved=bool(approval.approved),
+            success=bool(result.success),
+        )
+        if notify is not None:
+            reason = arguments.get("summary") or "a persona style proposal"
+            notify(f"Persona proposal ({reason}): {result.output}")
+        handled += 1
+    return handled
 
 
 class VoicePanel:
@@ -1329,6 +1443,26 @@ class StellaBridge:
             f"{_history_outcome(record)}"
             for record in reversed(records)
         )
+
+    def post_persona_drain(self) -> None:
+        """Ask the worker to surface queued persona proposals now.
+
+        Scheduled once after the window exists (never during startup):
+        approval dialogs need the UI poll loop to be running, and the
+        blocking approval happens on the worker thread like any turn.
+        """
+
+        def handle() -> None:
+            application = self._application
+            if application is None:
+                return
+            drain_persona_proposals(
+                application.session.stella,
+                application.proposals,
+                notify=lambda message: self._emit("notice", message),
+            )
+
+        self._post(handle)
 
     def post_apply_settings(self, settings: StellaSettings) -> None:
         def handle() -> None:

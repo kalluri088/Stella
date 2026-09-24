@@ -46,8 +46,9 @@ application is built and used on one daemon worker thread. The UI thread never
 touches `Stella`, tools, memory, or the database directly. It posts commands
 (`post_turn`, `post_memories`, `post_reminder_add`, ...) and a 100 ms poll
 drains `UiEvent` values (`turn`, `memories`, `reminders`, `settings`,
-`reminder_delivered`, `error`) back into widgets. All friendly error text is
-produced by the bridge; failures never surface as raw exceptions.
+`reminder_delivered`, `notice`, `error`) back into widgets. All friendly
+error text is produced by the bridge; failures never surface as raw
+exceptions.
 
 The CLI (`uv run stella`) builds the identical `StellaApplication` through
 `build_application(settings)` using the same `stella.config.resolve_settings`
@@ -103,7 +104,13 @@ display, and can never approve a tool or change permissions.
   "Provider: … Model: … Status: Connected / Not connected" line. Apply
   rebuilds the application through `build_application` before anything is
   saved, so a failed rebuild keeps the working session alive and can never
-  overwrite the last known-good configuration.
+  overwrite the last known-good configuration. One extra checkbox —
+  *Record transcripts for persona reflection* — turns the bounded, opt-in
+  transcript file on or off (off by default; see `PERSONA.md`).
+- Persona: chat style changes go through the normal `persona_edit`
+  approval dialog with a real diff. If `stella reflect` has queued style
+  proposals, the window shows each one as an ordinary approval prompt
+  shortly after launch (never during startup) — deny and nothing changes.
 - Voice: press **Listen** to record one explicit utterance, see the transcript
   enter the same conversation path as typed input, and optionally hear the
   final response spoken ("Speak replies", off by default). See `VOICE.md` for
@@ -129,7 +136,9 @@ core path and reports that nothing was changed.
 
 - Single window, single worker thread; one conversation per process.
 - Conversation history lives in this session only; there is no persistent
-  chat log (the durable History is action metadata, not chat).
+  chat log (the durable History is action metadata, not chat). The opt-in
+  transcript file records turn text for persona reflection only — off by
+  default, and never read back into a conversation (`PERSONA.md`).
 - Memory search is the existing deterministic keyword matcher, not semantic.
 - Cancel interrupts an in-flight provider request (native Ollama: the
   wait is abandoned within about a second; OpenAI-compatible: the reply

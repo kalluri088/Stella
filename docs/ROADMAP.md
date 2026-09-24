@@ -168,6 +168,41 @@ working and helping me, even if not the fastest."
   OpenAI-compatible endpoint or Ollama model must pass, so provider
   swaps are verified rather than hoped for.
 
+## Stage C — personality
+
+Stella's character becomes durable, editable data — while the trust
+model stays exactly as in Stage A: the model proposes, the app decides,
+approvals bind to exact arguments. Personality may change *style* only;
+risk levels, tool registration and dispatch remain application-owned
+code no text file can influence (`src/stella/persona.py`,
+`src/stella/tools.py`, `docs/PERSONA.md`).
+
+- **C1. Persona as data — done.** `persona.md` (yours) plus a learned
+  `persona.addons.md` compose into the system prompt under a fixed,
+  app-owned invariant block that persona text can never override; no
+  persona file means the byte-identical default prompt. Addon lines pass
+  a forbidden-content filter with visible discard counts and hard caps
+  (20 bullets / ~1 KB).
+- **C2. `persona_edit` — done.** Chat-initiated style changes execute
+  only as a `DANGEROUS` capability: realpath-locked to the two persona
+  files, unified-diff preview, exact-match approval, verified-byte
+  receipts — the same boundary as every file write.
+- **C3. CLI persona tooling — done.** `stella persona` (opens
+  `$EDITOR`), `stella persona preset snark|warm|terse`, and a
+  first-run onboarding that drafts a persona from three questions and
+  writes it only on an explicit yes.
+- **C4. Bounded self-learning — done.** Opt-in transcripts (off by
+  default, bounded, local, never read back into chat) feed
+  `stella reflect`, which derives only observable friction signals,
+  proposes at most two style edits, re-checks every candidate
+  app-side (anti-sycophancy, authority lines, cap consolidation) and
+  **writes nothing**: proposals are queued and surfaced as real
+  approvals at the next session.
+- **C5. Open questions for later.** Deliberately not built here:
+  per-conversation voice switching, persona-specific tool behavior (a
+  persona must never change what Stella *can* do), and any form of
+  automatic write.
+
 ## Packaging and release
 
 - The repository has no git remote yet; the first push happens only when
@@ -183,6 +218,7 @@ Not planned, in any stage, unless this section is deliberately rewritten:
 MCP integration, a plugin system, an autonomous agent loop, multi-user
 accounts, cloud hosting, mobile apps, wake-word detection,
 always-listening audio, speaker identification, emotion detection, a
-model marketplace, automatic large-model downloads, self-modifying or
-self-learning behavior, Kubernetes/Docker orchestration, arbitrary shell
-access, and unrestricted computer control.
+model marketplace, automatic large-model downloads, self-modifying
+behavior and self-learning beyond the approval-gated style notes of
+Stage C, Kubernetes/Docker orchestration, arbitrary shell access, and
+unrestricted computer control.

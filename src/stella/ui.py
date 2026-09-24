@@ -112,6 +112,10 @@ class StellaWindow:
         bridge.post_history()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._tick)
+        # Queued persona reflection proposals need the approval-drain
+        # loop above to already be running, so they are requested one
+        # beat later, never during construction.
+        root.after(250, self._bridge.post_persona_drain)
 
     # ----------------------------------------------------------- chat
 
@@ -344,6 +348,8 @@ class StellaWindow:
             )
         elif kind == "settings":
             self._line(f"(settings) {payload}")
+        elif kind == "notice":
+            self._line(f"(persona) {payload}")
         elif kind == "voice_state":
             self._handle_voice_state(str(payload))
         elif kind == "voice_transcript":
@@ -640,6 +646,23 @@ class StellaWindow:
             entry.insert("0", value)
             entry.pack(side="left", fill="x", expand=True)
             self._settings_fields[label] = entry
+        self._transcripts_var = tk.BooleanVar(
+            value=settings.transcripts_enabled
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Record transcripts for persona reflection",
+            variable=self._transcripts_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Conversation text is stored in a bounded local file; "
+                "'stella reflect' turns it into style proposals that "
+                "only take effect if you approve them."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             text=(
@@ -681,6 +704,7 @@ class StellaWindow:
             memory_db=fields["Memory DB"].get().strip(),
             reminders_db=fields["Reminders DB"].get().strip(),
             workspace=fields["Workspace"].get().strip(),
+            transcripts_enabled=self._transcripts_var.get(),
         )
 
     def _entered_key(self) -> str:

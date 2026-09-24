@@ -42,10 +42,21 @@ survives process restarts. Statuses are `pending`, `handled` and
 `cancelled`; the last two are terminal, so a reminder cannot transition
 twice and one reminder's id cannot cancel or handle another.
 
-There is deliberately **no scheduler, daemon, or heartbeat**. Due reminders
-are recognized when the user actually interacts with Stella: the CLI checks
-for due reminders at the start of each turn. Reminders missed while offline
-are delivered on the next interaction, exactly once.
+The desktop UI checks for due reminders on its own: `StellaBridge` runs a
+small daemon ticker (every 5 seconds by default) whose only action is to
+post one reminder check onto the bridge's single worker-thread command
+queue. All reminder state therefore still changes only on that worker
+thread, and firing remains the notify-only runtime path — the ticker
+never consults the Brain, the LLM, or the dispatcher. Because the
+`pending → handled` transition is one atomic conditional update, a
+reminder is delivered exactly once even when a tick and a turn race or
+two Stella processes share the store. A tick that arrives mid-turn queues
+behind the running turn, so delivery can land just after it.
+
+The CLI deliberately keeps the older behaviour: it checks for due
+reminders at the start of each interaction, because a CLI session that is
+idle has no window to inform. Reminders missed while offline are
+delivered on the next check (or the next tick, in the UI), exactly once.
 
 ## What happens when a reminder becomes due
 

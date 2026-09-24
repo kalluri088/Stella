@@ -91,10 +91,12 @@ treated as approval.
 
 ## Intentionally not implemented
 
-This boundary does not provide an approval UI, persistent approval storage,
-identity, authentication, permissions, audit logging, risk analysis based on
+This boundary does not provide persistent approval storage, identity,
+authentication, permissions, audit logging, risk analysis based on
 complex arguments, sandboxing, or least-privilege execution. It is not a
-general policy engine.
+general policy engine. (The content-aware approval previews described
+below are review material shown at prompt time; they are not risk
+analysis and authorize nothing.)
 
 No shell, network, process, or other dangerous production tool has been added.
 `filesystem_write` is create-only, `filesystem_edit` replaces the full
@@ -174,3 +176,35 @@ application flow inside `Tool.execute()`, not a model decision or tool step,
 and neither a verified receipt nor file contents or tool output grant any
 authority for later actions — each dangerous action still requires its own
 exact approval.
+
+## Content-aware approval previews
+
+A one-line summary is not reviewable: approving a file edit should show
+*what changes*. Before invoking the approval callback, the runtime asks
+the dispatcher for an optional `ActionPreview` for the exact capability
+and arguments. Previews are computed by application code — the "before"
+half is read from disk by the app, the "after" half is the exact
+validated argument — and only for arguments that already pass the tool's
+own validation, so an escaping or invalid request can never make a
+preview read (or report on) anything. Previews are bounded (60 lines /
+4 000 characters) and clipped honestly, never silently:
+
+- `filesystem_edit`: a unified diff between the current file contents and
+  the exact new content; a missing file, a binary file and an oversized
+  file are each described honestly instead of being misleadingly diffed;
+- `filesystem_write`: the bounded new content, plus a warning when the
+  create would fail because a file already exists;
+- `filesystem_delete`: the irreversibility note plus the beginning of the
+  content that would be lost;
+- `network_read`: the validated URL only — deliberately no DNS lookup,
+  because execution re-validates every resolved address and resolving
+  twice would introduce a rebinding race of the preview's own making.
+
+A preview is display-only and never part of the authorization token:
+`ApprovalRequest`/`ToolApproval` equality, the dispatcher's exact-match
+verification and the independent post-execution verification are
+unchanged, and the verified receipt remains ground truth (a file that
+changes after the preview is caught there, not by the preview). Both the
+CLI prompt and the Tk approval dialog render previews; providers that
+take only the request keep working because a plain `None` preview is
+never forwarded.

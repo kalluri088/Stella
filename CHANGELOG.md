@@ -22,6 +22,27 @@
   credential store); use `OPENAI_API_KEY` to keep one across launches.
   Environment variables keep working and override the saved file.
 
+### Stella informs while idle
+
+- **Idle reminder firing** — the desktop window now checks for due
+  reminders on its own every few seconds; a reminder comes to you even
+  if you send no message. Delivery stays exactly-once (an atomic store
+  transition, shared across ticks, turns and processes), the check runs
+  on the same single worker thread as everything else, and the CLI
+  keeps its fires-on-next-interaction behaviour by design.
+
+### Reviewable approvals
+
+- **Content-aware approval previews** — approving a file change now
+  shows what actually changes: a unified diff for edits, the bounded new
+  content for writes (with a warning if the create would fail), the
+  beginning of the content a delete would lose, and the validated URL
+  for network reads. Previews are computed by the application from
+  already-validated arguments only, are bounded and honestly labelled
+  when clipped, and are never part of the authorization token — the
+  verified post-execution receipt remains the ground truth. Shown in
+  both the CLI prompt and the Tk approval dialog.
+
 ## 1.0.0 — 2026-09-23
 
 First public release of Stella, a local-first desktop assistant for Linux.

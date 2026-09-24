@@ -80,8 +80,11 @@ working and helping me, even if not the fastest."
   `StellaBridge.cancel_current_turn` in `src/stella/app.py`,
   `docs/UI.md`). The CLI keeps Ctrl+C as its immediate-stop
   equivalent by design.
-- **A6. Per-turn duration UX.** Surface how long each turn took in the
-  transcript so slow answers read as "local model", not "broken".
+- **A6. Per-turn duration UX — done.** Every finished turn is timed by
+  the session (`TurnOutcome.duration_seconds`) and the transcript
+  renders it ("Stella: … (took 47 s)"), so slow answers read as
+  "local model", not "broken". The duration is display-only; the
+  stored conversation never carries it.
 
 ## Stage B — sharper judgment and scale
 

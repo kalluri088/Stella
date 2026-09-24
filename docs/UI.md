@@ -69,6 +69,9 @@ display, and can never approve a tool or change permissions.
   or an executing action — and the cancelled turn is discarded whole
   from the conversation. A cancel while an approval dialog is open denies
   that action (fail-closed) and dismisses the dialog; nothing executes.
+  Every finished turn also ends with how long it took in the transcript
+  ("Stella: … (took 47 s)") — display-only, the stored conversation
+  never carries that text.
   The CLI keeps Ctrl+C as its immediate-stop equivalent.
 - Approvals: a dialog shows "Stella wants to: <capability and arguments>"
   for every `DANGEROUS` action, with Allow and Cancel, plus a read-only

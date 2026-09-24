@@ -18,6 +18,7 @@ import queue
 import shlex
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -177,6 +178,10 @@ class TurnOutcome:
     error_message: str | None = None
     interrupted: bool = False
     cancelled: bool = False
+    # Wall-clock seconds the turn consumed; None only when the turn
+    # never started measuring. Display material (A6): slow answers
+    # should read as "local model", not "broken".
+    duration_seconds: float | None = None
 
 
 class StellaSession:
@@ -211,6 +216,13 @@ class StellaSession:
         user_input: str,
         should_cancel: Callable[[], bool] | None = None,
     ) -> TurnOutcome:
+        started = time.monotonic()
+
+        def timed(**fields: object) -> TurnOutcome:
+            return TurnOutcome(
+                duration_seconds=time.monotonic() - started, **fields
+            )
+
         try:
             context = Context(
                 user_input=user_input,
@@ -224,10 +236,10 @@ class StellaSession:
                 else self.stella.process(context, should_cancel=should_cancel)
             )
         except KeyboardInterrupt:
-            return TurnOutcome(interrupted=True)
+            return timed(interrupted=True)
         except Exception as error:  # noqa: BLE001 - keep the session alive
             detail = " ".join(str(error).split()) or type(error).__name__
-            return TurnOutcome(
+            return timed(
                 error_message=(
                     f"Stella could not finish that request "
                     f"({detail[:160]}). Nothing was changed; "
@@ -238,12 +250,12 @@ class StellaSession:
             # A cancelled turn is discarded whole: nothing is appended to
             # the conversation history, so the next turn never "remembers"
             # an answer that was never given.
-            return TurnOutcome(result=result, cancelled=True)
+            return timed(result=result, cancelled=True)
         response = display_response(result)
         self.history.append(Message(role="user", content=user_input))
         if response is not None:
             self.history.append(Message(role="assistant", content=response))
-        return TurnOutcome(result=result, response=response)
+        return timed(result=result, response=response)
 
 
 VOICE_MODES = {"auto", "openai", "off"}

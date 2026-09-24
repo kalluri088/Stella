@@ -21,6 +21,7 @@ from stella.app import (
     StellaBridge,
     StellaSession,
     StellaSettings,
+    TurnOutcome,
     VoicePanel,
 )
 from stella.audio import TranscriptionProvider
@@ -424,6 +425,37 @@ def test_window_cancel_during_approval_denies_and_executes_nothing() -> None:
         assert tool.executions == []
         transcript = window._chat.get("1.0", "end")
         assert "stopped that request at your cancel" in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_duration_tail_formats_every_finished_turn() -> None:
+    assert StellaWindow._duration_tail(TurnOutcome()) == ""
+    assert (
+        StellaWindow._duration_tail(TurnOutcome(duration_seconds=1.24))
+        == " (took 1.2 s)"
+    )
+    assert (
+        StellaWindow._duration_tail(TurnOutcome(duration_seconds=47.4))
+        == " (took 47 s)"
+    )
+
+
+def test_window_transcript_records_turn_duration() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._input.insert("1.0", "how long")
+        window._send()
+        deadline = time.monotonic() + 5
+        while window._busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        # A6: every completed turn says how long it took, so a slow
+        # local model reads as slow, not broken.
+        assert "Stella: window reply (took " in window._chat.get(
+            "1.0", "end"
+        )
     finally:
         bridge.stop()
         root.destroy()

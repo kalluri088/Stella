@@ -73,6 +73,11 @@
   denies that action fail-closed and dismisses the dialog, so it can
   never be an accidental bypass. The CLI keeps Ctrl+C as its
   immediate-stop equivalent.
+- **Per-turn duration in the transcript** — every finished turn now
+  ends with how long it took ("Stella: … (took 47 s)"), so slow
+  answers from a local model read as slow rather than broken. The
+  duration is display metadata only; the stored conversation never
+  carries it.
 
 ## 1.0.0 — 2026-09-23
 

@@ -264,25 +264,38 @@ class StellaWindow:
         self._turn_started = None
         self._cancelling = False
         self._status.configure(text="")
+        tail = self._duration_tail(outcome)
         if outcome.interrupted:
             self._line("Stella stopped that request. Nothing was changed.")
             return
         if outcome.cancelled:
             self._line(
-                "Stella stopped that request at your cancel. It was "
-                "discarded and is not part of the conversation."
+                "Stella stopped that request at your cancel"
+                f"{tail}. It was discarded and is not part of the "
+                "conversation."
             )
             return
         if outcome.error_message is not None:
             self._line(f"✗ {outcome.error_message}")
             return
         if outcome.response is not None:
-            self._line(f"Stella: {outcome.response}")
+            self._line(f"Stella: {outcome.response}{tail}")
         else:
-            self._line("Stella has nothing to add.")
+            self._line(f"Stella has nothing to add.{tail}")
         if outcome.result is not None and outcome.result.tool_result is not None:
             status = outcome_status(outcome.result.tool_result)
             self._line(f"Action outcome: {status.symbol} {status.kind}")
+
+    @staticmethod
+    def _duration_tail(outcome: TurnOutcome) -> str:
+        # A6: every finished turn says how long it took, so a slow local
+        # model reads as slow rather than broken. Display only; the
+        # stored conversation never carries this text.
+        if outcome.duration_seconds is None:
+            return ""
+        seconds = outcome.duration_seconds
+        text = f"{seconds:.1f} s" if seconds < 10 else f"{seconds:.0f} s"
+        return f" (took {text})"
 
     # ------------------------------------------------------ event pump
 

@@ -1553,3 +1553,38 @@ def test_cancel_without_running_turn_has_no_later_effect() -> None:
         assert outcome.cancelled is False
     finally:
         bridge.stop()
+
+
+# ------------------------------------------------------- per-turn duration (A6)
+
+
+def test_run_turn_reports_elapsed_seconds_for_every_outcome() -> None:
+    class SleepingStella:
+        def process(
+            self, context: Context, should_cancel=None
+        ) -> StellaResult:
+            time.sleep(0.05)
+            return StellaResult(
+                Decision(kind=DecisionKind.ANSWER, content="noted"),
+                response="noted",
+            )
+
+    session = StellaSession(SleepingStella())  # type: ignore[arg-type]
+    outcome = session.run_turn("slow turn")
+
+    assert outcome.duration_seconds is not None
+    assert outcome.duration_seconds >= 0.05
+    # The timing is display metadata; the stored conversation stays clean.
+    assert session.history[-1].content == "noted"
+
+    class BoomStella:
+        def process(
+            self, context: Context, should_cancel=None
+        ) -> StellaResult:
+            raise RuntimeError("nope")
+
+    failed = StellaSession(  # type: ignore[arg-type]
+        BoomStella()
+    ).run_turn("boom")
+    assert failed.duration_seconds is not None
+    assert failed.error_message is not None

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
-from stella.memory import MemoryItem, MemoryScope, MemoryType
+from stella.memory import Memory, MemoryItem, MemoryScope, MemoryType
 
 SemanticVector = tuple[float, ...]
 DEFAULT_SEMANTIC_LIMIT = 8
@@ -130,6 +130,11 @@ class SemanticIndex(ABC):
             )
         ][:limit]
 
+    def clear(self) -> bool:
+        """Remove every indexed item in this index's own scope."""
+
+        return self._clear()
+
     @abstractmethod
     def _upsert(self, item: MemoryItem, vector: SemanticVector) -> bool:
         """Implement storage in a concrete semantic index."""
@@ -142,6 +147,10 @@ class SemanticIndex(ABC):
         limit: int,
     ) -> list[SemanticMatch]:
         """Implement retrieval in a concrete semantic index."""
+
+    @abstractmethod
+    def _clear(self) -> bool:
+        """Implement a scope-bounded wipe in a concrete semantic index."""
 
 
 class SemanticRetriever:
@@ -357,6 +366,14 @@ class SQLiteSemanticIndex(SemanticIndex):
         )
         return matches[:limit]
 
+    def _clear(self) -> bool:
+        self._connection.execute(
+            "DELETE FROM semantic_vectors WHERE scope = ?",
+            (self.scope.value,),
+        )
+        self._connection.commit()
+        return True
+
     def close(self) -> None:
         """Close the SQLite index connection."""
 
@@ -367,3 +384,28 @@ class SQLiteSemanticIndex(SemanticIndex):
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+def reconcile_semantic_index(
+    memory: Memory,
+    retriever: SemanticRetriever,
+) -> bool:
+    """Rebuild the semantic index from the authoritative memory store.
+
+    A full idempotent rebuild (rather than per-operation hooks) because
+    ``Memory.store`` never reports the new id and the memory panels can
+    change the store through any trusted path: reconciliation heals
+    writes, updates and deletes at once. At personal scale the cost is
+    a handful of SHA-256 hashes. A False return means the index may be
+    stale; the memory store itself is never affected.
+    """
+
+    if not retriever.index.clear():
+        return False
+    ok = True
+    for item in memory.retrieve(None):
+        if item.scope is not retriever.index.scope:
+            continue
+        if not retriever.index_memory(item):
+            ok = False
+    return ok

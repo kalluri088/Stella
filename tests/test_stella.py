@@ -1929,6 +1929,9 @@ def test_answer_generation_receives_memories_and_selected_decision() -> None:
             "memory_type": "semantic",
             "scope": "user",
             "relevant_to_current_request": True,
+            # Fusion reports how every memory was found, even without a
+            # semantic retriever: this one arrived by keyword match.
+            "retrieval": {"method": "keyword", "score": 1},
         }
     ]
     assert len(llm.messages) == 1

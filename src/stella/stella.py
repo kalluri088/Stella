@@ -15,6 +15,7 @@ from stella.brain import Brain, Decision, DecisionKind
 from stella.context import (
     Context,
     InputEnvelope,
+    RetrievalSource,
     ToolObservation,
     limit_tool_output,
     select_conversation_history,
@@ -26,7 +27,13 @@ from stella.llm import (
     Message,
     ProviderRequestCancelled,
 )
-from stella.memory import Memory, MemoryItem, MemoryWriteRequest, MemoryWriteResult
+from stella.memory import (
+    Memory,
+    MemoryItem,
+    MemoryWriteRequest,
+    MemoryWriteResult,
+    relevance_score,
+)
 from stella.proactivity import (
     DelegatedAction,
     DueTaskEvent,
@@ -38,7 +45,11 @@ from stella.proactivity import (
 )
 from stella.proactivity import evaluate_due_task_event as evaluate_due_task_event_once
 from stella.reminders import ReminderStore
-from stella.semantic_memory import SemanticRetriever
+from stella.semantic_memory import (
+    SemanticMatch,
+    SemanticRetriever,
+    reconcile_semantic_index,
+)
 from stella.tools import (
     ApprovalRequest,
     Tool,
@@ -54,6 +65,7 @@ from stella.trace import (
     InputReceivedEvent,
     InteractionTrace,
     MemoryActionEvent,
+    MemoryIndexSyncEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
     ReminderLifecycleEvent,
@@ -63,6 +75,8 @@ from stella.video import VideoProvider, VideoSampling
 from stella.vision import VisionProvider
 
 MAX_HANDLED_PROACTIVE_EVENTS = 512
+MAX_SEMANTIC_SUPPLEMENT = 2
+MEMORY_MUTATION_ACTIONS = frozenset({"write", "update", "delete"})
 
 
 def _tool_call_key(capability: str | None, arguments: dict) -> str:
@@ -197,12 +211,54 @@ class Stella:
             for item in self.memory.retrieve(memory_query):
                 if item not in retrieved_memories:
                     retrieved_memories.append(item)
-        if not retrieved_memories and self.semantic_retriever is not None:
-            for match in self.semantic_retriever.retrieve(
-                context.user_input, limit=1
-            )[:1]:
-                if match.item not in retrieved_memories:
-                    retrieved_memories.append(match.item)
+        # Fused, keyword-dominant recall: lexical results keep their exact
+        # order; at most MAX_SEMANTIC_SUPPLEMENT semantic matches fill the
+        # remaining space. The two score scales are never compared — each
+        # memory carries its own provenance instead.
+        semantic_supplements: list[SemanticMatch] = []
+        if self.semantic_retriever is not None:
+            supplement_matches = self.semantic_retriever.retrieve(
+                context.user_input, limit=MAX_SEMANTIC_SUPPLEMENT
+            )
+            # The cap is enforced here rather than trusted from the backend,
+            # so one bounded supplement set holds for any retriever.
+            for match in supplement_matches[:MAX_SEMANTIC_SUPPLEMENT]:
+                if (
+                    match.item.id is not None
+                    and any(
+                        existing.id == match.item.id
+                        for existing in retrieved_memories
+                    )
+                ) or match.item in retrieved_memories:
+                    continue
+                retrieved_memories.append(match.item)
+                semantic_supplements.append(match)
+        semantic_ids = {
+            match.item.id
+            for match in semantic_supplements
+            if match.item.id is not None
+        }
+        retrieval_sources: dict[int, RetrievalSource] = {}
+        for item in retrieved_memories:
+            if item.id is None:
+                continue
+            if item.id in semantic_ids:
+                match = next(
+                    one
+                    for one in semantic_supplements
+                    if one.item.id == item.id
+                )
+                retrieval_sources[item.id] = RetrievalSource(
+                    memory_id=item.id,
+                    method="local-hash-embedding",
+                    score=round(match.score, 3),
+                )
+            else:
+                retrieval_sources[item.id] = RetrievalSource(
+                    memory_id=item.id,
+                    method="keyword",
+                    score=relevance_score(item.content, context.user_input),
+                )
         retrieved_memories = select_retrieved_memories(
             retrieved_memories, context.user_input
         )
@@ -218,6 +274,7 @@ class Stella:
         memory_write = None
         memory_write_requested = False
         memory_write_denied = False
+        index_sync_failed = False
         tool_steps = 0
         last_tool_result = None
         executed_call_keys: set[str] = set()
@@ -263,6 +320,7 @@ class Stella:
                 retrieved_memories=retrieved_memories,
                 tool_observations=list(observations),
                 input_envelope=context.input_envelope,
+                retrieval_sources=dict(retrieval_sources),
             )
             try:
                 decision = decide_turn(decision_context)
@@ -372,6 +430,16 @@ class Stella:
                                 memory_id=action.memory_id,
                             )
                         )
+                        if (
+                            self.semantic_retriever is not None
+                            and tool_result.success
+                            and action.count > 0
+                            and action.action in MEMORY_MUTATION_ACTIONS
+                        ):
+                            index_sync_failed = (
+                                not self._sync_semantic_index(trace)
+                                or index_sync_failed
+                            )
                     if tool_result.action_receipt is not None:
                         receipt = tool_result.action_receipt
                         trace.record(
@@ -425,6 +493,15 @@ class Stella:
                             trace=trace,
                         )
                         memory_write_denied = memory_write_denied or write_denied
+                        if (
+                            self.semantic_retriever is not None
+                            and memory_write is not None
+                            and memory_write.written
+                        ):
+                            index_sync_failed = (
+                                not self._sync_semantic_index(trace)
+                                or index_sync_failed
+                            )
                         if write_denied:
                             # A proposal the runtime refused must not reach
                             # response synthesis as pending work.
@@ -482,7 +559,9 @@ class Stella:
                         except ProviderRequestCancelled:
                             return cancelled_result(decision)
                         response = self._with_memory_note(
-                            response, memory_write_denied
+                            response,
+                            memory_write_denied,
+                            index_sync_failed=index_sync_failed,
                         )
                         return StellaResult(
                             decision,
@@ -534,6 +613,15 @@ class Stella:
                     trace=trace,
                 )
                 memory_write_denied = memory_write_denied or write_denied
+                if (
+                    self.semantic_retriever is not None
+                    and memory_write is not None
+                    and memory_write.written
+                ):
+                    index_sync_failed = (
+                        not self._sync_semantic_index(trace)
+                        or index_sync_failed
+                    )
                 if write_denied:
                     decision = replace(decision, memory_write=None)
                 trace.record_memory_write(
@@ -556,7 +644,9 @@ class Stella:
                     # not a tool observation preceded it. Re-synthesizing it
                     # spent a whole extra LLM call on identical authority.
                     response = self._with_memory_note(
-                        decision.content, memory_write_denied
+                        decision.content,
+                        memory_write_denied,
+                        index_sync_failed=index_sync_failed,
                     )
                     return StellaResult(
                         decision,
@@ -585,7 +675,9 @@ class Stella:
                 except ProviderRequestCancelled:
                     return cancelled_result(decision)
                 response = self._with_memory_note(
-                    response, memory_write_denied
+                    response,
+                    memory_write_denied,
+                    index_sync_failed=index_sync_failed,
                 )
                 return StellaResult(
                     decision,
@@ -1029,17 +1121,36 @@ class Stella:
             False,
         )
 
+    def _sync_semantic_index(self, trace: InteractionTrace) -> bool:
+        """Rebuild the semantic index from the authoritative memory store.
+
+        A False return is reported honestly (trace event plus a note on
+        the turn's response); it never changes any memory write's own
+        outcome, because the memory store is the ground truth.
+        """
+
+        ok = reconcile_semantic_index(self.memory, self.semantic_retriever)
+        trace.record(MemoryIndexSyncEvent(ok=ok))
+        return ok
+
     @staticmethod
     def _with_memory_note(
-        response: str, memory_write_denied: bool
+        response: str,
+        memory_write_denied: bool,
+        index_sync_failed: bool = False,
     ) -> str:
-        if not memory_write_denied:
-            return response
-        return (
-            response
-            + "\n\nNote: a memory write was proposed but not approved, "
-            "so nothing was remembered."
-        )
+        note = ""
+        if memory_write_denied:
+            note += (
+                "\n\nNote: a memory write was proposed but not approved, "
+                "so nothing was remembered."
+            )
+        if index_sync_failed:
+            note += (
+                "\n\nNote: the semantic index could not be refreshed; "
+                "stored memories are unaffected."
+            )
+        return response + note
 
     @staticmethod
     def _is_meaningful_tool_result(

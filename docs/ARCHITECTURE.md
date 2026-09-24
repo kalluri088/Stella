@@ -203,19 +203,20 @@ Memory is opt-in: it only stores items passed to `store()`. It does not automati
 ### Semantic retrieval boundary
 
 `stella.semantic_memory` defines a provider-neutral semantic path without
-changing `Memory` or the current lexical retrieval path. `EmbeddingProvider`
-turns text into a bounded vector, `SemanticIndex` owns scoped index/upsert/search
-operations, and `SemanticRetriever` composes the two for bounded query
+changing `Memory` or the lexical retrieval path. `EmbeddingProvider`
+turns text into a bounded vector, `SemanticIndex` owns scoped
+index/upsert/search operations plus a scope-bounded `clear()`, and
+`SemanticRetriever` composes the two for bounded query
 retrieval. The index is constructed with a trusted `MemoryScope`; it rejects
 mismatched item scope, invalid `MemoryType`, invalid vectors, and
 unbounded/invalid limits. Search filters results again by scope and optional
 type as defense in depth.
 
 Semantic results are `SemanticMatch` values containing only a memory item and
-an index-provided score. They do not contain permissions, tool authority, or
-approval state, and they are not connected to Brain control flow yet. The
-existing `Memory` implementations remain the source of explicit storage,
-lifecycle, lexical retrieval, and scope enforcement.
+an index-provided score. They contain no permissions, tool authority, or
+approval state; they only enrich what the Brain is shown, never what it may
+do. The existing `Memory` implementations remain the source of explicit
+storage, lifecycle, lexical retrieval, and scope enforcement.
 
 `LocalHashEmbeddingProvider` is the current local provider. It uses stable
 SHA-256 feature hashing over normalized words and character trigrams to create
@@ -226,13 +227,29 @@ stores vectors and the authorized memory metadata in a separate SQLite table
 and performs a bounded linear cosine scan, which is appropriate for Stella's
 current local scale.
 
-Semantic indexing is opt-in. The application explicitly supplies already
-stored, identified `MemoryItem` values to `SemanticRetriever.index_memory()`;
-the semantic index does not replace `Memory.store()`, lifecycle operations, or
-lexical retrieval. The application must keep the semantic index synchronized
-when memory items are updated or deleted. Semantic results contain no
-permissions, tool authority, or approval state, and lexical/semantic fusion or
-reranking is not implemented.
+Semantic recall is opt-in (`STELLA_SEMANTIC_MEMORY` or the Settings
+checkbox); disabled installs never create the index file. When enabled,
+`Stella.process` performs fused, keyword-dominant recall: lexical matches
+keep their exact order and retrieval slot priority, and at most two semantic
+supplements (`MAX_SEMANTIC_SUPPLEMENT`) may fill the remaining space. Stella
+enforces the cap itself rather than trusting the backend, and items already
+retrieved lexically are never duplicated. The two score scales are never
+compared with each other. Instead every retrieved memory carries reported
+provenance (`RetrievalSource`: `keyword` with the lexical score, or
+`local-hash-embedding` with the rounded cosine score), and the Brain payload
+surfaces it so the model can describe a semantic hit at most as "this may be
+related" — never as understanding.
+
+Index synchronization uses a full rebuild (`reconcile_semantic_index`): clear
+the scope, then re-embed every memory item in it. A rebuild was chosen over
+per-operation hooks because `Memory.store()` reports no new id and trusted
+write paths are many (memory tools, memory-write proposals, the UI panel);
+reconciliation is idempotent, heals updates and deletes at once, and also
+heals changes made while Stella was down (one reconcile at startup). Stella
+reconciles after every successful memory mutation in a turn. Failures are
+reported honestly — a `MemoryIndexSyncEvent(ok=False)` in the trace plus a
+plain note on the response — and never change a memory write's own outcome,
+because the memory store remains the ground truth.
 
 ### Brain and Decision
 

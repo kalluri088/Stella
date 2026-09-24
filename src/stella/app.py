@@ -44,6 +44,12 @@ from stella.persona import (
     TranscriptRecorder,
 )
 from stella.reminders import ReminderStore, SQLiteReminderStore
+from stella.semantic_memory import (
+    LocalHashEmbeddingProvider,
+    SemanticRetriever,
+    SQLiteSemanticIndex,
+    reconcile_semantic_index,
+)
 from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
     MAX_AUDIT_RECORDS,
@@ -284,8 +290,19 @@ class StellaSession:
 
 
 VOICE_MODES = {"auto", "openai", "off"}
-TRANSCRIPT_ENV_ON = {"1", "true", "on", "yes"}
-TRANSCRIPT_ENV_OFF = {"0", "false", "off", "no"}
+ENV_ON = {"1", "true", "on", "yes"}
+ENV_OFF = {"0", "false", "off", "no"}
+
+
+def _env_toggle(name: str) -> bool | None:
+    """A general on/off environment toggle, or None when it says nothing."""
+
+    raw = os.environ.get(name, "").strip().casefold()
+    if raw in ENV_ON:
+        return True
+    if raw in ENV_OFF:
+        return False
+    return None
 
 
 def transcripts_env_override() -> bool | None:
@@ -296,12 +313,18 @@ def transcripts_env_override() -> bool | None:
     default.
     """
 
-    raw = os.environ.get("STELLA_TRANSCRIPTS", "").strip().casefold()
-    if raw in TRANSCRIPT_ENV_ON:
-        return True
-    if raw in TRANSCRIPT_ENV_OFF:
-        return False
-    return None
+    return _env_toggle("STELLA_TRANSCRIPTS")
+
+
+def semantic_env_override() -> bool | None:
+    """The STELLA_SEMANTIC_MEMORY override, or None when it says nothing.
+
+    The semantic index duplicates every stored memory's content into a
+    second local database, so building it is strictly opt-in; this only
+    overrides the saved choice, never enables by default.
+    """
+
+    return _env_toggle("STELLA_SEMANTIC_MEMORY")
 
 
 def default_data_dir() -> Path:
@@ -337,6 +360,10 @@ def default_transcripts_db() -> str:
     return str(default_data_dir() / "stella_transcript.db")
 
 
+def default_semantic_db() -> str:
+    return str(default_data_dir() / "stella_semantic_index.db")
+
+
 def default_workspace() -> str:
     return str(default_data_dir() / "workspace")
 
@@ -354,6 +381,8 @@ class StellaSettings:
     history_db: str = field(default_factory=default_history_db)
     transcripts_db: str = field(default_factory=default_transcripts_db)
     transcripts_enabled: bool = False
+    semantic_db: str = field(default_factory=default_semantic_db)
+    semantic_memory_enabled: bool = False
     workspace: str = field(default_factory=default_workspace)
     voice_transcription: str = "auto"
     voice_speech: str = "auto"
@@ -397,6 +426,9 @@ class StellaSettings:
             "transcripts_db": os.environ.get(
                 "STELLA_TRANSCRIPT_DB", default_transcripts_db()
             ),
+            "semantic_db": os.environ.get(
+                "STELLA_SEMANTIC_DB", default_semantic_db()
+            ),
             "workspace": os.environ.get(
                 "STELLA_WORKSPACE", default_workspace()
             ),
@@ -422,17 +454,26 @@ class StellaSettings:
         ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
         openai_base_url: str | None = None,
         transcripts_enabled: bool = False,
+        semantic_memory_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
-        override = transcripts_env_override()
+        transcript_override = transcripts_env_override()
+        semantic_override = semantic_env_override()
         return cls(
             provider=provider,
             model=model,
             ollama_base_url=ollama_base_url,
             openai_base_url=openai_base_url,
             transcripts_enabled=(
-                transcripts_enabled if override is None else override
+                transcripts_enabled
+                if transcript_override is None
+                else transcript_override
+            ),
+            semantic_memory_enabled=(
+                semantic_memory_enabled
+                if semantic_override is None
+                else semantic_override
             ),
             **cls._environment_fields(),
         )
@@ -462,6 +503,7 @@ class StellaSettings:
                 "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
             ),
             transcripts_enabled=transcripts_env_override() is True,
+            semantic_memory_enabled=semantic_env_override() is True,
             **cls._environment_fields(),
         )
 
@@ -491,6 +533,12 @@ class StellaApplication:
             self.session.transcripts.close()
         if self.proposals is not None:
             self.proposals.close()
+        retriever = self.session.stella.semantic_retriever
+        if (
+            retriever is not None
+            and isinstance(retriever.index, SQLiteSemanticIndex)
+        ):
+            retriever.index.close()
 
 
 def build_application(settings: StellaSettings) -> StellaApplication:
@@ -536,6 +584,20 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # recording back off.
     transcripts = TranscriptRecorder(settings.transcripts_db)
     proposals = ReflectionStore(settings.transcripts_db)
+    # The semantic index duplicates every stored memory into a second
+    # local database, so it exists only while the opt-in flag is on;
+    # off means no file is even created.
+    semantic_retriever = None
+    if settings.semantic_memory_enabled:
+        Path(settings.semantic_db).parent.mkdir(parents=True, exist_ok=True)
+        semantic_index = SQLiteSemanticIndex(settings.semantic_db, memory.scope)
+        semantic_retriever = SemanticRetriever(
+            LocalHashEmbeddingProvider(), semantic_index
+        )
+        # One rebuild at startup heals anything changed while Stella was
+        # away. A failure here is not fatal and not silent: every later
+        # memory mutation re-syncs and reports honestly.
+        reconcile_semantic_index(memory, semantic_retriever)
     workspace = settings.workspace
     tools = ToolDispatcher(
         [
@@ -572,6 +634,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         memory=memory,
         max_tool_steps=2,
         reminders=reminders,
+        semantic_retriever=semantic_retriever,
     )
     # The shared application backs the desktop UI too, so its session must
     # not quote CLI-only instructions ("type 'exit'") in UI error messages.

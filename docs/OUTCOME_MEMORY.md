@@ -40,9 +40,15 @@ non-empty, and one-write gates control persistence.
 - Empty output is not eligible.
 - One explicit write is allowed per interaction.
 - Raw tool output is not automatically stored.
-- Retrieval remains deterministic keyword overlap.
-- No embeddings, semantic ranking, personality system, or proactive behavior
-  is involved.
+- Retrieval remains deterministic keyword overlap by default. With the
+  opt-in semantic index enabled, at most two extra items may be appended
+  after the keyword matches, each reported with its own provenance
+  (`RetrievalSource`: `keyword` plus lexical score, or
+  `local-hash-embedding` plus cosine score). The scales are never
+  compared, and a word-shape hit is presented to the Brain as a weaker
+  hint than a keyword match — never as understanding.
+- No learned embeddings, personality system, or proactive behavior is
+  involved.
 
 ## Proof required
 

@@ -3,7 +3,7 @@ import json
 import pytest
 
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain, SimpleBrain
-from stella.context import Context, ToolObservation
+from stella.context import Context, RetrievalSource, ToolObservation
 from stella.llm import (
     LLMClient,
     LLMResponse,
@@ -297,8 +297,47 @@ def test_llm_brain_flags_request_relevant_memory_in_decision_payload() -> None:
             "memory_type": "semantic",
             "scope": "user",
             "relevant_to_current_request": True,
+            # No retrieval_sources on this Context: the provenance default
+            # is honest ("none"), never a guessed method.
+            "retrieval": {"method": "none", "score": 0},
         }
     ]
+
+
+def test_llm_brain_payload_reports_retrieval_provenance() -> None:
+    llm = ResponseLLM('{"kind": "answer", "content": "Have jasmine tea."}')
+    keyword = MemoryItem(
+        content="The user prefers jasmine tea in the evening.", id=1
+    )
+    hint = MemoryItem(content="The user booked a tea tasting.", id=2)
+
+    LLMBrain(llm).decide(
+        Context(
+            user_input="What tea should I have this evening?",
+            retrieved_memories=[keyword, hint],
+            retrieval_sources={
+                1: RetrievalSource(
+                    memory_id=1, method="keyword", score=3
+                ),
+                2: RetrievalSource(
+                    memory_id=2,
+                    method="local-hash-embedding",
+                    score=0.412,
+                ),
+            },
+        )
+    )
+
+    payload = json.loads(llm.messages[0][1].content)
+    provenance = {
+        entry["content"]: entry["retrieval"]
+        for entry in payload["retrieved_memories"]
+    }
+    assert provenance[keyword.content] == {"method": "keyword", "score": 3}
+    assert provenance[hint.content] == {
+        "method": "local-hash-embedding",
+        "score": 0.412,
+    }
 
 
 def test_llm_brain_flags_background_memory_as_irrelevant() -> None:

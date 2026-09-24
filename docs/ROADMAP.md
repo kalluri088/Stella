@@ -157,10 +157,19 @@ working and helping me, even if not the fastest."
   the user.* Today risk is per-capability and hard-coded; a classifier
   would have to be proven not to weaken the exact-match approval
   boundary before it earns a place.
-- **B2. Semantic memory retrieval.** The `LocalHashEmbeddingProvider`
-  exists but is unwired (`src/stella/semantic_memory.py`); connect it to
-  memory recall with honest relevance reporting, no silent ranking
-  magic.
+- **B2. Semantic memory retrieval — done.** The
+  `LocalHashEmbeddingProvider` is wired into memory recall
+  (`src/stella/semantic_memory.py`, `src/stella/stella.py`) with the two
+  decisions taken up front: it is **opt-in** (Settings checkbox or
+  `STELLA_SEMANTIC_MEMORY`, because the index duplicates memory content
+  into a second local file, and disabled installs never create it), and
+  recall is **fused, keyword-dominant** — keyword matches keep their
+  order, at most two labeled semantic supplements fill the slack, and
+  the two score scales are never cross-compared. Provenance is reported
+  per memory (`RetrievalSource`, surfaced in the Brain payload), the
+  index is healed by full reconciliation (startup plus after every
+  in-turn memory mutation) with failures reported honestly, and no
+  silent ranking magic entered anywhere.
 - **B3. Memory-scale policies.** As stored memory grows: bounded
   retrieval windows, dedupe guidance, and forgetting tools that stay
   approval-gated.

@@ -1,4 +1,9 @@
-from stella.memory import MemoryItem, MemoryScope, MemoryType
+from stella.memory import (
+    InMemoryMemory,
+    MemoryItem,
+    MemoryScope,
+    MemoryType,
+)
 from stella.semantic_memory import (
     EmbeddingProvider,
     LocalHashEmbeddingProvider,
@@ -7,6 +12,7 @@ from stella.semantic_memory import (
     SemanticRetriever,
     SemanticVector,
     SQLiteSemanticIndex,
+    reconcile_semantic_index,
 )
 
 
@@ -24,6 +30,7 @@ class RecordingSemanticIndex(SemanticIndex):
         super().__init__(scope)
         self.indexed: list[tuple[MemoryItem, SemanticVector]] = []
         self.matches: list[SemanticMatch] = []
+        self.cleared = 0
 
     def _upsert(self, item: MemoryItem, vector: SemanticVector) -> bool:
         self.indexed.append((item, vector))
@@ -36,6 +43,11 @@ class RecordingSemanticIndex(SemanticIndex):
         limit: int,
     ) -> list[SemanticMatch]:
         return list(self.matches)
+
+    def _clear(self) -> bool:
+        self.cleared += 1
+        self.indexed.clear()
+        return True
 
 
 class AlternateSemanticIndex(RecordingSemanticIndex):
@@ -73,6 +85,8 @@ def test_semantic_index_rejects_mismatched_scope_and_invalid_metadata() -> None:
         valid_vector,
     ) is False
     assert index.indexed == []
+    assert index.clear() is True
+    assert index.cleared == 1
 
 
 def test_semantic_search_filters_scope_and_type_and_bounds_results() -> None:
@@ -255,3 +269,85 @@ def test_local_backend_persists_vectors_and_metadata(tmp_path) -> None:
         assert matches[0].item.created_at == 12
     finally:
         second_index.close()
+
+
+def test_reconcile_rebuilds_the_index_from_the_authoritative_memory_store(
+    tmp_path,
+) -> None:
+    provider = LocalHashEmbeddingProvider()
+    index = SQLiteSemanticIndex(str(tmp_path / "reconcile.db"), MemoryScope.USER)
+    retriever = SemanticRetriever(provider, index)
+    memory = InMemoryMemory()
+    memory.store(MemoryItem(content="The user prefers tea in the morning."))
+    memory.store(MemoryItem(content="The user works late on Thursdays."))
+    # A row for a memory that no longer exists: only a rebuild can heal it.
+    retriever.index_memory(
+        MemoryItem(
+            content="Quantum entanglement laboratory protocol.",
+            id=99,
+            scope=MemoryScope.USER,
+        )
+    )
+
+    try:
+        assert reconcile_semantic_index(memory, retriever) is True
+        assert retriever.retrieve("quantum entanglement protocol") == []
+        morning = retriever.retrieve("tea in the morning")
+        assert morning[0].item.content == "The user prefers tea in the morning."
+        # Reconciliation is idempotent: a second pass changes nothing.
+        assert reconcile_semantic_index(memory, retriever) is True
+        assert retriever.retrieve("tea in the morning") == morning
+    finally:
+        index.close()
+
+
+def test_reconcile_isolates_other_scopes_in_the_same_database(tmp_path) -> None:
+    database_path = str(tmp_path / "scoped-reconcile.db")
+    provider = LocalHashEmbeddingProvider()
+    user_index = SQLiteSemanticIndex(database_path, MemoryScope.USER)
+    stella_index = SQLiteSemanticIndex(database_path, MemoryScope.STELLA)
+    user_retriever = SemanticRetriever(provider, user_index)
+    memory = InMemoryMemory()
+    memory.store(
+        MemoryItem(
+            content="The user prefers tea.",
+            id=1,
+            scope=MemoryScope.USER,
+        )
+    )
+    stella_item = MemoryItem(
+        content="Stella prefers tea.",
+        id=1,
+        scope=MemoryScope.STELLA,
+    )
+
+    try:
+        assert SemanticRetriever(provider, stella_index).index_memory(stella_item)
+        assert reconcile_semantic_index(memory, user_retriever) is True
+        # The wipe and rebuild stayed inside the user scope only.
+        surviving = SemanticRetriever(provider, stella_index).retrieve(
+            "prefers tea"
+        )
+        assert [match.item.content for match in surviving] == [stella_item.content]
+    finally:
+        user_index.close()
+        stella_index.close()
+
+
+class FailingClearIndex(RecordingSemanticIndex):
+    def _clear(self) -> bool:
+        return False
+
+
+def test_reconcile_reports_failure_without_touching_the_memory_store() -> None:
+    memory = InMemoryMemory()
+    memory.store(MemoryItem(content="The user prefers tea."))
+    index = FailingClearIndex(MemoryScope.USER)
+    retriever = SemanticRetriever(LocalHashEmbeddingProvider(), index)
+
+    assert reconcile_semantic_index(memory, retriever) is False
+    # The authoritative store is never the casualty of an index failure.
+    assert [item.content for item in memory.retrieve(None)] == [
+        "The user prefers tea."
+    ]
+    assert retriever.index.indexed == []

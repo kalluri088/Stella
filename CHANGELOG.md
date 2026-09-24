@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Semantic memory recall (opt-in)
+
+- **Keyword-dominant fused recall** — a new Settings checkbox (or
+  `STELLA_SEMANTIC_MEMORY=1`) wires the local word-shape embedding index
+  (`LocalHashEmbeddingProvider` + `SQLiteSemanticIndex`) into memory
+  retrieval. Keyword matches keep their exact place; at most two
+  semantic supplements may fill the remaining space, so nothing about a
+  lexical hit's ranking silently changes. Disabled installs never create
+  the index file at all (`STELLA_SEMANTIC_DB` moves it if enabled).
+- **Honest provenance, no ranking magic** — every retrieved memory
+  reports how it was found (`keyword` with the lexical score, or
+  `local-hash-embedding` with the cosine similarity) in the Brain
+  payload; the two scales are never compared with each other, and the
+  prompt states that a word-shape match means the words look alike —
+  never that anything understood the meaning.
+- **Self-healing index with honest failures** — the index is rebuilt
+  from the authoritative memory store at startup and after every
+  in-turn memory mutation, so edits made while Stella was down are
+  caught up too. A failed refresh is reported (a trace event plus a
+  note on the answer) and never changes the memory write's own verified
+  outcome.
+
 ### Personality (data, never code)
 
 - **A written persona** — `~/.config/stella/persona.md` (and

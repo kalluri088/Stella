@@ -14,6 +14,13 @@ checked that it did.
 - **Chat** — a desktop window or the terminal, with your choice of model.
 - **Remember** — say "remember that …" and she asks first; the Memories tab
   shows exactly what is stored, and you can delete anything, any time.
+- **Find related memories (opt-in)** — the Settings checkbox (or
+  `STELLA_SEMANTIC_MEMORY=1`) adds a local word-shape index, so a memory
+  can surface because its words look alike even when your exact keywords
+  miss. Keyword matches always keep first place, at most two extra hints
+  are added, and each is labeled with how it was found — a similarity
+  score, never a claim of understanding. Off by default, and while off
+  the index file is never created.
 - **Remind** — "in 20 minutes, tell me to take the pan off the stove." An
   open window delivers reminders on its own, even while you say nothing.
 - **Work with files** — read, create, edit files inside her workspace folder.
@@ -116,6 +123,8 @@ development, or running several configurations side by side:
 | `STELLA_PERSONA_DIR` | Persona file location | `~/.config/stella` |
 | `STELLA_TRANSCRIPTS` | Transcript recording on/off (`1`/`0`; overrides the saved setting) | off |
 | `STELLA_TRANSCRIPT_DB` | Transcript file location | `~/.local/share/stella/stella_transcript.db` |
+| `STELLA_SEMANTIC_MEMORY` | Semantic memory recall on/off (`1`/`0`; overrides the saved setting) | off |
+| `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 
 Normal users never need any of these.
@@ -139,7 +148,9 @@ file, your memories, your reminders, the action history, and her workspace
 folder — plain files you own. Her persona files are yours too, under
 `~/.config/stella`. The conversation transcript (used only for style
 reflection) is off by default and, when you turn it on, is one bounded
-local file. No telemetry, no accounts, no cloud sync.
+local file; so is the semantic memory index, which keeps a second local
+copy of each memory's text alongside its word-shape fingerprint. No
+telemetry, no accounts, no cloud sync.
 With the local Ollama setup, nothing ever leaves your machine.
 
 ## Honest limits (no marketing here)
@@ -165,7 +176,7 @@ With the local Ollama setup, nothing ever leaves your machine.
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, wake words, autonomous agents, cloud accounts…)
-- `tests/` — 899 tests; every "done" claim in this README is checked by one
+- `tests/` — 912 tests; every "done" claim in this README is checked by one
 
 ## Found a problem?
 

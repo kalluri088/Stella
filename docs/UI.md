@@ -104,9 +104,13 @@ display, and can never approve a tool or change permissions.
   "Provider: … Model: … Status: Connected / Not connected" line. Apply
   rebuilds the application through `build_application` before anything is
   saved, so a failed rebuild keeps the working session alive and can never
-  overwrite the last known-good configuration. One extra checkbox —
-  *Record transcripts for persona reflection* — turns the bounded, opt-in
-  transcript file on or off (off by default; see `PERSONA.md`).
+  overwrite the last known-good configuration. Two extra checkboxes —
+  *Record transcripts for persona reflection* (off by default; see
+  `PERSONA.md`) and *Semantic memory recall (local word-shape index)* (off
+  by default; see `ARCHITECTURE.md`) — turn the two optional local files
+  (transcript, semantic index) on or off. The semantic index duplicates
+  every stored memory's text into its own file; while unchecked, that
+  file is never created.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt

@@ -90,6 +90,18 @@ class ActionReceiptEvent:
 
 
 @dataclass(frozen=True)
+class MemoryIndexSyncEvent:
+    """One semantic index rebuild after a memory mutation.
+
+    Only the outcome is recorded; the rebuild's cost and contents never
+    enter the trace. A False ``ok`` means the index may be stale — the
+    memory store itself is never affected.
+    """
+
+    ok: bool
+
+
+@dataclass(frozen=True)
 class ReminderLifecycleEvent:
     """Bounded metadata for one reminder store or delivery transition.
 
@@ -113,6 +125,7 @@ TraceEvent = (
     | MemoryWriteEvent
     | MemoryActionEvent
     | ActionReceiptEvent
+    | MemoryIndexSyncEvent
     | ReminderLifecycleEvent
 )
 

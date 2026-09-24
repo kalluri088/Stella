@@ -663,6 +663,24 @@ class StellaWindow:
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._semantic_var = tk.BooleanVar(
+            value=settings.semantic_memory_enabled
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Semantic memory recall (local word-shape index)",
+            variable=self._semantic_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Stores approved memories are additionally indexed by a "
+                "deterministic local word-shape embedding so related "
+                "phrasings can still be found; matches are always labeled "
+                "as weaker hints, never as understanding."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             text=(
@@ -705,6 +723,7 @@ class StellaWindow:
             reminders_db=fields["Reminders DB"].get().strip(),
             workspace=fields["Workspace"].get().strip(),
             transcripts_enabled=self._transcripts_var.get(),
+            semantic_memory_enabled=self._semantic_var.get(),
         )
 
     def _entered_key(self) -> str:

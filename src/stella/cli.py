@@ -47,6 +47,7 @@ from stella.trace import (
     InputReceivedEvent,
     InteractionTrace,
     MemoryActionEvent,
+    MemoryIndexSyncEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
     ReminderLifecycleEvent,
@@ -240,6 +241,9 @@ def format_trace(result: StellaResult) -> list[str]:
             line = _reminder_lifecycle_line(event)
             if line is not None:
                 lines.append(line)
+        elif isinstance(event, MemoryIndexSyncEvent):
+            status = "refreshed" if event.ok else "REFRESH FAILED"
+            lines.append(_trace_line("memory", f"semantic index {status}"))
         elif isinstance(event, FinalResponseEvent):
             if event.needs_more_information:
                 lines.append(

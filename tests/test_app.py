@@ -33,7 +33,7 @@ from stella.app import (
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import Context
 from stella.llm import LLMClient, LLMResponse, Message, run_cancellable
-from stella.memory import InMemoryMemory, MemoryItem
+from stella.memory import InMemoryMemory, MemoryItem, SQLiteMemory
 from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella, StellaResult
 from stella.tools import (
@@ -1162,6 +1162,100 @@ def test_transcript_recording_is_opt_in_across_settings_paths(
         StellaSettings.from_environment().transcripts_db
         == str(tmp_path / "custom.db")
     )
+
+
+def test_semantic_recall_is_opt_in_across_settings_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("STELLA_SEMANTIC_MEMORY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    # Default everywhere: the duplicated index is off unless requested.
+    assert StellaSettings().semantic_memory_enabled is False
+    saved = StellaSettings.from_saved(provider="ollama", model="m")
+    assert saved.semantic_memory_enabled is False
+    assert Path(saved.semantic_db) == (
+        tmp_path / "xdg" / "stella" / "stella_semantic_index.db"
+    )
+    # The saved checkbox value is respected...
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", semantic_memory_enabled=True
+        ).semantic_memory_enabled
+        is True
+    )
+    # ...and the environment can force either way.
+    monkeypatch.setenv("STELLA_SEMANTIC_MEMORY", "off")
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", semantic_memory_enabled=True
+        ).semantic_memory_enabled
+        is False
+    )
+    monkeypatch.setenv("STELLA_SEMANTIC_MEMORY", "1")
+    monkeypatch.setenv("STELLA_MODEL", "m")
+    assert StellaSettings.from_environment().semantic_memory_enabled is True
+    monkeypatch.setenv(
+        "STELLA_SEMANTIC_DB", str(tmp_path / "custom-semantic.db")
+    )
+    assert (
+        StellaSettings.from_environment().semantic_db
+        == str(tmp_path / "custom-semantic.db")
+    )
+
+
+def _semantic_settings(
+    tmp_path: Path, enabled: bool
+) -> StellaSettings:
+    return StellaSettings(
+        provider="ollama",
+        model="test",
+        ollama_base_url="http://127.0.0.1:9",
+        memory_db=str(tmp_path / "state" / "memory.db"),
+        reminders_db=str(tmp_path / "state" / "reminders.db"),
+        workspace=str(tmp_path / "workspace"),
+        semantic_db=str(tmp_path / "state" / "semantic.db"),
+        semantic_memory_enabled=enabled,
+        voice_transcription="off",
+        voice_speech="off",
+    )
+
+
+def test_build_application_creates_no_semantic_index_when_disabled(
+    tmp_path: Path,
+) -> None:
+    settings = _semantic_settings(tmp_path, False)
+
+    application = build_application(settings)
+    try:
+        assert application.session.stella.semantic_retriever is None
+        assert not Path(settings.semantic_db).exists()
+    finally:
+        application.close()
+
+
+def test_build_application_reconciles_the_index_at_startup(
+    tmp_path: Path,
+) -> None:
+    # A memory stored while Stella was down must still be findable: the
+    # startup reconcile heals changes the running hooks could not see.
+    settings = _semantic_settings(tmp_path, True)
+    Path(settings.memory_db).parent.mkdir(parents=True, exist_ok=True)
+    seed = SQLiteMemory(settings.memory_db)
+    seed.store(MemoryItem(content="The user prefers tea in the morning."))
+    seed.close()
+
+    application = build_application(settings)
+    try:
+        retriever = application.session.stella.semantic_retriever
+        assert retriever is not None
+        matches = retriever.retrieve("tea in the morning")
+        assert [match.item.content for match in matches] == [
+            "The user prefers tea in the morning."
+        ]
+    finally:
+        application.close()
+    assert Path(settings.semantic_db).is_file()
 
 
 def test_from_environment_defaults_to_local_ollama_without_a_cloud_key(

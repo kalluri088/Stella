@@ -138,6 +138,22 @@ class ToolObservation:
     output: str
 
 
+@dataclass(frozen=True)
+class RetrievalSource:
+    """How one memory entered the context, reported as data.
+
+    ``method`` is "keyword" (deterministic term overlap),
+    "local-hash-embedding" (deterministic word/trigram similarity — a
+    weaker hint, not an understanding of meaning), or "none" (not
+    recorded). The score is on that method's own scale; methods are
+    never compared against each other.
+    """
+
+    memory_id: int
+    method: str
+    score: int | float
+
+
 @dataclass
 class Context:
     """Information currently needed to prepare a response."""
@@ -147,6 +163,12 @@ class Context:
     retrieved_memories: list[MemoryItem] = field(default_factory=list)
     tool_observations: list[ToolObservation] = field(default_factory=list)
     input_envelope: InputEnvelope | None = None
+    # How each retrieved memory was found, keyed by memory id. Populated
+    # by the runtime during recall; provenance is reported, never an
+    # authority. Empty means "retrieval method not recorded".
+    retrieval_sources: Mapping[int, "RetrievalSource"] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if self.input_envelope is None:

@@ -36,6 +36,7 @@ _CONFIG_FIELDS = (
     "ollama_base_url",
     "openai_base_url",
     "transcripts_enabled",
+    "semantic_memory_enabled",
 )
 
 
@@ -321,4 +322,5 @@ def resolve_settings() -> StellaSettings | None:
             or endpoint(raw.get("openai_base_url"))
         ),
         transcripts_enabled=raw.get("transcripts_enabled") is True,
+        semantic_memory_enabled=raw.get("semantic_memory_enabled") is True,
     )

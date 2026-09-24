@@ -57,7 +57,12 @@ from stella.voice import (
 
 
 class SpyLLM(LLMClient):
-    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        should_cancel=None,
+    ) -> str:
+        del should_cancel
         return "the action completed"
 
 
@@ -65,12 +70,22 @@ class ScriptedBrain(Brain):
     def __init__(self, decisions: list[Decision]) -> None:
         self.decisions = decisions
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
+        del should_cancel
         return self.decisions.pop(0)
 
 
 class ExplodingBrain(Brain):
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
+        del context, should_cancel
         raise AssertionError("a failed transcript must not reach the Brain")
 
 

@@ -1,7 +1,16 @@
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from stella.llm import LLMToolDefinition, Message, ToolUseMode
+import pytest
+
+from stella.llm import (
+    LLMToolDefinition,
+    Message,
+    ProviderRequestCancelled,
+    ToolUseMode,
+)
 from stella.openai_client import OpenAILLMClient
 
 
@@ -162,3 +171,38 @@ def test_openai_client_malformed_native_arguments_fail_closed(monkeypatch) -> No
 
     assert result.tool_calls[0].name == "echo"
     assert result.tool_calls[0].arguments == {}
+
+
+def test_openai_client_cancel_returns_while_the_request_is_stuck(
+    monkeypatch,
+) -> None:
+    # The SDK path cannot abort its transport mid-request, so cancel
+    # abandons the wait instead: the caller returns promptly and the
+    # orphaned reply is discarded when it eventually lands.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    release = threading.Event()
+
+    def slow_create(**_kwargs):
+        release.wait(10)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="late reply")
+                )
+            ]
+        )
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.side_effect = slow_create
+        client = OpenAILLMClient(model="test-model")
+
+        started = time.monotonic()
+        with pytest.raises(ProviderRequestCancelled):
+            client.chat(
+                [Message(role="user", content="hi")],
+                should_cancel=lambda: True,
+            )
+        elapsed = time.monotonic() - started
+
+    release.set()
+    assert elapsed < 5

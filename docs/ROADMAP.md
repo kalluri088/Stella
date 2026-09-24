@@ -71,13 +71,14 @@ working and helping me, even if not the fastest."
 - **A5. Working feedback and cancel — done.** The desktop status line
   counts elapsed seconds while a turn runs, and a Cancel button stops
   the turn at its next safe point: cancellation is cooperative and
-  checked only between steps (before a Brain decision, immediately
+  checked between steps (before a Brain decision, immediately
   after one returns, and right after a dispatched step lands), so an
-  in-flight provider request, an approval prompt or an executing
-  action is never interrupted mid-way. A cancelled turn is discarded
-  whole from the conversation; a cancel with an approval still open
-  denies it fail-closed (`Stella.process(should_cancel=...)` and
-  `StellaBridge.cancel_current_turn` in `src/stella/app.py`,
+  approval prompt or an executing action is never interrupted
+  mid-way. (As shipped, A5 could not reach an in-flight provider
+  request either; A7 below closes that gap.) A cancelled turn is
+  discarded whole from the conversation; a cancel with an approval
+  still open denies it fail-closed (`Stella.process(should_cancel=...)`
+  and `StellaBridge.cancel_current_turn` in `src/stella/app.py`,
   `docs/UI.md`). The CLI keeps Ctrl+C as its immediate-stop
   equivalent by design.
 - **A6. Per-turn duration UX — done.** Every finished turn is timed by
@@ -85,6 +86,28 @@ working and helping me, even if not the fastest."
   renders it ("Stella: … (took 47 s)"), so slow answers read as
   "local model", not "broken". The duration is display-only; the
   stored conversation never carries it.
+- **A7. Cancel interrupts in-flight provider requests — done.** The
+  safe-point model of A5 meant cancelling during a blocking model
+  call waited out the whole request (minutes on a slow local turn).
+  Now the desktop Cancel also aborts the request itself: the native
+  Ollama path runs its HTTP wait on the worker thread under a short
+  socket-timeout poll (`_await_native_response` in
+  `src/stella/ollama_client.py`), so the wait is abandoned within
+  about a second and the connection closed; the OpenAI-compatible
+  paths wrap the blocking SDK call in `run_cancellable`
+  (`src/stella/llm.py`) and give up on it, discarding any late
+  reply. `should_cancel` is offered to `Brain.decide` and the
+  synthesis `chat` calls — conditionally, so 1-argument clients are
+  unaffected — and a turn without a cancel behaves exactly as
+  before (the CLI never passes one). Cancelled turns still surface
+  through the existing checkpoint shapes: an abandoned decision
+  records nothing, an abandoned synthesis keeps whatever effects
+  already landed, and the whole turn is discarded from the
+  conversation. Honest limits: server-side generation stops on
+  disconnect best-effort only (`stream: True` would be the
+  guaranteed fix, deliberately not taken on), an executing action
+  still lands first, and voice transcription remains a
+  non-cancellable blocking segment.
 
 ## Stage B — sharper judgment and scale
 

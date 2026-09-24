@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from stella.llm import (
+    CancelCheck,
     LLMClient,
     LLMResponse,
     LLMToolCall,
@@ -14,6 +15,7 @@ from stella.llm import (
     Message,
     MessageInput,
     ToolUseMode,
+    run_cancellable,
 )
 
 
@@ -32,15 +34,17 @@ class OpenAILLMClient(LLMClient):
             base_url=base_url,
         )
 
-    def chat(self, messages: list[MessageInput]) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": message.role, "content": message.content}
-                if isinstance(message, Message)
-                else message
-                for message in messages
-            ],
+    def chat(
+        self,
+        messages: list[MessageInput],
+        should_cancel: CancelCheck | None = None,
+    ) -> str:
+        response = run_cancellable(
+            lambda: self.client.chat.completions.create(
+                model=self.model,
+                messages=self._messages(messages),
+            ),
+            should_cancel,
         )
         return response.choices[0].message.content or ""
 
@@ -49,14 +53,20 @@ class OpenAILLMClient(LLMClient):
         messages: list[MessageInput],
         tools: list[LLMToolDefinition],
         tool_choice: ToolUseMode = ToolUseMode.AUTO,
+        should_cancel: CancelCheck | None = None,
     ) -> LLMResponse:
         """Use Responses API native calls with provider-neutral normalization."""
 
-        response = self.client.responses.create(
-            model=self.model,
-            input=self._messages(messages),
-            tools=[self._responses_tool_definition(tool) for tool in tools],
-            tool_choice=tool_choice.value,
+        response = run_cancellable(
+            lambda: self.client.responses.create(
+                model=self.model,
+                input=self._messages(messages),
+                tools=[
+                    self._responses_tool_definition(tool) for tool in tools
+                ],
+                tool_choice=tool_choice.value,
+            ),
+            should_cancel,
         )
         calls = tuple(
             self._responses_tool_call(item)

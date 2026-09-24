@@ -21,7 +21,11 @@ from stella.context import (
     select_retrieved_memories,
     select_tool_observations,
 )
-from stella.llm import LLMClient, Message
+from stella.llm import (
+    LLMClient,
+    Message,
+    ProviderRequestCancelled,
+)
 from stella.memory import Memory, MemoryItem, MemoryWriteRequest, MemoryWriteResult
 from stella.proactivity import (
     DelegatedAction,
@@ -150,14 +154,20 @@ class Stella:
     ) -> StellaResult:
         """Process a context according to the brain's decision.
 
-        ``should_cancel`` is an application-owned check consulted only at
-        safe points: before each brain decision, immediately after one
-        returns (before any of its side effects), and right after a
-        dispatched step has been recorded. A cancelled turn runs no
-        further tool, writes no memory, and proposes no answer.
-        Cancellation can never interrupt an approval prompt or a
-        dispatched tool midway; those steps stay atomic and land before
-        the next checkpoint.
+        ``should_cancel`` is an application-owned check consulted at safe
+        points: before each brain decision, immediately after one returns
+        (before any of its side effects), and right after a dispatched
+        step has been recorded. A cancelled turn runs no further tool,
+        writes no memory, and proposes no answer. It is additionally
+        offered to the brain and the response-synthesis calls, so a
+        provider request still in flight can be abandoned
+        (:class:`ProviderRequestCancelled`) instead of waited out; an
+        abandoned decision records nothing, and an abandoned synthesis
+        returns the same shape as a cancel at the last checkpoint
+        (effects already recorded — including any memory write that ran
+        before synthesis — stay recorded). Cancellation can still never
+        interrupt an approval prompt or a dispatched tool midway; those
+        steps stay atomic and land before the next checkpoint.
         """
 
         trace = InteractionTrace()
@@ -212,22 +222,40 @@ class Stella:
         last_tool_result = None
         executed_call_keys: set[str] = set()
 
+        def cancelled_result(cancelled_decision: Decision) -> StellaResult:
+            # Shared shape for every cancelled exit: no response, no
+            # pending proposals; effects already recorded stay recorded.
+            return StellaResult(
+                cancelled_decision,
+                retrieved_memories=retrieved_memories,
+                memory_write=memory_write,
+                step_trace=step_trace,
+                interaction_trace=self._complete_trace(
+                    trace,
+                    cancelled_decision,
+                    response=None,
+                    memory_write=memory_write,
+                    memory_write_requested=memory_write_requested,
+                ),
+                cancelled=True,
+            )
+
+        def decide_turn(decision_context: Context) -> Decision:
+            if should_cancel is not None:
+                return self.brain.decide(
+                    decision_context, should_cancel=should_cancel
+                )
+            return self.brain.decide(decision_context)
+
+        def synthesise(messages: list[Message]) -> str:
+            if should_cancel is not None:
+                return self.llm.chat(messages, should_cancel=should_cancel)
+            return self.llm.chat(messages)
+
         while True:
             if should_cancel is not None and should_cancel():
-                cancelled_decision = Decision(kind=DecisionKind.DO_NOTHING)
-                return StellaResult(
-                    cancelled_decision,
-                    retrieved_memories=retrieved_memories,
-                    memory_write=memory_write,
-                    step_trace=step_trace,
-                    interaction_trace=self._complete_trace(
-                        trace,
-                        cancelled_decision,
-                        response=None,
-                        memory_write=memory_write,
-                        memory_write_requested=memory_write_requested,
-                    ),
-                    cancelled=True,
+                return cancelled_result(
+                    Decision(kind=DecisionKind.DO_NOTHING)
                 )
             decision_context = Context(
                 user_input=context.user_input,
@@ -236,7 +264,15 @@ class Stella:
                 tool_observations=list(observations),
                 input_envelope=context.input_envelope,
             )
-            decision = self.brain.decide(decision_context)
+            try:
+                decision = decide_turn(decision_context)
+            except ProviderRequestCancelled:
+                # The request was abandoned at the user's cancel, so no
+                # decision exists to record: the turn ends exactly as if
+                # the cancel had landed at the checkpoint above.
+                return cancelled_result(
+                    Decision(kind=DecisionKind.DO_NOTHING)
+                )
             # Provenance is fixed at decision time: a proposal made after
             # tool observations entered the context may have been shaped by
             # untrusted output and is only stored with user approval.
@@ -258,20 +294,7 @@ class Stella:
                 # The decision is discarded before any of its effects: no
                 # tool dispatch, no approval request, no memory proposal.
                 step_trace.append(StellaStep(decision))
-                return StellaResult(
-                    decision,
-                    retrieved_memories=retrieved_memories,
-                    memory_write=memory_write,
-                    step_trace=step_trace,
-                    interaction_trace=self._complete_trace(
-                        trace,
-                        decision,
-                        response=None,
-                        memory_write=memory_write,
-                        memory_write_requested=memory_write_requested,
-                    ),
-                    cancelled=True,
-                )
+                return cancelled_result(decision)
             memory_write_requested = (
                 memory_write_requested or decision.memory_write is not None
             )
@@ -389,22 +412,7 @@ class Stella:
                         # recorded; the cancelled turn stops here rather
                         # than writing memory or answering, so no early
                         # return below can carry the turn past the cancel.
-                        return StellaResult(
-                            decision,
-                            retrieved_memories=retrieved_memories,
-                            memory_write=memory_write,
-                            step_trace=step_trace,
-                            interaction_trace=self._complete_trace(
-                                trace,
-                                decision,
-                                response=None,
-                                memory_write=memory_write,
-                                memory_write_requested=(
-                                    memory_write_requested
-                                ),
-                            ),
-                            cancelled=True,
-                        )
+                        return cancelled_result(decision)
                     if (
                         memory_write is None
                         and decision.memory_write is not None
@@ -461,15 +469,18 @@ class Stella:
                             ),
                         )
                     if self.max_tool_steps == 1:
-                        response = self.llm.chat(
-                            self._tool_messages(
-                                context,
-                                retrieved_memories,
-                                decision,
-                                tool_result,
-                                observations,
+                        try:
+                            response = synthesise(
+                                self._tool_messages(
+                                    context,
+                                    retrieved_memories,
+                                    decision,
+                                    tool_result,
+                                    observations,
+                                )
                             )
-                        )
+                        except ProviderRequestCancelled:
+                            return cancelled_result(decision)
                         response = self._with_memory_note(
                             response, memory_write_denied
                         )
@@ -562,14 +573,17 @@ class Stella:
                             memory_write_requested=memory_write_requested,
                         ),
                     )
-                response = self.llm.chat(
-                    self._answer_messages(
-                        context,
-                        retrieved_memories,
-                        decision,
-                        observations,
+                try:
+                    response = synthesise(
+                        self._answer_messages(
+                            context,
+                            retrieved_memories,
+                            decision,
+                            observations,
+                        )
                     )
-                )
+                except ProviderRequestCancelled:
+                    return cancelled_result(decision)
                 response = self._with_memory_note(
                     response, memory_write_denied
                 )

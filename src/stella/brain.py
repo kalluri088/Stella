@@ -15,6 +15,7 @@ from stella.context import (
     select_tool_observations,
 )
 from stella.llm import (
+    CancelCheck,
     LLMClient,
     LLMToolCall,
     LLMToolDefinition,
@@ -138,8 +139,18 @@ class Brain(ABC):
     answer_content_is_final = False
 
     @abstractmethod
-    def decide(self, context: Context) -> Decision:
-        """Return a decision for the supplied context."""
+    def decide(
+        self,
+        context: Context,
+        should_cancel: CancelCheck | None = None,
+    ) -> Decision:
+        """Return a decision for the supplied context.
+
+        ``should_cancel`` is offered to brains that make provider
+        requests so those requests can be abandoned mid-flight; a
+        brain that ignores it still lands at the runtime's safe-point
+        checkpoints.
+        """
 
 
 class LLMBrain(Brain):
@@ -354,17 +365,30 @@ Behavioral preferences:
         # may pin it. It is reference data for the model, never authority.
         self._clock = clock or (lambda: datetime.now().astimezone())
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel: CancelCheck | None = None,
+    ) -> Decision:
         tool_definitions = self._tool_definitions()
         tool_choice = self.policy.choose(context, tool_definitions)
-        response = self.llm.chat_with_tools(
-            [
-                Message(role="system", content=self._system_prompt()),
-                Message(role="user", content=self._context_payload(context)),
-            ],
-            tool_definitions,
-            tool_choice=tool_choice,
-        )
+        messages = [
+            Message(role="system", content=self._system_prompt()),
+            Message(role="user", content=self._context_payload(context)),
+        ]
+        if should_cancel is not None:
+            response = self.llm.chat_with_tools(
+                messages,
+                tool_definitions,
+                tool_choice=tool_choice,
+                should_cancel=should_cancel,
+            )
+        else:
+            response = self.llm.chat_with_tools(
+                messages,
+                tool_definitions,
+                tool_choice=tool_choice,
+            )
         if response.tool_calls:
             return self._decision_from_tool_call(response.tool_calls[0])
         text = response.content or ""
@@ -573,7 +597,12 @@ Behavioral preferences:
 class SimpleBrain(Brain):
     """Deterministic brain using explicit input prefixes for testing."""
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel: CancelCheck | None = None,
+    ) -> Decision:
+        del should_cancel
         user_input = context.user_input.strip()
         if not user_input or user_input == "do_nothing":
             return Decision(DecisionKind.DO_NOTHING)

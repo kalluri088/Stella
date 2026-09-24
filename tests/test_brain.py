@@ -56,6 +56,42 @@ class NativeToolLLM(LLMClient):
         )
 
 
+class KwargRecordingLLM(LLMClient):
+    """Records exactly which keyword arguments LLMBrain chooses to pass."""
+
+    def __init__(self) -> None:
+        self.kwargs: dict[str, object] = {}
+
+    def chat(self, messages, **extra) -> str:
+        self.kwargs = extra
+        return '{"kind":"answer","content":"ok"}'
+
+    def chat_with_tools(self, messages, tools, tool_choice=ToolUseMode.AUTO, **extra):
+        self.kwargs = extra
+        return LLMResponse(content='{"kind":"answer","content":"ok"}')
+
+
+def test_llm_brain_omits_should_cancel_when_the_turn_has_none() -> None:
+    # One-argument client fakes must keep working: an uncancelled turn
+    # passes nothing extra through the seam.
+    llm = KwargRecordingLLM()
+
+    LLMBrain(llm).decide(Context(user_input="hi"))
+
+    assert llm.kwargs == {}
+
+
+def test_llm_brain_forwards_should_cancel_to_the_client() -> None:
+    llm = KwargRecordingLLM()
+
+    def check() -> bool:
+        return False
+
+    LLMBrain(llm).decide(Context(user_input="hi"), should_cancel=check)
+
+    assert llm.kwargs == {"should_cancel": check}
+
+
 def test_brain_interface_is_abstract() -> None:
     with pytest.raises(TypeError):
         Brain()

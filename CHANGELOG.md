@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Responsive cancellation
+
+- **Cancel interrupts a provider request in flight** — pressing Cancel
+  in the desktop window no longer waits out a slow model reply. On
+  the local Ollama path the pending HTTP read is abandoned within
+  about a second and the connection closed; an OpenAI-compatible
+  request is likewise given up on and its late reply discarded. The
+  cancelled turn is still discarded whole, approvals and executing
+  actions remain atomic (a running step lands first), and an
+  uninterrupted turn behaves exactly as before. Honest caveats:
+  server-side generation for an abandoned request stops best-effort,
+  and the voice transcription segment remains non-cancellable.
+
 ## 1.1.0 — 2026-09-24
 
 ### First-run setup and model configuration

@@ -58,12 +58,14 @@ pytestmark = pytest.mark.skipif(
 
 
 class AnswerLLM(LLMClient):
-    def chat(self, messages) -> str:
+    def chat(self, messages, should_cancel=None) -> str:
+        del should_cancel
         return "window reply"
 
 
 class AnswerBrain(Brain):
-    def decide(self, context: Context) -> Decision:
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        del should_cancel
         return Decision(kind=DecisionKind.ANSWER, content="window reply")
 
 
@@ -71,7 +73,8 @@ class ToolThenAnswerBrain(Brain):
     def __init__(self) -> None:
         self.first = True
 
-    def decide(self, context: Context) -> Decision:
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        del should_cancel
         if self.first:
             self.first = False
             return Decision(
@@ -92,7 +95,8 @@ class GatedBrain(Brain):
     def __init__(self) -> None:
         self.gate = threading.Event()
 
-    def decide(self, context: Context) -> Decision:
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        del should_cancel
         self.gate.wait(5)
         return Decision(kind=DecisionKind.ANSWER, content="late reply")
 
@@ -846,7 +850,8 @@ class EchoToolBrain(Brain):
     def __init__(self) -> None:
         self.first = True
 
-    def decide(self, context: Context) -> Decision:
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        del should_cancel
         if self.first:
             self.first = False
             return Decision(

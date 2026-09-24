@@ -30,9 +30,9 @@ from stella.app import (
     display_response,
     outcome_status,
 )
-from stella.brain import Brain, Decision, DecisionKind
+from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import Context
-from stella.llm import LLMClient, Message
+from stella.llm import LLMClient, LLMResponse, Message, run_cancellable
 from stella.memory import InMemoryMemory, MemoryItem
 from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella, StellaResult
@@ -54,7 +54,12 @@ REAL_NOW = dt.datetime.now(dt.UTC)
 
 
 class SpyLLM(LLMClient):
-    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        should_cancel=None,
+    ) -> str:
+        del should_cancel
         return "the action completed"
 
 
@@ -62,12 +67,22 @@ class ScriptedBrain(Brain):
     def __init__(self, decisions: list[Decision]) -> None:
         self.decisions = decisions
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
+        del should_cancel
         return self.decisions.pop(0)
 
 
 class ExplodingBrain(Brain):
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
+        del context, should_cancel
         raise AssertionError("this turn must not consult the Brain")
 
 
@@ -78,9 +93,13 @@ class SleepingBrain(ScriptedBrain):
         super().__init__(decisions)
         self._delay = delay
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         time.sleep(self._delay)
-        return super().decide(context)
+        return super().decide(context, should_cancel=should_cancel)
 
 
 class DangerousTool(Tool):
@@ -1247,8 +1266,9 @@ def test_bridge_wires_the_broker_into_the_stella_core() -> None:
 
 
 class _FakeHTTPResponse:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, status: int = 200) -> None:
         self._body = body
+        self.status = status
 
     def read(self) -> bytes:
         return self._body
@@ -1258,6 +1278,25 @@ class _FakeHTTPResponse:
 
     def __exit__(self, *exc: object) -> bool:
         return False
+
+
+class _FakeHTTPConnection:
+    """Stands in for http.client on the native Ollama transport."""
+
+    def __init__(
+        self, host, port=None, timeout=None, *, body: bytes = b"{}"
+    ) -> None:
+        self.body = body
+        self.closed = 0
+
+    def request(self, method, path, body=None, headers=None) -> None:
+        pass
+
+    def getresponse(self) -> _FakeHTTPResponse:
+        return _FakeHTTPResponse(self.body)
+
+    def close(self) -> None:
+        self.closed += 1
 
 
 def make_ollama_app(tmp_path: Path, base_url: str) -> StellaApplication:
@@ -1321,11 +1360,11 @@ def test_reachable_provider_reply_answers_through_the_session(
         }
     ).encode("utf-8")
 
-    def fake_urlopen(request, timeout=None):
-        return _FakeHTTPResponse(body)
+    def factory(host, port=None, timeout=None, **_kwargs):
+        return _FakeHTTPConnection(host, port, timeout=timeout, body=body)
 
     monkeypatch.setattr(
-        "stella.ollama_client.urllib.request.urlopen", fake_urlopen
+        "stella.ollama_client.http.client.HTTPConnection", factory
     )
     application = make_ollama_app(
         tmp_path, "http://127.0.0.1:11434/v1"
@@ -1552,6 +1591,66 @@ def test_cancel_without_running_turn_has_no_later_effect() -> None:
         assert outcome.response == "the action completed"
         assert outcome.cancelled is False
     finally:
+        bridge.stop()
+
+
+# ------------------------------------- in-flight provider cancellation (A7)
+
+
+def test_bridge_cancel_interrupts_a_blocked_provider_request() -> None:
+    class BlockingLLM(LLMClient):
+        """Behaves like a real provider client: stuck until released."""
+
+        def __init__(self) -> None:
+            self.release = threading.Event()
+
+        def chat(self, messages, should_cancel=None) -> str:
+            raise AssertionError("text fallback must not be used")
+
+        def chat_with_tools(
+            self, messages, tools, tool_choice=None, should_cancel=None
+        ):
+            def request():
+                self.release.wait(30)
+                return LLMResponse(
+                    content='{"kind":"answer","content":"too late"}'
+                )
+
+            return run_cancellable(request, should_cancel, poll_seconds=0.05)
+
+    llm = BlockingLLM()
+    session = StellaSession(
+        Stella(
+            LLMBrain(llm),  # type: ignore[arg-type]
+            llm,
+            ToolDispatcher([EchoTool()]),
+            InMemoryMemory(),
+        )
+    )
+    application = StellaApplication(
+        session, StellaSettings(model="test")
+    )
+    bridge = StellaBridge(lambda: application)
+    try:
+        bridge.post_turn("this will hang")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if not bridge.poll():
+                time.sleep(0.02)
+        bridge.cancel_current_turn()
+
+        events = wait_for_event(bridge, "turn")
+        outcome: TurnOutcome = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+        # The wait ended because it was cancelled, not because the
+        # provider replied: no turn event arrived before the cancel.
+        assert outcome.cancelled is True
+        assert outcome.response is None
+        assert outcome.error_message is None
+        assert session.history == []
+    finally:
+        llm.release.set()
         bridge.stop()
 
 

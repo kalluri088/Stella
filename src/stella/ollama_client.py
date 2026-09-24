@@ -1,20 +1,25 @@
 """Ollama implementation of the LLM client interface via its OpenAI-compatible API."""
 
+import http.client
 import json
-import urllib.request
+import urllib.parse
 from typing import Any
 
 from stella.llm import (
+    CancelCheck,
     LLMResponse,
     LLMToolCall,
     LLMToolDefinition,
     MessageInput,
+    ProviderRequestCancelled,
     ToolUseMode,
+    run_cancellable,
 )
 from stella.openai_client import OpenAILLMClient
 
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 NATIVE_REQUEST_TIMEOUT_SECONDS = 600
+NATIVE_CANCEL_POLL_SECONDS = 0.25
 
 
 def native_chat_url(base_url: str) -> str:
@@ -47,19 +52,31 @@ class OllamaLLMClient(OpenAILLMClient):
         self.num_ctx = num_ctx
         self.native_url = native_chat_url(base_url)
 
-    def chat(self, messages: list[MessageInput]) -> str:
+    def chat(
+        self,
+        messages: list[MessageInput],
+        should_cancel: CancelCheck | None = None,
+    ) -> str:
         if self.native:
-            return self._native_chat(messages).get("content") or ""
-        return super().chat(messages)
+            return (
+                self._native_chat(messages, should_cancel=should_cancel).get(
+                    "content"
+                )
+                or ""
+            )
+        return super().chat(messages, should_cancel=should_cancel)
 
     def chat_with_tools(
         self,
         messages: list[MessageInput],
         tools: list[LLMToolDefinition],
         tool_choice: ToolUseMode = ToolUseMode.AUTO,
+        should_cancel: CancelCheck | None = None,
     ) -> LLMResponse:
         if self.native:
-            message = self._native_chat(messages, tools)
+            message = self._native_chat(
+                messages, tools, should_cancel=should_cancel
+            )
             return LLMResponse(
                 content=message.get("content") or None,
                 tool_calls=tuple(
@@ -78,7 +95,10 @@ class OllamaLLMClient(OpenAILLMClient):
             # Ollama's compatibility API does not enforce "required"; the
             # LLMBrain answer guard remains the trusted enforcement point.
             request["tool_choice"] = "auto"
-        response = self.client.chat.completions.create(**request)
+        response = run_cancellable(
+            lambda: self.client.chat.completions.create(**request),
+            should_cancel,
+        )
         message = response.choices[0].message
         content = getattr(message, "content", None)
         return LLMResponse(
@@ -93,6 +113,7 @@ class OllamaLLMClient(OpenAILLMClient):
         self,
         messages: list[MessageInput],
         tools: list[LLMToolDefinition] | None = None,
+        should_cancel: CancelCheck | None = None,
     ) -> dict[str, Any]:
         """POST one non-streaming request to Ollama's native /api/chat."""
 
@@ -109,17 +130,76 @@ class OllamaLLMClient(OpenAILLMClient):
         if self.num_ctx is not None:
             request["options"] = {"num_ctx": self.num_ctx}
         body = json.dumps(request).encode("utf-8")
-        http_request = urllib.request.Request(
-            self.native_url,
-            data=body,
-            headers={"Content-Type": "application/json"},
+        url = urllib.parse.urlsplit(self.native_url)
+        secure = url.scheme == "https"
+        connection_class = (
+            http.client.HTTPSConnection
+            if secure
+            else http.client.HTTPConnection
         )
-        with urllib.request.urlopen(
-            http_request, timeout=NATIVE_REQUEST_TIMEOUT_SECONDS
-        ) as response:
+        connection = connection_class(
+            url.hostname or "127.0.0.1",
+            url.port or (443 if secure else 80),
+            timeout=NATIVE_REQUEST_TIMEOUT_SECONDS,
+        )
+        path = url.path or "/api/chat"
+        if url.query:
+            path = f"{path}?{url.query}"
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            if should_cancel is None:
+                response = connection.getresponse()
+            else:
+                response = self._await_native_response(
+                    connection, should_cancel
+                )
+            if response.status >= 400:
+                raise OSError(
+                    "Ollama native chat request failed: "
+                    f"HTTP {response.status}"
+                )
             payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
         message = payload.get("message")
         return message if isinstance(message, dict) else {}
+
+    @staticmethod
+    def _await_native_response(
+        connection: http.client.HTTPConnection,
+        should_cancel: CancelCheck,
+    ) -> http.client.HTTPResponse:
+        """Wait for response headers, checking cancellation between polls.
+
+        Short socket timeouts keep every read on the calling thread, so
+        a cancel can abandon the wait from the thread that owns the
+        connection (a cross-thread close would not wake a blocked
+        read). Closing releases our side promptly; whether Ollama stops
+        the abandoned generation is server behavior we do not rely on.
+        """
+
+        sock = connection.sock
+        if sock is None:  # request() always connects first
+            return connection.getresponse()
+        sock.settimeout(NATIVE_CANCEL_POLL_SECONDS)
+        try:
+            while True:
+                try:
+                    return connection.getresponse()
+                except TimeoutError:
+                    if should_cancel():
+                        raise ProviderRequestCancelled(
+                            "the Ollama request was cancelled "
+                            "while in flight"
+                        ) from None
+        finally:
+            if connection.sock is not None:
+                connection.sock.settimeout(NATIVE_REQUEST_TIMEOUT_SECONDS)
 
     @staticmethod
     def _native_tool_call(call: Any) -> LLMToolCall:

@@ -63,12 +63,15 @@ display, and can never approve a tool or change permissions.
   honest error lines, and continuous history within the window session.
   While a turn runs, the status line counts elapsed seconds
   ("Stella is working · 12 s") so a slow local model reads as slow, not
-  broken, and a **Cancel** button appears beside Send. Cancel is
-  cooperative: it stops the turn at the next safe point between steps —
-  it never interrupts an in-flight provider request, an approval prompt
-  or an executing action — and the cancelled turn is discarded whole
-  from the conversation. A cancel while an approval dialog is open denies
-  that action (fail-closed) and dismisses the dialog; nothing executes.
+  broken, and a **Cancel** button appears beside Send. Cancel stops the
+  turn at the next safe point between steps and — since A7 — also
+  interrupts a provider request that is still in flight: the native
+  Ollama wait is abandoned within about a second and the connection
+  closed, and an OpenAI-compatible request is likewise given up on
+  (reply discarded). It never interrupts an approval prompt or an
+  executing action, and the cancelled turn is discarded whole from the
+  conversation. A cancel while an approval dialog is open denies that
+  action (fail-closed) and dismisses the dialog; nothing executes.
   Every finished turn also ends with how long it took in the transcript
   ("Stella: … (took 47 s)") — display-only, the stored conversation
   never carries that text.
@@ -128,8 +131,14 @@ core path and reports that nothing was changed.
 - Conversation history lives in this session only; there is no persistent
   chat log (the durable History is action metadata, not chat).
 - Memory search is the existing deterministic keyword matcher, not semantic.
-- Cancel stops a turn between steps; it cannot abort an in-flight provider
-  request or an executing action mid-way — the running step lands first.
+- Cancel interrupts an in-flight provider request (native Ollama: the
+  wait is abandoned within about a second; OpenAI-compatible: the reply
+  is discarded) and stops a turn at the next safe point between steps.
+  It cannot abort an executing action mid-way — the running step lands
+  first — and server-side generation for an abandoned Ollama request
+  stops best-effort, not with a guarantee.
+- Voice transcription is a blocking segment that Cancel does not
+  interrupt; cancel lands before or after the transcript, never during.
 - Voice is one explicit utterance per Listen press with local-first providers;
   there is no wake word, continuous listening, or streaming recognition.
 - No browser automation, email/calendar, cloud accounts, plugins, or remote

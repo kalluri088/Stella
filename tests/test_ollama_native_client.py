@@ -2,58 +2,141 @@
 
 import json
 from types import SimpleNamespace
-from typing import Self
 from unittest.mock import patch
 
 import pytest
 
-from stella.llm import LLMToolDefinition, Message
-from stella.ollama_client import OllamaLLMClient, native_chat_url
+from stella.llm import (
+    LLMToolDefinition,
+    Message,
+    ProviderRequestCancelled,
+)
+from stella.ollama_client import (
+    NATIVE_REQUEST_TIMEOUT_SECONDS,
+    OllamaLLMClient,
+    native_chat_url,
+)
+
+
+class FakeSocket:
+    """Records the timeout switches the cancel-aware read loop makes."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float | None] = []
+
+    def settimeout(self, value: float | None) -> None:
+        self.timeouts.append(value)
 
 
 class FakeHTTPResponse:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, status: int = 200) -> None:
         self._body = body
+        self.status = status
 
     def read(self) -> bytes:
         return self._body
 
-    def __enter__(self) -> Self:
-        return self
 
-    def __exit__(self, *exc: object) -> bool:
-        return False
+class FakeConnection:
+    """One captured http.client connection replaying a canned /api/chat."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int | None,
+        timeout: float | None = None,
+        *,
+        body: bytes = b"{}",
+        status: int = 200,
+        wait_timeouts: int = 0,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.body = body
+        self.status = status
+        # Number of header-read timeouts to simulate before the reply.
+        self._wait_timeouts = wait_timeouts
+        self.getresponse_calls = 0
+        self.sent: list[SimpleNamespace] = []
+        self.closed = 0
+        self.sock = FakeSocket()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.sent.append(
+            SimpleNamespace(
+                method=method, path=path, body=body, headers=headers
+            )
+        )
+
+    def getresponse(self) -> FakeHTTPResponse:
+        self.getresponse_calls += 1
+        if self.getresponse_calls <= self._wait_timeouts:
+            raise TimeoutError("timed out waiting for the server")
+        return FakeHTTPResponse(self.body, status=self.status)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class ConnectionRecorder:
+    def __init__(self) -> None:
+        self.connections: list[FakeConnection] = []
+
+    def install(
+        self,
+        message: dict,
+        *,
+        status: int = 200,
+        wait_timeouts: int = 0,
+    ) -> None:
+        body = json.dumps({"message": message}).encode("utf-8")
+
+        def factory(host, port=None, timeout=None, **_kwargs):
+            connection = FakeConnection(
+                host,
+                port,
+                timeout=timeout,
+                body=body,
+                status=status,
+                wait_timeouts=wait_timeouts,
+            )
+            self.connections.append(connection)
+            return connection
+
+        self._patchers = [
+            patch("stella.ollama_client.http.client.HTTPConnection", factory),
+            patch(
+                "stella.ollama_client.http.client.HTTPSConnection", factory
+            ),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+
+    def stop(self) -> None:
+        for patcher in self._patchers:
+            patcher.stop()
 
 
 @pytest.fixture
-def urlopen_stub():
-    """Capture native requests and replay a canned /api/chat reply."""
+def connections():
+    """Fake http.client transports for Ollama's native /api/chat."""
 
-    captured: list[SimpleNamespace] = []
-
-    def install(message: dict) -> None:
-        def urlopen(request, timeout=None):
-            captured.append(
-                SimpleNamespace(request=request, timeout=timeout)
-            )
-            body = json.dumps({"message": message}).encode("utf-8")
-            return FakeHTTPResponse(body)
-
-        patcher = patch(
-            "stella.ollama_client.urllib.request.urlopen", urlopen
-        )
-        patcher.start()
-        install._patchers.append(patcher)  # type: ignore[attr-defined]
-
-    install.requests = captured  # type: ignore[attr-defined]
-    install._patchers = []  # type: ignore[attr-defined]
-    yield install
-    for patcher in install._patchers:  # type: ignore[attr-defined]
-        patcher.stop()
+    recorder = ConnectionRecorder()
+    try:
+        yield recorder
+    finally:
+        recorder.stop()
 
 
-def sent_payload(request) -> dict:
-    return json.loads(request.data.decode("utf-8"))
+def sent_payload(connection: FakeConnection) -> dict:
+    return json.loads(connection.sent[-1].body.decode("utf-8"))
 
 
 def make_client(**kwargs) -> OllamaLLMClient:
@@ -72,16 +155,19 @@ def test_native_chat_url_strips_compatibility_suffix() -> None:
     )
 
 
-def test_native_chat_sends_num_ctx_option(urlopen_stub) -> None:
-    urlopen_stub({"role": "assistant", "content": "4", "tool_calls": []})
+def test_native_chat_sends_num_ctx_option(connections) -> None:
+    connections.install({"role": "assistant", "content": "4", "tool_calls": []})
     client = make_client(native=True, num_ctx=4096)
 
     result = client.chat([Message(role="user", content="What is 2+2?")])
 
     assert result == "4"
-    request = urlopen_stub.requests[-1].request
-    assert request.full_url == "http://127.0.0.1:11434/api/chat"
-    payload = sent_payload(request)
+    connection = connections.connections[-1]
+    assert (connection.host, connection.port) == ("127.0.0.1", 11434)
+    assert connection.sent[-1].method == "POST"
+    assert connection.sent[-1].path == "/api/chat"
+    assert connection.timeout == NATIVE_REQUEST_TIMEOUT_SECONDS
+    payload = sent_payload(connection)
     assert payload["options"] == {"num_ctx": 4096}
     assert payload["stream"] is False
     assert payload["messages"] == [
@@ -90,9 +176,9 @@ def test_native_chat_sends_num_ctx_option(urlopen_stub) -> None:
 
 
 def test_native_chat_with_tools_sends_num_ctx_and_parses_call(
-    urlopen_stub,
+    connections,
 ) -> None:
-    urlopen_stub(
+    connections.install(
         {
             "role": "assistant",
             "content": "",
@@ -119,7 +205,7 @@ def test_native_chat_with_tools_sends_num_ctx_and_parses_call(
         ],
     )
 
-    payload = sent_payload(urlopen_stub.requests[-1].request)
+    payload = sent_payload(connections.connections[-1])
     assert payload["options"] == {"num_ctx": 4096}
     assert payload["tool_choice"] == "auto"
     assert payload["tools"][0]["function"]["name"] == "system_info"
@@ -129,9 +215,9 @@ def test_native_chat_with_tools_sends_num_ctx_and_parses_call(
 
 
 def test_native_tool_arguments_may_arrive_as_json_string(
-    urlopen_stub,
+    connections,
 ) -> None:
-    urlopen_stub(
+    connections.install(
         {
             "role": "assistant",
             "tool_calls": [
@@ -154,10 +240,15 @@ def test_native_tool_arguments_may_arrive_as_json_string(
 
 
 def test_native_malformed_tool_arguments_fail_closed(
-    urlopen_stub,
+    connections,
 ) -> None:
-    urlopen_stub(
-        {"role": "assistant", "tool_calls": [{"function": {"name": "echo", "arguments": "not-json"}}]}
+    connections.install(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": "echo", "arguments": "not-json"}}
+            ],
+        }
     )
     client = make_client(native=True)
 
@@ -168,14 +259,71 @@ def test_native_malformed_tool_arguments_fail_closed(
     assert result.tool_calls[0].arguments == {}
 
 
-def test_native_omits_options_without_num_ctx(urlopen_stub) -> None:
-    urlopen_stub({"role": "assistant", "content": "ok"})
+def test_native_omits_options_without_num_ctx(connections) -> None:
+    connections.install({"role": "assistant", "content": "ok"})
     client = make_client(native=True)
 
     client.chat([Message(role="user", content="hi")])
 
-    payload = sent_payload(urlopen_stub.requests[-1].request)
+    payload = sent_payload(connections.connections[-1])
     assert "options" not in payload
+
+
+def test_native_error_status_raises(connections) -> None:
+    connections.install({"role": "assistant", "content": "x"}, status=500)
+    client = make_client(native=True)
+
+    with pytest.raises(OSError, match="HTTP 500"):
+        client.chat([Message(role="user", content="hi")])
+
+    # The failed exchange still closes its connection.
+    assert connections.connections[-1].closed == 1
+
+
+def test_native_cancel_while_waiting_aborts_the_wait(connections) -> None:
+    connections.install(
+        {"role": "assistant", "content": "never delivered"},
+        wait_timeouts=1,
+    )
+    client = make_client(native=True)
+    cancels = iter([True])
+
+    with pytest.raises(ProviderRequestCancelled):
+        client.chat(
+            [Message(role="user", content="hi")],
+            should_cancel=lambda: next(cancels, True),
+        )
+
+    connection = connections.connections[-1]
+    # One simulated header timeout, then the cancel check fired: the
+    # wait was abandoned without ever reading the eventual reply.
+    assert connection.getresponse_calls == 1
+    assert connection.closed == 1
+    # Poll timeout was installed for the header wait and the long request
+    # timeout restored afterwards — cancellation never leaves a socket on
+    # a fast-timeout setting.
+    assert connection.sock.timeouts[0] < NATIVE_REQUEST_TIMEOUT_SECONDS
+    assert connection.sock.timeouts[-1] == NATIVE_REQUEST_TIMEOUT_SECONDS
+
+
+def test_native_cancel_check_false_keeps_waiting_for_the_reply(
+    connections,
+) -> None:
+    connections.install(
+        {"role": "assistant", "content": "late but real"},
+        wait_timeouts=2,
+    )
+    client = make_client(native=True)
+
+    result = client.chat(
+        [Message(role="user", content="hi")],
+        should_cancel=lambda: False,
+    )
+
+    assert result == "late but real"
+    connection = connections.connections[-1]
+    assert connection.getresponse_calls == 3
+    assert connection.closed == 1
 
 
 def test_compat_mode_remains_default_and_untouched() -> None:

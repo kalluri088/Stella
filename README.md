@@ -113,9 +113,11 @@ Normal users never need any of these.
 - Type your message, press **Ctrl+Enter** (Enter adds a line break).
 - Approvals show what will really happen — a diff, the new content, or the
   URL — with **Allow** and **Cancel**. Closing the dialog means deny.
-- **Cancel** during a working turn stops it at the next safe point: a
-  cancelled turn is discarded and never remembered as having happened.
-  (In the terminal, Ctrl+C does the same job.)
+- **Cancel** during a working turn stops it: it also interrupts a provider
+  request that is still in flight (the wait is abandoned within about a
+  second), but never an action that has started executing — that step
+  lands first. A cancelled turn is discarded and never remembered as
+  having happened. (In the terminal, Ctrl+C does the same job.)
 - The tabs manage **Memories**, **Reminders**, **History** and **Settings**.
 
 ## Where your data lives

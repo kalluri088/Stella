@@ -6,7 +6,11 @@ import pytest
 
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import MAX_RETRIEVED_MEMORIES, Context
-from stella.llm import LLMClient, Message
+from stella.llm import (
+    LLMClient,
+    Message,
+    ProviderRequestCancelled,
+)
 from stella.memory import (
     InMemoryMemory,
     Memory,
@@ -41,7 +45,11 @@ class FixedBrain(Brain):
     def __init__(self, decision: Decision) -> None:
         self.decision = decision
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         return self.decision
 
 
@@ -50,7 +58,11 @@ class RecordingBrain(FixedBrain):
         super().__init__(decision)
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         return super().decide(context)
 
@@ -60,7 +72,11 @@ class SequenceBrain(Brain):
         self.decisions = list(decisions)
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         return self.decisions.pop(0)
 
@@ -69,7 +85,11 @@ class MemoryAwareBrain(Brain):
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         if context.retrieved_memories:
             return Decision(DecisionKind.ANSWER)
@@ -84,7 +104,11 @@ class EveningTeaPreferenceBrain(Brain):
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         if context.retrieved_memories:
             return Decision(
@@ -103,7 +127,11 @@ class ContextualTeaBrain(Brain):
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         has_evening_history = any(
             message.content == "I am having a quiet evening tea at home."
@@ -129,7 +157,11 @@ class UncertaintyAwareTeaNoteBrain(Brain):
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         has_target = any(
             "plans/evening.txt" in message.content
@@ -162,7 +194,11 @@ class StatusPreferenceBrain(Brain):
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def decide(self, context: Context) -> Decision:
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
         self.contexts.append(context)
         has_status_preference = any(
             "one-line status update" in memory.content.casefold()
@@ -187,7 +223,11 @@ class RecordingLLM(LLMClient):
         self.response = response
         self.messages: list[list[Message | dict[str, str]]] = []
 
-    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        should_cancel=None,
+    ) -> str:
         self.messages.append(messages)
         return self.response
 
@@ -197,7 +237,11 @@ class SequenceLLM(LLMClient):
         self.responses = responses
         self.messages: list[list[Message | dict[str, str]]] = []
 
-    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        should_cancel=None,
+    ) -> str:
         self.messages.append(messages)
         return self.responses.pop(0)
 
@@ -1241,7 +1285,11 @@ class RelevanceObligingLLM(LLMClient):
     def __init__(self) -> None:
         self.messages: list[list[Message | dict[str, str]]] = []
 
-    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        should_cancel=None,
+    ) -> str:
         self.messages.append(messages)
         payload = json.loads(messages[1].content)
         relevant = [
@@ -2015,6 +2063,89 @@ def test_cancellation_between_steps_keeps_executed_step_and_skips_next() -> None
     assert result.step_trace[0].tool_result == ToolResult(
         success=True, output="tool output"
     )
+
+
+# ------------------------------------- in-flight provider cancellation (A7)
+
+
+class AbortingBrain(Brain):
+    """Stands in for an LLMBrain whose provider request was abandoned.
+
+    Also records whether the turn offered the cancellation check, so the
+    forwarding contract at this seam is tested, not assumed.
+    """
+
+    def __init__(self) -> None:
+        self.offered_cancel: bool | None = None
+
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        self.offered_cancel = should_cancel is not None
+        raise ProviderRequestCancelled("abandoned mid-request")
+
+
+def test_cancel_aborting_the_decision_request_records_nothing() -> None:
+    brain = AbortingBrain()
+    tool = RecordingTool()
+    stella = Stella(
+        brain,
+        RecordingLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    )
+
+    result = stella.process(
+        Context(user_input="stop that request"),
+        should_cancel=lambda: False,
+    )
+
+    # The abandoned request produced no decision: the turn ends exactly
+    # like a cancel at the first checkpoint, and the check reached the
+    # brain so the client could abort.
+    assert brain.offered_cancel is True
+    assert result.cancelled is True
+    assert result.decision.kind is DecisionKind.DO_NOTHING
+    assert result.step_trace == []
+    assert result.response is None
+    assert tool.arguments == []
+
+
+def test_cancel_aborting_synthesis_keeps_recorded_effects() -> None:
+    class AbortingSynthesisLLM(RecordingLLM):
+        def chat(self, messages, should_cancel=None) -> str:
+            self.messages.append(messages)
+            raise ProviderRequestCancelled("abandoned mid-answer")
+
+    brain = FixedBrain(Decision(DecisionKind.ANSWER))
+    llm = AbortingSynthesisLLM(response="never")
+    stella = Stella(
+        brain, llm, ToolDispatcher([RecordingTool()]), InMemoryMemory()
+    )
+
+    result = stella.process(
+        Context(user_input="answer then cancel the reply"),
+        should_cancel=lambda: False,
+    )
+
+    assert result.cancelled is True
+    assert result.decision.kind is DecisionKind.ANSWER
+    assert result.response is None
+    assert len(llm.messages) == 1
+
+
+def test_uncancelled_turn_never_touches_the_abort_kwarg() -> None:
+    class StrictLLM(LLMClient):
+        def chat(self, messages) -> str:  # no should_cancel parameter
+            return "plain call"
+
+    brain = FixedBrain(Decision(DecisionKind.ANSWER))
+    stella = Stella(
+        brain, StrictLLM(), ToolDispatcher([]), InMemoryMemory()
+    )
+
+    result = stella.process(Context(user_input="hi"))
+
+    assert result.response == "plain call"
+    assert result.cancelled is False
 
 
 def test_turn_without_should_cancel_is_unchanged() -> None:

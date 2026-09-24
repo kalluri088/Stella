@@ -243,6 +243,19 @@ code no text file can influence (`src/stella/persona.py`,
   per-conversation voice switching, persona-specific tool behavior (a
   persona must never change what Stella *can* do), and any form of
   automatic write.
+- **C6. Persona snapshot history and revert — done.** Every write path
+  (approved `persona_edit`, editor session, preset, onboarding draft,
+  revert) copies the previous bytes into a `history/` directory the
+  user owns before replacing the file: full snapshots, newest 10 per
+  file, `manifest.jsonl` labels recording what replaced them, identical
+  content deduped. `stella persona revert` lists them newest-first;
+  `revert <number>` shows a diff, confirms, restores the exact bytes,
+  verifies the read-back — and snapshots the state it displaces, so a
+  revert is itself undoable. Recovery tooling, not a boundary: a failed
+  snapshot never blocks an approved write (the result says so honestly),
+  approval matching is untouched, and reflection still has no write
+  path of its own. The editor copy predates the `$EDITOR` session;
+  mid-edit states are not versioned.
 
 ## Packaging and release
 

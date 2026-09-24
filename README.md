@@ -42,7 +42,8 @@ checked that it did.
   create with `stella persona` or a preset (`snark`, `warm`, `terse`), and
   can change in chat: she proposes a diff, you approve it. Ask to "be
   drier" and that is what happens — nothing persona-related writes itself
-  behind your back.
+  behind your back. Every replacement keeps a snapshot, so a change you
+  regret is one `stella persona revert` away from undone.
 - **Learn her style (opt-in)** — with transcript recording on,
   `stella reflect` turns your observed friction ("too long", cancelled
   rambles) into at most two style proposals, surfaced as approval
@@ -194,7 +195,7 @@ With the local Ollama setup, nothing ever leaves your machine.
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, wake words, autonomous agents, cloud accounts…)
-- `tests/` — 932 tests; every "done" claim in this README is checked by one
+- `tests/` — 969 tests; every "done" claim in this README is checked by one
 
 ## Found a problem?
 

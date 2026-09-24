@@ -12,7 +12,7 @@ import ssl
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path, PureWindowsPath
 from urllib.parse import SplitResult, urlsplit
@@ -25,6 +25,7 @@ from stella.persona import (
     PersonaPaths,
     persona_directory,
     sanitize_addons,
+    snapshot_persona_state,
 )
 from stella.reminders import ReminderStore, reminder_validation_error
 
@@ -1152,6 +1153,16 @@ class PersonaEditTool(Tool):
                 if rejection is not None:
                     return rejection
 
+            # Every approved replacement first copies the previous bytes
+            # into history/, so 'stella persona revert' can undo it. The
+            # snapshot failing never blocks the write the user approved;
+            # it is only noted honestly on the result.
+            snapshot_error = snapshot_persona_state(
+                self.paths,
+                "addons" if self._is_addons(target) else "persona",
+                source="approved edit",
+                summary=str(arguments["summary"]).strip()[:120],
+            )
             expected = content.encode("utf-8")
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary = target.parent / f".{target.name}.tmp-{os.getpid()}"
@@ -1166,7 +1177,17 @@ class PersonaEditTool(Tool):
             # bytes either land completely or not at all.
             os.replace(temporary, target)
             verified, size = _verify_written_file(target, expected)
-            return _write_outcome("persona_edit", verified, size, "updated")
+            result = _write_outcome("persona_edit", verified, size, "updated")
+            if snapshot_error is not None and result.success:
+                result = replace(
+                    result,
+                    output=(
+                        f"{result.output} (The previous version could not "
+                        f"be snapshotted: {snapshot_error}; this write "
+                        "cannot be reverted.)"
+                    ),
+                )
+            return result
         except (OSError, RuntimeError, UnicodeEncodeError):
             return ToolResult(
                 success=False,

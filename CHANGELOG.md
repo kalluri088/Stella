@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Persona writes became reversible
+
+- **Every replacement keeps a snapshot** — before an approved
+  `persona_edit`, an editor session, a preset, an onboarding draft or
+  a revert touches `persona.md` / `persona.addons.md`, the previous
+  bytes are copied into a `history/` directory you own (newest 10 per
+  file, labeled with what replaced them; identical content is
+  deduped).
+- **One command away from undone** — `stella persona revert` lists the
+  undoable versions; `stella persona revert <number>` shows a unified
+  diff, asks you to confirm, restores those exact bytes and verifies
+  the read-back. The restore snapshots what it displaces, so reverting
+  a revert is just one more revert.
+- **Honest limits** — a failed snapshot never blocks a write you
+  already approved (the result then says the change cannot be
+  reverted), the editor copy predates the `$EDITOR` session, and
+  reflection still writes nothing: approved proposals inherit history
+  through the same `persona_edit` path as always.
+
 ### Cancel reaches the whole voice periphery
 
 - **The transcribing window is cancellable** — pressing **Cancel**

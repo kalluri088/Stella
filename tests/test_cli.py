@@ -1050,3 +1050,196 @@ def test_run_cli_drains_persona_proposals_after_approvals_exist(
     assert paths.addons.read_text(encoding="utf-8") == "- drier replies\n"
     assert store.pending() == []
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# Persona snapshots and 'stella persona revert' (same tmp-dir discipline:
+# everything below runs against STELLA_PERSONA_DIR, never ~/.config/stella).
+# ---------------------------------------------------------------------------
+
+
+def test_preset_snapshots_the_persona_it_replaces(persona_dir) -> None:
+    from stella.persona import (
+        PersonaPaths,
+        list_persona_snapshots,
+        read_persona_snapshot,
+    )
+
+    assert cli.apply_persona_preset("snark") == 0
+    # A first create has nothing to keep: history stays uncreated.
+    assert not (persona_dir / "history").exists()
+    old = (persona_dir / "persona.md").read_bytes()
+    assert cli.apply_persona_preset("terse", force=True) == 0
+    paths = PersonaPaths(persona_dir)
+    snapshots = list_persona_snapshots(paths)
+    assert [s.source for s in snapshots] == ["preset"]
+    # Labels record the write that replaced the kept version.
+    assert snapshots[0].summary == "terse preset"
+    assert read_persona_snapshot(paths, snapshots[0]) == old
+
+
+def test_editor_session_snapshots_before_opening(
+    persona_dir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    persona_dir.mkdir(parents=True, exist_ok=True)
+    (persona_dir / "persona.md").write_bytes(b"hand written")
+    monkeypatch.setattr(cli.subprocess, "run", lambda command, check: None)
+    assert cli.open_persona_editor() == 0
+    # An unchanged repeat visit dedupes: one snapshot, not two.
+    assert cli.open_persona_editor() == 0
+    files = list((persona_dir / "history").glob("persona.*.md"))
+    assert len(files) == 1
+    assert files[0].read_bytes() == b"hand written"
+
+
+def seed_two_replacements(persona_dir):
+    from stella.persona import PersonaPaths, replace_persona_file
+
+    paths = PersonaPaths(persona_dir)
+    replace_persona_file(
+        paths, "persona", b"one", source="preset", summary="first write"
+    )
+    replace_persona_file(
+        paths, "persona", b"two", source="preset", summary="second write"
+    )
+    return paths
+
+
+def test_revert_without_history_says_so(persona_dir) -> None:
+    out = CollectingOutput()
+    assert cli.run_persona_revert(output_fn=out) == 0
+    assert "No persona history yet" in out.text
+    assert cli.run_persona_revert(3, output_fn=out) == 2
+    assert "There is no snapshot number 3." in out.text
+
+
+def test_revert_lists_snapshots_newest_first(persona_dir) -> None:
+    seed_two_replacements(persona_dir)
+    out = CollectingOutput()
+    assert cli.run_persona_revert(output_fn=out) == 0
+    rows = [line for line in out.lines if line.startswith("[")]
+    assert [row.split()[0] for row in rows] == ["[1]"]
+    assert "second write" in rows[0]
+    assert "undoable" in out.text
+
+
+def test_revert_restores_a_snapshot_and_is_itself_undoable(persona_dir) -> None:
+    from stella.persona import list_persona_snapshots
+
+    paths = seed_two_replacements(persona_dir)
+    out = CollectingOutput()
+    assert cli.run_persona_revert(1, yes=True, output_fn=out) == 0
+    assert (persona_dir / "persona.md").read_bytes() == b"one"
+    assert "snapshot to restore" in out.text  # the diff was shown
+    assert "bytes verified" in out.text
+    # The replaced "two" is snapshotted first, so a revert-of-the-revert
+    # is already in history.
+    snapshots = list_persona_snapshots(paths)
+    assert snapshots[0].source == "revert"
+    assert "restored snapshot" in (snapshots[0].summary or "")
+
+
+def test_revert_declined_or_eof_restores_nothing(persona_dir) -> None:
+    seed_two_replacements(persona_dir)
+    out = CollectingOutput()
+    assert (
+        cli.run_persona_revert(
+            1, output_fn=out, input_fn=lambda prompt: "no"
+        )
+        == 1
+    )
+    assert (persona_dir / "persona.md").read_bytes() == b"two"
+
+    def eof(prompt: str = "") -> str:
+        raise EOFError
+
+    assert cli.run_persona_revert(1, output_fn=out, input_fn=eof) == 1
+    assert out.text.count("Nothing was restored.") == 2
+
+
+def test_revert_of_an_identical_snapshot_is_a_noop(persona_dir) -> None:
+    from stella.persona import replace_persona_file
+
+    paths = seed_two_replacements(persona_dir)
+    replace_persona_file(
+        paths, "persona", b"one", source="preset", summary="third write"
+    )
+    # Snapshot 2 holds b"one" — the same bytes the file has now.
+    out = CollectingOutput()
+    assert cli.run_persona_revert(2, yes=True, output_fn=out) == 0
+    assert "identical to the current" in out.text
+    assert (persona_dir / "persona.md").read_bytes() == b"one"
+
+
+def test_revert_refuses_an_oversized_snapshot(persona_dir) -> None:
+    from stella.persona import (
+        MAX_PERSONA_BYTES,
+        PersonaPaths,
+        replace_persona_file,
+    )
+
+    replace_persona_file(
+        PersonaPaths(persona_dir), "persona", b"small", source="preset"
+    )
+    history = persona_dir / "history"
+    history.mkdir(exist_ok=True)
+    (history / "persona.20260101T120000123456Z.7.1.md").write_bytes(
+        b"x" * (MAX_PERSONA_BYTES + 1)
+    )
+    out = CollectingOutput()
+    assert cli.run_persona_revert(1, yes=True, output_fn=out) == 1
+    assert "over the" in out.text
+    assert (persona_dir / "persona.md").read_bytes() == b"small"
+
+
+def test_revert_refuses_a_symlinked_snapshot(persona_dir) -> None:
+    from stella.persona import PersonaPaths, replace_persona_file
+
+    replace_persona_file(
+        PersonaPaths(persona_dir), "persona", b"current", source="preset"
+    )
+    history = persona_dir / "history"
+    history.mkdir(exist_ok=True)
+    outside = persona_dir.parent / "outside.md"
+    outside.write_bytes(b"evil")
+    (history / "persona.20260101T120000123456Z.7.1.md").symlink_to(outside)
+    out = CollectingOutput()
+    assert cli.run_persona_revert(1, yes=True, output_fn=out) == 1
+    assert "escaped the history directory" in out.text
+    assert (persona_dir / "persona.md").read_bytes() == b"current"
+    assert outside.read_bytes() == b"evil"
+
+
+def test_revert_of_addons_leaves_persona_untouched(persona_dir) -> None:
+    from stella.persona import PersonaPaths, replace_persona_file
+
+    paths = PersonaPaths(persona_dir)
+    replace_persona_file(
+        paths, "persona", b"persona stays", source="preset"
+    )
+    replace_persona_file(
+        paths, "addons", b"- short notes\n", source="approved edit"
+    )
+    replace_persona_file(
+        paths, "addons", b"- terse notes\n", source="approved edit"
+    )
+    out = CollectingOutput()
+    assert cli.run_persona_revert(1, yes=True, output_fn=out) == 0
+    assert (persona_dir / "persona.addons.md").read_bytes() == (
+        b"- short notes\n"
+    )
+    assert (persona_dir / "persona.md").read_bytes() == b"persona stays"
+
+
+def test_main_persona_revert_subcommand_exit_codes(persona_dir) -> None:
+    seed_two_replacements(persona_dir)
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["persona", "revert"])
+    assert raised.value.code == 0
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["persona", "revert", "1", "--yes"])
+    assert raised.value.code == 0
+    assert (persona_dir / "persona.md").read_bytes() == b"one"
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["persona", "revert", "42"])
+    assert raised.value.code == 2

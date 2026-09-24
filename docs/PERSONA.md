@@ -12,6 +12,7 @@ same exact-match approval boundary as a file write
 | --- | --- | --- |
 | `persona.md` | `~/.config/stella/persona.md` | you (editor or preset) — or Stella via an approved `persona_edit` |
 | `persona.addons.md` | `~/.config/stella/persona.addons.md` | Stella via an approved `persona_edit` only |
+| `history/` | `~/.config/stella/history/` | Stella automatically, just before every replacement of either file above |
 | transcript DB | `~/.local/share/stella/stella_transcript.db` | Stella, **only if you turn recording on** |
 
 Paths honor `STELLA_PERSONA_DIR` and `STELLA_TRANSCRIPT_DB`. With no
@@ -63,6 +64,31 @@ a starter persona instead of a blank page (it refuses to clobber an
 existing persona without `--force`). Presets and editor writes are
 human-initiated and bypass approval by design; model-initiated writes
 never do.
+
+## Version history and `stella persona revert`
+
+Every write path above — approved `persona_edit`, editor session,
+preset, onboarding draft, and a revert itself — first copies the
+previous bytes of the file into `history/` (full snapshots, newest 10
+per file, plus a `manifest.jsonl` label of who replaced them and why).
+The snapshots are plain files you own; the prompt loader never reads
+that directory.
+
+- `stella persona revert` lists what is undoable, newest first.
+- `stella persona revert <number>` shows a unified diff against the
+  current file, asks you to confirm (`--yes` to skip), restores those
+  exact bytes and verifies the read-back. The restore is snapshotted
+  too, so reverting a revert is one more command.
+- Reflection still has no write path at all: approved proposals become
+  ordinary `persona_edit` calls and inherit snapshots exactly like any
+  other approved edit.
+
+Two honest limits: a snapshot that fails never blocks the write you
+already approved (the result then says the change cannot be reverted),
+and the editor copy is taken *before* the `$EDITOR` session starts —
+mid-edit states are not versioned, only the file as it was when you
+opened it (identical content is deduped, so repeat visits cost
+nothing).
 
 ## First-run onboarding
 

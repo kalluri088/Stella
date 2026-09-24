@@ -2,6 +2,7 @@
 
 import argparse
 import datetime as dt
+import difflib
 import json
 import os
 import shlex
@@ -19,17 +20,25 @@ from stella.brain import Decision
 from stella.config import resolve_settings
 from stella.llm import Message
 from stella.persona import (
+    ADDONS_FILE_NAME,
+    MAX_PERSONA_BYTES,
     ONBOARDING_QUESTIONS,
     ONBOARDING_SKIP_MARKER,
     PERSONA_DRAFT_SYSTEM,
+    PERSONA_FILE_NAME,
     PERSONA_SKELETON,
     PRESET_TEMPLATES,
     PersonaPaths,
     PersonaReflection,
+    PersonaSnapshot,
     ReflectionStore,
     TranscriptRecorder,
     ensure_persona_directory,
+    list_persona_snapshots,
     persona_directory,
+    read_persona_snapshot,
+    replace_persona_file,
+    snapshot_persona_state,
     write_persona_text,
 )
 from stella.stella import Stella, StellaResult
@@ -376,12 +385,24 @@ def open_persona_editor(output_fn: Callable[[str], None] = print) -> int:
     paths = _persona_paths()
     ensure_persona_directory(paths)
     if not paths.persona.exists():
-        write_persona_text(paths, PERSONA_SKELETON)
+        write_persona_text(paths, PERSONA_SKELETON, source="editor")
     editor = (
         os.environ.get("VISUAL", "").strip()
         or os.environ.get("EDITOR", "").strip()
         or "vi"
     )
+    # The hand-edit itself happens inside $EDITOR, invisible to Stella, so
+    # the recoverable copy is taken now: `stella persona revert` rolls back
+    # to the persona as it was before this editing session (identical
+    # content is deduped, so repeat visits cost nothing).
+    if paths.persona.exists():
+        snapshot_error = snapshot_persona_state(
+            paths, "persona", source="editor"
+        )
+        if snapshot_error is not None:
+            output_fn(
+                f"Warning: this edit may not be revertable ({snapshot_error})."
+            )
     try:
         subprocess.run(
             [*shlex.split(editor), str(paths.persona)], check=False
@@ -409,12 +430,143 @@ def apply_persona_preset(
             "Pass --force to replace it with the preset."
         )
         return 1
-    write_persona_text(paths, PRESET_TEMPLATES[name])
+    write_persona_text(
+        paths, PRESET_TEMPLATES[name], source="preset",
+        summary=f"{name} preset",
+    )
     output_fn(
         f"Wrote the {name} preset to {paths.persona}. "
         "Edit it any time with 'stella persona'."
     )
     return 0
+
+
+def _persona_role_file(role: str) -> str:
+    return PERSONA_FILE_NAME if role == "persona" else ADDONS_FILE_NAME
+
+
+def _persona_snapshot_line(index: int, snapshot: PersonaSnapshot) -> str:
+    summary = f' "{snapshot.summary}"' if snapshot.summary else ""
+    return (
+        f"[{index}]  {snapshot.created_ts}  "
+        f"{_persona_role_file(snapshot.role)}  {snapshot.source}{summary}  "
+        f"({snapshot.size_bytes} B)"
+    )
+
+
+def run_persona_revert(
+    index: int | None = None,
+    yes: bool = False,
+    output_fn: Callable[[str], None] = print,
+    input_fn: Callable[[str], str] = input,
+) -> int:
+    """List persona snapshots, or restore one by its listing number.
+
+    Like the preset and the editor, this is the human speaking directly,
+    so it does not pass through the approval boundary. The restore is
+    confirmed against the current file and is itself snapshotted first,
+    which makes reverting a revert one command away too.
+    """
+
+    paths = _persona_paths()
+    ensure_persona_directory(paths)
+    snapshots = list_persona_snapshots(paths)
+    if index is None:
+        if not snapshots:
+            output_fn(
+                "No persona history yet — nothing has been replaced "
+                "under this persona directory."
+            )
+            return 0
+        for number, snapshot in enumerate(snapshots, start=1):
+            output_fn(_persona_snapshot_line(number, snapshot))
+        output_fn(
+            "Run 'stella persona revert <number>' to restore one; the "
+            "restore is confirmed and itself undoable."
+        )
+        return 0
+    if index < 1 or index > len(snapshots):
+        output_fn(f"There is no snapshot number {index}.")
+        return 2
+    snapshot = snapshots[index - 1]
+    role_file = _persona_role_file(snapshot.role)
+    if snapshot.size_bytes > MAX_PERSONA_BYTES:
+        output_fn(
+            f"That snapshot is {snapshot.size_bytes} bytes, over the "
+            f"{MAX_PERSONA_BYTES}-byte persona cap; nothing was restored."
+        )
+        return 1
+    data = read_persona_snapshot(paths, snapshot)
+    if data is None:
+        output_fn(
+            "That snapshot is unreadable, oversized, or escaped the "
+            "history directory; nothing was restored."
+        )
+        return 1
+    target = paths.persona if snapshot.role == "persona" else paths.addons
+    try:
+        current = target.read_bytes() if target.exists() else None
+    except OSError:
+        current = None
+    if current == data:
+        output_fn(
+            f"That snapshot is identical to the current {role_file}; "
+            "nothing was restored."
+        )
+        return 0
+    diff = difflib.unified_diff(
+        ("" if current is None else current)
+        .decode("utf-8", errors="replace")
+        .splitlines(),
+        data.decode("utf-8", errors="replace").splitlines(),
+        fromfile=f"{role_file} (current)",
+        tofile="snapshot to restore",
+        lineterm="",
+    )
+    for line in diff:
+        output_fn(line)
+    if not yes:
+        try:
+            answer = input_fn("Restore this snapshot? [y/N]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.casefold() not in {"y", "yes"}:
+            output_fn("Nothing was restored.")
+            return 1
+    try:
+        snapshot_error = replace_persona_file(
+            paths,
+            snapshot.role,
+            data,
+            source="revert",
+            summary=f"restored snapshot {snapshot.file_name}",
+        )
+    except OSError:
+        output_fn(
+            f"The restore of {role_file} failed; the current file was "
+            "left as it was."
+        )
+        return 1
+    if snapshot_error is not None:
+        output_fn(
+            f"Warning: the state before this restore could not be "
+            f"snapshotted ({snapshot_error}); the restore cannot be "
+            "undone."
+        )
+    try:
+        restored = target.read_bytes() if target.exists() else None
+    except OSError:
+        restored = None
+    if restored == data:
+        output_fn(
+            f"Restored {role_file} from snapshot {index}; bytes verified."
+        )
+        return 0
+    output_fn(
+        f"The restore of {role_file} could not be verified; check the "
+        "file."
+    )
+    return 1
 
 
 def _mark_persona_onboarding_skipped(paths: PersonaPaths) -> None:
@@ -491,10 +643,12 @@ def run_persona_onboarding(
     except (EOFError, KeyboardInterrupt):
         choice = ""
     if choice == "yes":
-        write_persona_text(paths, draft)
+        write_persona_text(paths, draft, source="onboarding",
+                           summary="first-run draft")
         output_fn(f"Persona saved to {paths.persona}.")
     elif choice == "edit":
-        write_persona_text(paths, draft)
+        write_persona_text(paths, draft, source="onboarding",
+                           summary="first-run draft")
         output_fn(f"Persona saved to {paths.persona}; opening your editor.")
         open_persona_editor(output_fn)
     else:
@@ -606,6 +760,22 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="replace an existing persona.md",
     )
+    revert_parser = persona_commands.add_parser(
+        "revert",
+        help="list persona snapshots, or restore one with 'revert <number>'",
+    )
+    revert_parser.add_argument(
+        "number",
+        type=int,
+        nargs="?",
+        default=None,
+        help="snapshot number from the listing (newest is 1)",
+    )
+    revert_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the confirmation prompt",
+    )
     commands.add_parser(
         "reflect",
         help=(
@@ -617,6 +787,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "persona":
         if args.persona_command == "preset":
             raise SystemExit(apply_persona_preset(args.name, force=args.force))
+        if args.persona_command == "revert":
+            raise SystemExit(run_persona_revert(args.number, yes=args.yes))
         raise SystemExit(open_persona_editor())
     if args.command == "reflect":
         raise SystemExit(run_persona_reflection())

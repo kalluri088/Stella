@@ -9,12 +9,16 @@ here participates in dispatch, risk, or approval decisions — those stay
 exactly where `docs/APPROVAL_BOUNDARY.md` puts them.
 """
 
+import itertools
 import json
 import os
+import re
 import sqlite3
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 PERSONA_FILE_NAME = "persona.md"
 ADDONS_FILE_NAME = "persona.addons.md"
@@ -123,6 +127,10 @@ class PersonaPaths:
     @property
     def addons(self) -> Path:
         return self.directory / ADDONS_FILE_NAME
+
+    @property
+    def history(self) -> Path:
+        return self.directory / PERSONA_HISTORY_DIR_NAME
 
     def role_of(self, resolved: Path) -> str | None:
         """Return which persona role a resolved path plays, if any."""
@@ -378,21 +386,353 @@ def ensure_persona_directory(paths: PersonaPaths) -> None:
     paths.directory.mkdir(parents=True, exist_ok=True)
 
 
-def write_persona_text(paths: PersonaPaths, text: str) -> None:
+def write_persona_text(
+    paths: PersonaPaths,
+    text: str,
+    *,
+    source: str,
+    summary: str | None = None,
+) -> str | None:
     """Write persona.md from an explicitly user-driven command path.
 
     This is the CLI (a human giving an order), not a model proposal, so
-    it needs no approval — but it still replaces the file atomically
-    and leaves it readable only by its owner.
+    it needs no approval — but the previous version is snapshotted into
+    ``history/`` first, the file is replaced atomically, and it stays
+    readable only by its owner. The returned error string (never raised)
+    says the old version may not be revertable.
     """
 
+    return replace_persona_file(
+        paths, "persona", text.encode("utf-8"), source=source,
+        summary=summary,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Version history: every persona replacement is revertable.
+#
+# The persona is style the user can change their mind about, so before any
+# write replaces persona.md or persona.addons.md — approved edit, editor
+# session, preset, onboarding draft, or revert — the previous bytes are
+# copied into a history directory the user owns. Snapshots are full copies
+# (files are tiny by cap), the newest MAX_PERSONA_SNAPSHOTS per role
+# survive, and `stella persona revert` restores any of them. This is
+# recovery tooling, not a security boundary: snapshot failures are
+# reported honestly and never block a write the user authorized.
+# ---------------------------------------------------------------------------
+
+PERSONA_HISTORY_DIR_NAME = "history"
+PERSONA_MANIFEST_NAME = "manifest.jsonl"
+MAX_PERSONA_SNAPSHOTS = 10  # kept versions, per persona file (role)
+_SNAPSHOT_READ_LIMIT = 64 * 1024  # a hand-grown old file is still copied
+_SNAPSHOT_TIME_FORMAT = "%Y%m%dT%H%M%S%f"
+# role.<fixed-width UTC stamp>Z.<pid>.<seq>.md — name sort IS time sort.
+_SNAPSHOT_NAME_RE = re.compile(
+    r"^(persona|addons)\.([0-9]{8}T[0-9]{12})Z\.([0-9]+)\.([0-9]+)\.md$"
+)
+
+PersonaSource = Literal[
+    "approved edit", "editor", "preset", "onboarding", "revert"
+]
+
+_snapshot_seq = itertools.count()
+
+
+@dataclass(frozen=True)
+class PersonaSnapshot:
+    """One recoverable past version of one persona file."""
+
+    role: str  # "persona" | "addons"
+    file_name: str  # bare name inside history/ (validated shape)
+    created_ts: str  # ISO-8601 UTC, taken from the name's stamp
+    source: str  # what replaced this version; "unknown" if unlabeled
+    summary: str | None
+    size_bytes: int
+
+
+def _snapshot_match(name: str) -> re.Match[str] | None:
+    return _SNAPSHOT_NAME_RE.match(name)
+
+
+def _persona_stamp_to_iso(stamp: str) -> str:
+    try:
+        parsed = datetime.strptime(
+            stamp, _SNAPSHOT_TIME_FORMAT
+        ).replace(tzinfo=UTC)
+    except ValueError:
+        return stamp
+    return parsed.isoformat()
+
+
+def _new_snapshot_name(role: str) -> str:
+    stamp = datetime.now(UTC).strftime(_SNAPSHOT_TIME_FORMAT)
+    return f"{role}.{stamp}Z.{os.getpid()}.{next(_snapshot_seq)}.md"
+
+
+def _read_regular_bounded(path: Path, limit: int) -> bytes | None:
+    """Read one file without following symlinks, capped at ``limit``.
+
+    Returns None when the file is missing, unreadable, not a regular
+    file, or larger than the limit (the limit is what refuses a hostile
+    or runaway file instead of streaming it into memory).
+    """
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                return None
+            return handle.read(limit + 1)
+    except OSError:
+        return None
+    # The `with` owns the descriptor on every return path above.
+
+
+def _read_persona_manifest(history_dir: Path) -> list[dict]:
+    """Manifest rows, skipping garbage: a broken label is never data loss."""
+
+    rows: list[dict] = []
+    try:
+        with open(
+            history_dir / PERSONA_MANIFEST_NAME, encoding="utf-8"
+        ) as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and isinstance(
+                    row.get("snapshot"), str
+                ):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def _write_persona_manifest(history_dir: Path, rows: list[dict]) -> None:
+    """Replace the manifest atomically; OSError propagates to the caller."""
+
+    temporary = history_dir / f".manifest.tmp-{os.getpid()}"
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    os.replace(temporary, history_dir / PERSONA_MANIFEST_NAME)
+
+
+def _snapshot_names_on_disk(history_dir: Path) -> list[str]:
+    try:
+        return [
+            name for name in os.listdir(history_dir) if _snapshot_match(name)
+        ]
+    except OSError:
+        return []
+
+
+def snapshot_persona_state(
+    paths: PersonaPaths,
+    role: str,
+    *,
+    source: str,
+    summary: str | None = None,
+) -> str | None:
+    """Copy the current bytes of one persona file into ``history/``.
+
+    Returns None on success or intentional no-op (no file yet, or the
+    content is identical to the newest snapshot), and a short honest
+    error string on failure. It never raises: history is recovery
+    tooling, and a broken copy must not block a write that was already
+    approved by the user or the dispatcher.
+    """
+
+    if role not in ("persona", "addons"):
+        return "unknown persona role"
+    target = paths.persona if role == "persona" else paths.addons
+    if not os.path.lexists(target):
+        return None  # first create: there is nothing yet to keep
+    data = _read_regular_bounded(target, _SNAPSHOT_READ_LIMIT)
+    if data is None:
+        return "the previous version could not be read"
+    history = paths.history
+    try:
+        ensure_persona_directory(paths)
+        history.mkdir(exist_ok=True)
+    except OSError:
+        return "the history directory could not be created"
+    names = sorted(_snapshot_names_on_disk(history), reverse=True)
+    newest_for_role = next(
+        (name for name in names if _snapshot_match(name).group(1) == role),
+        None,
+    )
+    if newest_for_role is not None:
+        previous = _read_regular_bounded(
+            history / newest_for_role, _SNAPSHOT_READ_LIMIT
+        )
+        if previous == data:
+            return None  # dedup: nothing changed since the last snapshot
+    name = _new_snapshot_name(role)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(history / name, flags, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        row = {
+            "snapshot": name,
+            "role": role,
+            "ts": _persona_stamp_to_iso(_snapshot_match(name).group(2)),
+            "source": source,
+            "summary": summary,
+            "bytes": len(data),
+        }
+        with open(
+            history / PERSONA_MANIFEST_NAME, "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError:
+        return "the snapshot could not be written"
+    _enforce_persona_retention(paths)
+    return None
+
+
+def _enforce_persona_retention(paths: PersonaPaths) -> None:
+    """Keep only the newest MAX_PERSONA_SNAPSHOTS snapshots per role.
+
+    The manifest is rewritten first, then evicted files are removed: a
+    crash between the two leaves orphan files that the read path
+    tolerates (disk is authoritative for existence; the manifest only
+    carries labels), so history self-heals on the next snapshot.
+    """
+
+    history = paths.history
+    names = _snapshot_names_on_disk(history)
+    groups: dict[str, list[str]] = {}
+    for name in sorted(names, reverse=True):
+        groups.setdefault(_snapshot_match(name).group(1), []).append(name)
+    kept: set[str] = set()
+    for group in groups.values():
+        kept.update(group[:MAX_PERSONA_SNAPSHOTS])
+    rows = [
+        row
+        for row in _read_persona_manifest(history)
+        if row["snapshot"] in kept
+    ]
+    try:
+        _write_persona_manifest(history, rows)
+    except OSError:
+        return
+    for name in names:
+        if name not in kept:
+            try:
+                (history / name).unlink(missing_ok=True)
+            except OSError:
+                continue
+
+
+def list_persona_snapshots(paths: PersonaPaths) -> list[PersonaSnapshot]:
+    """Every revertable version, newest first, labels from the manifest.
+
+    Files on disk decide what exists; a snapshot whose manifest row was
+    lost is still listed (as "unknown"), and a manifest row for a
+    missing file is simply gone.
+    """
+
+    history = paths.history
+    rows: dict[str, dict] = {}
+    for row in _read_persona_manifest(history):
+        rows.setdefault(row["snapshot"], row)
+    snapshots: list[PersonaSnapshot] = []
+    for name in sorted(_snapshot_names_on_disk(history), reverse=True):
+        match = _snapshot_match(name)
+        try:
+            size = (history / name).stat().st_size
+        except OSError:
+            continue  # vanished between listing and stat
+        row = rows.get(name, {})
+        summary = row.get("summary")
+        source = row.get("source")
+        snapshots.append(
+            PersonaSnapshot(
+                role=match.group(1),
+                file_name=name,
+                created_ts=_persona_stamp_to_iso(match.group(2)),
+                source=source if isinstance(source, str) else "unknown",
+                summary=summary if isinstance(summary, str) else None,
+                size_bytes=size,
+            )
+        )
+    return snapshots
+
+
+def read_persona_snapshot(
+    paths: PersonaPaths, snapshot: PersonaSnapshot
+) -> bytes | None:
+    """Return one snapshot's exact bytes, or None if it cannot be trusted.
+
+    The name must match the validated snapshot shape and play the role
+    it claims, and must resolve to a regular file inside the history
+    directory; the restored content must also fit the persona cap.
+    """
+
+    match = _snapshot_match(snapshot.file_name)
+    if match is None or match.group(1) != snapshot.role:
+        return None
+    history = paths.history
+    candidate = history / snapshot.file_name
+    try:
+        inside = os.path.realpath(candidate) == os.path.join(
+            os.path.realpath(history), snapshot.file_name
+        )
+    except OSError:
+        return None
+    if not inside:
+        return None
+    data = _read_regular_bounded(candidate, MAX_PERSONA_BYTES)
+    if data is None or len(data) > MAX_PERSONA_BYTES:
+        return None
+    return data
+
+
+def replace_persona_file(
+    paths: PersonaPaths,
+    role: str,
+    data: bytes,
+    *,
+    source: str,
+    summary: str | None = None,
+) -> str | None:
+    """Snapshot the old state (if any), then atomically replace one file.
+
+    Returns the snapshot's honest error string, or None. Raises OSError
+    only when the replacement itself fails — the write the user asked
+    for is the operation; history is the courtesy around it.
+    """
+
+    snapshot_error = snapshot_persona_state(
+        paths, role, source=source, summary=summary
+    )
+    target = paths.persona if role == "persona" else paths.addons
     ensure_persona_directory(paths)
-    temporary = paths.directory / f".{PERSONA_FILE_NAME}.tmp-cli"
-    data = text.encode("utf-8")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    temporary = target.parent / f".{target.name}.tmp-{os.getpid()}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600)
     with os.fdopen(descriptor, "wb") as file:
         file.write(data)
-    os.replace(temporary, paths.persona)
+    os.replace(temporary, target)
+    return snapshot_error
 
 
 # ---------------------------------------------------------------------------

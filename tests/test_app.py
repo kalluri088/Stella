@@ -20,6 +20,7 @@ from stella.app import (
     ApprovalBroker,
     MemoryPanel,
     ReminderPanel,
+    ReminderScheduler,
     StellaApplication,
     StellaBridge,
     StellaSession,
@@ -67,6 +68,18 @@ class ScriptedBrain(Brain):
 class ExplodingBrain(Brain):
     def decide(self, context: Context) -> Decision:
         raise AssertionError("this turn must not consult the Brain")
+
+
+class SleepingBrain(ScriptedBrain):
+    """Answers like ScriptedBrain but holds the worker thread busy."""
+
+    def __init__(self, decisions: list[Decision], delay: float) -> None:
+        super().__init__(decisions)
+        self._delay = delay
+
+    def decide(self, context: Context) -> Decision:
+        time.sleep(self._delay)
+        return super().decide(context)
 
 
 class DangerousTool(Tool):
@@ -481,12 +494,12 @@ def test_broker_next_request_without_timeout_does_not_block() -> None:
 
 
 def make_bridge(
-    stella: Stella, settings: StellaSettings | None = None
+    stella: Stella, settings: StellaSettings | None = None, **bridge_options
 ) -> StellaBridge:
     application = StellaApplication(
         StellaSession(stella), settings or StellaSettings(model="test")
     )
-    return StellaBridge(lambda: application)
+    return StellaBridge(lambda: application, **bridge_options)
 
 
 def wait_for_event(bridge: StellaBridge, kind: str) -> list:
@@ -529,6 +542,165 @@ def test_bridge_delivers_due_reminders_before_the_turn_event() -> None:
     delivered = next(e.payload for e in events if e.kind == "reminder_delivered")
     assert delivered == "Private errand is due today."
     bridge.stop()
+
+
+# ------------------------------------------------------------ idle reminder ticks
+
+
+def test_bridge_delivers_due_reminder_while_idle_without_any_turn() -> None:
+    # Stage A D1: an open-but-idle window must still inform, unprompted.
+    now = dt.datetime.now(dt.UTC)
+    store = InMemoryReminderStore()
+    assert store.create("Idle errand", now + dt.timedelta(milliseconds=200), now)
+    bridge = make_bridge(
+        make_recording_stella(reminders=store), reminder_tick_seconds=0.05
+    )
+    try:
+        events = wait_for_event(bridge, "reminder_delivered")
+    finally:
+        bridge.stop()
+    payloads = [
+        event.payload
+        for event in events
+        if event.kind == "reminder_delivered"
+    ]
+    assert payloads == ["Idle errand is due today."]
+
+
+def test_bridge_tick_uses_the_injected_clock() -> None:
+    # Determinism: the sweep compares against the bridge's clock, so a
+    # fixed future "now" fires immediately with no sleeping past due time.
+    store = InMemoryReminderStore()
+    assert store.create("Future errand", REAL_NOW + dt.timedelta(hours=1), REAL_NOW)
+    fixed = REAL_NOW + dt.timedelta(hours=2)
+    bridge = make_bridge(
+        make_recording_stella(reminders=store),
+        reminder_tick_seconds=0.05,
+        now=lambda: fixed,
+    )
+    try:
+        events = wait_for_event(bridge, "reminder_delivered")
+    finally:
+        bridge.stop()
+    delivered = next(
+        event.payload
+        for event in events
+        if event.kind == "reminder_delivered"
+    )
+    assert delivered == "Future errand is due today."
+    assert store.pending() == ()
+
+
+def test_reminder_scheduler_stops_calling_after_stop() -> None:
+    calls: list[int] = []
+    scheduler = ReminderScheduler(
+        lambda: calls.append(1), interval_seconds=0.02
+    )
+    scheduler.start()
+    time.sleep(0.15)
+    scheduler.stop()
+
+    assert calls
+    settled = len(calls)
+    time.sleep(0.1)
+    assert len(calls) == settled
+
+
+def test_reminder_check_queues_behind_a_busy_turn() -> None:
+    # A sweep posted while the worker is mid-turn must wait its turn on
+    # the single command queue: no parallel Stella, no lost delivery.
+    now = dt.datetime.now(dt.UTC)
+    store = InMemoryReminderStore()
+    assert store.create(
+        "First errand", now + dt.timedelta(minutes=1), now
+    )
+    assert store.create(
+        "Second errand", now + dt.timedelta(minutes=5), now
+    )
+    sweep_count = 0
+
+    def staged_now() -> dt.datetime:
+        # The turn's own pre-sweep sees only the first reminder due;
+        # every later sweep (the queued one) sees both as due.
+        nonlocal sweep_count
+        sweep_count += 1
+        if sweep_count == 1:
+            return now + dt.timedelta(minutes=2)
+        return now + dt.timedelta(minutes=6)
+
+    stella = Stella(
+        SleepingBrain(
+            [Decision(kind=DecisionKind.ANSWER, content="slow reply")], 0.6
+        ),
+        SpyLLM(),
+        ToolDispatcher([EchoTool()]),
+        InMemoryMemory(),
+        reminders=store,
+    )
+    bridge = make_bridge(
+        stella, reminder_tick_seconds=None, now=staged_now
+    )
+    try:
+        bridge.post_turn("hello")
+        time.sleep(0.2)  # worker is now parked inside Brain.decide
+        bridge.post_reminder_check()
+        events: list = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            events.extend(bridge.poll())
+            deliveries = [e for e in events if e.kind == "reminder_delivered"]
+            if len(deliveries) == 2 and any(e.kind == "turn" for e in events):
+                break
+            time.sleep(0.02)
+    finally:
+        bridge.stop()
+
+    deliveries = [
+        event.payload
+        for event in events
+        if event.kind == "reminder_delivered"
+    ]
+    kinds = [event.kind for event in events]
+    assert deliveries[0] == "First errand is due today."
+    assert deliveries[1] == "Second errand is due today."
+    # The queued sweep could only run after the turn event: everything
+    # after "turn" is that second delivery and the panel refresh.
+    turn_index = kinds.index("turn")
+    assert deliveries[1] in [
+        event.payload for event in events[turn_index + 1 :]
+    ]
+    assert set(kinds[turn_index + 1 :]) <= {
+        "reminder_delivered",
+        "reminders",
+    }
+    assert store.pending() == ()
+
+
+def test_due_reminder_delivers_exactly_once_across_tick_and_turn() -> None:
+    # Tick and turn race to claim the same reminder; the store's atomic
+    # transition means the user is told exactly once.
+    now = dt.datetime.now(dt.UTC)
+    store = InMemoryReminderStore()
+    assert store.create(
+        "Contended errand", now + dt.timedelta(milliseconds=500), now
+    )
+    bridge = make_bridge(
+        make_recording_stella(reminders=store), reminder_tick_seconds=0.03
+    )
+    try:
+        bridge.post_turn("hello")
+        events = wait_for_event(bridge, "reminder_delivered")
+        time.sleep(0.3)  # let several more ticks pass
+        events.extend(bridge.poll())
+    finally:
+        bridge.stop()
+    deliveries = [
+        event.payload
+        for event in events
+        if event.kind == "reminder_delivered"
+    ]
+    assert deliveries == ["Contended errand is due today."]
+    assert any(event.kind == "turn" for event in events)
 
 
 def test_bridge_reports_startup_failure_without_a_stack_trace() -> None:

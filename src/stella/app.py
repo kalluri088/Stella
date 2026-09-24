@@ -159,7 +159,8 @@ class StellaSession:
     """One continuous conversation shared by the CLI and the UI.
 
     It only orchestrates calls that the CLI already made inline: the
-    trusted per-interaction due-reminder check and ``Stella.process``.
+    trusted due-reminder check (per interaction, plus the UI bridge's
+    idle tick) and ``Stella.process``.
     """
 
     def __init__(
@@ -828,6 +829,38 @@ class UiEvent:
     payload: object = None
 
 
+class ReminderScheduler:
+    """Wakes on an interval and asks the bridge for one due-reminder sweep.
+
+    It owns no Stella state: the ticker thread only calls ``on_tick``,
+    which posts onto the bridge's single command queue, so all reminder
+    evaluation still happens on the one worker thread that owns Stella.
+    """
+
+    def __init__(
+        self,
+        on_tick: Callable[[], None],
+        interval_seconds: float = 5.0,
+    ) -> None:
+        self._on_tick = on_tick
+        self._interval = interval_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="stella-reminder-tick", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._on_tick()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+
+
 class StellaBridge:
     """Serialise all UI requests onto one worker thread that owns Stella.
 
@@ -839,8 +872,17 @@ class StellaBridge:
     friendly ``("error", ...)`` event instead of a stack trace.
     """
 
-    def __init__(self, factory: Callable[[], StellaApplication]) -> None:
+    def __init__(
+        self,
+        factory: Callable[[], StellaApplication],
+        *,
+        reminder_tick_seconds: float | None = 5.0,
+        now: Callable[[], dt.datetime] | None = None,
+    ) -> None:
         self.approvals = ApprovalBroker()
+        self._reminder_tick_seconds = reminder_tick_seconds
+        self._now = now if now is not None else (lambda: dt.datetime.now(dt.UTC))
+        self._scheduler: ReminderScheduler | None = None
         self._application: StellaApplication | None = None
         self._memory: MemoryPanel | None = None
         self._reminders: ReminderPanel | None = None
@@ -873,6 +915,14 @@ class StellaBridge:
             return
         self._application = application
         self._rebind(application)
+        if self._reminder_tick_seconds is not None:
+            # Only a successfully started Stella gets a ticker, and it must
+            # be running before _ready releases the caller: stop() from the
+            # UI could otherwise catch a half-built scheduler.
+            self._scheduler = ReminderScheduler(
+                self.post_reminder_check, self._reminder_tick_seconds
+            )
+            self._scheduler.start()
         self._ready.set()
 
     def _rebind(self, application: StellaApplication) -> None:
@@ -949,12 +999,31 @@ class StellaBridge:
 
     def _handle_turn(self, user_input: str) -> TurnOutcome:
         session = self._require_session()
-        for delivery in session.check_due_reminders():
-            if delivery.delivered and delivery.message is not None:
-                self._emit("reminder_delivered", delivery.message)
+        self._check_due_reminders()
         outcome = session.run_turn(user_input)
         self._emit("turn", outcome)
         return outcome
+
+    def post_reminder_check(self) -> None:
+        """One due-reminder sweep, run on the worker thread.
+
+        This is the ticker's entire entry point: it posts, it never
+        evaluates reminders on the ticker thread itself.
+        """
+
+        self._post(self._check_due_reminders)
+
+    def _check_due_reminders(self) -> None:
+        session = self._require_session()
+        delivered = False
+        for delivery in session.check_due_reminders(self._now()):
+            if delivery.delivered and delivery.message is not None:
+                self._emit("reminder_delivered", delivery.message)
+                delivered = True
+        if delivered and self._reminders is not None:
+            # A handled row disappears from the Reminders panel without
+            # waiting for the next user interaction.
+            self._emit("reminders", self._reminders.pending_rows())
 
     # -------------------------------------------------------------- voice
 
@@ -1155,6 +1224,9 @@ class StellaBridge:
         self._post(handle)
 
     def stop(self) -> None:
+        if self._scheduler is not None:
+            self._scheduler.stop()
+            self._scheduler = None
         self.approvals.deny_outstanding()
         if self._voice is not None:
             self._voice.cancel_playback()

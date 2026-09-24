@@ -110,9 +110,11 @@ def make_window(
     tool: Tool | None = None,
     voice: VoicePanel | None = None,
     settings: StellaSettings | None = None,
+    reminders: InMemoryReminderStore | None = None,
+    reminder_tick_seconds: float | None = 5.0,
 ) -> tuple[tk.Tk, StellaWindow, StellaBridge, InMemoryMemory]:
     memory = InMemoryMemory()
-    store = InMemoryReminderStore()
+    store = reminders if reminders is not None else InMemoryReminderStore()
     tools = ToolDispatcher([tool or EchoTool()])
     stella = Stella(
         brain or AnswerBrain(),
@@ -129,7 +131,9 @@ def make_window(
             voice,
         )
 
-    bridge = StellaBridge(factory)
+    bridge = StellaBridge(
+        factory, reminder_tick_seconds=reminder_tick_seconds
+    )
     root = tk.Tk()
     window = StellaWindow(
         root, bridge, settings or StellaSettings(model="test")
@@ -150,6 +154,26 @@ def test_window_conversation_round_trip() -> None:
         assert "You: hello window" in transcript
         assert "Stella: window reply" in transcript
         assert window._busy is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_informs_about_due_reminder_while_idle() -> None:
+    # Stage A D1: with no user input at all, the bridge tick must place
+    # the due reminder into the transcript through the existing pump.
+    now = dt.datetime.now(dt.UTC)
+    store = InMemoryReminderStore()
+    assert store.create(
+        "Idle ping", now + dt.timedelta(milliseconds=200), now
+    )
+    root, window, bridge, _ = make_window(
+        reminders=store, reminder_tick_seconds=0.05
+    )
+    try:
+        pump(root, 2.0)
+        transcript = window._chat.get("1.0", "end")
+        assert "Reminder: Idle ping is due today." in transcript
     finally:
         bridge.stop()
         root.destroy()

@@ -2,6 +2,7 @@ import sys
 
 import pytest
 
+from stella import cli
 from stella.brain import Brain, Decision, DecisionKind
 from stella.cli import (
     cli_approval_provider,
@@ -718,3 +719,231 @@ def test_cli_main_uses_saved_configuration_without_environment(
         cli.main([])
     assert raised.value.code == 0
     assert seen[0].model == "saved-cli-model"
+
+
+# ---------------------------------------------------------------------------
+# Persona CLI: presets, editor, and first-run onboarding (all paths are
+# forced into tmp_path via STELLA_PERSONA_DIR; nothing here may touch the
+# real ~/.config/stella).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def persona_dir(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    directory = tmp_path / "persona-config"
+    monkeypatch.setenv("STELLA_PERSONA_DIR", str(directory))
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+    return directory
+
+
+def script_input(answers: list[str]):
+    iterator = iter(answers)
+
+    def fake_input(prompt: str = "") -> str:
+        return next(iterator)
+
+    return fake_input
+
+
+class CollectingOutput:
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def __call__(self, message: str) -> None:
+        self.lines.append(message)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
+class DraftLLM:
+    def __init__(self, reply: str = "", error: Exception | None = None) -> None:
+        self.reply = reply
+        self.error = error
+        self.calls: list[list] = []
+
+    def chat(self, messages) -> str:
+        self.calls.append(list(messages))
+        if self.error is not None:
+            raise self.error
+        return self.reply
+
+
+def make_onboarding_stella(llm):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(llm=llm)
+
+
+def test_persona_preset_writes_template_and_refuses_to_clobber(
+    persona_dir,
+) -> None:
+    assert cli.apply_persona_preset("snark") == 0
+    written = (persona_dir / "persona.md").read_text(encoding="utf-8")
+    for section in ("## BACKSTORY", "## VOICE", "## STANCE", "## EXAMPLES"):
+        assert section in written
+    # A second preset without --force keeps the existing persona untouched.
+    assert cli.apply_persona_preset("terse") == 1
+    assert (
+        "The user's clock is the only schedule that matters."
+        not in (persona_dir / "persona.md").read_text(encoding="utf-8")
+    )
+    assert cli.apply_persona_preset("terse", force=True) == 0
+    assert "personal insult to waste" in (
+        persona_dir / "persona.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_main_persona_preset_subcommand_writes_file(persona_dir) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["persona", "preset", "warm"])
+    assert raised.value.code == 0
+    written = (persona_dir / "persona.md").read_text(encoding="utf-8")
+    assert "## BACKSTORY" in written
+    assert "impossible to fluster" in written
+
+
+def test_main_persona_opens_editor_on_skeleton(
+    persona_dir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("EDITOR", "myeditor -w")
+    launched: list[list[str]] = []
+
+    def fake_run(command, check):
+        launched.append(list(command))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["persona"])
+    assert raised.value.code == 0
+    # The commented skeleton was created and handed to the split command.
+    skeleton = (persona_dir / "persona.md").read_text(encoding="utf-8")
+    assert "## VOICE" in skeleton and skeleton.lstrip().startswith("#")
+    assert launched == [["myeditor", "-w", str(persona_dir / "persona.md")]]
+    # An existing persona is opened as-is, never re-skeletonized.
+    (persona_dir / "persona.md").write_text("mine", encoding="utf-8")
+    assert cli.open_persona_editor() == 0
+    assert (persona_dir / "persona.md").read_text(encoding="utf-8") == "mine"
+
+
+def test_persona_editor_reports_an_unlaunchable_editor(
+    persona_dir, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setenv("EDITOR", "/nonexistent/stella-test-editor")
+    assert cli.open_persona_editor() == 1
+    captured = capsys.readouterr()
+    assert "Could not start" in captured.out
+    # The skeleton is still there for a manual edit.
+    assert (persona_dir / "persona.md").exists()
+
+
+def test_onboarding_accept_writes_draft(persona_dir) -> None:
+    draft = "## BACKSTORY\nA dry wit.\n"
+    llm = DraftLLM(reply=draft)
+    output = CollectingOutput()
+    cli.run_persona_onboarding(
+        make_onboarding_stella(llm),
+        input_fn=script_input(
+            ["ex-colleague", "old friend", "never pads", "yes"]
+        ),
+        output_fn=output,
+    )
+    assert (persona_dir / "persona.md").read_text(encoding="utf-8") == draft
+    assert not (persona_dir / cli.ONBOARDING_SKIP_MARKER).exists()
+    # The three answers reached the model inside the drafting prompt.
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0][1].content
+    assert "ex-colleague" in prompt and "never pads" in prompt
+
+
+def test_onboarding_edit_writes_draft_then_opens_editor(
+    persona_dir, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EDITOR", "myeditor")
+    launched: list[list[str]] = []
+
+    def fake_run(command, check):
+        launched.append(list(command))
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    llm = DraftLLM(reply="## VOICE\nshort\n")
+    cli.run_persona_onboarding(
+        make_onboarding_stella(llm),
+        input_fn=script_input(["a", "b", "c", "edit"]),
+        output_fn=CollectingOutput(),
+    )
+    assert "short" in (persona_dir / "persona.md").read_text(encoding="utf-8")
+    assert launched == [["myeditor", str(persona_dir / "persona.md")]]
+
+
+def test_onboarding_decline_saves_nothing_and_never_asks_again(
+    persona_dir,
+) -> None:
+    llm = DraftLLM(reply="## BACKSTORY\nx\n")
+    cli.run_persona_onboarding(
+        make_onboarding_stella(llm),
+        input_fn=script_input(["a", "b", "c", "no thanks"]),
+        output_fn=CollectingOutput(),
+    )
+    assert not (persona_dir / "persona.md").exists()
+    assert (persona_dir / cli.ONBOARDING_SKIP_MARKER).exists()
+    # A second session sees the marker and stays quiet.
+    def must_not_ask(prompt: str = "") -> str:
+        raise AssertionError("onboarding asked again after a decline")
+
+    cli.run_persona_onboarding(
+        make_onboarding_stella(DraftLLM()),
+        input_fn=must_not_ask,
+        output_fn=CollectingOutput(),
+    )
+
+
+def test_onboarding_first_empty_answer_skips_without_a_model_call(
+    persona_dir,
+) -> None:
+    llm = DraftLLM(reply="unused")
+    cli.run_persona_onboarding(
+        make_onboarding_stella(llm),
+        input_fn=script_input([""]),
+        output_fn=CollectingOutput(),
+    )
+    assert llm.calls == []
+    assert not (persona_dir / "persona.md").exists()
+    assert (persona_dir / cli.ONBOARDING_SKIP_MARKER).exists()
+
+
+def test_onboarding_draft_failure_writes_nothing_but_reports(
+    persona_dir,
+) -> None:
+    output = CollectingOutput()
+    llm = DraftLLM(error=RuntimeError("model offline"))
+    cli.run_persona_onboarding(
+        make_onboarding_stella(llm),
+        input_fn=script_input(["a", "b", "c"]),
+        output_fn=output,
+    )
+    assert not (persona_dir / "persona.md").exists()
+    assert "could not draft" in output.text
+    assert "model offline" in output.text
+
+
+def test_onboarding_is_silent_when_a_persona_already_exists(
+    persona_dir,
+) -> None:
+    persona_dir.mkdir(parents=True)
+    (persona_dir / "persona.md").write_text("keep me", encoding="utf-8")
+
+    def must_not_ask(prompt: str = "") -> str:
+        raise AssertionError("onboarding ran despite an existing persona")
+
+    cli.run_persona_onboarding(
+        make_onboarding_stella(DraftLLM()),
+        input_fn=must_not_ask,
+        output_fn=CollectingOutput(),
+    )
+    assert (persona_dir / "persona.md").read_text(encoding="utf-8") == "keep me"

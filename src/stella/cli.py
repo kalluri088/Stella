@@ -3,12 +3,27 @@
 import argparse
 import datetime as dt
 import json
+import os
+import shlex
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 
 from stella.app import StellaSession, StellaSettings, build_application
 from stella.brain import Decision
 from stella.config import resolve_settings
+from stella.llm import Message
+from stella.persona import (
+    ONBOARDING_QUESTIONS,
+    ONBOARDING_SKIP_MARKER,
+    PERSONA_DRAFT_SYSTEM,
+    PERSONA_SKELETON,
+    PRESET_TEMPLATES,
+    PersonaPaths,
+    ensure_persona_directory,
+    persona_directory,
+    write_persona_text,
+)
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
@@ -315,10 +330,154 @@ def create_stella_from_environment() -> Stella:
     return build_application(StellaSettings.from_environment()).session.stella
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    """Start an interactive Stella session."""
+def _persona_paths() -> PersonaPaths:
+    return PersonaPaths(persona_directory())
 
-    parser = argparse.ArgumentParser(description="Start an interactive Stella session")
+
+def open_persona_editor(output_fn: Callable[[str], None] = print) -> int:
+    """Create persona.md from the commented skeleton if needed, then edit it.
+
+    This is the human giving a direct order, not a model proposal, so it
+    bypasses the approval boundary by design; the file it writes is still
+    style data that the runtime places under the hard invariant.
+    """
+
+    paths = _persona_paths()
+    ensure_persona_directory(paths)
+    if not paths.persona.exists():
+        write_persona_text(paths, PERSONA_SKELETON)
+    editor = (
+        os.environ.get("VISUAL", "").strip()
+        or os.environ.get("EDITOR", "").strip()
+        or "vi"
+    )
+    try:
+        subprocess.run(
+            [*shlex.split(editor), str(paths.persona)], check=False
+        )
+    except OSError:
+        output_fn(
+            f"Could not start {editor}. "
+            f"Your persona is at {paths.persona}."
+        )
+        return 1
+    return 0
+
+
+def apply_persona_preset(
+    name: str,
+    force: bool = False,
+    output_fn: Callable[[str], None] = print,
+) -> int:
+    """Write a starter persona from a named preset template."""
+
+    paths = _persona_paths()
+    if paths.persona.exists() and not force:
+        output_fn(
+            f"A persona already exists at {paths.persona}. "
+            "Pass --force to replace it with the preset."
+        )
+        return 1
+    write_persona_text(paths, PRESET_TEMPLATES[name])
+    output_fn(
+        f"Wrote the {name} preset to {paths.persona}. "
+        "Edit it any time with 'stella persona'."
+    )
+    return 0
+
+
+def _mark_persona_onboarding_skipped(paths: PersonaPaths) -> None:
+    ensure_persona_directory(paths)
+    try:
+        (paths.directory / ONBOARDING_SKIP_MARKER).touch()
+    except OSError:
+        pass
+
+
+def run_persona_onboarding(
+    stella: Stella,
+    input_fn: Callable[[str], str] = input,
+    output_fn: Callable[[str], None] = print,
+) -> None:
+    """Draft a first persona from three questions; the user keeps veto power.
+
+    The user supplies taste, not prose: the answers go to the configured
+    LLM, the draft is only displayed, and nothing is written until the
+    user says so. Declining (or any failure) records a marker so Stella
+    never nags twice; delete it to be asked again.
+    """
+
+    paths = _persona_paths()
+    if paths.persona.exists() or (
+        paths.directory / ONBOARDING_SKIP_MARKER
+    ).exists():
+        return
+    output_fn(
+        "Stella has no persona yet. Three quick questions and Stella "
+        "will draft one; leave the first answer empty to skip forever."
+    )
+    answers: list[tuple[str, str]] = []
+    try:
+        for index, question in enumerate(ONBOARDING_QUESTIONS):
+            answer = input_fn(f"{question}\n> ").strip()
+            if not answer and index == 0:
+                _mark_persona_onboarding_skipped(paths)
+                output_fn("No persona saved; Stella keeps the default voice.")
+                return
+            answers.append((question, answer or "Your call."))
+    except (EOFError, KeyboardInterrupt):
+        _mark_persona_onboarding_skipped(paths)
+        output_fn("No persona saved; Stella keeps the default voice.")
+        return
+    prompt = "\n".join(f"Q: {question}\nA: {answer}" for question, answer in answers)
+    try:
+        draft = stella.llm.chat(
+            [
+                Message(role="system", content=PERSONA_DRAFT_SYSTEM),
+                Message(role="user", content=prompt),
+            ]
+        )
+    except Exception as error:  # noqa: BLE001 - drafting is optional polish
+        detail = " ".join(str(error).split()) or type(error).__name__
+        _mark_persona_onboarding_skipped(paths)
+        output_fn(
+            f"Stella could not draft a persona ({detail[:120]}). "
+            "Run 'stella persona' to write one by hand."
+        )
+        return
+    output_fn("Here is Stella's draft persona:\n")
+    output_fn(draft.strip())
+    output_fn("")
+    try:
+        choice = (
+            input_fn(
+                "Save this persona? Type 'yes' to save, 'edit' to save "
+                "then open your editor, or anything else to skip: "
+            )
+            .strip()
+            .casefold()
+        )
+    except (EOFError, KeyboardInterrupt):
+        choice = ""
+    if choice == "yes":
+        write_persona_text(paths, draft)
+        output_fn(f"Persona saved to {paths.persona}.")
+    elif choice == "edit":
+        write_persona_text(paths, draft)
+        output_fn(f"Persona saved to {paths.persona}; opening your editor.")
+        open_persona_editor(output_fn)
+    else:
+        _mark_persona_onboarding_skipped(paths)
+        output_fn("No persona saved; Stella keeps the default voice.")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Dispatch the stella command: chat by default, persona subcommands."""
+
+    parser = argparse.ArgumentParser(
+        description="Stella: a local AI assistant. With no arguments, "
+        "starts an interactive session."
+    )
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -329,7 +488,41 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="render a compact 'Stella did' timeline after each turn",
     )
+    commands = parser.add_subparsers(dest="command")
+    chat_parser = commands.add_parser(
+        "chat", help="start an interactive session (the default)"
+    )
+    chat_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    chat_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    persona_parser = commands.add_parser(
+        "persona",
+        help="create or edit Stella's persona files (opens $EDITOR)",
+    )
+    persona_commands = persona_parser.add_subparsers(dest="persona_command")
+    preset_parser = persona_commands.add_parser(
+        "preset", help="start persona.md from a preset template"
+    )
+    preset_parser.add_argument(
+        "name", choices=tuple(sorted(PRESET_TEMPLATES)), help="preset to write"
+    )
+    preset_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing persona.md",
+    )
     args = parser.parse_args(argv)
+    if args.command == "persona":
+        if args.persona_command == "preset":
+            raise SystemExit(apply_persona_preset(args.name, force=args.force))
+        raise SystemExit(open_persona_editor())
     settings = resolve_settings()
     if settings is None:
         print(
@@ -344,6 +537,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(line)
     print("Ask Stella anything. Type 'exit' to quit.\n")
     try:
-        run_cli(application.session.stella, debug=args.debug, trace=args.trace)
+        run_persona_onboarding(application.session.stella)
+        run_cli(
+            application.session.stella,
+            debug=getattr(args, "debug", False),
+            trace=getattr(args, "trace", False),
+        )
     finally:
         application.close()

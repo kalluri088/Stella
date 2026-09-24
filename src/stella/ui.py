@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from dataclasses import replace
 from tkinter import ttk
 
@@ -47,6 +48,217 @@ _SEMANTIC_PROVIDER_BY_LABEL = {
     label: value for value, label in _SEMANTIC_PROVIDER_LABELS.items()
 }
 
+# One dark palette shared by the window, the dialogs and the setup
+# wizard. Everything here is presentation only: the bridge contract,
+# transcript wording and approval exactness are untouched by styling.
+_WINDOW = "#151821"
+_SURFACE = "#1c2029"
+_SURFACE_ALT = "#252a37"
+_FIELD = "#2b3140"
+_TEXT = "#e9ecf3"
+_TEXT_DIM = "#98a2b6"
+_ACCENT = "#8fb2ff"
+_ACCENT_STRONG = "#4f6ef7"
+_ON_ACCENT = "#0f1219"
+_ERROR = "#ff9a8d"
+_OK = "#8fe3b0"
+_REMINDER = "#d3b5ff"
+_USER_BUBBLE = "#24304a"
+_STELLA_BUBBLE = "#1f2b28"
+
+_FONT_CANDIDATES = (
+    "Inter",
+    "Cantarell",
+    "Noto Sans",
+    "Ubuntu",
+    "DejaVu Sans",
+    "Segoe UI",
+)
+
+
+def _font_family(root: tk.Misc) -> str | None:
+    """Pick the nicest installed UI font, or None to keep Tk's default."""
+    families = {name.casefold() for name in tkfont.families(root)}
+    for candidate in _FONT_CANDIDATES:
+        if candidate.casefold() in families:
+            return candidate
+    return None
+
+
+def _configure_styles(root: tk.Misc) -> None:
+    """Apply the Stella theme to every Tk and ttk widget in this app.
+
+    ttk styles and named fonts are process-wide, so calling this from
+    any window configures all of them; it is deliberately idempotent.
+    """
+    family = _font_family(root)
+    if family is not None:
+        for name in (
+            "TkDefaultFont",
+            "TkTextFont",
+            "TkMenuFont",
+            "TkHeadingFont",
+            "TkCaptionFont",
+            "TkSmallCaptionFont",
+        ):
+            try:
+                tkfont.nametofont(name).configure(family=family, size=10)
+            except tk.TclError:  # pragma: no cover - exotic Tk builds
+                pass
+    default = tkfont.nametofont("TkDefaultFont")
+    ui_family = default.actual("family")
+    ui_size = default.actual("size")
+
+    style = ttk.Style()
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+    style.configure(
+        ".",
+        background=_SURFACE,
+        foreground=_TEXT,
+        fieldbackground=_FIELD,
+        padding=6,
+    )
+    style.configure("Toplevel", background=_SURFACE)
+    style.configure("TFrame", background=_SURFACE)
+    style.configure("Card.TFrame", background=_SURFACE_ALT)
+    style.configure("TLabel", background=_SURFACE, foreground=_TEXT)
+    style.configure("Dim.TLabel", foreground=_TEXT_DIM)
+    style.configure(
+        "Status.TLabel",
+        foreground=_ACCENT,
+        font=(ui_family, ui_size, "italic"),
+    )
+    style.configure(
+        "Brand.TLabel",
+        foreground=_ACCENT,
+        font=(ui_family, ui_size + 5, "bold"),
+    )
+    style.configure(
+        "Heading.TLabel", font=(ui_family, ui_size + 1, "bold")
+    )
+    style.configure(
+        "TButton",
+        background=_FIELD,
+        foreground=_TEXT,
+        bordercolor=_SURFACE_ALT,
+        lightcolor=_SURFACE_ALT,
+        darkcolor=_SURFACE_ALT,
+        focusthickness=0,
+        padding=(14, 7),
+    )
+    style.map(
+        "TButton",
+        background=[("disabled", _SURFACE_ALT), ("active", _ACCENT_STRONG)],
+        foreground=[("disabled", _TEXT_DIM), ("active", _ON_ACCENT)],
+    )
+    style.configure(
+        "Accent.TButton",
+        background=_ACCENT_STRONG,
+        foreground=_ON_ACCENT,
+        bordercolor=_ACCENT_STRONG,
+        lightcolor=_ACCENT_STRONG,
+        darkcolor=_ACCENT_STRONG,
+    )
+    style.map(
+        "Accent.TButton",
+        background=[("disabled", _SURFACE_ALT), ("active", "#6f8bff")],
+        foreground=[("disabled", _TEXT_DIM)],
+    )
+    style.configure(
+        "TMenubutton",
+        background=_FIELD,
+        foreground=_TEXT,
+        bordercolor=_SURFACE_ALT,
+        focusthickness=0,
+        padding=(10, 5),
+    )
+    style.map("TMenubutton", background=[("active", _ACCENT_STRONG)])
+    style.configure(
+        "TNotebook", background=_SURFACE, borderwidth=0, tabmargins=(2, 0, 2, 0)
+    )
+    style.configure(
+        "TNotebook.Tab",
+        background=_SURFACE_ALT,
+        foreground=_TEXT_DIM,
+        padding=(14, 7),
+    )
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", _FIELD)],
+        foreground=[("selected", _TEXT)],
+    )
+    style.configure(
+        "TEntry",
+        insertcolor=_TEXT,
+        bordercolor=_SURFACE_ALT,
+        lightcolor=_SURFACE_ALT,
+        darkcolor=_SURFACE_ALT,
+        fieldbackground=_FIELD,
+        foreground=_TEXT,
+        padding=7,
+    )
+    style.configure("TLabel.TSeparator", background=_SURFACE)
+    style.configure(
+        "TCheckbutton", background=_SURFACE, foreground=_TEXT, padding=4
+    )
+    style.map(
+        "TCheckbutton",
+        background=[("active", _SURFACE)],
+        foreground=[("disabled", _TEXT_DIM)],
+        indicatorcolor=[("selected", _ACCENT)],
+    )
+    style.configure("TRadiobutton", background=_SURFACE, foreground=_TEXT)
+    style.map(
+        "TRadiobutton",
+        background=[("active", _SURFACE)],
+        indicatorcolor=[("selected", _ACCENT)],
+    )
+    style.configure(
+        "TCombobox",
+        fieldbackground=_FIELD,
+        background=_FIELD,
+        foreground=_TEXT,
+        arrowcolor=_TEXT_DIM,
+        bordercolor=_SURFACE_ALT,
+        lightcolor=_SURFACE_ALT,
+        darkcolor=_SURFACE_ALT,
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", _FIELD)],
+        selectbackground=[("readonly", _FIELD)],
+        selectforeground=[("readonly", _TEXT)],
+    )
+    style.configure(
+        "TScrollbar",
+        background=_SURFACE_ALT,
+        troughcolor=_SURFACE,
+        bordercolor=_SURFACE,
+        arrowcolor=_TEXT_DIM,
+        relief="flat",
+    )
+    style.map("TScrollbar", background=[("active", _ACCENT_STRONG)])
+    root.option_add("*Menu*background", _FIELD)
+    root.option_add("*Menu*foreground", _TEXT)
+    root.option_add("*Menu*activeBackground", _ACCENT_STRONG)
+    root.option_add("*Menu*activeForeground", _ON_ACCENT)
+
+
+def _style_listbox(box: tk.Listbox) -> None:
+    """Theme a plain tk.Listbox to match the ttk widgets around it."""
+    box.configure(
+        background=_FIELD,
+        foreground=_TEXT,
+        selectbackground=_ACCENT_STRONG,
+        selectforeground=_ON_ACCENT,
+        highlightthickness=0,
+        borderwidth=0,
+        relief="flat",
+        activestyle="none",
+        font="TkDefaultFont",
+    )
+
 
 class StellaWindow:
     """One Tk window driven entirely by posted bridge commands."""
@@ -66,17 +278,43 @@ class StellaWindow:
         self._dialogs: list[tk.Toplevel] = []
         self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
-        root.geometry("980x620")
+        root.geometry("1180x680")
+        root.minsize(920, 560)
+        root.configure(background=_SURFACE)
+        _configure_styles(root)
 
         main = ttk.Frame(root)
-        main.pack(fill="both", expand=True, padx=8, pady=8)
+        main.pack(fill="both", expand=True, padx=12, pady=12)
 
         chat = ttk.Frame(main)
         chat.pack(side="left", fill="both", expand=True)
+        header = ttk.Frame(chat)
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text="Stella", style="Brand.TLabel").pack(
+            side="left"
+        )
+        ttk.Label(
+            header,
+            text="local-first · your conversation stays on this machine",
+            style="Dim.TLabel",
+        ).pack(side="left", padx=(12, 0), pady=(6, 0))
         transcript_frame = ttk.Frame(chat)
         transcript_frame.pack(fill="both", expand=True)
         self._chat = tk.Text(
-            transcript_frame, wrap="word", state="disabled", height=18
+            transcript_frame,
+            wrap="word",
+            state="disabled",
+            background=_WINDOW,
+            foreground=_TEXT,
+            insertbackground=_TEXT,
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat",
+            padx=10,
+            pady=12,
+            font="TkTextFont",
+            spacing1=4,
+            spacing2=2,
         )
         scrollbar = ttk.Scrollbar(
             transcript_frame, command=self._chat.yview
@@ -84,30 +322,49 @@ class StellaWindow:
         self._chat.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self._chat.pack(side="left", fill="both", expand=True)
-        self._status = ttk.Label(chat, text="", anchor="w")
-        self._status.pack(fill="x")
+        self._configure_chat_tags()
+        self._status = ttk.Label(chat, text="", anchor="w",
+                                 style="Status.TLabel")
+        self._status.pack(fill="x", pady=(8, 2))
         input_frame = ttk.Frame(chat)
         input_frame.pack(fill="x")
-        self._input = tk.Text(input_frame, height=3, wrap="word")
+        self._input = tk.Text(
+            input_frame,
+            height=3,
+            wrap="word",
+            background=_FIELD,
+            foreground=_TEXT,
+            insertbackground=_TEXT,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=_SURFACE_ALT,
+            highlightcolor=_ACCENT_STRONG,
+            padx=10,
+            pady=8,
+            font="TkTextFont",
+        )
         self._input.pack(side="left", fill="both", expand=True)
         send_button = ttk.Button(
-            input_frame, text="Send", command=self._send
+            input_frame, text="Send", command=self._send,
+            style="Accent.TButton",
         )
-        send_button.pack(side="left", fill="y", padx=(4, 0))
+        send_button.pack(side="left", fill="y", padx=(6, 0))
         self._cancel_button = ttk.Button(
             input_frame, text="Cancel", command=self._cancel_turn,
             state="disabled",
         )
-        self._cancel_button.pack(side="left", fill="y", padx=(4, 0))
+        self._cancel_button.pack(side="left", fill="y", padx=(6, 0))
         self._input.bind("<Control-Return>", lambda _event: self._send())
         ttk.Label(
             chat,
             text="Ctrl+Enter sends; Enter adds a new line.",
-        ).pack(anchor="w")
+            style="Dim.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
         self._build_voice_row(chat, bridge)
 
         notebook = ttk.Notebook(main)
-        notebook.pack(side="left", fill="y", padx=(8, 0))
+        notebook.pack(side="left", fill="y", padx=(14, 0))
         self._build_memory_tab(notebook)
         self._build_reminder_tab(notebook)
         self._build_history_tab(notebook)
@@ -131,11 +388,106 @@ class StellaWindow:
 
     # ----------------------------------------------------------- chat
 
-    def _line(self, text: str) -> None:
-        self._chat.configure(state="normal")
-        self._chat.insert("end", text + "\n\n", "see")
-        self._chat.configure(state="disabled")
-        self._chat.see("end")
+    def _configure_chat_tags(self) -> None:
+        # Speech-bubble rendering for the transcript: presentation only,
+        # the stored text (and every asserted prefix) is exactly what
+        # the state machine inserted.
+        base = tkfont.nametofont("TkTextFont")
+        self._head_font = tkfont.Font(
+            family=base.actual("family"),
+            size=base.actual("size"),
+            weight="bold",
+        )
+        self._italic_font = tkfont.Font(
+            family=base.actual("family"),
+            size=base.actual("size"),
+            slant="italic",
+        )
+        chat = self._chat
+        # "gap" is configured last so its background wins over a bubble's
+        # on the blank spacer line.
+        chat.tag_configure(
+            "bubble-stella",
+            background=_STELLA_BUBBLE,
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=150,
+            spacing1=8,
+            spacing3=0,
+        )
+        chat.tag_configure(
+            "bubble-user",
+            background=_USER_BUBBLE,
+            lmargin1=150,
+            lmargin2=150,
+            rmargin=14,
+            justify="right",
+            spacing1=8,
+            spacing3=0,
+        )
+        chat.tag_configure("head-stella", foreground=_OK, font=self._head_font)
+        chat.tag_configure("body-stella", foreground=_TEXT)
+        chat.tag_configure("head-user", foreground=_ACCENT, font=self._head_font)
+        chat.tag_configure("body-user", foreground="#e6ecf7")
+        chat.tag_configure(
+            "note",
+            foreground=_TEXT_DIM,
+            font=self._italic_font,
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=14,
+            spacing1=6,
+            spacing3=0,
+        )
+        chat.tag_configure(
+            "error",
+            foreground=_ERROR,
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=14,
+            spacing1=8,
+            spacing3=0,
+        )
+        chat.tag_configure(
+            "reminder",
+            foreground=_REMINDER,
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=14,
+            spacing1=8,
+            spacing3=0,
+        )
+        chat.tag_configure("gap", background=_WINDOW)
+
+    def _line(self, text: str, role: str = "note") -> None:
+        chat = self._chat
+        chat.configure(state="normal")
+        if role in ("user", "stella"):
+            bubble = "bubble-user" if role == "user" else "bubble-stella"
+            split = text.find(": ")
+            if 0 < split <= 20:
+                chat.insert(
+                    "end",
+                    text[: split + 2],
+                    (bubble, f"head-{role}"),
+                )
+                chat.insert(
+                    "end",
+                    text[split + 2 :],
+                    (bubble, f"body-{role}"),
+                )
+            else:
+                chat.insert("end", text, (bubble, f"body-{role}"))
+            chat.insert("end", "\n", (bubble,))
+            chat.insert("end", "\n", ("gap",))
+        elif role == "reminder" or role == "error":
+            chat.insert("end", text + "\n", (role,))
+            chat.insert("end", "\n", ("gap",))
+        else:
+            chat.insert("end", text + "\n", ("note",))
+            chat.insert("end", "\n", ("gap",))
+        chat.configure(state="disabled")
+        chat.see("end")
 
     def _send(self) -> None:
         if self._listening:
@@ -147,7 +499,7 @@ class StellaWindow:
         if not user_input or self._busy:
             return
         self._input.delete("1.0", "end")
-        self._line(f"You: {user_input}")
+        self._line(f"You: {user_input}", role="user")
         self._busy = True
         self._begin_turn_timer()
         self._status.configure(text="Stella is working · 0 s")
@@ -209,6 +561,7 @@ class StellaWindow:
             self._mic_button.configure(state="disabled")
         ttk.Label(
             chat,
+            style="Dim.TLabel",
             text=(
                 "Voice input is not available here (no capture command or "
                 "transcription provider)."
@@ -216,7 +569,7 @@ class StellaWindow:
                 else "Listening and speaking are explicit; recordings are "
                 "removed right after transcription."
             ),
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(2, 0))
 
     def _toggle_listen(self) -> None:
         if self._busy:
@@ -273,7 +626,10 @@ class StellaWindow:
             if not self._busy:
                 self._status.configure(text="")
         else:  # pragma: no cover - unknown states must not appear
-            self._line(f"✗ Stella sent an unexpected voice state: {state}")
+            self._line(
+                f"✗ Stella sent an unexpected voice state: {state}",
+                role="error",
+            )
 
     def _handle_voice_error(self, message: str) -> None:
         # A voice failure never corrupts conversation state: the transcript
@@ -284,7 +640,7 @@ class StellaWindow:
         self._mic_button.configure(text="Listen")
         self._mic_cancel.configure(state="disabled")
         self._stop_speaking.configure(state="disabled")
-        self._line(f"✗ {message}")
+        self._line(f"✗ {message}", role="error")
         if not self._busy:
             self._status.configure(text="")
 
@@ -305,12 +661,12 @@ class StellaWindow:
             )
             return
         if outcome.error_message is not None:
-            self._line(f"✗ {outcome.error_message}")
+            self._line(f"✗ {outcome.error_message}", role="error")
             return
         if outcome.response is not None:
-            self._line(f"Stella: {outcome.response}{tail}")
+            self._line(f"Stella: {outcome.response}{tail}", role="stella")
         else:
-            self._line(f"Stella has nothing to add.{tail}")
+            self._line(f"Stella has nothing to add.{tail}", role="stella")
         if outcome.result is not None and outcome.result.tool_result is not None:
             status = outcome_status(outcome.result.tool_result)
             self._line(f"Action outcome: {status.symbol} {status.kind}")
@@ -357,7 +713,7 @@ class StellaWindow:
         if kind == "turn":
             self._handle_turn(payload)
         elif kind == "reminder_delivered":
-            self._line(f"Reminder: {payload}")
+            self._line(f"Reminder: {payload}", role="reminder")
         elif kind == "memories":
             self._show_memories(payload)
         elif kind == "memory_result":
@@ -378,7 +734,7 @@ class StellaWindow:
         elif kind == "voice_state":
             self._handle_voice_state(str(payload))
         elif kind == "voice_transcript":
-            self._line(f"You (voice): {payload}")
+            self._line(f"You (voice): {payload}", role="user")
             self._transcribing = False
             self._mic_cancel.configure(state="disabled")
             self._busy = True
@@ -387,9 +743,11 @@ class StellaWindow:
         elif kind == "voice_error":
             self._handle_voice_error(str(payload))
         elif kind == "error":
-            self._line(f"✗ {payload}")
+            self._line(f"✗ {payload}", role="error")
         else:  # pragma: no cover - unknown kinds must not appear
-            self._line(f"✗ Stella sent an unexpected update: {kind}")
+            self._line(
+                f"✗ Stella sent an unexpected update: {kind}", role="error"
+            )
 
     # ------------------------------------------------------- approvals
 
@@ -410,6 +768,7 @@ class StellaWindow:
         dialog = tk.Toplevel(self._root)
         dialog.title("Stella needs approval")
         dialog.resizable(False, False)
+        dialog.configure(background=_SURFACE)
 
         def answer(approved: bool) -> None:
             self._bridge.resolve_approval(token, approved)
@@ -420,13 +779,19 @@ class StellaWindow:
             if self._status.cget("text") == "":
                 self._status.configure(text="Stella is working...")
 
-        ttk.Label(dialog, text="Stella wants to:").pack(padx=10, pady=(10, 0))
+        ttk.Label(
+            dialog, text="Approval needed", style="Heading.TLabel"
+        ).pack(padx=16, pady=(16, 2), anchor="w")
+        ttk.Label(dialog, text="Stella wants to:", style="Dim.TLabel").pack(
+            padx=16, anchor="w"
+        )
         ttk.Label(
             dialog,
             text=action_summary(request),
             wraplength=420,
             justify="left",
-        ).pack(padx=10, pady=6)
+            style="Heading.TLabel",
+        ).pack(padx=16, pady=(4, 8), anchor="w")
         if preview is not None and preview.detail_lines:
             # App-computed display of what the exact validated arguments
             # mean (current file content, diff, target). Review material
@@ -439,10 +804,17 @@ class StellaWindow:
                 font="TkFixedFont",
                 state="disabled",
                 wrap="none",
+                background=_WINDOW,
+                foreground=_TEXT_DIM,
+                relief="flat",
+                borderwidth=0,
+                highlightthickness=1,
+                highlightbackground=_SURFACE_ALT,
+                padx=8,
+                pady=6,
             )
-            box.configure(foreground="#333333")
-            box.tag_configure("added", foreground="#1a7f37")
-            box.tag_configure("removed", foreground="#b3261e")
+            box.tag_configure("added", foreground=_OK)
+            box.tag_configure("removed", foreground=_ERROR)
             box.pack(padx=10, pady=(0, 4))
             dialog.preview_box = box
             lines = list(preview.detail_lines)
@@ -458,12 +830,15 @@ class StellaWindow:
                 box.insert("end", line + "\n", (tag,) if tag else ())
             box.configure(state="disabled")
         buttons = ttk.Frame(dialog)
-        buttons.pack(pady=10)
+        buttons.pack(pady=14)
         cancel_button = ttk.Button(
             buttons, text="Cancel", command=lambda: answer(False)
         )
         allow_button = ttk.Button(
-            buttons, text="Allow", command=lambda: answer(True)
+            buttons,
+            text="Allow",
+            command=lambda: answer(True),
+            style="Accent.TButton",
         )
         cancel_button.pack(side="left", padx=6)
         allow_button.pack(side="left", padx=6)
@@ -495,6 +870,7 @@ class StellaWindow:
         self._memory_list = tk.Listbox(
             frame, exportselection=False, width=48, height=18
         )
+        _style_listbox(self._memory_list)
         self._memory_list.pack(padx=6)
         actions = ttk.Frame(frame)
         actions.pack(fill="x", padx=6, pady=4)
@@ -504,7 +880,9 @@ class StellaWindow:
         ttk.Button(
             actions, text="Forget selected", command=self._forget_memory
         ).pack(side="left", padx=6)
-        self._memory_status = ttk.Label(frame, text="", wraplength=340)
+        self._memory_status = ttk.Label(
+            frame, text="", wraplength=340, style="Dim.TLabel"
+        )
         self._memory_status.pack(padx=6, pady=4, anchor="w")
 
     def _refresh_memories(self) -> None:
@@ -539,6 +917,7 @@ class StellaWindow:
         self._reminder_list = tk.Listbox(
             frame, exportselection=False, width=48, height=14
         )
+        _style_listbox(self._reminder_list)
         self._reminder_list.pack(padx=6, pady=(6, 2))
         add_row = ttk.Frame(frame)
         add_row.pack(fill="x", padx=6, pady=2)
@@ -552,6 +931,7 @@ class StellaWindow:
         self._reminder_due.pack(side="left", fill="x", expand=True)
         ttk.Label(
             frame,
+            style="Dim.TLabel",
             text="Example due time: 2026-01-01T09:00:00+00:00",
         ).pack(padx=6, anchor="w")
         actions = ttk.Frame(frame)
@@ -612,6 +992,7 @@ class StellaWindow:
         self._history_list = tk.Listbox(
             frame, exportselection=False, width=64, height=18
         )
+        _style_listbox(self._history_list)
         self._history_list.pack(padx=6, pady=(6, 2))
         actions = ttk.Frame(frame)
         actions.pack(fill="x", padx=6, pady=4)
@@ -620,6 +1001,7 @@ class StellaWindow:
         )
         ttk.Label(
             frame,
+            style="Dim.TLabel",
             text="What Stella recently did, newest first. Kept between "
             "launches; metadata only, never file contents.",
             wraplength=460,
@@ -683,6 +1065,7 @@ class StellaWindow:
         ).pack(padx=6, pady=(4, 0), anchor="w")
         ttk.Label(
             frame,
+            style="Dim.TLabel",
             text=(
                 "Conversation text is stored in a bounded local file; "
                 "'stella reflect' turns it into style proposals that "
@@ -713,6 +1096,7 @@ class StellaWindow:
         ).pack(side="left")
         ttk.Label(
             frame,
+            style="Dim.TLabel",
             text=(
                 "Stored approved memories are additionally indexed by the "
                 "chosen embedding so related phrasings can still be found; "
@@ -725,6 +1109,7 @@ class StellaWindow:
         ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
+            style="Dim.TLabel",
             text=(
                 "The API key applies to this session only and is never "
                 "saved or shown again; to keep it permanently, export "
@@ -853,18 +1238,23 @@ class SetupDialog:
         dialog = tk.Toplevel(parent)
         dialog.title("Welcome to Stella")
         dialog.resizable(False, False)
+        dialog.configure(background=_SURFACE)
+        _configure_styles(parent)
         self._dialog = dialog
         ttk.Label(
             dialog,
-            text=(
-                "Welcome to Stella.\n\n"
-                "How would you like Stella to run?"
-            ),
+            text="Welcome to Stella",
+            style="Brand.TLabel",
+        ).pack(padx=16, pady=(16, 2), anchor="w")
+        ttk.Label(
+            dialog,
+            text="How would you like Stella to run?",
+            style="Dim.TLabel",
             justify="left",
-        ).pack(padx=12, pady=(12, 4), anchor="w")
+        ).pack(padx=16, pady=(0, 6), anchor="w")
         self._mode = tk.StringVar(value="ollama")
         choices = ttk.Frame(dialog)
-        choices.pack(fill="x", padx=12)
+        choices.pack(fill="x", padx=16)
         for mode, label in (
             ("ollama", "Local model (Ollama)"),
             ("openai", "OpenAI API"),
@@ -878,7 +1268,7 @@ class SetupDialog:
                 command=self._mode_changed,
             ).pack(anchor="w")
         fields = ttk.Frame(dialog)
-        fields.pack(fill="x", padx=12, pady=6)
+        fields.pack(fill="x", padx=16, pady=6)
         self._fields: dict[str, ttk.Entry] = {}
         for label in ("Model", "Ollama base URL", "API base URL", "API key"):
             row = ttk.Frame(fields)
@@ -898,8 +1288,9 @@ class SetupDialog:
             )
         self._model_list = tk.Listbox(fields, height=5, width=55,
                                       exportselection=False)
+        _style_listbox(self._model_list)
         buttons = ttk.Frame(dialog)
-        buttons.pack(fill="x", padx=12, pady=2)
+        buttons.pack(fill="x", padx=16, pady=4)
         self._refresh_button = ttk.Button(
             buttons, text="Refresh models", command=self.refresh_models
         )
@@ -909,7 +1300,8 @@ class SetupDialog:
         )
         self._test_button.pack(side="left", padx=6)
         self._finish_button = ttk.Button(
-            buttons, text="Start Stella", command=self.finish, state="disabled"
+            buttons, text="Start Stella", command=self.finish, state="disabled",
+            style="Accent.TButton",
         )
         self._finish_button.pack(side="left")
         self.status = ttk.Label(
@@ -917,8 +1309,9 @@ class SetupDialog:
             text="Pick a model, then test the connection.",
             wraplength=420,
             justify="left",
+            style="Dim.TLabel",
         )
-        self.status.pack(padx=12, pady=(2, 12), anchor="w")
+        self.status.pack(padx=16, pady=(4, 16), anchor="w")
         self._model_list.bind("<<ListboxSelect>>", self._model_selected)
         self._mode_changed()
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)

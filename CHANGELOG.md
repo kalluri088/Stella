@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### The window got a real look
+
+- **Dark, calm theme** — one palette across the chat window, the
+  approval dialogs and the first-run setup wizard: deep slate surfaces,
+  a themed font picked from what the system has, and consistent
+  buttons, tabs, lists and fields.
+- **Speech bubbles** — your messages render as right-aligned bubbles,
+  Stella's replies as left ones with a highlighted name; reminders,
+  errors and quiet system notes each have their own readable style
+  instead of one undifferentiated block of text.
+- **Clearer chrome** — a window header, an accent-colored Send button,
+  an italic status line, and approval dialogs that read as a heading,
+  the exact action, the diff preview, and two obvious answers.
+- **Nothing semantic moved** — every word the transcript, status line
+  and dialogs assert is the same text through the same bridge
+  contracts; this is presentation only.
+
 ### Speech starts speaking while the reply is still being written out
 
 - **Sentence by sentence** — a multi-sentence spoken reply is now

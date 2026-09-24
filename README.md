@@ -64,11 +64,11 @@ data. None of them can grant authority. Details:
 
 ## Install
 
-Download `stella-1.0.0-py3-none-any.whl` from the v1.0.0 release and install
+Download `stella-1.1.0-py3-none-any.whl` from the latest release and install
 it with [uv](https://docs.astral.sh/uv/) (or pipx):
 
 ```bash
-uv tool install ./stella-1.0.0-py3-none-any.whl
+uv tool install ./stella-1.1.0-py3-none-any.whl
 ```
 
 To install from source instead:
@@ -76,7 +76,7 @@ To install from source instead:
 ```bash
 git clone <this repository> && cd Stella
 uv build
-uv tool install ./dist/stella-1.0.0-py3-none-any.whl
+uv tool install ./dist/stella-1.1.0-py3-none-any.whl
 ```
 
 This exposes two commands: `stella-ui` (desktop window) and `stella` (CLI).

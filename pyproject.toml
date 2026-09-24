@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stella"
-version = "1.0.0"
+version = "1.1.0"
 description = "Local-first desktop assistant for Linux: chat, user-controlled memory, approved file actions, and one-shot reminders"
 readme = "README.md"
 requires-python = ">=3.12"

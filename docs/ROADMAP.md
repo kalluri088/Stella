@@ -40,7 +40,7 @@ mechanism — not an aspiration.
    particular model's quirks (`src/stella/ollama_client.py`,
    `src/stella/llm.py`).
 
-## Stage A — a functional daily assistant (target: 1.1.0)
+## Stage A — a functional daily assistant (complete — released in 1.1.0)
 
 The bar for Stage A: "I should be talking, asking, and it should be
 working and helping me, even if not the fastest."

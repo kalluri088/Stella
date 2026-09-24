@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-09-24
+
 ### First-run setup and model configuration
 
 - **Setup window on first launch** — with no configuration, `stella-ui`

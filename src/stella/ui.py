@@ -89,14 +89,18 @@ class StellaWindow:
         notebook.pack(side="left", fill="y", padx=(8, 0))
         self._build_memory_tab(notebook)
         self._build_reminder_tab(notebook)
+        self._build_history_tab(notebook)
         self._build_settings_tab(notebook, settings)
 
         self._line(
             "Ask Stella anything. The tabs manage memories, reminders, "
-            "and the minimal local settings."
+            "recent actions, and the minimal local settings."
         )
         bridge.post_memories()
         bridge.post_reminders()
+        # Action history is durable, so the History tab shows what Stella
+        # did in earlier sessions, not only in this window.
+        bridge.post_history()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._tick)
 
@@ -261,6 +265,8 @@ class StellaWindow:
             self._memory_status.configure(text=str(payload))
         elif kind == "reminders":
             self._show_reminders(payload)
+        elif kind == "history":
+            self._show_history(payload)
         elif kind == "reminder_result":
             status: OutcomeStatus = payload
             self._reminder_status.configure(
@@ -493,6 +499,38 @@ class StellaWindow:
             return
         content, _due = self._reminder_rows[selected[0]]
         self._bridge.post_reminder_cancel(content)
+
+    # ---------------------------------------------------------- history
+
+    def _build_history_tab(self, notebook: ttk.Notebook) -> None:
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="History")
+        self._history_list = tk.Listbox(
+            frame, exportselection=False, width=64, height=18
+        )
+        self._history_list.pack(padx=6, pady=(6, 2))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", padx=6, pady=4)
+        ttk.Button(actions, text="Refresh", command=self._refresh_history).pack(
+            side="left"
+        )
+        ttk.Label(
+            frame,
+            text="What Stella recently did, newest first. Kept between "
+            "launches; metadata only, never file contents.",
+            wraplength=460,
+        ).pack(padx=6, anchor="w")
+
+    def _refresh_history(self) -> None:
+        self._bridge.post_history()
+
+    def _show_history(self, rows: tuple[str, ...]) -> None:
+        self._history_list.delete(0, "end")
+        if not rows:
+            self._history_list.insert("end", "(no actions recorded yet)")
+            return
+        for row in rows:
+            self._history_list.insert("end", row)
 
     # --------------------------------------------------------- settings
 

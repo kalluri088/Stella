@@ -720,3 +720,52 @@ def test_settings_apply_without_a_key_leaves_the_environment_alone(
     finally:
         bridge.stop()
         root.destroy()
+
+
+class EchoToolBrain(Brain):
+    """Dispatches the safe echo capability once, then answers."""
+
+    def __init__(self) -> None:
+        self.first = True
+
+    def decide(self, context: Context) -> Decision:
+        if self.first:
+            self.first = False
+            return Decision(
+                DecisionKind.TOOL,
+                capability="echo",
+                arguments={"message": "recorded"},
+            )
+        return Decision(kind=DecisionKind.ANSWER, content="after")
+
+
+def test_window_history_tab_lists_dispatched_actions() -> None:
+    # Stage A A3: the durable trail must be visible in the window, and a
+    # turn that dispatches must refresh it without pressing Refresh.
+    root, window, bridge, _ = make_window(brain=EchoToolBrain())
+    try:
+        pump(root, 0.4)
+        rows = [
+            window._history_list.get(i)
+            for i in range(window._history_list.size())
+        ]
+        assert rows == ["(no actions recorded yet)"]
+
+        window._input.insert("1.0", "echo something")
+        window._send()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            root.update()
+            rows = [
+                window._history_list.get(i)
+                for i in range(window._history_list.size())
+            ]
+            if any("echo" in row for row in rows):
+                break
+            time.sleep(0.02)
+    finally:
+        bridge.stop()
+        root.destroy()
+
+    assert any("echo" in row and "done" in row for row in rows)
+    assert "recorded" not in "".join(rows)

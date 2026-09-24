@@ -57,13 +57,17 @@ working and helping me, even if not the fastest."
   for already-validated arguments and never part of the authorization
   token (`ActionPreview` in `src/stella/tools.py`,
   `docs/APPROVAL_BOUNDARY.md`).
-- **A3. Durable action history.** Replace the in-memory 256-record audit
-  deque with a small SQLite action-history table so what Stella did
-  survives restarts; keep it metadata-only (no file contents), reusing
-  the existing `AuditRecord` shape.
-- **A4. `network_read` receipts.** Fetches mutate nothing but should
-  still leave a verifiable trace: record URL, byte count and outcome so
-  "what did Stella read?" is answerable after the fact.
+- **A3. Durable action history — done.** The bounded audit trail is now
+  an injectable store (`ActionHistory` in `src/stella/history.py`):
+  SQLite-backed in the application (`STELLA_HISTORY_DB`, retention
+  enforced on every append) and in-memory by default for tests. Entries
+  reuse the `AuditRecord` shape, stay metadata-only, and are visible in
+  the desktop History tab (`docs/AUDIT_LOGGING.md`).
+- **A4. `network_read` receipts — done.** Every fetch attempt carries a
+  `fetch` receipt (`verified` + byte count, or `failed`/`invalid`) that
+  lands in the durable history with the validated URL, so "what did
+  Stella read?" is answerable after the fact
+  (`docs/NETWORK_READ.md`).
 - **A5. Working feedback and cancel.** A turn can take minutes on a
   local model (600 s provider timeout today). Show elapsed time while
   working and offer a cancel that stops the turn cleanly without

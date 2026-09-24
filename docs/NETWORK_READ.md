@@ -26,8 +26,11 @@ LLM proposes network_read + {"url": "..."}
 ```
 
 The model cannot supply approval, risk, headers, cookies, credentials, proxy
-settings, redirects, timeouts, or response limits. The dispatcher records the
-validated action and outcome in the existing audit trail.
+settings, redirects, timeouts, or response limits. Every fetch attempt ends
+with a `fetch` receipt — `verified` with the fetched byte count on success,
+`failed` (transport, status, content, or size) or `invalid` (blocked
+destination) on failure — recorded with the validated URL in the durable
+action history and shown in the desktop History tab.
 
 ## URL and network policy
 

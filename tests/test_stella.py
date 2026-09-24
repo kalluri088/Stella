@@ -494,7 +494,11 @@ def test_stella_dispatches_network_read_and_sends_untrusted_result_to_llm(
 
     result = stella.process(Context(user_input="Read the public note."))
 
-    assert result.tool_result == ToolResult(success=True, output="public note")
+    assert result.tool_result == ToolResult(
+        success=True,
+        output="public note",
+        action_receipt=ActionReceipt("fetch", "verified", 11),
+    )
     assert result.response == "The public note says: public note"
     payload = json.loads(llm.messages[0][1].content)
     assert payload["tool_result"] == {

@@ -301,8 +301,10 @@ only after a `Brain` returns a tool decision. Stella delegates to the trusted
 evaluates trusted risk classification, checks exact application approval when
 required, executes the selected tool, and returns a `ToolResult` for one final
 natural-language response. The final call does not choose another action or
-execute another tool. It also keeps a process-local `AuditRecord` for each
-dispatch attempt. There is no plugin registry or dynamic discovery layer.
+execute another tool. It also records an `AuditRecord` for each dispatch
+attempt in a bounded action history (`stella.history`): process-local by
+default, SQLite-backed in the desktop application so it survives restarts.
+There is no plugin registry or dynamic discovery layer.
 
 ### Stella orchestration
 

@@ -603,7 +603,9 @@ def test_voice_turn_follows_the_typed_session_path() -> None:
         index for index, kind in enumerate(kinds) if kind[0] == "turn"
     )
     assert transcript_at < turn_at
-    outcome: TurnOutcome = events[-1].payload
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
     assert outcome.response == "the action completed"
     session = bridge._application.session
     assert session.history == [
@@ -858,7 +860,9 @@ def test_voice_cannot_bypass_tool_approval() -> None:
 
     assert request.arguments == {"value": "x"}
     assert tool.executions == []
-    outcome: TurnOutcome = events[-1].payload
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
     assert outcome.result is not None
     assert outcome.result.tool_result is not None
     assert outcome_status(outcome.result.tool_result).kind == "denied"
@@ -895,7 +899,8 @@ def test_spoken_approval_words_do_not_manufacture_authority() -> None:
     # The only execution came from the broker-approved dispatcher request,
     # with the original arguments — not from the spoken words.
     assert tool.executions == [{"value": "x"}]
-    assert events[-1].payload.response == "the action completed"
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == "the action completed"
     bridge.stop()
 
 
@@ -967,7 +972,9 @@ def test_voice_preserves_verification_statuses(
     events = wait_for_event(bridge, "turn")
 
     assert tool.executions == [{"value": "x"}]
-    outcome: TurnOutcome = events[-1].payload
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
     assert outcome.result is not None
     assert outcome.result.tool_result is not None
     status = outcome_status(outcome.result.tool_result)

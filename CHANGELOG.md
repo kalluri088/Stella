@@ -43,6 +43,22 @@
   verified post-execution receipt remains the ground truth. Shown in
   both the CLI prompt and the Tk approval dialog.
 
+### Durable action history
+
+- **What Stella did survives restarts** — the dispatcher's bounded
+  audit trail moved from a process-memory deque into a small SQLite
+  history file (`stella_action_history.db`, override with
+  `STELLA_HISTORY_DB`). Records stay metadata-only: capability,
+  redacted argument summaries, risk, approval outcome, result and the
+  tool's verified receipt — never file contents or tool output. The
+  retention of the newest 256 entries is enforced on every append, and
+  a new History tab in the desktop window lists recent actions,
+  newest first.
+- **`network_read` receipts** — every fetch attempt now ends with a
+  `fetch` receipt: `verified` with the byte count on success, or an
+  honest `failed`/`invalid` outcome otherwise, recorded alongside the
+  validated URL in the history.
+
 ## 1.0.0 — 2026-09-23
 
 First public release of Stella, a local-first desktop assistant for Linux.

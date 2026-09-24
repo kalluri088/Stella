@@ -1,8 +1,11 @@
 import datetime as dt
+import json
+import sqlite3
 from unittest.mock import patch
 
 import pytest
 
+from stella.history import SQLiteActionHistory
 from stella.tools import (
     MAX_AUDIT_RECORDS,
     MAX_PREVIEW_LINES,
@@ -1174,7 +1177,9 @@ def test_network_read_blocks_local_and_private_destinations(hostname: str) -> No
     result = NetworkReadTool().execute({"url": url})
 
     assert result == ToolResult(
-        success=False, output="Network destination blocked."
+        success=False,
+        output="Network destination blocked.",
+        action_receipt=ActionReceipt("fetch", "invalid"),
     )
 
 
@@ -1204,7 +1209,11 @@ def test_network_read_contains_transport_failures(monkeypatch) -> None:
 
     result = NetworkReadTool().execute({"url": "https://example.com/notes.txt"})
 
-    assert result == ToolResult(success=False, output="Network request failed.")
+    assert result == ToolResult(
+        success=False,
+        output="Network request failed.",
+        action_receipt=ActionReceipt("fetch", "failed"),
+    )
 
 
 class FakeNetworkSocket:
@@ -1261,7 +1270,11 @@ def test_network_read_executes_bounded_text_response(monkeypatch) -> None:
 
     result = NetworkReadTool().execute({"url": "https://example.com/notes.txt"})
 
-    assert result == ToolResult(success=True, output="hello")
+    assert result == ToolResult(
+        success=True,
+        output="hello",
+        action_receipt=ActionReceipt("fetch", "verified", 5),
+    )
     assert connection.requested == (
         "GET",
         "/notes.txt",
@@ -1297,7 +1310,11 @@ def test_network_read_rejects_unsupported_or_invalid_content(
 
     result = NetworkReadTool().execute({"url": "https://example.com/notes.txt"})
 
-    assert result == ToolResult(success=False, output=expected)
+    assert result == ToolResult(
+        success=False,
+        output=expected,
+        action_receipt=ActionReceipt("fetch", "failed"),
+    )
 
 
 def test_network_read_rejects_redirect_and_oversized_response(monkeypatch) -> None:
@@ -1312,7 +1329,9 @@ def test_network_read_rejects_redirect_and_oversized_response(monkeypatch) -> No
         lambda hostname, address, timeout: redirect,
     )
     assert NetworkReadTool().execute({"url": "https://example.com/"}) == ToolResult(
-        success=False, output="Network request failed."
+        success=False,
+        output="Network request failed.",
+        action_receipt=ActionReceipt("fetch", "failed"),
     )
 
     oversized = FakeNetworkConnection(FakeNetworkResponse(b"x"))
@@ -1326,7 +1345,9 @@ def test_network_read_rejects_redirect_and_oversized_response(monkeypatch) -> No
         lambda hostname, address, timeout: oversized,
     )
     assert NetworkReadTool().execute({"url": "https://example.com/"}) == ToolResult(
-        success=False, output="Network response too large."
+        success=False,
+        output="Network response too large.",
+        action_receipt=ActionReceipt("fetch", "failed"),
     )
 
 
@@ -1353,7 +1374,11 @@ def test_network_read_is_dangerous_and_requires_exact_approval(monkeypatch) -> N
         "network_read",
         arguments,
         ToolApproval(request=request, approved=True),
-    ) == ToolResult(success=True, output="hello")
+    ) == ToolResult(
+        success=True,
+        output="hello",
+        action_receipt=ActionReceipt("fetch", "verified", 5),
+    )
 
 
 def test_network_read_connected_peer_is_revalidated() -> None:
@@ -1752,3 +1777,105 @@ def test_dispatcher_execution_and_verification_ignore_previews(
     )
     assert allowed.success is True
     assert (workspace / "notes.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_dispatcher_history_defaults_to_bounded_in_memory_trail() -> None:
+    dispatcher = ToolDispatcher([EchoTool()])
+
+    for index in range(MAX_AUDIT_RECORDS + 10):
+        dispatcher.execute("echo", {"message": f"m{index}"})
+
+    records = dispatcher.audit_records
+    assert len(records) == MAX_AUDIT_RECORDS
+    assert records[0].arguments == {"message": f"m{10}"}
+    assert records[-1].arguments == {"message": f"m{MAX_AUDIT_RECORDS + 9}"}
+
+
+def test_dispatcher_audit_records_survive_recreation_with_sqlite_history(
+    tmp_path,
+) -> None:
+    path = tmp_path / "history.db"
+    first = ToolDispatcher([EchoTool()], history=SQLiteActionHistory(path, 256))
+    first.execute("echo", {"message": "hello"})
+
+    second = ToolDispatcher([EchoTool()], history=SQLiteActionHistory(path, 256))
+    records = second.audit_records
+
+    assert len(records) == 1
+    assert records[0].capability == "echo"
+    assert records[0].arguments == {"message": "hello"}
+    assert records[0].execution_success is True
+    assert records[0].action_receipt is None
+
+
+def test_sqlite_history_redacts_large_argument_values(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = tmp_path / "history.db"
+    secret = "TOP-SECRET-CONTENT " * 20
+    dispatcher = ToolDispatcher(
+        [FileSystemWriteTool(workspace)], history=SQLiteActionHistory(path, 256)
+    )
+    arguments = {"path": "notes.txt", "content": secret}
+    dispatcher.execute(
+        "filesystem_write",
+        arguments,
+        ToolApproval(
+            request=ApprovalRequest("filesystem_write", arguments), approved=True
+        ),
+    )
+
+    rows = sqlite3.connect(path).execute(
+        "SELECT entry FROM action_history"
+    ).fetchall()
+    entry = json.loads(rows[0][0])
+
+    assert "TOP-SECRET" not in rows[0][0]
+    assert entry["arguments"]["content"] == f"<{len(secret)} characters>"
+    assert entry["action_receipt"]["status"] == "verified"
+
+
+def test_network_read_verified_receipt_lands_in_history(monkeypatch) -> None:
+    connection = FakeNetworkConnection(FakeNetworkResponse(b"hello"))
+    monkeypatch.setattr(
+        "stella.tools.NetworkReadTool._resolve_public_addresses",
+        classmethod(lambda cls, hostname: ("93.184.216.34",)),
+    )
+    monkeypatch.setattr(
+        "stella.tools._ValidatedHTTPSConnection",
+        lambda hostname, address, timeout: connection,
+    )
+    dispatcher = ToolDispatcher([NetworkReadTool()])
+    arguments = {"url": "https://example.com/notes.txt"}
+
+    dispatcher.execute(
+        "network_read",
+        arguments,
+        ToolApproval(request=ApprovalRequest("network_read", arguments), approved=True),
+    )
+
+    record = dispatcher.audit_records[-1]
+    assert record.capability == "network_read"
+    assert record.arguments == arguments
+    assert record.approval_granted is True
+    assert record.execution_success is True
+    assert record.action_receipt == ActionReceipt("fetch", "verified", 5)
+
+
+def test_network_read_failure_receipt_lands_in_history(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "stella.tools.NetworkReadTool._resolve_public_addresses",
+        classmethod(lambda cls, hostname: None),
+    )
+    dispatcher = ToolDispatcher([NetworkReadTool()])
+    arguments = {"url": "https://example.com/notes.txt"}
+
+    dispatcher.execute(
+        "network_read",
+        arguments,
+        ToolApproval(request=ApprovalRequest("network_read", arguments), approved=True),
+    )
+
+    record = dispatcher.audit_records[-1]
+    assert record.execution_success is False
+    assert record.action_receipt == ActionReceipt("fetch", "invalid")

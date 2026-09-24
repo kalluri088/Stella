@@ -776,7 +776,9 @@ def test_bridge_stays_alive_after_a_failing_turn() -> None:
     bridge.post_turn("do something")
     events = wait_for_event(bridge, "turn")
 
-    outcome: TurnOutcome = events[-1].payload
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
     assert outcome.error_message is not None
     assert "provider exploded" in outcome.error_message
     assert "Traceback (most recent call last)" not in outcome.error_message
@@ -820,7 +822,9 @@ def test_bridge_denied_approval_executes_nothing() -> None:
     bridge.resolve_approval(token, False)
     events = wait_for_event(bridge, "turn")
 
-    outcome: TurnOutcome = events[-1].payload
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
     assert tool.executions == []
     assert request.arguments == {"value": "x"}
     assert outcome.result is not None
@@ -856,7 +860,9 @@ def test_bridge_allowed_approval_runs_the_original_arguments_only() -> None:
     events = wait_for_event(bridge, "turn")
 
     assert tool.executions == [{"value": "x"}]
-    outcome: TurnOutcome = events[-1].payload
+    outcome: TurnOutcome = next(
+        event.payload for event in events if event.kind == "turn"
+    )
     assert outcome.result is not None
     bridge.stop()
 
@@ -1260,6 +1266,7 @@ def make_ollama_app(tmp_path: Path, base_url: str) -> StellaApplication:
             ollama_base_url=base_url,
             memory_db=str(tmp_path / "m.db"),
             reminders_db=str(tmp_path / "r.db"),
+            history_db=str(tmp_path / "h.db"),
             workspace=str(tmp_path / "ws"),
         )
     )
@@ -1329,3 +1336,113 @@ def test_reachable_provider_reply_answers_through_the_session(
         assert outcome.result.tool_result is None
     finally:
         application.close()
+
+
+# ------------------------------------------------------ durable history (A3/A4)
+
+
+def test_settings_read_history_db_from_environment(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("STELLA_MODEL", "test-model")
+    monkeypatch.setenv("STELLA_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("STELLA_HISTORY_DB", str(tmp_path / "h.db"))
+
+    settings = StellaSettings.from_environment()
+
+    assert settings.history_db == str(tmp_path / "h.db")
+
+
+def test_build_application_uses_durable_history(tmp_path) -> None:
+    from stella.history import SQLiteActionHistory
+
+    application = make_ollama_app(tmp_path, "http://127.0.0.1:1")
+
+    try:
+        history = application.session.stella.tools.history
+        assert isinstance(history, SQLiteActionHistory)
+        assert (tmp_path / "h.db").exists()
+    finally:
+        application.close()
+
+
+def test_action_history_survives_application_rebuild(tmp_path) -> None:
+    application = make_ollama_app(tmp_path, "http://127.0.0.1:1")
+    try:
+        application.session.stella.tools.history.append(
+            {
+                "capability": "filesystem_write",
+                "arguments": {"path": "notes.txt"},
+                "risk_level": "dangerous",
+                "approval_required": True,
+                "approval_granted": True,
+                "execution_success": True,
+                "timestamp": "2026-09-24T00:00:00+00:00",
+                "action_receipt": None,
+            }
+        )
+    finally:
+        application.close()
+
+    relaunched = make_ollama_app(tmp_path, "http://127.0.0.1:1")
+    try:
+        records = relaunched.session.stella.tools.audit_records
+        assert len(records) == 1
+        assert records[0].capability == "filesystem_write"
+        assert records[0].approval_granted is True
+    finally:
+        relaunched.close()
+
+
+def test_bridge_emits_history_after_a_dispatched_turn() -> None:
+    tool = DangerousTool()
+    stella = Stella(
+        ScriptedBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="approval_test",
+                    arguments={"value": "x"},
+                ),
+                Decision(kind=DecisionKind.ANSWER, content="done"),
+            ]
+        ),
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_turn("run the dangerous test action")
+    token, _request = bridge_approval_request(bridge)
+    bridge.resolve_approval(token, True)
+    # The bridge emits "history" immediately after "turn" for a turn that
+    # dispatched, so waiting for the newer kind cannot miss it.
+    events = wait_for_event(bridge, "history")
+
+    rows = next(event.payload for event in events if event.kind == "history")
+    assert len(rows) == 1
+    assert "approval_test" in rows[0]
+    assert "done" in rows[0]
+    bridge.stop()
+
+
+def test_bridge_emits_no_history_event_for_a_turn_without_dispatch() -> None:
+    bridge = make_bridge(make_recording_stella())
+
+    bridge.post_turn("just talk")
+    events = wait_for_event(bridge, "turn")
+    time.sleep(0.2)
+    events.extend(bridge.poll())
+
+    assert [event.kind for event in events] == ["turn"]
+    bridge.stop()
+
+
+def test_bridge_post_history_answers_refresh_without_dispatches() -> None:
+    bridge = make_bridge(make_recording_stella())
+
+    bridge.post_history()
+    events = wait_for_event(bridge, "history")
+
+    payload = next(event.payload for event in events if event.kind == "history")
+    assert payload == ()
+    bridge.stop()

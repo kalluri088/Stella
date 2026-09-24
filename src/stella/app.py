@@ -32,6 +32,7 @@ from stella.context import (
     InputPart,
     InputProvenance,
 )
+from stella.history import SQLiteActionHistory
 from stella.llm import Message
 from stella.memory import Memory, MemoryItem, SQLiteMemory
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
@@ -39,8 +40,10 @@ from stella.openai_client import OpenAILLMClient
 from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
+    MAX_AUDIT_RECORDS,
     ActionPreview,
     ApprovalRequest,
+    AuditRecord,
     DateTimeTool,
     FileSystemDeleteTool,
     FileSystemEditTool,
@@ -146,6 +149,25 @@ def outcome_status(result: ToolResult | None) -> OutcomeStatus:
     return OutcomeStatus(receipt.status, "✗", result.output)
 
 
+def _history_outcome(record: AuditRecord) -> str:
+    """One honest outcome word for a History row.
+
+    Denied and "approval required" both arrive as an ungranted approval
+    (the trail keeps the same fields for both), so they share a word
+    rather than claim a distinction the record cannot make.
+    """
+
+    if record.approval_granted is False:
+        return "not approved"
+    if record.execution_success:
+        receipt = record.action_receipt
+        if receipt is not None and receipt.status == "verified":
+            return "done · verified"
+        return "done"
+    receipt = record.action_receipt
+    return f"failed · {receipt.status}" if receipt is not None else "failed"
+
+
 @dataclass(frozen=True)
 class TurnOutcome:
     """The bounded result of one conversation turn."""
@@ -237,6 +259,10 @@ def default_reminders_db() -> str:
     return str(default_data_dir() / "stella_reminders.db")
 
 
+def default_history_db() -> str:
+    return str(default_data_dir() / "stella_action_history.db")
+
+
 def default_workspace() -> str:
     return str(default_data_dir() / "workspace")
 
@@ -251,6 +277,7 @@ class StellaSettings:
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     memory_db: str = field(default_factory=default_memory_db)
     reminders_db: str = field(default_factory=default_reminders_db)
+    history_db: str = field(default_factory=default_history_db)
     workspace: str = field(default_factory=default_workspace)
     voice_transcription: str = "auto"
     voice_speech: str = "auto"
@@ -287,6 +314,9 @@ class StellaSettings:
             ),
             "reminders_db": os.environ.get(
                 "STELLA_REMINDERS_DB", default_reminders_db()
+            ),
+            "history_db": os.environ.get(
+                "STELLA_HISTORY_DB", default_history_db()
             ),
             "workspace": os.environ.get(
                 "STELLA_WORKSPACE", default_workspace()
@@ -368,6 +398,9 @@ class StellaApplication:
         reminders = self.session.stella.reminders
         if isinstance(reminders, SQLiteReminderStore):
             reminders.close()
+        history = self.session.stella.tools.history
+        if isinstance(history, SQLiteActionHistory):
+            history.close()
 
 
 def build_application(settings: StellaSettings) -> StellaApplication:
@@ -402,9 +435,11 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # so ensure every configured location exists before opening it.
     Path(settings.memory_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.reminders_db).parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.history_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.workspace).mkdir(parents=True, exist_ok=True)
     memory = SQLiteMemory(settings.memory_db)
     reminders = SQLiteReminderStore(settings.reminders_db)
+    history = SQLiteActionHistory(settings.history_db, MAX_AUDIT_RECORDS)
     workspace = settings.workspace
     tools = ToolDispatcher(
         [
@@ -428,7 +463,8 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             ReminderCreateTool(reminders),
             ReminderListTool(reminders),
             ReminderCancelTool(reminders),
-        ]
+        ],
+        history=history,
     )
     stella = Stella(
         brain=LLMBrain(llm, tools),
@@ -896,6 +932,7 @@ class StellaBridge:
         self._application: StellaApplication | None = None
         self._memory: MemoryPanel | None = None
         self._reminders: ReminderPanel | None = None
+        self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
         self._playback: threading.Thread | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
@@ -1012,6 +1049,10 @@ class StellaBridge:
         self._check_due_reminders()
         outcome = session.run_turn(user_input)
         self._emit("turn", outcome)
+        # The History panel tracks what the turn actually did without
+        # waiting for the user to press Refresh; turns that touched no
+        # capability change nothing and emit nothing.
+        self._emit_history_if_new()
         return outcome
 
     def post_reminder_check(self) -> None:
@@ -1205,6 +1246,39 @@ class StellaBridge:
             self._emit("reminders", panel.pending_rows())
 
         self._post(handle)
+
+    def post_history(self) -> None:
+        """Send the newest action-history rows to the UI."""
+
+        def handle() -> None:
+            self._emit("history", self._history_rows())
+
+        self._post(handle)
+
+    def _emit_history_if_new(self) -> None:
+        records = self._require_session().stella.tools.audit_records
+        if not records:
+            return
+        stamp = records[-1].timestamp
+        if stamp != self._history_stamp:
+            self._history_stamp = stamp
+            self._emit("history", self._history_rows())
+
+    def _history_rows(self, limit: int = 50) -> tuple[str, ...]:
+        """Display rows for the History panel: newest first, metadata only.
+
+        Arguments never appear here; only the capability, an outcome word
+        and the dispatch time. File contents and tool output were already
+        kept out of the durable trail by the dispatcher's redaction.
+        """
+
+        records = self._require_session().stella.tools.audit_records[-limit:]
+        return tuple(
+            f"{record.timestamp[:16]}  "
+            f"{record.capability or 'unknown'}  "
+            f"{_history_outcome(record)}"
+            for record in reversed(records)
+        )
 
     def post_apply_settings(self, settings: StellaSettings) -> None:
         def handle() -> None:

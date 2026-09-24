@@ -11,13 +11,13 @@ import socket
 import ssl
 import time
 from abc import ABC, abstractmethod
-from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PureWindowsPath
 from urllib.parse import SplitResult, urlsplit
 
+from stella.history import ActionHistory, InMemoryActionHistory
 from stella.memory import Memory, MemoryItem
 from stella.reminders import ReminderStore, reminder_validation_error
 
@@ -215,7 +215,7 @@ def action_summary(request: ApprovalRequest) -> str:
 
 @dataclass(frozen=True)
 class AuditRecord:
-    """A trusted in-memory record of one tool dispatch attempt.
+    """A trusted record of one tool dispatch attempt.
 
     Argument values are redacted to length summaries above
     ``MAX_AUDIT_ARGUMENT_CHARS`` so a long-lived process does not retain
@@ -229,6 +229,7 @@ class AuditRecord:
     approval_granted: bool | None
     execution_success: bool
     timestamp: str
+    action_receipt: ActionReceipt | None = None
 
 
 MAX_AUDIT_RECORDS = 256
@@ -245,6 +246,58 @@ def _audit_argument_value(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return f"<{type(value).__name__}>"
+
+
+def _audit_entry(record: AuditRecord) -> dict[str, object]:
+    """Serialize one audit record into a JSON-safe history entry."""
+
+    receipt = record.action_receipt
+    return {
+        "capability": record.capability,
+        "arguments": {
+            key: _audit_argument_value(value)
+            for key, value in record.arguments.items()
+        },
+        "risk_level": record.risk_level.value if record.risk_level else None,
+        "approval_required": record.approval_required,
+        "approval_granted": record.approval_granted,
+        "execution_success": record.execution_success,
+        "timestamp": record.timestamp,
+        "action_receipt": (
+            {
+                "action": receipt.action,
+                "status": receipt.status,
+                "size_bytes": receipt.size_bytes,
+            }
+            if receipt is not None
+            else None
+        ),
+    }
+
+
+def _audit_record(entry: dict[str, object]) -> AuditRecord:
+    """Rebuild one audit record from a stored history entry."""
+
+    receipt = entry.get("action_receipt")
+    risk_level = entry.get("risk_level")
+    return AuditRecord(
+        capability=entry.get("capability"),  # type: ignore[arg-type]
+        arguments=dict(entry.get("arguments") or {}),
+        risk_level=RiskLevel(risk_level) if risk_level else None,
+        approval_required=bool(entry.get("approval_required")),
+        approval_granted=entry.get("approval_granted"),  # type: ignore[arg-type]
+        execution_success=bool(entry.get("execution_success")),
+        timestamp=str(entry.get("timestamp", "")),
+        action_receipt=(
+            ActionReceipt(
+                receipt["action"],  # type: ignore[index]
+                receipt["status"],  # type: ignore[index]
+                receipt.get("size_bytes"),  # type: ignore[union-attr]
+            )
+            if isinstance(receipt, dict)
+            else None
+        ),
+    )
 
 
 class Tool(ABC):
@@ -2065,7 +2118,11 @@ class NetworkReadTool(Tool):
             return ToolResult(success=False, output="Invalid tool arguments.")
         addresses = self._resolve_public_addresses(parsed.hostname or "")
         if addresses is None:
-            return ToolResult(success=False, output="Network destination blocked.")
+            return ToolResult(
+                success=False,
+                output="Network destination blocked.",
+                action_receipt=ActionReceipt("fetch", "invalid"),
+            )
 
         connection: _ValidatedHTTPSConnection | None = None
         deadline = time.monotonic() + self.TOTAL_TIMEOUT
@@ -2089,14 +2146,24 @@ class NetworkReadTool(Tool):
             response = connection.getresponse()
             if time.monotonic() >= deadline:
                 return ToolResult(
-                    success=False, output="Network request timed out."
+                    success=False,
+                    output="Network request timed out.",
+                    action_receipt=ActionReceipt("fetch", "failed"),
                 )
             if not 200 <= response.status < 300:
-                return ToolResult(success=False, output="Network request failed.")
+                return ToolResult(
+                    success=False,
+                    output="Network request failed.",
+                    action_receipt=ActionReceipt("fetch", "failed"),
+                )
             if not self._content_type_is_utf8_text(
                 response.getheader("Content-Type")
             ):
-                return ToolResult(success=False, output="Network content rejected.")
+                return ToolResult(
+                    success=False,
+                    output="Network content rejected.",
+                    action_receipt=ActionReceipt("fetch", "failed"),
+                )
 
             content_length = response.getheader("Content-Length")
             if content_length is not None:
@@ -2107,11 +2174,15 @@ class NetworkReadTool(Tool):
                         or content_length_value > self.MAX_RESPONSE_SIZE
                     ):
                         return ToolResult(
-                            success=False, output="Network response too large."
+                            success=False,
+                            output="Network response too large.",
+                            action_receipt=ActionReceipt("fetch", "failed"),
                         )
                 except ValueError:
                     return ToolResult(
-                        success=False, output="Network request failed."
+                        success=False,
+                        output="Network request failed.",
+                        action_receipt=ActionReceipt("fetch", "failed"),
                     )
 
             body = bytearray()
@@ -2119,7 +2190,9 @@ class NetworkReadTool(Tool):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return ToolResult(
-                        success=False, output="Network request timed out."
+                        success=False,
+                        output="Network request timed out.",
+                        action_receipt=ActionReceipt("fetch", "failed"),
                     )
                 if connection.sock is not None:
                     connection.sock.settimeout(min(self.READ_TIMEOUT, remaining))
@@ -2131,15 +2204,29 @@ class NetworkReadTool(Tool):
                 body.extend(chunk)
                 if len(body) > self.MAX_RESPONSE_SIZE:
                     return ToolResult(
-                        success=False, output="Network response too large."
+                        success=False,
+                        output="Network response too large.",
+                        action_receipt=ActionReceipt("fetch", "failed"),
                     )
             try:
                 output = bytes(body).decode("utf-8")
             except UnicodeDecodeError:
-                return ToolResult(success=False, output="Network content is not valid UTF-8.")
-            return ToolResult(success=True, output=output)
+                return ToolResult(
+                    success=False,
+                    output="Network content is not valid UTF-8.",
+                    action_receipt=ActionReceipt("fetch", "failed"),
+                )
+            return ToolResult(
+                success=True,
+                output=output,
+                action_receipt=ActionReceipt("fetch", "verified", len(body)),
+            )
         except (OSError, RuntimeError, TimeoutError):
-            return ToolResult(success=False, output="Network request failed.")
+            return ToolResult(
+                success=False,
+                output="Network request failed.",
+                action_receipt=ActionReceipt("fetch", "failed"),
+            )
         finally:
             if connection is not None:
                 connection.close()
@@ -2148,22 +2235,42 @@ class NetworkReadTool(Tool):
 class ToolDispatcher:
     """Application-owned exact-capability dispatcher for approved tools."""
 
-    def __init__(self, tools: Iterable[Tool] = ()) -> None:
+    def __init__(
+        self,
+        tools: Iterable[Tool] = (),
+        history: ActionHistory | None = None,
+    ) -> None:
         self._tools: dict[str, Tool] = {}
-        self._audit_records: deque[AuditRecord] = deque(maxlen=MAX_AUDIT_RECORDS)
+        # The audit trail is a bounded durable store by default in the
+        # application; a plain in-memory trail keeps tests and library
+        # users independent of any file.
+        self._history: ActionHistory = (
+            history
+            if history is not None
+            else InMemoryActionHistory(MAX_AUDIT_RECORDS)
+        )
         for tool in tools:
             self.register(tool)
+
+    @property
+    def history(self) -> ActionHistory:
+        """The bounded store behind this dispatcher's audit trail."""
+
+        return self._history
 
     @property
     def audit_records(self) -> list[AuditRecord]:
         """Return a snapshot of the most recent trusted dispatch records.
 
-        The trail is bounded to ``MAX_AUDIT_RECORDS``; the oldest records are
-        evicted so a long-lived desktop process cannot accumulate unbounded
-        audit state.
+        The trail is bounded to ``MAX_AUDIT_RECORDS``; the oldest records
+        are evicted so a long-lived desktop process cannot accumulate
+        unbounded audit state.
         """
 
-        return list(self._audit_records)
+        return [
+            _audit_record(entry)
+            for entry in self._history.recent(MAX_AUDIT_RECORDS)
+        ]
 
     def register(self, tool: Tool) -> None:
         """Register one application-approved tool by its exact name."""
@@ -2300,14 +2407,21 @@ class ToolDispatcher:
             result = ToolResult(success=False, output="Tool execution failed.")
             return result
         finally:
-            self._audit_records.append(
-                AuditRecord(
-                    capability=capability,
-                    arguments=audit_arguments,
-                    risk_level=risk_level,
-                    approval_required=approval_required,
-                    approval_granted=approval_granted,
-                    execution_success=result.success,
-                    timestamp=dt.datetime.now(dt.UTC).isoformat(),
+            self._history.append(
+                _audit_entry(
+                    AuditRecord(
+                        capability=capability,
+                        arguments=audit_arguments,
+                        risk_level=risk_level,
+                        approval_required=approval_required,
+                        approval_granted=approval_granted,
+                        execution_success=result.success,
+                        timestamp=dt.datetime.now(dt.UTC).isoformat(),
+                        action_receipt=(
+                            result.action_receipt
+                            if isinstance(result, ToolResult)
+                            else None
+                        ),
+                    )
                 )
             )

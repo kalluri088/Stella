@@ -18,6 +18,7 @@ reminders, or approvals, and a successful setup grants nothing beyond
 from __future__ import annotations
 
 import os
+import time
 import tkinter as tk
 from dataclasses import replace
 from tkinter import ttk
@@ -47,6 +48,9 @@ class StellaWindow:
         self._busy = False
         self._listening = False
         self._speaking = False
+        self._turn_started: float | None = None
+        self._cancelling = False
+        self._shown_seconds = -1
         self._dialogs: list[tk.Toplevel] = []
         self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
@@ -78,6 +82,11 @@ class StellaWindow:
             input_frame, text="Send", command=self._send
         )
         send_button.pack(side="left", fill="y", padx=(4, 0))
+        self._cancel_button = ttk.Button(
+            input_frame, text="Cancel", command=self._cancel_turn,
+            state="disabled",
+        )
+        self._cancel_button.pack(side="left", fill="y", padx=(4, 0))
         self._input.bind("<Control-Return>", lambda _event: self._send())
         ttk.Label(
             chat,
@@ -124,8 +133,30 @@ class StellaWindow:
         self._input.delete("1.0", "end")
         self._line(f"You: {user_input}")
         self._busy = True
-        self._status.configure(text="Stella is thinking...")
+        self._begin_turn_timer()
+        self._status.configure(text="Stella is working · 0 s")
         self._bridge.post_turn(user_input)
+
+    def _begin_turn_timer(self) -> None:
+        self._turn_started = time.monotonic()
+        self._cancelling = False
+        self._shown_seconds = -1
+
+    def _cancel_turn(self) -> None:
+        if not self._busy or self._cancelling:
+            return
+        # Ask the bridge to stop at the next safe point. An approval that
+        # is still open is denied by the same call (fail-closed), so
+        # cancelling can never leave a pending prompt waiting forever.
+        self._cancelling = True
+        self._cancel_button.configure(state="disabled")
+        self._status.configure(text="Stella is stopping...")
+        self._bridge.cancel_current_turn()
+        # Any approval dialog still on screen was just denied at the
+        # broker; dismiss it so a later click can never appear to reopen
+        # a question that has already been answered fail-closed.
+        for dialog in list(self._dialogs):
+            dialog.cancel_button.invoke()
 
     # ------------------------------------------------------------ voice
 
@@ -230,9 +261,17 @@ class StellaWindow:
 
     def _handle_turn(self, outcome: TurnOutcome) -> None:
         self._busy = False
+        self._turn_started = None
+        self._cancelling = False
         self._status.configure(text="")
         if outcome.interrupted:
             self._line("Stella stopped that request. Nothing was changed.")
+            return
+        if outcome.cancelled:
+            self._line(
+                "Stella stopped that request at your cancel. It was "
+                "discarded and is not part of the conversation."
+            )
             return
         if outcome.error_message is not None:
             self._line(f"✗ {outcome.error_message}")
@@ -251,7 +290,25 @@ class StellaWindow:
         for event in self._bridge.poll():
             self._handle_event(event)
         self._drain_approvals()
+        self._render_working_status()
         self._root.after(100, self._tick)
+
+    def _render_working_status(self) -> None:
+        # Elapsed time is display-only; the cancel it advertises is
+        # cooperative and lands between steps, never inside a tool or an
+        # in-flight provider request.
+        self._cancel_button.configure(
+            state="normal" if self._busy and not self._cancelling else "disabled"
+        )
+        if not self._busy or self._dialogs or self._turn_started is None:
+            return
+        if self._cancelling:
+            self._status.configure(text="Stella is stopping...")
+            return
+        seconds = int(time.monotonic() - self._turn_started)
+        if seconds != self._shown_seconds:
+            self._shown_seconds = seconds
+            self._status.configure(text=f"Stella is working · {seconds} s")
 
     def _handle_event(self, event: UiEvent) -> None:
         kind, payload = event.kind, event.payload
@@ -279,7 +336,8 @@ class StellaWindow:
         elif kind == "voice_transcript":
             self._line(f"You (voice): {payload}")
             self._busy = True
-            self._status.configure(text="Stella is thinking...")
+            self._begin_turn_timer()
+            self._status.configure(text="Stella is working · 0 s")
         elif kind == "voice_error":
             self._handle_voice_error(str(payload))
         elif kind == "error":
@@ -314,7 +372,7 @@ class StellaWindow:
             dialog.grab_release()
             dialog.destroy()
             if self._status.cget("text") == "":
-                self._status.configure(text="Stella is thinking...")
+                self._status.configure(text="Stella is working...")
 
         ttk.Label(dialog, text="Stella wants to:").pack(padx=10, pady=(10, 0))
         ttk.Label(

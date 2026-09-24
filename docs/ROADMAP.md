@@ -68,11 +68,18 @@ working and helping me, even if not the fastest."
   lands in the durable history with the validated URL, so "what did
   Stella read?" is answerable after the fact
   (`docs/NETWORK_READ.md`).
-- **A5. Working feedback and cancel.** A turn can take minutes on a
-  local model (600 s provider timeout today). Show elapsed time while
-  working and offer a cancel that stops the turn cleanly without
-  leaving half-executed actions (approval prompts and execution remain
-  atomic; cancel lands between steps).
+- **A5. Working feedback and cancel — done.** The desktop status line
+  counts elapsed seconds while a turn runs, and a Cancel button stops
+  the turn at its next safe point: cancellation is cooperative and
+  checked only between steps (before a Brain decision, immediately
+  after one returns, and right after a dispatched step lands), so an
+  in-flight provider request, an approval prompt or an executing
+  action is never interrupted mid-way. A cancelled turn is discarded
+  whole from the conversation; a cancel with an approval still open
+  denies it fail-closed (`Stella.process(should_cancel=...)` and
+  `StellaBridge.cancel_current_turn` in `src/stella/app.py`,
+  `docs/UI.md`). The CLI keeps Ctrl+C as its immediate-stop
+  equivalent by design.
 - **A6. Per-turn duration UX.** Surface how long each turn took in the
   transcript so slow answers read as "local model", not "broken".
 

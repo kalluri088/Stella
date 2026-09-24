@@ -176,6 +176,7 @@ class TurnOutcome:
     response: str | None = None
     error_message: str | None = None
     interrupted: bool = False
+    cancelled: bool = False
 
 
 class StellaSession:
@@ -205,13 +206,22 @@ class StellaSession:
             now = dt.datetime.now(dt.UTC)
         return self.stella.check_due_reminders(now)
 
-    def run_turn(self, user_input: str) -> TurnOutcome:
+    def run_turn(
+        self,
+        user_input: str,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> TurnOutcome:
         try:
-            result = self.stella.process(
-                Context(
-                    user_input=user_input,
-                    conversation_history=list(self.history),
-                )
+            context = Context(
+                user_input=user_input,
+                conversation_history=list(self.history),
+            )
+            result = (
+                self.stella.process(context)
+                if should_cancel is None
+                # Only applications that understand cancellation receive
+                # it; the keyword never reaches embedding test stubs.
+                else self.stella.process(context, should_cancel=should_cancel)
             )
         except KeyboardInterrupt:
             return TurnOutcome(interrupted=True)
@@ -224,6 +234,11 @@ class StellaSession:
                     f"{self._error_footer}"
                 )
             )
+        if getattr(result, "cancelled", False):
+            # A cancelled turn is discarded whole: nothing is appended to
+            # the conversation history, so the next turn never "remembers"
+            # an answer that was never given.
+            return TurnOutcome(result=result, cancelled=True)
         response = display_response(result)
         self.history.append(Message(role="user", content=user_input))
         if response is not None:
@@ -936,6 +951,7 @@ class StellaBridge:
         self._voice: VoicePanel | None = None
         self._playback: threading.Thread | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self._turn_cancel = threading.Event()
         self._events: queue.Queue[UiEvent] = queue.Queue()
         self._ready = threading.Event()
         self._thread = threading.Thread(
@@ -1044,10 +1060,27 @@ class StellaBridge:
 
         self._post(handle)
 
+    def cancel_current_turn(self) -> None:
+        """Ask the running turn to stop at its next safe point.
+
+        Callable from any thread (the UI button presses it while the
+        worker is busy): it only sets a flag and denies any outstanding
+        approval — the canonical safe answer the broker already uses when
+        the application exits. It never approves, executes, or interrupts
+        an action that is already in flight.
+        """
+
+        self._turn_cancel.set()
+        self.approvals.deny_outstanding()
+
+    def _should_cancel(self) -> bool:
+        return self._turn_cancel.is_set()
+
     def _handle_turn(self, user_input: str) -> TurnOutcome:
         session = self._require_session()
+        self._turn_cancel.clear()
         self._check_due_reminders()
-        outcome = session.run_turn(user_input)
+        outcome = session.run_turn(user_input, should_cancel=self._should_cancel)
         self._emit("turn", outcome)
         # The History panel tracks what the turn actually did without
         # waiting for the user to press Refresh; turns that touched no

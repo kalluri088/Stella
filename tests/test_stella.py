@@ -1913,3 +1913,121 @@ def test_persisted_memory_changes_later_stella_behavior(tmp_path) -> None:
     assert second_brain.contexts[0].retrieved_memories == [item]
     assert result.decision.kind is DecisionKind.ANSWER
     assert result.response == "Rust"
+
+
+# ------------------------------------------------- cooperative cancellation (A5)
+
+
+def test_cancellation_before_first_decision_runs_nothing() -> None:
+    brain = RecordingBrain(
+        Decision(
+            DecisionKind.TOOL, capability="record", arguments={"message": "x"}
+        )
+    )
+    llm = RecordingLLM()
+    tool = RecordingTool()
+    stella = Stella(brain, llm, ToolDispatcher([tool]), InMemoryMemory())
+
+    result = stella.process(
+        Context(user_input="actually stop"), should_cancel=lambda: True
+    )
+
+    assert result.cancelled is True
+    assert result.response is None
+    assert brain.contexts == []
+    assert llm.messages == []
+    assert tool.arguments == []
+
+
+def test_cancellation_after_decision_skips_approval_and_execution() -> None:
+    brain = RecordingBrain(
+        Decision(
+            DecisionKind.TOOL,
+            capability="approval_test",
+            arguments={"value": "x"},
+        )
+    )
+    tool = ApprovalRecordingTool()
+    requests: list[ApprovalRequest] = []
+
+    def approve(request: ApprovalRequest) -> ToolApproval:
+        requests.append(request)
+        return ToolApproval(request=request, approved=True)
+
+    stella = Stella(
+        brain,
+        RecordingLLM(response="never reached"),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        approval_provider=approve,
+    )
+    # False at the first checkpoint, True immediately after the decision:
+    # the proposed effect must be discarded before any of its steps.
+    ticks = iter([False, True])
+
+    result = stella.process(
+        Context(user_input="cancel this"), should_cancel=lambda: next(ticks)
+    )
+
+    assert result.cancelled is True
+    assert len(brain.contexts) == 1
+    assert requests == []
+    assert tool.arguments == []
+    assert result.response is None
+
+
+def test_cancellation_between_steps_keeps_executed_step_and_skips_next() -> None:
+    tool = RecordingTool()
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                capability="record",
+                arguments={"message": "first"},
+            ),
+            Decision(
+                DecisionKind.TOOL,
+                capability="record",
+                arguments={"message": "second"},
+            ),
+            Decision(DecisionKind.ANSWER),
+        ]
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(response="never synthesized"),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        max_tool_steps=3,
+    )
+    # Cancel as soon as the first step has finished: the check reads the
+    # app's own record of what executed. An executed step is never undone
+    # or interrupted — cancel lands between steps.
+    result = stella.process(
+        Context(user_input="multi-step, stop after one"),
+        should_cancel=lambda: len(tool.arguments) >= 1,
+    )
+
+    assert result.cancelled is True
+    assert tool.arguments == [{"message": "first"}]
+    assert len(brain.contexts) == 1
+    assert result.response is None
+    assert result.step_trace[0].tool_result == ToolResult(
+        success=True, output="tool output"
+    )
+
+
+def test_turn_without_should_cancel_is_unchanged() -> None:
+    # Embedding callers that never pass the keyword keep exactly their
+    # previous behavior.
+    stella, _, tool = make_stella(
+        Decision(
+            DecisionKind.TOOL, capability="record", arguments={"message": "go"}
+        )
+    )
+
+    result = stella.process(Context(user_input="as before"))
+
+    assert result.cancelled is False
+    assert tool.arguments == [{"message": "go"}]
+    assert result.response == "answer"

@@ -768,7 +768,9 @@ def test_bridge_stays_alive_after_a_failing_turn() -> None:
         def __init__(self) -> None:
             self.memory = InMemoryMemory()
 
-        def process(self, context: Context) -> StellaResult:
+        def process(
+            self, context: Context, should_cancel=None
+        ) -> StellaResult:
             raise RuntimeError("provider exploded")
 
     bridge = make_bridge(FailingStella())  # type: ignore[arg-type]
@@ -1446,3 +1448,108 @@ def test_bridge_post_history_answers_refresh_without_dispatches() -> None:
     payload = next(event.payload for event in events if event.kind == "history")
     assert payload == ()
     bridge.stop()
+
+
+# ------------------------------------------------- cooperative cancellation (A5)
+
+
+def test_run_turn_discards_cancelled_turn_from_conversation_history() -> None:
+    class CancelAwareStella:
+        def __init__(self) -> None:
+            self.contexts: list[Context] = []
+
+        def process(
+            self, context: Context, should_cancel=None
+        ) -> StellaResult:
+            self.contexts.append(context)
+            if should_cancel is not None and should_cancel():
+                return StellaResult(
+                    Decision(kind=DecisionKind.DO_NOTHING), cancelled=True
+                )
+            return StellaResult(
+                Decision(kind=DecisionKind.ANSWER, content="noted"),
+                response="noted",
+            )
+
+    stella = CancelAwareStella()
+    session = StellaSession(stella)  # type: ignore[arg-type]
+
+    outcome = session.run_turn("do something", should_cancel=lambda: True)
+
+    assert outcome.cancelled is True
+    assert outcome.result is not None
+    # The cancelled turn leaves no trace: neither its request nor an
+    # answer that was never given enters the conversation.
+    assert session.history == []
+
+    follow_up = session.run_turn("hello", should_cancel=lambda: False)
+
+    assert follow_up.response == "noted"
+    assert session.history == [
+        Message(role="user", content="hello"),
+        Message(role="assistant", content="noted"),
+    ]
+    assert stella.contexts[1].conversation_history == []
+
+
+def test_bridge_cancel_denies_outstanding_approval_and_ends_turn() -> None:
+    tool = DangerousTool()
+    brain = ScriptedBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                capability="approval_test",
+                arguments={"value": "x"},
+            ),
+            Decision(kind=DecisionKind.ANSWER, content="never reached"),
+        ]
+    )
+    bridge = make_bridge(Stella(
+        brain,
+        SpyLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+    ))
+    try:
+        bridge.post_turn("run the dangerous test action")
+        _token, _request = bridge_approval_request(bridge)
+
+        bridge.cancel_current_turn()
+        events = wait_for_event(bridge, "turn")
+        outcome: TurnOutcome = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+        # Cancelling an open approval is a denial, never a bypass: the
+        # tool did not run and the turn stops at the next checkpoint
+        # without consulting the Brain again.
+        assert outcome.cancelled is True
+        assert outcome.response is None
+        assert tool.executions == []
+        assert len(brain.decisions) == 1
+
+        # Cancellation is per-turn: the next turn runs normally.
+        bridge.post_turn("still there?")
+        events = wait_for_event(bridge, "turn")
+        follow_up: TurnOutcome = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+        assert follow_up.cancelled is False
+        assert follow_up.response == "the action completed"
+    finally:
+        bridge.stop()
+
+
+def test_cancel_without_running_turn_has_no_later_effect() -> None:
+    bridge = make_bridge(make_recording_stella())
+    try:
+        bridge.cancel_current_turn()
+
+        bridge.post_turn("hello")
+        events = wait_for_event(bridge, "turn")
+        outcome: TurnOutcome = next(
+            event.payload for event in events if event.kind == "turn"
+        )
+        assert outcome.response == "the action completed"
+        assert outcome.cancelled is False
+    finally:
+        bridge.stop()

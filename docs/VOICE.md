@@ -35,8 +35,9 @@ the underlying Stella decision or its history entry.
 ## UI states
 
 The status line distinguishes "Listening...", "Transcribing...",
-"Stella is thinking...", and "Speaking...", and returns to idle when the
-utterance is finished. "Listening..." appears only while the recorder is
+the elapsed "Stella is working · N s" turn state, and "Speaking...", and
+returns to idle when the utterance is finished.
+"Listening..." appears only while the recorder is
 actually running, and speech is only claimed after a transcript was produced.
 
 ## Controls

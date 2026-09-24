@@ -60,17 +60,34 @@ display, and can never approve a tool or change permissions.
 ## What the UI can do
 
 - Conversation: send multi-line messages (Ctrl+Return or Send), see replies,
-  a visible "Stella is thinking..." state, honest error lines, and continuous
-  history within the window session.
-- Approvals: a dialog shows "Stella wants to: <capability and arguments>" for
-  every `DANGEROUS` action, with Allow and Cancel.
+  honest error lines, and continuous history within the window session.
+  While a turn runs, the status line counts elapsed seconds
+  ("Stella is working · 12 s") so a slow local model reads as slow, not
+  broken, and a **Cancel** button appears beside Send. Cancel is
+  cooperative: it stops the turn at the next safe point between steps —
+  it never interrupts an in-flight provider request, an approval prompt
+  or an executing action — and the cancelled turn is discarded whole
+  from the conversation. A cancel while an approval dialog is open denies
+  that action (fail-closed) and dismisses the dialog; nothing executes.
+  The CLI keeps Ctrl+C as its immediate-stop equivalent.
+- Approvals: a dialog shows "Stella wants to: <capability and arguments>"
+  for every `DANGEROUS` action, with Allow and Cancel, plus a read-only
+  app-computed preview (diff, new content, loss excerpt or validated URL)
+  as review material only — the answer still binds solely to the exact
+  `ApprovalRequest`.
 - Memory: list stored memories, keyword-search them, and forget the selected
   one. The list shows content only; internal database ids never appear and
   forgetting works by visible list position through `MemoryPanel`.
 - Reminders: list pending one-shot reminders with due times, create one from
   content plus an ISO due time, and cancel by query text — all by executing
-  the same trusted reminder tools the CLI uses. No scheduler is added: due
-  reminders are delivered when the next turn is processed, same as the CLI.
+  the same trusted reminder tools the CLI uses. An open window also fires
+  due reminders unprompted: a ticker posts a reminder check onto the
+  worker thread every few seconds, so an idle Stella still informs (the
+  CLI keeps firing on the next interaction by design).
+- History: a tab lists what Stella recently did — capability, time and
+  honest outcome, newest first — from the durable action history, so
+  earlier sessions are visible too. Entries are metadata only; file
+  contents and tool output never appear.
 - Action outcomes: each tool result is rendered with the honest status from
   `outcome_status` (verified ✓, unverified ✗, inconclusive ?, failed ✗,
   denied ✗). An unverified action is never shown as verified.
@@ -105,10 +122,11 @@ core path and reports that nothing was changed.
 ## Current limits
 
 - Single window, single worker thread; one conversation per process.
-- History lives in this session only; there is no persistent chat log.
+- Conversation history lives in this session only; there is no persistent
+  chat log (the durable History is action metadata, not chat).
 - Memory search is the existing deterministic keyword matcher, not semantic.
-- Reminders are user-created one-shots delivered during interaction; there is
-  no background delivery.
+- Cancel stops a turn between steps; it cannot abort an in-flight provider
+  request or an executing action mid-way — the running step lands first.
 - Voice is one explicit utterance per Listen press with local-first providers;
   there is no wake word, continuous listening, or streaming recognition.
 - No browser automation, email/calendar, cloud accounts, plugins, or remote

@@ -84,6 +84,7 @@ class StellaResult:
     step_trace: list["StellaStep"] = field(default_factory=list)
     max_steps_reached: bool = False
     interaction_trace: InteractionTrace | None = None
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,8 +143,22 @@ class Stella:
         self.reminders = reminders
         self._handled_proactive_event_ids: dict[str, None] = {}
 
-    def process(self, context: Context) -> StellaResult:
-        """Process a context according to the brain's decision."""
+    def process(
+        self,
+        context: Context,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> StellaResult:
+        """Process a context according to the brain's decision.
+
+        ``should_cancel`` is an application-owned check consulted only at
+        safe points: before each brain decision, immediately after one
+        returns (before any of its side effects), and right after a
+        dispatched step has been recorded. A cancelled turn runs no
+        further tool, writes no memory, and proposes no answer.
+        Cancellation can never interrupt an approval prompt or a
+        dispatched tool midway; those steps stay atomic and land before
+        the next checkpoint.
+        """
 
         trace = InteractionTrace()
         conversation_history = select_conversation_history(
@@ -198,6 +213,22 @@ class Stella:
         executed_call_keys: set[str] = set()
 
         while True:
+            if should_cancel is not None and should_cancel():
+                cancelled_decision = Decision(kind=DecisionKind.DO_NOTHING)
+                return StellaResult(
+                    cancelled_decision,
+                    retrieved_memories=retrieved_memories,
+                    memory_write=memory_write,
+                    step_trace=step_trace,
+                    interaction_trace=self._complete_trace(
+                        trace,
+                        cancelled_decision,
+                        response=None,
+                        memory_write=memory_write,
+                        memory_write_requested=memory_write_requested,
+                    ),
+                    cancelled=True,
+                )
             decision_context = Context(
                 user_input=context.user_input,
                 conversation_history=conversation_history,
@@ -223,6 +254,24 @@ class Stella:
                     memory_write_proposed=decision.memory_write is not None,
                 )
             )
+            if should_cancel is not None and should_cancel():
+                # The decision is discarded before any of its effects: no
+                # tool dispatch, no approval request, no memory proposal.
+                step_trace.append(StellaStep(decision))
+                return StellaResult(
+                    decision,
+                    retrieved_memories=retrieved_memories,
+                    memory_write=memory_write,
+                    step_trace=step_trace,
+                    interaction_trace=self._complete_trace(
+                        trace,
+                        decision,
+                        response=None,
+                        memory_write=memory_write,
+                        memory_write_requested=memory_write_requested,
+                    ),
+                    cancelled=True,
+                )
             memory_write_requested = (
                 memory_write_requested or decision.memory_write is not None
             )
@@ -335,6 +384,27 @@ class Stella:
                             ),
                         ]
                     )
+                    if should_cancel is not None and should_cancel():
+                        # The step that just finished is real and stays
+                        # recorded; the cancelled turn stops here rather
+                        # than writing memory or answering, so no early
+                        # return below can carry the turn past the cancel.
+                        return StellaResult(
+                            decision,
+                            retrieved_memories=retrieved_memories,
+                            memory_write=memory_write,
+                            step_trace=step_trace,
+                            interaction_trace=self._complete_trace(
+                                trace,
+                                decision,
+                                response=None,
+                                memory_write=memory_write,
+                                memory_write_requested=(
+                                    memory_write_requested
+                                ),
+                            ),
+                            cancelled=True,
+                        )
                     if (
                         memory_write is None
                         and decision.memory_write is not None

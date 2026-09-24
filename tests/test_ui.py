@@ -9,6 +9,7 @@ dialog denies rather than fabricates authorization.
 
 import datetime as dt
 import os
+import threading
 import time
 import tkinter as tk
 
@@ -78,6 +79,21 @@ class ToolThenAnswerBrain(Brain):
                 arguments={"value": "x"},
             )
         return Decision(kind=DecisionKind.ANSWER, content="after")
+
+
+class GatedBrain(Brain):
+    """Blocks inside ``decide`` until the test opens the gate.
+
+    Stands in for a slow provider turn: the UI stays busy while the
+    worker thread is genuinely inside the Brain.
+    """
+
+    def __init__(self) -> None:
+        self.gate = threading.Event()
+
+    def decide(self, context: Context) -> Decision:
+        self.gate.wait(5)
+        return Decision(kind=DecisionKind.ANSWER, content="late reply")
 
 
 class DangerousTool(Tool):
@@ -338,6 +354,76 @@ def test_approval_dialog_shows_read_only_preview_then_answers_request() -> None:
         pump(root, 0.8)
         assert tool.executions == [{"value": "x"}]
         assert window._dialogs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+# ------------------------------------------------------- working feedback + cancel
+
+
+def test_window_shows_elapsed_time_and_cancel_ends_turn_cleanly() -> None:
+    brain = GatedBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        assert str(window._cancel_button["state"]) == "disabled"
+        window._input.insert("1.0", "take your time")
+        window._send()
+        pump(root, 0.3)
+        # A turn that is merely slow must not read as broken: the status
+        # line shows elapsed seconds while the worker is inside the Brain.
+        assert str(window._status.cget("text")).startswith(
+            "Stella is working · "
+        )
+        assert str(window._cancel_button["state"]) == "normal"
+
+        window._cancel_turn()
+        assert window._status.cget("text") == "Stella is stopping..."
+        assert str(window._cancel_button["state"]) == "disabled"
+        # The provider request already in flight is not interrupted; it
+        # lands, and the turn stops at the next safe point afterwards.
+        brain.gate.set()
+        deadline = time.monotonic() + 5
+        while window._busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        pump(root, 0.2)
+        transcript = window._chat.get("1.0", "end")
+        assert "stopped that request at your cancel" in transcript
+        assert "Stella: window reply" not in transcript
+        assert window._status.cget("text") == ""
+        assert str(window._cancel_button["state"]) == "disabled"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_cancel_during_approval_denies_and_executes_nothing() -> None:
+    tool = DangerousTool()
+    root, window, bridge, _ = make_window(
+        brain=ToolThenAnswerBrain(), tool=tool
+    )
+    try:
+        window._input.insert("1.0", "do the dangerous thing")
+        window._send()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not window._dialogs:
+            root.update()
+            time.sleep(0.02)
+        assert window._dialogs, "approval dialog did not appear"
+
+        window._cancel_turn()
+        # The open approval was denied fail-closed and its dialog
+        # dismissed; nothing executed, and the turn ends as cancelled.
+        assert window._dialogs == []
+        deadline = time.monotonic() + 5
+        while window._busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        pump(root, 0.2)
+        assert tool.executions == []
+        transcript = window._chat.get("1.0", "end")
+        assert "stopped that request at your cancel" in transcript
     finally:
         bridge.stop()
         root.destroy()

@@ -59,6 +59,21 @@
   honest `failed`/`invalid` outcome otherwise, recorded alongside the
   validated URL in the history.
 
+### Working feedback and cancel
+
+- **Elapsed-time feedback** — while a turn runs, the desktop status
+  line counts seconds ("Stella is working · 12 s") so a slow local
+  model reads as slow, not broken.
+- **Cooperative cancel** — a Cancel button asks the running turn to
+  stop at its next safe point: between steps only. An in-flight
+  provider request, an open approval prompt and an executing action
+  are never interrupted; they land, and the turn stops right after.
+  A cancelled turn is discarded whole from the conversation; nothing
+  half-taken is claimed as done. Cancelling while an approval is open
+  denies that action fail-closed and dismisses the dialog, so it can
+  never be an accidental bypass. The CLI keeps Ctrl+C as its
+  immediate-stop equivalent.
+
 ## 1.0.0 — 2026-09-23
 
 First public release of Stella, a local-first desktop assistant for Linux.

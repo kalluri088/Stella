@@ -288,6 +288,25 @@ working and helping me, even if not the fastest."
   foot process wrote the typed probe to disk, then screen_read OCR'd it
   back with tesseract mis-reading `O` as `0`), active-window OCR
   ~0.42 s, full-screen OCR 6.90 s.
+- **B7. Voice barge-in — researched, deliberately NOT started.**
+  Compendium item 7 (report 08) measured the two prerequisites on this
+  box and they pass: PipeWire's WebRTC `module-echo-cancel` cancels
+  Stella's own playback to the noise floor (−29.6 dB, 0 % false-VAD
+  frames during playback vs 22.8 % uncancelled), and silero-vad costs
+  0.30 ms per 32 ms frame over ONNX (RTF 0.01), so a continuous
+  listener is ~1 thread-percent. The Tier-1 half of ship order (a
+  voice-reachable Cancel that flushes playback) already landed as A8,
+  so barge-in would only add a mic-listener thread feeding the same
+  `cancel_current_turn()`/`stop_playback()` path. It is gated on three
+  things that must not be crossed unattended: (1) it needs `onnxruntime`
+  as a **new project dependency** (report 08 explicitly rules out the
+  pip `silero-vad`/CUDA-torch path), (2) its one unfinished acceptance
+  test is a **human double-talk check** — speak over playback and
+  confirm the cancelled source still carries the near-end voice — which
+  needs a person at the mic, and (3) it loads a **system-wide PipeWire
+  echo-cancel module** on the live desktop, a high-blast-radius change
+  the report itself documents as easy to mis-bind. Awaiting explicit
+  approval for the dependency and a sitting for the double-talk test.
 
 ## Stage C — personality
 

@@ -19,6 +19,13 @@ from urllib.parse import SplitResult, urlsplit
 
 from stella.history import ActionHistory, InMemoryActionHistory
 from stella.memory import Memory, MemoryItem
+from stella.persona import (
+    ADDONS_FILE_NAME,
+    MAX_PERSONA_BYTES,
+    PersonaPaths,
+    persona_directory,
+    sanitize_addons,
+)
 from stella.reminders import ReminderStore, reminder_validation_error
 
 
@@ -163,6 +170,18 @@ def action_summary(request: ApprovalRequest) -> str:
         path = quoted("path")
         if path is not None and quoted("content") is not None:
             return f"replace the contents of {path} in your Stella workspace"
+    elif capability == "persona_edit":
+        path = quoted("path")
+        summary = quoted("summary")
+        if (
+            path is not None
+            and quoted("content") is not None
+            and summary is not None
+        ):
+            return (
+                f"rewrite Stella's persona style file {path} "
+                f"(stated reason: {summary})"
+            )
     elif capability == "filesystem_delete":
         path = quoted("path")
         if path is not None:
@@ -1012,6 +1031,205 @@ class FileSystemEditTool(FileSystemWriteTool):
             )
         return ActionPreview(
             detail_lines=tuple(diff_lines[:MAX_PREVIEW_LINES]),
+            truncated=len(diff_lines) > MAX_PREVIEW_LINES,
+        )
+
+
+class PersonaEditTool(Tool):
+    """Replace one of the two persona style files and verify the result.
+
+    The persona is style data and nothing else: this tool reaches only
+    ``persona.md`` or ``persona.addons.md`` under the configured persona
+    directory. A learned-style file whose new content tries to change
+    authority is refused whole — approved bytes are never silently
+    rewritten; the addons filter at prompt-load time is defense in
+    depth, and the refusal is reported honestly either way.
+    """
+
+    def __init__(self, directory: str | Path | None = None) -> None:
+        self.paths = PersonaPaths(
+            persona_directory()
+            if directory is None
+            else Path(directory).expanduser()
+        )
+
+    @property
+    def name(self) -> str:
+        return "persona_edit"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Replaces the full content of one of Stella's two persona "
+            "style files (persona.md or persona.addons.md) and verifies "
+            "the result before reporting success. Requires the exact "
+            "absolute path of one of those files, the complete new "
+            "content, a one-line summary, and explicit approval. Persona "
+            "content tunes phrasing only; it never changes tools, risk "
+            "levels, or approvals."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {
+            "path": "exact absolute persona file path",
+            "content": "UTF-8 string",
+            "summary": "one line describing the change",
+        }
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.DANGEROUS
+
+    def _allowed(self, path: str) -> Path | None:
+        for allowed in (self.paths.persona, self.paths.addons):
+            if Path(path) == allowed:
+                return allowed
+        return None
+
+    @staticmethod
+    def _is_addons(target: Path) -> bool:
+        return target.name == ADDONS_FILE_NAME
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        if (
+            not isinstance(arguments, dict)
+            or set(arguments) != {"path", "content", "summary"}
+            or not all(
+                isinstance(arguments[key], str)
+                for key in ("path", "content", "summary")
+            )
+        ):
+            return False
+
+        path = arguments["path"]
+        content = arguments["content"]
+        summary = arguments["summary"]
+        if self._allowed(path) is None:
+            return False
+        if "\x00" in path or "\x00" in content:
+            return False
+        try:
+            content_size = len(content.encode("utf-8"))
+        except UnicodeEncodeError:
+            return False
+        return (
+            content_size <= MAX_PERSONA_BYTES
+            and bool(summary.strip())
+            and "\n" not in summary
+        )
+
+    def _addons_rejection(self, content: str) -> ToolResult | None:
+        notes = sanitize_addons(content)
+        if notes.filtered_lines == 0:
+            return None
+        return ToolResult(
+            success=False,
+            output=(
+                f"{notes.filtered_lines} line(s) in the new style notes "
+                "try to change approvals, rules, or identity instead of "
+                "tone; nothing was written."
+            ),
+            action_receipt=ActionReceipt("persona_edit", "invalid"),
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+
+        target = self._allowed(str(arguments["path"]))
+        content = str(arguments["content"])
+        assert target is not None  # validated above
+        try:
+            if os.path.lexists(target) and target.is_symlink():
+                return ToolResult(
+                    success=False,
+                    output="Symbolic links are not supported.",
+                    action_receipt=ActionReceipt("persona_edit", "invalid"),
+                )
+            if self._is_addons(target):
+                rejection = self._addons_rejection(content)
+                if rejection is not None:
+                    return rejection
+
+            expected = content.encode("utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.parent / f".{target.name}.tmp-{os.getpid()}"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(temporary, flags, 0o600)
+            with os.fdopen(descriptor, "wb") as file:
+                file.write(expected)
+            # os.replace is atomic within the directory and replaces the
+            # target itself rather than following it, so the approved
+            # bytes either land completely or not at all.
+            os.replace(temporary, target)
+            verified, size = _verify_written_file(target, expected)
+            return _write_outcome("persona_edit", verified, size, "updated")
+        except (OSError, RuntimeError, UnicodeEncodeError):
+            return ToolResult(
+                success=False,
+                output="Persona file could not be written.",
+                action_receipt=ActionReceipt("persona_edit", "failed"),
+            )
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        path = request.arguments.get("path")
+        content = request.arguments.get("content")
+        summary = request.arguments.get("summary")
+        if not isinstance(path, str) or not isinstance(content, str):
+            return None
+        target = self._allowed(path)
+        if target is None:
+            return None
+
+        lines: list[str] = []
+        if isinstance(summary, str) and summary.strip():
+            lines.append(f"summary: {summary.strip()}")
+        if self._is_addons(target):
+            filtered = sanitize_addons(content).filtered_lines
+            if filtered:
+                lines.append(
+                    f"{filtered} line(s) ask to change authority, not "
+                    "style — this write would be rejected."
+                )
+        current, truncated = _preview_file_text(target)
+        if current is None:
+            if not target.exists():
+                lines.append("no file exists yet — this creates it.")
+                body = content.splitlines()
+                lines.extend(f"+ {line}" for line in body[:MAX_PREVIEW_LINES])
+                return ActionPreview(
+                    detail_lines=tuple(lines),
+                    truncated=len(body) > MAX_PREVIEW_LINES,
+                )
+            lines.append(
+                "current contents cannot be previewed "
+                "(binary or unreadable file)."
+            )
+            return ActionPreview(detail_lines=tuple(lines))
+        if truncated:
+            lines.append(
+                "current file is too large to preview fully; "
+                "this replaces the whole file."
+            )
+            return ActionPreview(detail_lines=tuple(lines), truncated=True)
+        diff_lines = list(
+            difflib.unified_diff(
+                current.splitlines(),
+                content.splitlines(),
+                fromfile=f"{path} (current)",
+                tofile=f"{path} (new)",
+                lineterm="",
+            )
+        )
+        if not diff_lines:
+            lines.append("new content is identical to the current file.")
+            return ActionPreview(detail_lines=tuple(lines))
+        lines.extend(diff_lines[:MAX_PREVIEW_LINES])
+        return ActionPreview(
+            detail_lines=tuple(lines),
             truncated=len(diff_lines) > MAX_PREVIEW_LINES,
         )
 

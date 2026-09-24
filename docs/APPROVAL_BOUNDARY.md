@@ -17,6 +17,10 @@ approval before execution. The current tools remain unchanged:
   executes without interactive approval in this MVP;
 - `filesystem_write`, `filesystem_edit`, and `filesystem_delete` are
   `DANGEROUS` and require exact trusted approval;
+- `persona_edit` is `DANGEROUS` and requires exact trusted approval; it can
+  rewrite only the two persona style files (`persona.md`,
+  `persona.addons.md`) inside the configured persona directory — personality
+  is style data, and the tool reaches nothing else;
 - `network_read` is `DANGEROUS` and requires exact trusted approval before an
   external connection;
 - `reminder_create` and `reminder_cancel` are `DANGEROUS` and require exact
@@ -192,6 +196,10 @@ preview read (or report on) anything. Previews are bounded (60 lines /
 - `filesystem_edit`: a unified diff between the current file contents and
   the exact new content; a missing file, a binary file and an oversized
   file are each described honestly instead of being misleadingly diffed;
+- `persona_edit`: the stated one-line summary, then the same honest unified
+  diff against the persona file; creating a first persona is announced, and
+  learned-notes content that tries to change authority (not style) is
+  flagged as a write that will be rejected;
 - `filesystem_write`: the bounded new content, plus a warning when the
   create would fail because a file already exists;
 - `filesystem_delete`: the irreversibility note plus the beginning of the

@@ -332,7 +332,11 @@ def test_approval_dialog_close_denies_the_action() -> None:
     try:
         dialog = _wait_for_approval_dialog(root, window, bridge)
         dialog.event_generate("<Escape>")
-        pump(root, 0.8)
+        # Poll for the denial to land instead of trusting a fixed sleep:
+        # under full-suite load the worker round-trip can exceed it.
+        deadline = time.monotonic() + 3
+        while window._dialogs and time.monotonic() < deadline:
+            pump(root, 0.05)
         assert tool.executions == []
         assert window._dialogs == []
     finally:

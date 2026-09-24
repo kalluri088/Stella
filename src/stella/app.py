@@ -38,6 +38,7 @@ from stella.llm import Message
 from stella.memory import Memory, MemoryItem, SQLiteMemory
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
 from stella.openai_client import OpenAILLMClient
+from stella.persona import PersonaLoader
 from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
@@ -55,6 +56,7 @@ from stella.tools import (
     MemoryUpdateTool,
     MemoryWriteTool,
     NetworkReadTool,
+    PersonaEditTool,
     ReminderCancelTool,
     ReminderCreateTool,
     ReminderListTool,
@@ -490,11 +492,14 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             ReminderCreateTool(reminders),
             ReminderListTool(reminders),
             ReminderCancelTool(reminders),
+            # Style data with its own write path: exactly the two persona
+            # files, DANGEROUS, verified like every other mutation.
+            PersonaEditTool(),
         ],
         history=history,
     )
     stella = Stella(
-        brain=LLMBrain(llm, tools),
+        brain=LLMBrain(llm, tools, persona=PersonaLoader()),
         llm=llm,
         tool=tools,
         memory=memory,

@@ -377,6 +377,38 @@ has no message. This is a synchronous result contract, not a notification
 provider or delivery mechanism. The caller remains responsible for deciding
 whether and how to display the message.
 
+### The two-tier event bus
+
+`stella.event_bus` (built to the measurements of research reports 02
+and 12) routes things that happened — an `Event` with a source, text
+and structured fields — against at most ten registered `Intention`
+records, and its only output is a `DispatchResult`: `Match` records
+with a human-readable reason, per-intention raw answers, and an honest
+tier status (`ran`, `skipped`, `absent`, `unavailable`). It never
+delivers, executes, approves or persists anything; acting on a match
+stays each consumer's own approved decision path, exactly as with
+proactivity results.
+
+Tier 0 is deterministic `Tier0Rule` matching (`TextMatches`,
+`FieldIs`, `FieldMatches`) — free, auditable, and validated at
+registration. A rule hit gates Tier 1 for that intention on that
+event, so an already-explained match is never paid for twice. Tier 1
+asks the remaining intentions' typed laya questions in one batched
+call per dispatch, and only accepts questions in the shipped
+`laya.presets` shape. Because the checkpoint ships uncalibrated
+confidences, a `noul` probability fires an intention only when that
+intention explicitly registered a threshold — otherwise it is
+advisory data inside the result — while a choice question fires on
+the returned label, a deterministic reading of the answer.
+
+The judge (`stella.laya_judge`) keeps laya outside Stella's own
+environment: it spawns the standalone `stella.laya_runner.py` under a
+separate venv interpreter and speaks line-delimited JSON. A hung,
+crashed, exiting or refusing runner is killed and reported as
+`TierOneUnavailable` — "could not ask" never reads as "no match" —
+and is restarted lazily on the next question. Routing death affects
+routing only, following the voice-degradation precedent.
+
 After the Brain returns, Stella performs at most one explicit memory write for the interaction. A write proposed by a decision grounded only in the user's own turn is stored directly; a proposal formed after tool observations may have been shaped by untrusted output, so it is stored only after a trusted approval provider approves the exact content, and it is never stored without a provider. A refused write is reported deterministically in the final response rather than left to the model's narration. For an ordinary `ANSWER` from `LLMBrain`, the Brain's structured `content` is required to be a complete final response and Stella returns it without a second LLM call. If that content is missing, Stella falls back to the dedicated final-response request. A tool-result answer still uses that dedicated request containing the current input, conversation history, retrieved memories, tool observations, and selected decision; the request explicitly tells the LLM to generate text for the already-selected answer rather than choose another action. For an ask decision, Stella returns the decision content and marks that more information is needed. For a tool decision, it passes the decision's structured arguments through the dispatcher. With a bound greater than one, the resulting structured `ToolObservation` is fed to the Brain for the next decision. Once the Brain selects `ANSWER` after tool observations, Stella makes one final response-generation call. A failed `ToolResult` is also represented as an observation; no retry is performed independently by Stella. If the bound is reached before another tool proposal can execute, Stella returns a deterministic limit result. For a do-nothing decision, it returns without calling the LLM or tool.
 
 Each `Stella.process()` result also exposes an `InteractionTrace`. The trace is
@@ -566,6 +598,10 @@ The following are intentionally outside the current MVP foundation:
 │       ├── brain.py           # structured decisions from the LLM
 │       ├── cli.py             # terminal front-end
 │       ├── context.py         # conversation/context assembly
+│       ├── event_bus.py       # two-tier intention routing (rules, then laya)
+│       ├── laya_judge.py      # subprocess Tier-1 judge client
+│       ├── laya_runner.py     # line-JSON server for the laya venv
+│       ├── llama_server.py    # Stella-owned llama.cpp brain process
 │       ├── llm.py             # provider-agnostic LLM interface
 │       ├── memory.py          # SQLite + in-memory memory stores
 │       ├── minilm_embedding.py # optional CPU sentence-transformers provider

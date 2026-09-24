@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Events now route through two cheap tiers before anything acts
+
+- **The event bus** (`stella.event_bus`) registers up to ten standing
+  intentions and dispatches events (a source, text and structured
+  fields) through Tier 0 — deterministic regex/field rules a human can
+  read and audit — and only the events a rule did not already explain
+  are asked of Tier 1, one batched laya question set per dispatch in
+  the shipped preset shape. A match is a *record with a reason*, never
+  an action: consuming a match stays each feature's own approved
+  decision.
+- **Uncalibrated confidence never acts.** The laya checkpoint's
+  probabilities are advisory data unless an intention explicitly
+  registered a threshold; choice-type questions fire on the label,
+  which is a deterministic reading of the answer.
+- **laya stays outside Stella.** A separate interpreter venv runs a
+  small line-JSON runner (`stella.laya_judge` + `stella.laya_runner`);
+  a hung, crashed or refusing judge is dropped with an honest
+  "unavailable" status — "could not ask" never reads as "no match" —
+  and is restarted on the next question. (live: 12.6 s to load,
+  ~2.6 GB VRAM beside the brain, 23–39 ms per event, clean teardown)
+
 ### Stella now runs her own llama.cpp brain
 
 - **Provider `llama`** — point Stella at a downloaded `.gguf` file

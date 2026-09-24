@@ -238,6 +238,29 @@ working and helping me, even if not the fastest."
 - **B4. Provider conformance suite.** One test harness that any
   OpenAI-compatible endpoint or Ollama model must pass, so provider
   swaps are verified rather than hoped for.
+- **B5. Two-tier event bus — done.** Compendium item 5, built exactly
+  as reports 02/12 measured it (`src/stella/event_bus.py`,
+  `src/stella/laya_judge.py`, `src/stella/laya_runner.py`). Events
+  (source + text + structured fields) are dispatched against at most
+  `MAX_INTENTIONS = 10` registered intentions: Tier 0 is deterministic
+  regex/field rules — free, auditable, and they gate Tier 1 per event
+  so an intention already matched lexically is never paid for twice;
+  Tier 1 is one batched typed-laya question set per residue event,
+  accepted only in the shipped `laya.presets` shape (report 12:
+  hand-rolled criteria drift off the trained distribution). Trust
+  rules hold: the bus **records `Match` reasons and never acts** —
+  consumers decide; because the checkpoint ships uncalibrated
+  confidences, a `noul` probability is advisory data unless the
+  intention registered an explicit threshold, while choice questions
+  fire deterministically on the label. laya is not a Stella
+  dependency: the judge spawns the standalone runner under the layav
+  venv interpreter over line-delimited JSON, and any hang, crash or
+  refusal degrades to an honest `TIER_ONE_UNAVAILABLE` status (never
+  a silent "no match") with lazy respawn — routing dies, nothing
+  else. Live on the real rig: 12.6 s model load, ~2.6 GiB VRAM
+  resident (coexists with the A10 brain's 2.8 GB), 23–39 ms per
+  batched multi-question event, clean teardown to 0 MiB. The B0
+  pre-decision router remains separate and sketch-only.
 
 ## Stage C — personality
 

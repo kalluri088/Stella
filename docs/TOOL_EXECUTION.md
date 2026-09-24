@@ -1,329 +1,143 @@
-# Current Tool Execution Flow
+# Stella Tool Execution & Dispatcher
 
-Stella now has a minimal single-tool loop. The Brain still decides whether a
-tool action is appropriate, while Stella remains responsible for execution and
-the final response request.
+One specification for how capabilities are composed, dispatched, validated,
+approved, executed, and reported. It replaces the earlier separate
+`TOOL_DISPATCHER.md`, `DATETIME_TOOL.md`, and `SYSTEM_INFO_TOOL.md` documents
+(their content is preserved here in current form).
 
-## Implemented flow
+Related specs: `APPROVAL_BOUNDARY.md` (approval mechanics, previews, receipts),
+`AUDIT_LOGGING.md` (what is recorded per attempt), `FILESYSTEM.md`,
+`WORKSPACE_ASSISTANT.md`, `NETWORK_READ.md`, `REMINDERS.md`, `PERSONA.md`,
+`OUTCOME_MEMORY.md`.
 
-For a `TOOL` decision, the runtime path is:
+## ToolDispatcher — exact, application-owned, fail-closed
 
-```text
-Context
-  -> Memory retrieval
-  -> Brain decision with capability
-  -> Stella capability check
-  -> injected Tool.execute(arguments)
-  -> ToolResult
-  -> LLM final-response call
-  -> StellaResult and CLI output
-```
+`ToolDispatcher` is deliberately only a collection and exact dispatcher: not a
+plugin framework, registry service, agent planner, or permission system. The
+application composition root (`src/stella/app.py`) constructs it with approved
+`Tool` objects; the LLM cannot register tools, create tool objects, or alter
+the dispatcher. Duplicate capability names raise a deterministic `ValueError`
+rather than silently substituting.
 
-The structured decision includes a `capability` identifier. The current
-application-approved capabilities are the exact names registered in the
-injected `ToolDispatcher`: `datetime`, `system_info`, `echo`,
-`filesystem_read`, `filesystem_write`, `filesystem_edit`,
-`filesystem_delete`, `network_read`, the memory tools (`memory_list`,
-`memory_update`, `memory_forget`), and the reminder tools (`reminder_create`,
-`reminder_list`, `reminder_cancel`, described in `REMINDERS.md`).
-Stella looks
-up the requested capability by exact name. Missing, unknown, or mismatched
-capabilities return:
+At runtime:
 
 ```text
-ToolResult(success=False, output="Tool capability unavailable.")
+Brain proposes capability + arguments
+  -> ToolDispatcher exact capability lookup
+  -> Tool.validate_arguments()
+  -> trusted RiskLevel classification (from the application-owned tool)
+  -> (DANGEROUS) exact application ApprovalRequest/ToolApproval handshake
+  -> Tool.execute()
+  -> ToolResult -> observation fed back into the bounded tool loop
 ```
 
-The tool is not validated or executed on that path, and Stella does not fall
-back to another tool. The LLM's description or natural-language claim about a
-tool is not authorization.
-
-After the capability matches, Stella asks the one `Tool` supplied to its constructor to validate the
-structured `Decision.arguments` dictionary, or `{}` when arguments are
-absent. Only valid arguments are passed to `Tool.execute()`. It then
-makes one LLM call for final natural-language response generation. The final
-call receives:
-
-- the current user input;
-- conversation history;
-- retrieved memories;
-- the selected `TOOL` decision and its arguments; and
-- the `ToolResult` containing `success` and `output`.
-
-The final-response call is not another decision. Its system instruction tells
-the LLM not to choose an action, execute a tool, or return decision JSON.
-
-The decision prompt exposes the currently available tools and their argument
-schemas:
-
-```json
-`datetime`: `{"kind":"date|time|datetime|weekday"}`
-`system_info`: `{"kind":"hostname|platform|cpu"}`
-`echo`: `{"message":"string"}`
-`filesystem_read`: `{"path":"relative UTF-8 text-file path"}`
-`filesystem_write`: `{"path":"relative UTF-8 text-file path", "content":"UTF-8 string"}`
-`filesystem_edit`: `{"path":"relative UTF-8 text-file path", "content":"UTF-8 string"}`
-`filesystem_delete`: `{"path":"relative UTF-8 text-file path"}`
-
-`network_read`: `{"url":"HTTPS URL without credentials, query, or fragment"}`
-```
-
-The model is instructed to use the listed capabilities only for their
-described operations and not to invent arguments. Filesystem edit and delete
-are limited to one existing regular file, delete rejects wildcards, and all
-three filesystem mutations require trusted approval. The dispatcher is a small
-application-owned collection, not a plugin registry or dynamic discovery
-system.
-
-Every filesystem mutation independently verifies the resulting state with
-trusted application code before reporting success, and returns a bounded
-`ActionReceipt(action, status, size_bytes)` on its `ToolResult`. Create and
-edit re-read the file and confirm the exact expected bytes are present
-("File created and verified." / "File edited and verified."); delete confirms
-the path is absent ("File deleted and verified to be absent."). If
-verification contradicts the write, the result fails honestly as
-"...verification did not confirm the expected result; the outcome is
-unverified."; if the resulting state cannot be inspected at all, it reports
-verification as inconclusive. Receipt statuses are `verified`, `unverified`,
-`inconclusive`, `failed`, `missing`, and `invalid`. Verification happens
-inside the tool's own `execute()` call as a controlled application flow — it
-is never a separate model decision or a recursive tool step, and an
-unverified receipt reaches the model as a failed `ToolResult`.
-
-Both successful and explicitly failed `ToolResult` values reach the final
-response call. If the tool raises an unexpected `Exception`, Stella converts
-it to the deterministic result:
-
-```text
-ToolResult(success=False, output="Tool execution failed.")
-```
-
-The exception is therefore visible to the final response path as a failed
-operation without being silently discarded. Stella does not retry the tool.
-
-`FileSystemDeleteTool` requires exactly one relative `path` argument. It
-rejects absolute paths, parent traversal, wildcard characters, missing files,
-directories, and symlinks. Its canonical resolved path must remain below the
-configured workspace. It is `DANGEROUS`, so `ToolDispatcher` requires an
-exact application approval matching the validated path before execution. It
-does not recurse or expand globs and verifies the file is actually absent
-before claiming success. Failures return deterministic results such as
-`File was not found.`, `File is not a regular file.`, or `File could not be
-deleted.`.
-
-`FileSystemEditTool` is the bounded edit counterpart of `FileSystemWriteTool`:
-it accepts the same `{path, content}` arguments, requires exact approval as a
-`DANGEROUS` tool, and replaces the full contents of one existing regular
-workspace file. It cannot create files, follow symlinks, or touch paths
-outside the workspace, and it verifies the written bytes before reporting
-`File edited and verified.`. Missing targets honestly return
-`File was not found.` without creating anything.
-
-`NetworkReadTool` requires exactly one HTTPS URL without userinfo, query
-strings, fragments, or a non-default port. It performs a fixed GET with no
-redirects, model-supplied headers, cookies, credentials, or proxy settings.
-It rejects local and non-global resolved addresses, revalidates the connected
-peer, accepts only UTF-8 `text/plain`, and bounds the response at 1 MiB with
-fixed connection/read/total timeouts. It is `DANGEROUS` because it creates an
-external connection, so exact trusted approval is required before execution.
-Fetched text is untrusted data and is not automatically stored in memory.
-
-`DateTimeTool` requires exactly one argument named `kind`, whose value must
-be one of `date`, `time`, `datetime`, or `weekday`. Missing keys, extra keys,
-unsupported values, non-dictionary arguments, and other malformed structures
-produce:
-
-```text
-ToolResult(success=False, output="Invalid tool arguments.")
-```
-
-The invalid input is rejected before date/time inspection. `DateTimeTool` also
-performs the same check when called directly, so direct callers do not rely on
-Stella to enforce the contract. It uses only Python's standard date/time
-library, does not read environment variables, and never invokes a shell or
-arbitrary command. It uses the host process's local timezone; it does not
-infer a user's timezone.
-
-The capability check guarantees that this Stella instance can execute only its
-injected tool under the exact capability name selected by the application. It
-does not provide permissions, authentication, user approval, sandboxing, or
-authorization for dangerous actions.
-
-The final natural-language response is stored in `StellaResult.response`, and
-the original `ToolResult` remains available in `StellaResult.tool_result`.
-The CLI displays the final response when one is present.
-
-## Preserved behavior
-
-`ANSWER`, `ASK`, and `DO_NOTHING` retain their existing behavior. Tool
-execution remains outside the Brain. The Brain proposes a decision; Stella
-executes the injected tool and coordinates the response.
-
-## Intentionally out of scope
-
-The current implementation injects a fixed set of bounded tools through one
-`ToolDispatcher`. It does not provide:
-
-- a plugin registry or dynamic tool discovery;
-- tool selection beyond exact lookup in the application-owned dispatcher;
-- general schemas or validation rules for future tools beyond each tool's own
-  validation contract;
-- retries, permissions, timeouts, or background execution;
-- autonomous tool loops or follow-up decisions;
-- external APIs, shell commands, subprocesses, or other side effects; or
-- automatic memory writes from tool inputs or results.
-
-The tool loop is deliberately one execution followed by one final response
-generation call.
-
-## Previous real-world SystemInfoTool validation
-
-The real OpenAI-backed CLI was run with `--debug`, a dedicated temporary
-SQLite database, and the previously configured model `gpt-5.6`. The request
-asked for the current hostname. The model produced the structured decision:
-
-```json
-{"kind":"tool","capability":"system_info","arguments":{"kind":"hostname"},"memory_write":null}
-```
-
-Stella authorized the exact `system_info` capability, `SystemInfoTool`
-executed its read-only hostname query, and the final response reported the
-returned hostname. This validates model recognition, argument generation,
-capability dispatch, tool execution, and final-response use of the
-`ToolResult`. The API key was not displayed or recorded.
-
-## Current real-world DateTimeTool validation
-
-The real OpenAI-backed CLI was run with `--debug`, a dedicated temporary
-SQLite database, and the previously configured model `gpt-5.6`. The request
-was: `What time is it?`. The model produced:
-
-```json
-{"kind":"tool","capability":"datetime","arguments":{"kind":"time"},"memory_write":null}
-```
-
-Stella authorized `datetime`, `DateTimeTool` returned the current host-local
-time with its numeric UTC offset, and the observed final response was:
-
-```text
-It’s 5:51:20 PM (UTC+05:30).
-```
-
-The final response therefore used the `ToolResult`. The API key was not
-displayed or recorded.
-
-## Real-world multi-capability dispatcher validation
-
-Using the real OpenAI-backed CLI with `--debug`, model `gpt-5.6`, and one
-session containing all three safe tools:
-
-```text
-What time is it?
-Decision: {"arguments": {"kind": "time"}, "capability": "datetime", ...}
-
-What operating system and platform is this machine running?
-Decision: {"arguments": {"kind": "platform"}, "capability": "system_info", ...}
-
-Please use the echo capability to echo exactly this marker: DISPATCHER_ECHO_7K2.
-Decision: {"arguments": {"message": "DISPATCHER_ECHO_7K2."}, "capability": "echo", ...}
-```
-
-All three tools executed successfully. The final responses used the matching
-`ToolResult`: local time with its offset, platform information, and the exact
-echo marker respectively. No API key was displayed or recorded.
-
-## Real-world validation
-
-Pre-validation checks:
-
-- `uv run pytest`: 56 passed
-- `uv run ruff check .`: all checks passed
-
-The validation used the real OpenAI-backed CLI with `--debug`, the existing
-`EchoTool`, and a dedicated temporary SQLite database. The API key was
-inherited by the process but was not displayed or recorded. The model was
-`gpt-5.6`.
-
-Successful scenario:
-
-```text
-Use the EchoTool with its required message argument to echo exactly this marker: ECHO_TOOL_REAL_WORLD_7F3K9.
-```
-
-The debug decision was:
-
-```text
-{"arguments": {"message": "ECHO_TOOL_REAL_WORLD_7F3K9."}, "content": "EchoTool", "kind": "tool", "memory_write": null}
-```
-
-The observed final CLI response was:
-
-```text
-ECHO_TOOL_REAL_WORLD_7F3K9.
-```
-
-This confirms that the real model selected `TOOL`, Stella executed the
-existing EchoTool, the tool returned the marker as its `ToolResult.output`,
-and the final LLM response reflected that result. The tool result therefore
-actually influenced the final response.
-
-Failure-path observation:
-
-```text
-Please use the EchoTool to echo this exact marker: ECHO_TOOL_REAL_WORLD_7F3K9.
-```
-
-The real model selected `TOOL` but generated the arguments
-`{"text": "ECHO_TOOL_REAL_WORLD_7F3K9."}`. EchoTool requires the `message`
-argument, so Stella caught the resulting exception and the final response was
-the deterministic failure text:
-
-```text
-Tool execution failed.
-```
-
-The earlier failure exposed a protocol limitation: the LLM decision prompt did
-not provide EchoTool's argument schema, so an underspecified natural-language
-request produced the wrong argument key. The prompt now exposes the required
-`{"message":"string"}` shape. A new real-model validation is still required
-to confirm that this clarification reliably produces the expected arguments.
-
-The follow-up validation attempt in the current environment was blocked before
-the CLI started because `STELLA_MODEL` was unset. `OPENAI_API_KEY` was present,
-but no model was guessed and no API request was made. The successful real-model
-observations above therefore predate this schema clarification; the revised
-prompt still needs a new real OpenAI run.
-
-## Latest real-world validation after schema clarification
-
-The existing OpenAI authentication was available without displaying the key,
-and the CLI was run with `STELLA_MODEL=gpt-5.6`. A fresh dedicated temporary
-SQLite database was used. The request was intentionally phrased without
-manually supplying the argument key:
-
-```text
-Please use the EchoTool to echo this exact marker: ECHO_TOOL_SCHEMA_CLARIFIED_9Q2LM.
-```
-
-The real `--debug` output showed:
-
-```text
-Decision: {"arguments": {"message": "ECHO_TOOL_SCHEMA_CLARIFIED_9Q2LM."}, "content": null, "kind": "tool", "memory_write": null}
-```
-
-EchoTool received the documented `message` argument and returned the marker.
-The final CLI response was:
-
-```text
-ECHO_TOOL_SCHEMA_CLARIFIED_9Q2LM.
-```
-
-End-to-end result: **succeeded**. The real model selected `TOOL`, generated
-the required `{"message": "string"}` shape, EchoTool returned the expected
-marker, and the final LLM response reflected that ToolResult. No production
-code was modified and the API key was not exposed.
-
-Post-validation checks:
-
-- `uv run pytest`: 57 passed
-- `uv run ruff check .`: all checks passed
+Unknown, missing, or mismatched capabilities return
+`ToolResult(False, "Tool capability unavailable.")` without validation or
+execution; Stella never falls back to another tool. Tool exceptions become the
+deterministic `Tool execution failed.` result so the failure is visible to the
+final response path without leaking stack traces, and Stella does not retry.
+
+The loop is bounded (`max_tool_steps`, CLI composes 2): the Brain may iterate
+tool → observation → decision within that cap, and hitting the limit produces
+a deterministic capped result, never an unbounded loop. Each dangerous action
+inside the loop still requires its own exact approval. See `ARCHITECTURE.md`
+for the orchestration details.
+
+## Registered capabilities (as composed in app.py)
+
+| Capability | Risk | Owning spec |
+|---|---|---|
+| `datetime` | SAFE | this doc, below |
+| `system_info` | SAFE | this doc, below |
+| `filesystem_read` | SENSITIVE | `FILESYSTEM.md` |
+| `filesystem_write` / `filesystem_edit` / `filesystem_delete` | DANGEROUS | `FILESYSTEM.md` |
+| `workspace_list` / `workspace_find` / `workspace_search` | SENSITIVE (inherited from read) | `WORKSPACE_ASSISTANT.md` |
+| `network_read` | DANGEROUS | `NETWORK_READ.md` |
+| `memory_list` | SENSITIVE | `OUTCOME_MEMORY.md` |
+| `memory_write` / `memory_update` / `memory_forget` | DANGEROUS | `OUTCOME_MEMORY.md` |
+| `reminder_create` / `reminder_cancel` | DANGEROUS | `REMINDERS.md` |
+| `reminder_list` | SENSITIVE | `REMINDERS.md` |
+| `persona_edit` | DANGEROUS (two files only) | `PERSONA.md` |
+
+`EchoTool` exists in `tools.py` but is **deliberately not registered**: a
+registered echo capability lets a confused model "succeed" by echoing the
+user's own text, which reads as a fake assistant response (found during
+dogfooding; see the comment at the composition root). It remains a test
+fixture only.
+
+## Decision-prompt routing rules
+
+`LLMBrain` receives the same dispatcher as Stella and serializes approved tool
+metadata (name, description, argument schema) into the decision prompt. The
+prompt explains when each safe capability is relevant, but that text is not
+authorization — the exact runtime lookup is. The model must not answer from
+general knowledge when the result depends on live runtime or workspace state:
+current time/date routes to `datetime`, machine information to `system_info`,
+file reads to `filesystem_read`/`workspace_*`; it must not claim a file is
+missing without letting the selected capability run, must not invent arguments,
+and if the needed capability is unavailable or arguments are incomplete it
+must ask or do nothing rather than guess. A `ToolResult` exists only after
+trusted dispatch returns it; model prose cannot fabricate one. The routing
+gate is repeated after the serialized tool inventory in the actual system
+message, so the model sees the capabilities and the mandatory-choice rule
+together immediately before the user context.
+
+## The two SAFE informational tools
+
+`DateTimeTool` (`datetime`) accepts exactly one argument `kind` from a fixed
+allowlist: `date`, `time`, `datetime`, `weekday`. Missing, extra, unsupported,
+or incorrectly typed arguments return the deterministic
+`Invalid tool arguments.` before any date/time inspection — and the tool
+performs the same check when called directly, so callers never rely on Stella
+to enforce the contract. Unexpected runtime failures return
+`Date/time unavailable.`. It uses only the standard library, reads no
+environment variables, never shells out, and reports the **host process's**
+local timezone with a numeric UTC offset; Stella has no trustworthy user
+timezone source and does not infer one from prompts, memory, hostname, or
+location. A future user timezone setting needs a clear source and ownership
+rule first.
+
+`SystemInfoTool` (`system_info`) accepts exactly `{"kind":
+"hostname|platform|cpu"}` using the standard-library `platform`/`os`
+functions; CPU output is the reported processor description plus core count.
+Runtime failures contain as `System information unavailable.`. It must never
+be expanded to accept arbitrary commands, environment-variable names, paths,
+or file queries — that would turn a SAFE tool into an OS surface.
+
+Both are read-only; their output is still treated as untrusted tool data in
+the final response call. Real-model validation at their milestones confirmed
+the full Brain → exact-capability check → argument validation → execution →
+final-response path (e.g. `What time is it?` → `{"kind":"time"}` → local time
+with offset); logs of those runs live in git history, not here.
+
+## Verification & receipts (mutating tools)
+
+Every filesystem, memory, reminder, persona, and network mutation verifies its
+resulting state with trusted application code before reporting success and
+returns a bounded `ActionReceipt(action, status, size_bytes)` on its
+`ToolResult`. Statuses are `verified`, `unverified`, `inconclusive`, `failed`,
+`missing`, `invalid`. A success claim always means the resulting state was
+verified; contradictory or uninspectable results fail honestly
+(`unverified`/`inconclusive`). Verification happens inside the tool's own
+`execute()` as a controlled application flow — never a separate model decision
+or recursive tool step — and an unverified receipt reaches the model as a
+failed `ToolResult`. A verified receipt grants no authority for any later
+action, and file/page contents never enter the receipt or trace.
+
+## Security boundaries and what the dispatcher does NOT provide
+
+The dispatcher guarantees only that execution routes to an application-
+registered exact capability, that tool-level validation happens first, and
+that trusted risk classification cannot be set or overridden by the model
+(a model field such as `approved: true` is ignored). `SENSITIVE` tools execute
+without interactive approval where the application has scoped them safely
+(`filesystem_read`/`workspace_*` are workspace-scoped and read-only; this is an
+application decision, not a model decision). `DANGEROUS` tools require an exact
+application-produced approval and fail closed when it is missing, rejected,
+malformed, or for a different action — see `APPROVAL_BOUNDARY.md`.
+
+Not provided by design: authentication, user permissions, plugin loading or
+dynamic discovery, model-controlled registration, sandboxing, resource limits
+or timeouts, retries, background execution, autonomous loops beyond the bound,
+general policy engines, and protection from prompt injection in tool output —
+tool results are untrusted data at every step.

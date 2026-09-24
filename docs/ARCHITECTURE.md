@@ -422,6 +422,34 @@ values. The trace is observational only: it cannot select decisions, grant
 approval, execute tools, write memory, or replace the existing step trace and
 tool audit.
 
+### Desktop tools
+
+`stella.os_tools` adds three opt-in capabilities for a Hyprland session:
+`screen_read` (grim capture piped to local `tesseract --psm` OCR),
+`window_focus`, and `key_send` (wtype into a focus-verified window). The
+module encodes the report-03/11/13 surface rules — and, where the live
+0.56.2/Omarchy build disagreed with them, the measured truth instead: the
+instance flag is `-i` (not `-r`), focus dispatches through the compositor's
+Lua API (`hl.dispatch(hl.dsp.focus{window=…})` via `hyprctl eval`), and
+grim takes `X,Y WxH` written to stdout with a trailing `-`.
+
+Two invariants hold the trust model. No decision reads a subprocess return
+code: reads require parseable JSON of the expected shape (the compositor
+answers "unknown request" at rc 0), and a failed shape is an error, never an
+empty list that would read as "no windows". Every act is followed by a fresh
+compositor re-query, so `window_focus` reports *verified* only when
+`activewindow` agrees and `key_send` reports *inconclusive* — the keystrokes
+reached a focus-confirmed window, but the application's reaction is
+unknowable from the compositor. `screen_read` bounds its OCR text
+(`MAX_SCREEN_TEXT_CHARS`) and masks obvious credentials before the model
+sees them, and pixels never persist. Registration is doubly gated — an
+explicit settings flag *and* a real session signature with `hyprctl`, `grim`,
+`tesseract` and `wtype` on `PATH` — so the model never sees a capability
+that could only fail. Risk levels stay application-owned: reads and focus
+are `SENSITIVE`, typing is `DANGEROUS`, all three route through the existing
+exact-argument approval dialog, whose preview names the concrete window
+(class, title, pid, address) and shows the literal text.
+
 ### CLI and shared application layer
 
 `stella.app` is the shared application layer that both interfaces build on.
@@ -608,6 +636,7 @@ The following are intentionally outside the current MVP foundation:
 │       ├── ollama_client.py   # local Ollama client
 │       ├── ollama_embedding.py # Ollama /api/embed provider
 │       ├── openai_client.py   # OpenAI-compatible client
+│       ├── os_tools.py        # opt-in Hyprland screen/focus/type tools
 │       ├── proactivity.py     # due-reminder surface during interaction
 │       ├── reminders.py       # one-shot reminder store
 │       ├── semantic_memory.py # provider-neutral semantic retrieval + local fallback

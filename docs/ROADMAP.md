@@ -261,6 +261,33 @@ working and helping me, even if not the fastest."
   resident (coexists with the A10 brain's 2.8 GB), 23–39 ms per
   batched multi-question event, clean teardown to 0 MiB. The B0
   pre-decision router remains separate and sketch-only.
+- **B6. Desktop awareness tools — done.** Compendium item 6, built on
+  reports 03/11/13 but corrected where the live 0.56.2/Omarchy machine
+  disagreed with them (`src/stella/os_tools.py`). Three capabilities,
+  all opt-in *and* environment-gated (a real Hyprland signature plus
+  `hyprctl`/`grim`/`tesseract`/`wtype` on `PATH`), so the model never
+  sees a tool that could only fail:
+  `screen_read` (grim → `tesseract --psm 6`, bounded 6 000-char OCR
+  text with obvious credentials masked; pixels never persist),
+  `window_focus` and `key_send` (typed only into an explicitly
+  addressed, focus-verified window). Every read trusts the JSON shape,
+  never the return code (the rc-0-"unknown request" trap), and every
+  act is followed by a compositor re-query, so a receipt says
+  *verified* only when the session proves it; `key_send` is honestly
+  `inconclusive` because the application's reaction is unknowable.
+  Two of the reports' measured specifics were wrong on this box and
+  are corrected in code, not papered over: the instance flag is `-i`
+  (not `-r`, which is *refresh* and made hyprctl answer "unknown
+  request"), focus goes through the compositor's Lua dispatch API
+  (`hl.dispatch(hl.dsp.focus{window=…})`; the `dispatch focuswindow
+  "(address:0x…)"` string form is rejected here), grim takes
+  `X,Y WxH` written to stdout via a trailing `-` (not `WxH+X+Y`), and
+  it reads the window geometry hyprctl reports, which is already in
+  grim's logical space — no scaling. Live on the real rig: reads 6–9 ms,
+  window focus 25–29 ms (verified), key send 94–106 ms (the target
+  foot process wrote the typed probe to disk, then screen_read OCR'd it
+  back with tesseract mis-reading `O` as `0`), active-window OCR
+  ~0.42 s, full-screen OCR 6.90 s.
 
 ## Stage C — personality
 

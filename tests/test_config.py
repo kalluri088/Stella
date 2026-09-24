@@ -89,6 +89,7 @@ def test_configuration_stores_only_non_secret_fields():
         "transcripts_enabled",
         "semantic_memory_enabled",
         "semantic_provider",
+        "os_tools_enabled",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):
@@ -400,3 +401,25 @@ def test_sanitize_redacts_secrets_and_bounds_length():
     assert config.sanitize(long_text) == "x" * 160
     assert config.sanitize("key is sk-abc123", ("sk-abc123",)) == "key is [redacted]"
     assert config.sanitize("  collapse   whitespace  ") == "collapse whitespace"
+
+
+def test_saved_configuration_roundtrips_the_os_tools_opt_in():
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="m", os_tools_enabled=True
+        )
+    )
+    raw = config.load_configuration()
+    assert raw is not None
+    assert raw["os_tools_enabled"] is True
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.os_tools_enabled is True
+
+
+def test_environment_toggle_overrides_the_saved_os_tools_choice(monkeypatch):
+    monkeypatch.setenv("STELLA_OS_TOOLS", "0")
+    settings = StellaSettings.from_saved(
+        provider="ollama", model="m", os_tools_enabled=True
+    )
+    assert settings.os_tools_enabled is False

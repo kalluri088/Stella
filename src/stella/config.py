@@ -40,6 +40,7 @@ _CONFIG_FIELDS = (
     "transcripts_enabled",
     "semantic_memory_enabled",
     "semantic_provider",
+    "os_tools_enabled",
 )
 
 
@@ -356,4 +357,5 @@ def resolve_settings() -> StellaSettings | None:
         transcripts_enabled=raw.get("transcripts_enabled") is True,
         semantic_memory_enabled=raw.get("semantic_memory_enabled") is True,
         semantic_provider=raw.get("semantic_provider", "local-hash"),
+        os_tools_enabled=raw.get("os_tools_enabled") is True,
     )

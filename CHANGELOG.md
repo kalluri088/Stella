@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Stella can read and act on the Hyprland desktop, only when proven
+
+- **Three opt-in desktop capabilities** — `screen_read` (a local
+  screenshot fed to local OCR — no cloud, no vision model), `window_focus`
+  and `key_send`. They are registered only when the settings flag is on
+  *and* this really is a Hyprland session with the tools installed, so
+  a model never sees a capability that could only fail.
+- **Nothing is trusted, everything is re-queried.** Reads accept only
+  parseable JSON of the expected shape (the compositor answers garbage
+  with rc 0), and every act is followed by a fresh compositor query, so
+  a receipt says *verified* only when the session proves it. A keystroke
+  send is honestly *inconclusive*: the keys reach a focus-confirmed
+  window, but what the application did with them is unknowable from
+  here.
+- **Privacy bound on what the screen says** — OCR text is capped and
+  obvious credentials are masked before the model sees them, and pixels
+  are never written to disk.
+- **Corrected against the live machine, not the notes** — the plan's
+  measured syntax was wrong in four places (the instance flag, the focus
+  dispatch route, grim's geometry format and its stdout argument); each
+  is fixed to what this Hyprland 0.56.2 build actually accepts and was
+  verified end-to-end with a real window. (live: reads ~8 ms, focus ~26 ms,
+  key send ~100 ms, window OCR ~0.4 s, full-screen OCR 6.9 s)
+
 ### Events now route through two cheap tiers before anything acts
 
 - **The event bus** (`stella.event_bus`) registers up to ten standing

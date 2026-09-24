@@ -1110,6 +1110,25 @@ class StellaWindow:
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._os_tools_var = tk.BooleanVar(
+            value=settings.os_tools_enabled
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Desktop awareness (screen read, focus, typing)",
+            variable=self._os_tools_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text=(
+                "Adds screen_read, window_focus and key_send on a Hyprland "
+                "desktop. Every use asks you first, with the exact window "
+                "named; screen text is read by local OCR only and typing "
+                "only ever goes to a window Stella just focused."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -1154,6 +1173,7 @@ class StellaWindow:
             workspace=fields["Workspace"].get().strip(),
             transcripts_enabled=self._transcripts_var.get(),
             semantic_memory_enabled=self._semantic_var.get(),
+            os_tools_enabled=self._os_tools_var.get(),
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],

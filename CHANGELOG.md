@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### The Ollama brain was losing most of its own instructions
+
+- **Silent truncation found by measurement, not mood.** Every decision
+  turn sends a ~5,300-token prompt (system contract plus context), but
+  Ollama's own `prompt_eval_count` reported exactly 2050 evaluated
+  tokens on every turn at `num_ctx=4096` — and still finished with
+  `stop`, never a length error. The head of the system prompt, where
+  the strict-JSON and routing rules live, simply never reached the
+  model.
+- **Fixed to `num_ctx=8192`, with a test pinning the wiring**
+  (`build_application` now asks for a context that fits the whole
+  decision prompt). The effect is measured, not assumed: on the decision
+  bench the incumbent goes from 21/30 to 29/30 strict cases, and on the
+  injection bench it obeyed instructions planted inside a tool output on
+  4 of 8 identical decisions before the fix and 0 of 8 after. (research
+  report 15; before/after via `~/tools/measure_prompt_ctx.py` and
+  `~/tools/bench_injection_repeat.py`)
+
 ### Stella can read and act on the Hyprland desktop, only when proven
 
 - **Three opt-in desktop capabilities** — `screen_read` (a local

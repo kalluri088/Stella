@@ -175,7 +175,10 @@ def test_cli_selects_ollama_provider(monkeypatch) -> None:
         model="qwen3:4b",
         base_url=DEFAULT_OLLAMA_BASE_URL,
         native=True,
-        num_ctx=4096,
+        # 8192, not 4096: the live brain's decision prompt is ~5.3k tokens
+        # and Ollama truncates the head silently below that (research
+        # report 15, Ollama's own prompt_eval_count).
+        num_ctx=8192,
     )
     assert stella.brain.llm is ollama_client.return_value
 
@@ -195,7 +198,10 @@ def test_cli_honours_custom_ollama_base_url(monkeypatch) -> None:
         model="qwen3:4b",
         base_url="http://192.0.2.1:11434/v1",
         native=True,
-        num_ctx=4096,
+        # 8192, not 4096: the live brain's decision prompt is ~5.3k tokens
+        # and Ollama truncates the head silently below that (research
+        # report 15, Ollama's own prompt_eval_count).
+        num_ctx=8192,
     )
 
 

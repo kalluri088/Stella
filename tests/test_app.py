@@ -1237,6 +1237,31 @@ def test_build_application_creates_no_semantic_index_when_disabled(
         application.close()
 
 
+def test_build_application_gives_the_ollama_brain_room_for_the_decision_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ollama truncates silently from the head: at num_ctx=4096 its own
+    # prompt_eval_count reported exactly 2050 evaluated tokens for every
+    # real decision turn (~5300 sent) while finishing with "stop" — the
+    # model never saw the head of its instruction prompt (research
+    # report 15). The wiring must keep num_ctx above the whole prompt.
+    captured: dict[str, object] = {}
+    original = app.OllamaLLMClient
+
+    class RecordingClient(original):  # type: ignore[misc]
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(app, "OllamaLLMClient", RecordingClient)
+    application = build_application(_semantic_settings(tmp_path, False))
+    try:
+        assert captured["native"] is True
+        assert captured["num_ctx"] >= 8192
+    finally:
+        application.close()
+
+
 def test_build_application_reconciles_the_index_at_startup(
     tmp_path: Path,
 ) -> None:

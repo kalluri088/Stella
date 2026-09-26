@@ -679,13 +679,17 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     brain_server: LlamaBrainServer | None = None
     if settings.provider == "ollama":
         # The compatibility endpoint ignores per-request options on Ollama
-        # 0.33.x; native /api/chat is the only way to apply num_ctx=4096,
-        # which keeps the model fully on GPU (measured ~3x faster turns).
+        # 0.33.x; native /api/chat is the only way to apply num_ctx. It must
+        # exceed the whole decision prompt: at 4096 the server evaluated
+        # exactly 2050 of the ~5300 prompt tokens for every turn and still
+        # reported finish "stop" — silently dropping the head of the
+        # instruction prompt (measured via Ollama's own prompt_eval_count,
+        # ~/tools/measure_prompt_ctx.py, research report 15).
         llm = OllamaLLMClient(
             model=settings.model,
             base_url=settings.ollama_base_url,
             native=True,
-            num_ctx=4096,
+            num_ctx=8192,
         )
     elif settings.provider == "openai":
         if not os.environ.get("OPENAI_API_KEY"):

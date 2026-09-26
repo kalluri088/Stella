@@ -198,7 +198,21 @@ working and helping me, even if not the fastest."
     `reasoning_effort: low` — part of the "hello takes 300 s"
     pain is a qwen3:4b thinking-mode artifact, and A7 already
     bounds the wait; see how much shrinks before a router earns
-    its VRAM. (2) Re-validate VRAM coexistence with whatever
+    its VRAM.
+    *Measured 2026-09-25 (research report 15,
+    `~/tools/bench_brain_decisions.py`): the LFM2.5-8B swap is
+    rejected on quality — 12/30 strict vs gpt-oss 28/30 on
+    Stella's real decision path, with 12/60 silences and
+    `hinglish 0/6` — and the real-turn speed gap is ~3×
+    (median 10.1 s vs 29.4 s), not the 17× decode ratio, because
+    decisions are prefill-dominated. The same bench caught a
+    live incumbent bug: at `num_ctx=4096` Ollama evaluated only
+    2050 of the ~5300-token decision prompt for every turn,
+    silently truncating the head of the system prompt; fixed to
+    8192 with a wiring test, and the post-fix incumbent arm scores
+    29/30 strict (was 21/30) at a 10.0 s median — matching or
+    beating gpt-oss on this corpus at ~3× the decision speed.*
+  (2) Re-validate VRAM coexistence with whatever
     ships as the brain config. (3) Routing-question conformance
     and calibration on Stella-shaped inputs — ties directly into
     the B4 provider conformance suite.

@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Stella can be interrupted by voice (Stage B7, opt-in barge-in)
+
+- **The ear shipped, still just a button.** `src/stella/barge_in.py`
+  runs a raw 16 kHz mono capture (`pw-record -a`, `arecord` fallback)
+  through the Silero VAD v6 ONNX model on one daemon thread; five
+  consecutive frames above both a probability and an energy floor
+  (~160 ms of speech) fire exactly one callback, and that callback is
+  `StellaBridge.cancel_current_turn()` — the documented any-thread
+  Cancel press from A8. The detector can approve nothing, inject
+  nothing, and never records: its only output is the interrupt.
+- **Opt-in and environment-only, like all voice settings.**
+  `STELLA_VOICE_BARGE_IN` defaults to `off`; `STELLA_VAD_MODEL`,
+  `STELLA_BARGE_SOURCE` (e.g. `ec_mic`) and `STELLA_BARGE_THRESHOLD`
+  cover the rest, and nothing is added to `config.json`. The one new
+  dependency is `onnxruntime`, isolated in a `barge-in` extra
+  (`uv sync --extra barge-in`) because the pip `silero-vad` package
+  would have dragged CUDA torch in (report 08).
+- **Echo cancellation is a prerequisite, documented as a recipe.**
+  Measured: uncancelled playback registers as speech on 23% of
+  playback frames; through PipeWire's WebRTC echo-cancel it is 0% at
+  −29.6 dB. `docs/VOICE.md` now carries the `pactl` setup (load the
+  module while the built-ins are default, then move the defaults to
+  `ec_out`/`ec_mic`) and the Bluetooth caveat (keep SCO out of the
+  ec chain).
+- **Degrades exactly like every other voice part.** A missing extra
+  or model says so once at startup and leaves everything else
+  working; an internal fault retires the ear for the session; a
+  broken ear never touches text, Listen, or speech. 20 offline tests
+  (judge, subprocess listener via a synthetic byte writer,
+  settings, bridge arm/disarm lifecycle) — no microphone needed.
+  The human double-talk acceptance on the live rig is still to come.
+
 ### The System-1 router gate: measured, and it says no (Stage B0)
 
 - **All three B0 prerequisites are now facts, not hopes** (research

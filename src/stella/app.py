@@ -25,6 +25,7 @@ from pathlib import Path
 
 from stella.audio import TranscriptionProvider
 from stella.audio_output import SpeechProvider, sentence_chunks
+from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
@@ -308,6 +309,7 @@ class StellaSession:
 
 
 VOICE_MODES = {"auto", "openai", "off"}
+BARGE_MODES = {"off", "on"}
 ENV_ON = {"1", "true", "on", "yes"}
 ENV_OFF = {"0", "false", "off", "no"}
 
@@ -418,6 +420,17 @@ def default_workspace() -> str:
     return str(default_data_dir() / "workspace")
 
 
+def default_vad_model() -> str:
+    """Where the small Silero VAD ONNX file lives on this machine.
+
+    A ~2 MB model file, not a pip package: installing ``silero-vad``
+    would drag CUDA torch in with it (research report 08 measured that
+    5.4 GB trap). Stella runs the file itself through onnxruntime.
+    """
+
+    return str(Path.home() / "models" / "silero" / "silero_vad.onnx")
+
+
 @dataclass(frozen=True)
 class StellaSettings:
     """The minimal local configuration a Stella application needs."""
@@ -446,6 +459,10 @@ class StellaSettings:
     speech_model: str = "tts-1"
     speech_voice: str = "alloy"
     speech_command: str | None = None
+    voice_barge_in: str = "off"
+    vad_model: str = field(default_factory=default_vad_model)
+    barge_source: str | None = None
+    barge_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         if self.semantic_provider not in SEMANTIC_PROVIDERS:
@@ -474,6 +491,21 @@ class StellaSettings:
         if speech_mode not in VOICE_MODES:
             raise SystemExit(
                 "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
+            )
+        barge_mode = os.environ.get("STELLA_VOICE_BARGE_IN", "off").casefold()
+        if barge_mode not in BARGE_MODES:
+            raise SystemExit(
+                "STELLA_VOICE_BARGE_IN must be 'on' or 'off'"
+            )
+        raw_threshold = os.environ.get("STELLA_BARGE_THRESHOLD", "0.5")
+        try:
+            barge_threshold = float(raw_threshold)
+        except ValueError:
+            barge_threshold = -1.0
+        if not 0.0 < barge_threshold < 1.0:
+            raise SystemExit(
+                "STELLA_BARGE_THRESHOLD must be a speech probability "
+                "strictly between 0 and 1"
             )
         raw_port = os.environ.get(
             "STELLA_LLAMA_SERVER_PORT", str(DEFAULT_LLAMA_SERVER_PORT)
@@ -524,6 +556,12 @@ class StellaSettings:
             "speech_model": os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
             "speech_voice": os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
             "speech_command": os.environ.get("STELLA_SPEECH_COMMAND"),
+            "voice_barge_in": barge_mode,
+            "vad_model": os.environ.get(
+                "STELLA_VAD_MODEL", default_vad_model()
+            ),
+            "barge_source": os.environ.get("STELLA_BARGE_SOURCE") or None,
+            "barge_threshold": barge_threshold,
         }
 
     @classmethod
@@ -613,12 +651,18 @@ class StellaApplication:
     voice: VoicePanel | None = None
     proposals: ReflectionStore | None = None
     brain_server: LlamaBrainServer | None = None
+    barge_in: BargeInListener | None = None
+    barge_notice: str | None = None
 
     def close(self) -> None:
         # The brain process is Stella's child: closing the application
         # stops it, so no llama-server is ever left running unsupervised.
         if self.brain_server is not None:
             self.brain_server.stop()
+        if self.barge_in is not None:
+            # The ear is Stella's child too: its capture process ends
+            # with the application, never outliving the window.
+            self.barge_in.stop()
         if self.voice is not None:
             self.voice.dispose()
         memory = self.session.stella.memory
@@ -796,6 +840,15 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # not quote CLI-only instructions ("type 'exit'") in UI error messages.
     # The interactive CLI loop builds its own StellaSession with the hint.
     voice = build_voice(settings)
+    # Barge-in is explicitly opt-in and its absence must never affect
+    # anything else: an enabled-but-broken ear becomes one honest
+    # message at startup (via the bridge), not a failed launch.
+    barge_in: BargeInListener | None = None
+    barge_notice: str | None = None
+    try:
+        barge_in = build_barge_in(settings)
+    except VoiceError as error:
+        barge_notice = str(error)
     # Last possible moment to spawn the brain: nothing after this can
     # fail and strand the process (stop() also runs inside a failed
     # start(), and close() owns it afterwards).
@@ -811,6 +864,8 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         voice,
         proposals=proposals,
         brain_server=brain_server,
+        barge_in=barge_in,
+        barge_notice=barge_notice,
     )
 
 
@@ -1065,6 +1120,25 @@ def build_voice(settings: StellaSettings) -> VoicePanel:
         speech,
         input_notice=input_notice,
         output_notice=output_notice,
+    )
+
+
+def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
+    """Assemble the barge-in ear, or None when the feature is off.
+
+    Unlike :func:`build_voice` this raises :class:`VoiceError` when
+    barge-in was explicitly asked for but cannot work (missing extra,
+    missing model): the reason must surface once as a message instead
+    of the feature silently doing nothing forever.
+    """
+
+    if settings.voice_barge_in != "on":
+        return None
+    vad = SileroVad(settings.vad_model)
+    return BargeInListener(
+        features=vad.features,
+        command=capture_command(settings.barge_source),
+        threshold=settings.barge_threshold,
     )
 
 
@@ -1353,6 +1427,7 @@ class StellaBridge:
         self._reminders: ReminderPanel | None = None
         self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
+        self._barge: BargeInListener | None = None
         self._playback: threading.Thread | None = None
         self._speech_interrupt: threading.Event | None = None
         self._speech_consumer: threading.Thread | None = None
@@ -1403,6 +1478,20 @@ class StellaBridge:
             getattr(stella, "reminders", None)
         )
         self._voice = application.voice
+        if (
+            self._barge is not None
+            and self._barge is not application.barge_in
+        ):
+            # Rebuilding the application replaces the ear too: the old
+            # capture process must not outlive the settings that grew it.
+            self._barge.stop()
+        self._barge = application.barge_in
+        if self._barge is not None:
+            self._barge.on_speech = self._on_barge_in
+        if application.barge_notice is not None:
+            # An enabled-but-unusable ear is reported once, honestly,
+            # and changes nothing else about how Stella behaves.
+            self._emit("voice_error", application.barge_notice)
 
     def _serve(self) -> None:
         while True:
@@ -1498,6 +1587,38 @@ class StellaBridge:
         if self._speech_interrupt is not None:
             self._speech_interrupt.set()
 
+    def _on_barge_in(self) -> None:
+        """One confirmed interruption is exactly one Cancel-button press.
+
+        Called from the barge-in thread; ``cancel_current_turn`` is
+        documented as any-thread callable. The detector contributes no
+        decision, no text, and no approval — the user's voice is just
+        another way to press the button that already exists.
+        """
+
+        self.cancel_current_turn()
+
+    def _begin_barge_in(self) -> None:
+        """Arm the ear for one speaking episode; problems retire the ear."""
+
+        listener = self._barge
+        if listener is None:
+            return
+        if listener.failed:
+            # The listener thread faulted once (a broken VAD model can
+            # do that): retire silently now, not loudly on every reply.
+            self._barge = None
+            return
+        try:
+            listener.start()
+        except VoiceError as error:
+            self._barge = None
+            self._emit("voice_error", str(error))
+
+    def _end_barge_in(self) -> None:
+        if self._barge is not None:
+            self._barge.stop()
+
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
 
@@ -1562,6 +1683,9 @@ class StellaBridge:
                 )
                 return
             try:
+                # Push-to-talk takes the microphone back: the barge-in
+                # ear never competes with an explicit Listen press.
+                self._end_barge_in()
                 panel.start_listening()
             except VoiceError as error:
                 self._emit("voice_error", str(error))
@@ -1678,6 +1802,7 @@ class StellaBridge:
         if self._playback is not None:
             self._playback.join(timeout=2)
         self._emit("voice_state", "speaking")
+        self._begin_barge_in()
 
         def play() -> None:
             try:
@@ -1691,6 +1816,7 @@ class StellaBridge:
                     f"Stella could not play the response ({detail[:120]}).",
                 )
             finally:
+                self._end_barge_in()
                 panel.dispose_artifact(path)
                 self._emit("voice_state", "idle")
 
@@ -1749,6 +1875,7 @@ class StellaBridge:
                     interrupt.set()
                 finally:
                     panel.dispose_artifact(item)
+            self._end_barge_in()
             self._emit("voice_state", "idle")
 
         try:
@@ -1783,6 +1910,7 @@ class StellaBridge:
         if self._speech_consumer is not None:
             self._speech_consumer.join(timeout=2)
         self._emit("voice_state", "speaking")
+        self._begin_barge_in()
         outbox.put(first)
         self._speech_consumer = threading.Thread(
             target=consume, name="stella-speech-playback", daemon=True
@@ -1960,6 +2088,7 @@ class StellaBridge:
         self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
+        self._end_barge_in()
         self._post(None)
         self._thread.join(timeout=5)
         if self._playback is not None:

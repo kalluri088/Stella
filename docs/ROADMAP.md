@@ -359,25 +359,30 @@ working and helping me, even if not the fastest."
   foot process wrote the typed probe to disk, then screen_read OCR'd it
   back with tesseract mis-reading `O` as `0`), active-window OCR
   ~0.42 s, full-screen OCR 6.90 s.
-- **B7. Voice barge-in — researched, deliberately NOT started.**
+- **B7. Voice barge-in — built; the live double-talk acceptance remains.**
   Compendium item 7 (report 08) measured the two prerequisites on this
   box and they pass: PipeWire's WebRTC `module-echo-cancel` cancels
   Stella's own playback to the noise floor (−29.6 dB, 0 % false-VAD
   frames during playback vs 22.8 % uncancelled), and silero-vad costs
   0.30 ms per 32 ms frame over ONNX (RTF 0.01), so a continuous
   listener is ~1 thread-percent. The Tier-1 half of ship order (a
-  voice-reachable Cancel that flushes playback) already landed as A8,
-  so barge-in would only add a mic-listener thread feeding the same
-  `cancel_current_turn()`/`stop_playback()` path. It is gated on three
-  things that must not be crossed unattended: (1) it needs `onnxruntime`
-  as a **new project dependency** (report 08 explicitly rules out the
-  pip `silero-vad`/CUDA-torch path), (2) its one unfinished acceptance
-  test is a **human double-talk check** — speak over playback and
-  confirm the cancelled source still carries the near-end voice — which
-  needs a person at the mic, and (3) it loads a **system-wide PipeWire
-  echo-cancel module** on the live desktop, a high-blast-radius change
-  the report itself documents as easy to mis-bind. Awaiting explicit
-  approval for the dependency and a sitting for the double-talk test.
+  voice-reachable Cancel that flushes playback) already landed as A8.
+  With all three gates explicitly approved, the ear itself shipped:
+  `src/stella/barge_in.py` runs a raw 16 kHz `pw-record`/`arecord`
+  capture through the Silero v6 ONNX model and fires only after five
+  consecutive frames clear both a probability and an energy floor —
+  and its entire authority is one call to the existing
+  `cancel_current_turn()`, so an interrupt is exactly a Cancel-button
+  press. It is opt-in via `STELLA_VOICE_BARGE_IN` (off by default;
+  voice settings never enter `config.json`), uses the new `barge-in`
+  extra (`onnxruntime` only), and degrades like every other voice
+  part: a broken ear disables the ear and nothing else. Offline tests
+  cover the judge, the subprocess listener, settings and the bridge
+  lifecycle (20 cases, no microphone needed). Remaining: the human
+  double-talk acceptance (speak over playback on the real rig with
+  the echo-cancel chain loaded, confirm near-end retention and
+  ≤500 ms talk→silence) and, while at it, the system-wide module
+  load itself.
 
 ## Stage C — personality
 

@@ -17,6 +17,10 @@ dependencies = [
 [project.optional-dependencies]
 # Real local embedding model for semantic recall (CPU-only torch suffices).
 embed = ["sentence-transformers>=3.0"]
+# Barge-in: Silero VAD v6 as one small ONNX file under onnxruntime. The
+# pip 'silero-vad' package is deliberately not the route: it drags CUDA
+# torch in with it (research report 08).
+barge-in = ["onnxruntime>=1.17"]
 
 [project.scripts]
 stella = "stella.cli:main"

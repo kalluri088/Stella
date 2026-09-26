@@ -65,6 +65,70 @@ The consequences users should know:
 - Chunk order is reply order; every artifact is removed once heard, and a
   newer reply retires the previous reply's unplayed queue.
 
+## Barge-in (optional interrupt-by-voice)
+
+By default Stella's microphone is only live between a **Listen** press and its
+stop. `STELLA_VOICE_BARGE_IN=on` adds one opt-in exception: while Stella is
+speaking, a small listener ("the ear") watches the microphone for the user's
+voice, and a confirmed utterance does exactly what the **Cancel** button
+already does — stop the audio and cancel the turn. The detector has no other
+authority: it cannot approve tools, cannot inject text, and produces one
+interruption per speaking episode. Outside of speech playback the ear is not
+running at all, so there is still no always-on listening.
+
+Detection is fully local: raw 16 kHz mono capture (`pw-record`, falling back to
+`arecord`) is fed frame by frame through Silero VAD running as an ONNX model;
+five consecutive voiced frames (about 160 ms) above both a probability and an
+energy threshold count as the user talking. Nothing is recorded, buffered for
+transcription, or persisted — the only output is the interrupt itself.
+
+Setup (all of it optional; off is the default and needs nothing):
+
+```bash
+uv sync --extra barge-in            # adds onnxruntime only
+# Put the Silero VAD ONNX model somewhere readable, e.g.
+#   ~/models/silero/silero_vad.onnx   (or point STELLA_VAD_MODEL elsewhere)
+STELLA_VOICE_BARGE_IN=1 uv run stella-ui
+```
+
+Environment variables (voice config is environment-only and is never written
+to `config.json`):
+
+- `STELLA_VOICE_BARGE_IN` — `off` (default) or `on`.
+- `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file.
+- `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic` (default: the
+  system's default source).
+- `STELLA_BARGE_THRESHOLD` — VAD probability in (0, 1), default `0.5`.
+
+Echo cancellation is the make-or-break prerequisite: without it Stella's own
+voice through the speakers registers as speech (measured on this machine —
+23% of playback frames looked voiced; with cancellation that fell to 0%). The
+recommended setup is PipeWire's WebRTC echo-cancel module, which replaces the
+raw devices with a stereo pair (`ec_out` / `ec_mic`) at the Pulse-server layer
+and needs no changes in Stella at all:
+
+```bash
+# IMPORTANT: the built-in speakers/mic must be the defaults *before* loading,
+# or the module binds to the wrong devices.
+pactl set-default-sink  alsa_output.pci-0000_00_1f.3.analog-stereo
+pactl set-default-source alsa_input.pci-0000_00_1f.3.analog-stereo
+pactl load-module module-echo-cancel aec_method=webrtc \
+    source_name=ec_mic sink_name=ec_out
+pactl set-default-sink ec_out
+pactl set-default-source ec_mic
+```
+
+Stella's playback and recordings then follow the cancelled pair automatically;
+`STELLA_BARGE_SOURCE=ec_mic` is only needed if the defaults are left elsewhere.
+With a Bluetooth headset the echo path is ~40 dB down by itself, so the raw
+devices are fine — route Bluetooth around the `ec_*` pair, because pulling SCO
+through echo-cancel triggers codec switches (measured, research report 08).
+
+When barge-in is enabled but cannot work, only the ear is disabled and nothing
+else changes: a missing extra or model reports one friendly error at startup,
+an internal fault retires the ear silently for the rest of the session, and
+text, Listen and speech all keep working.
+
 ## UI states
 
 The status line distinguishes "Listening...", "Transcribing...",
@@ -123,8 +187,9 @@ Recording uses `pw-record` or `arecord` when installed; playback uses
 - Speech artifacts are removed after playback, and provider temp directories
   are disposed of at shutdown.
 - Recording happens only between an explicit Listen press and its stop; there
-  is no background or always-on capture and no autonomous voice-triggered
-  action.
+  is no always-on capture and no autonomous voice-triggered action. The one
+  exception is opt-in barge-in, and even then the microphone feeds only a
+  local voiced/not-voiced decision that is never recorded or stored.
 
 ## Security posture
 

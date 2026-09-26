@@ -76,6 +76,19 @@ authority: it cannot approve tools, cannot inject text, and produces one
 interruption per speaking episode. Outside of speech playback the ear is not
 running at all, so there is still no always-on listening.
 
+> **Known issue (live testing, 2026-09-26):** on the developer's rig, enabling
+> the ear broke Stella's *playback* — the first one or two sentences of each
+> reply were stretched and glitched even though the detector never fired
+> (A/B verified: identical UI with the ear off plays perfectly). The stretch
+> only reproduces inside the fully loaded UI (brain, speech synthesis and the
+> live capture stream all at once), not in any isolated harness, so the
+> mechanism is still open (leading hypothesis: PipeWire real-time starvation
+> on the busy machine). Barge-in therefore stays **off by default and is not
+> yet accepted for live use**; the research report
+> (`~/research/19-barge-in-live.md`) records every measurement and the next
+> debugging steps. Text UI, push-to-talk voice, and chunked speech are
+> unaffected.
+
 Detection is fully local: raw 16 kHz mono capture (`pw-record`, falling back to
 `arecord`) is fed frame by frame through Silero VAD running as an ONNX model;
 five consecutive voiced frames (about 160 ms) above both a probability and an

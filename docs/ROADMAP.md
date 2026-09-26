@@ -378,11 +378,20 @@ working and helping me, even if not the fastest."
   extra (`onnxruntime` only), and degrades like every other voice
   part: a broken ear disables the ear and nothing else. Offline tests
   cover the judge, the subprocess listener, settings and the bridge
-  lifecycle (20 cases, no microphone needed). Remaining: the human
-  double-talk acceptance (speak over playback on the real rig with
-  the echo-cancel chain loaded, confirm near-end retention and
-  ≤500 ms talk→silence) and, while at it, the system-wide module
-  load itself.
+  lifecycle (20 cases, no microphone needed). **Live testing found a
+  real blocker:** with the ear on, the first sentences of each spoken
+  reply play stretched and glitched (a 7.5 s file measured 45.8 s and
+  76.6 s in the UI trace) even though the detector never fired, and
+  the identical UI with the ear off is perfect — the live capture
+  stream interferes with playback on this loaded machine. The stretch
+  does not reproduce in any isolated harness (five controlled
+  reproductions, including the full producer/consumer/synthesis/
+  per-episode-ear shape), so the mechanism is open (leading
+  hypothesis: PipeWire real-time starvation with brain + TTS +
+  capture all live at once). The human double-talk acceptance is
+  therefore NOT taken; barge-in stays off by default and parked
+  by user decision — full evidence and next steps in research
+  report 19.
 
 ## Stage C — personality
 

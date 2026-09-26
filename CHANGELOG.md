@@ -32,7 +32,19 @@
   broken ear never touches text, Listen, or speech. 20 offline tests
   (judge, subprocess listener via a synthetic byte writer,
   settings, bridge arm/disarm lifecycle) — no microphone needed.
-  The human double-talk acceptance on the live rig is still to come.
+- **Live testing then found a blocker, and barge-in is parked with it
+  documented.** With the ear on, the first sentences of each spoken
+  reply played stretched and glitching (a 7.5 s file took 45.8 s,
+  another 76.6 s in the UI trace) while the detector logged *zero*
+  voiced frames — and the byte-identical UI with the ear off plays
+  perfectly. Five controlled reproductions, up to and including the
+  full UI shape (per-episode ear churn, real producer/consumer
+  threads, real Kokoro synthesis during playback, zero-delay arming),
+  all stayed clean: the interference needs the fully loaded UI and is
+  still unexplained (leading hypothesis: PipeWire real-time
+  starvation with brain + TTS + capture live at once). The human
+  double-talk acceptance is therefore not taken; `off` remains the
+  default (research report 19 records every measurement).
 
 ### The System-1 router gate: measured, and it says no (Stage B0)
 

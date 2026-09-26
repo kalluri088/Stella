@@ -88,7 +88,7 @@ Setup (all of it optional; off is the default and needs nothing):
 uv sync --extra barge-in            # adds onnxruntime only
 # Put the Silero VAD ONNX model somewhere readable, e.g.
 #   ~/models/silero/silero_vad.onnx   (or point STELLA_VAD_MODEL elsewhere)
-STELLA_VOICE_BARGE_IN=1 uv run stella-ui
+STELLA_VOICE_BARGE_IN=on uv run stella-ui
 ```
 
 Environment variables (voice config is environment-only and is never written

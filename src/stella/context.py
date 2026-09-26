@@ -10,6 +10,11 @@ from stella.memory import MemoryItem, relevance_score
 
 MAX_CONVERSATION_HISTORY = 20
 MAX_RETRIEVED_MEMORIES = 5
+# B3 retrieval window: how many best-scoring candidates recall may carry
+# at all. The brain-facing cap stays MAX_RETRIEVED_MEMORIES; this bounds
+# the stage before it (fusion, provenance, the conversation-query merge)
+# so a large store cannot make every turn scan an unbounded list.
+MAX_RECALL_WINDOW = 16
 MAX_TOOL_OBSERVATIONS = 8
 MAX_TOOL_OUTPUT_CHARS = 4000
 MAX_INPUT_PARTS = 8

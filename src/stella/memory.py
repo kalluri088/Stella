@@ -79,6 +79,17 @@ def relevance_score(content: str, query: str) -> int:
     return len(shared_terms)
 
 
+def memory_terms(text: str) -> set[str]:
+    """Public view of the normalized term set used by matching above.
+
+    Exported for the memory-scale policies (B3): dedupe guidance compares
+    whole normalized term sets, and must use the same normalization the
+    recall path uses, never a second dialect.
+    """
+
+    return _terms(text)
+
+
 class MemoryType(str, Enum):
     """The deliberately small set of memory categories."""
 

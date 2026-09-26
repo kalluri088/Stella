@@ -11,14 +11,14 @@ import socket
 import ssl
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path, PureWindowsPath
 from urllib.parse import SplitResult, urlsplit
 
 from stella.history import ActionHistory, InMemoryActionHistory
-from stella.memory import Memory, MemoryItem
+from stella.memory import Memory, MemoryItem, memory_terms
 from stella.persona import (
     ADDONS_FILE_NAME,
     MAX_PERSONA_BYTES,
@@ -86,6 +86,43 @@ class RiskLevel(str, Enum):
     SAFE = "safe"
     SENSITIVE = "sensitive"
     DANGEROUS = "dangerous"
+
+
+# Total order used by argument-aware risk elevation (B1). Elevation may
+# only RAISE scrutiny: the effective risk of a call is the maximum of the
+# capability's floor and any argument-driven elevation, so no argument —
+# however the model phrases it — can ever demote a DANGEROUS capability.
+_RISK_ORDER = {RiskLevel.SAFE: 0, RiskLevel.SENSITIVE: 1, RiskLevel.DANGEROUS: 2}
+
+# Path-segment names that mark a file as carrying live credentials. The
+# match is deliberately over-broad (a "tokens_notes.md" also trips it):
+# the cost of one extra approval is a second of user time, the cost of a
+# missed one is secrets flowing into the model's prompt.
+_SENSITIVE_SEGMENT_TOKENS = (
+    "secret",
+    "credential",
+    "password",
+    "passwd",
+    "token",
+    "id_rsa",
+    "shadow",
+)
+
+
+def _looks_sensitive_path(path: str) -> bool:
+    """True when any path segment names credential-bearing material."""
+
+    normalized = str(path).replace("\\", "/").lower()
+    for segment in normalized.split("/"):
+        if not segment:
+            continue
+        if segment.startswith(".env"):
+            return True
+        if segment.endswith((".pem", ".key")):
+            return True
+        if any(token in segment for token in _SENSITIVE_SEGMENT_TOKENS):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -352,6 +389,17 @@ class Tool(ABC):
         """Return the trusted baseline risk classification."""
 
         return RiskLevel.SAFE
+
+    def argument_risk(self, arguments: Mapping[str, object]) -> RiskLevel | None:
+        """Return an argument-driven elevation above the floor, or None.
+
+        Application-owned code only, computed from arguments; returning a
+        level BELOW ``risk_level`` has no effect by construction (the
+        dispatcher takes the maximum), so an override can add scrutiny and
+        can never remove it.
+        """
+
+        return None
 
     @abstractmethod
     def validate_arguments(self, arguments: dict[str, object]) -> bool:
@@ -753,6 +801,16 @@ class FileSystemReadTool(Tool):
             and isinstance(arguments["path"], str)
             and _workspace_is_within(self.workspace, arguments["path"])
         )
+
+    def argument_risk(self, arguments: Mapping[str, object]) -> RiskLevel | None:
+        # Reading a live-credentials file is a materially different act
+        # from reading notes: its content flows into the model's prompt.
+        # Applies to the read tool; the write/edit/delete subclasses are
+        # already DANGEROUS and max() makes this a no-op for them.
+        path = arguments.get("path") if isinstance(arguments, Mapping) else None
+        if isinstance(path, str) and _looks_sensitive_path(path):
+            return RiskLevel.DANGEROUS
+        return None
 
     @staticmethod
     def _is_relative(path: str) -> bool:
@@ -1803,16 +1861,39 @@ class MemoryWriteTool(Tool):
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
-        stored = self.memory.store(
-            MemoryItem(content=str(arguments["content"]))
+        content = str(arguments["content"])
+        # B3 dedupe guidance, collected before the write so the new item
+        # cannot shadow itself: the store is never silently pruned or
+        # refused — the duplicate still lands, and the honest note lets
+        # the model (and user) choose memory_update instead next time.
+        new_terms = memory_terms(content)
+        duplicates = (
+            [
+                item
+                for item in self.memory.retrieve()
+                # A rewrite of the same fact shares every content word;
+                # word order alone never changes its meaning here.
+                # frozenset equality also cannot fire on a single term,
+                # so no short fact suppresses another.
+                if item.id is not None and memory_terms(item.content) == new_terms
+            ]
+            if len(new_terms) >= 2
+            else []
         )
+        stored = self.memory.store(MemoryItem(content=content))
+        output = "Stored the memory." if stored else "The memory could not be stored."
+        if stored and duplicates:
+            listing = "; ".join(
+                f"memory {item.id}: {item.content}" for item in duplicates[:3]
+            )
+            output += (
+                f" NOTE: this repeats what is already stored ({listing}). "
+                "If the user is REVISING that fact, use memory_update "
+                "instead of keeping both copies."
+            )
         return ToolResult(
             success=stored,
-            output=(
-                "Stored the memory."
-                if stored
-                else "The memory could not be stored."
-            ),
+            output=output,
             memory_action=MemoryAction(
                 action="write",
                 count=1 if stored else 0,
@@ -2551,10 +2632,35 @@ class ToolDispatcher:
         tool = self.get(capability)
         return tool.risk_level if tool is not None else None
 
-    def requires_approval(self, capability: str | None) -> bool:
-        """Return whether trusted risk requires approval before execution."""
+    def effective_risk_level(
+        self,
+        capability: str | None,
+        arguments: Mapping[str, object] | None = None,
+    ) -> RiskLevel | None:
+        """Return the risk actually applied to this call: floor plus any
+        argument-driven elevation. Never lower than the floor."""
 
-        return self.risk_level(capability) is RiskLevel.DANGEROUS
+        floor = self.risk_level(capability)
+        if floor is None or arguments is None:
+            return floor
+        tool = self.get(capability)
+        assert tool is not None
+        elevation = tool.argument_risk(arguments)
+        if elevation is None:
+            return floor
+        return max(floor, elevation, key=lambda level: _RISK_ORDER[level])
+
+    def requires_approval(
+        self, capability: str | None, arguments: Mapping[str, object] | None = None
+    ) -> bool:
+        """Return whether trusted risk requires approval before execution.
+
+        Without arguments this is the exact pre-B1 floor question; with
+        arguments an elevation can turn a no-approval call into one that
+        asks, and can never turn an asking call into a silent one.
+        """
+
+        return self.effective_risk_level(capability, arguments) is RiskLevel.DANGEROUS
 
     def preview(
         self, capability: str | None, arguments: dict[str, object]
@@ -2606,7 +2712,6 @@ class ToolDispatcher:
                 return result
 
             risk_level = tool.risk_level
-            approval_required = risk_level is RiskLevel.DANGEROUS
             if not tool.validate_arguments(arguments):
                 audit_arguments = {}
                 result = ToolResult(
@@ -2614,7 +2719,12 @@ class ToolDispatcher:
                 )
                 return result
             # Risk is read from the application-owned tool after validation;
-            # no model-provided risk value participates in dispatch.
+            # no model-provided risk value participates in dispatch. The
+            # effective risk is the floor maxed with the trusted argument
+            # elevation, so elevation can add approvals but never remove
+            # one, and it can fire on validated arguments only.
+            risk_level = self.effective_risk_level(capability, arguments) or risk_level
+            approval_required = risk_level is RiskLevel.DANGEROUS
             if approval_required:
                 if approval is None:
                     approval_granted = False

@@ -13,6 +13,7 @@ from stella.audio import (
 from stella.audio_output import SpeechArtifact, SpeechOutput, SpeechProvider
 from stella.brain import Brain, Decision, DecisionKind
 from stella.context import (
+    MAX_RECALL_WINDOW,
     Context,
     InputEnvelope,
     RetrievalSource,
@@ -207,9 +208,15 @@ class Stella:
                 *(message.content for message in conversation_history),
             ]
         )
-        retrieved_memories = self.memory.retrieve(context.user_input)
+        # B3 bounded retrieval window: recall keeps at most the
+        # MAX_RECALL_WINDOW best-scoring candidates from each bounded
+        # query (retrieve returns relevance-sorted lists for a query),
+        # so fusion and the merge below never scan an unbounded store.
+        retrieved_memories = self.memory.retrieve(context.user_input)[
+            :MAX_RECALL_WINDOW
+        ]
         if conversation_history:
-            for item in self.memory.retrieve(memory_query):
+            for item in self.memory.retrieve(memory_query)[:MAX_RECALL_WINDOW]:
                 if item not in retrieved_memories:
                     retrieved_memories.append(item)
         # Fused, keyword-dominant recall: lexical results keep their exact
@@ -914,7 +921,11 @@ class Stella:
         trace: InteractionTrace | None = None,
     ) -> tuple[ToolResult, bool]:
         approval = None
-        approval_required = self.tools.requires_approval(capability)
+        # Ask with the arguments in hand: a trusted argument elevation can
+        # add an approval prompt (and ``execute`` re-derives the same
+        # effective risk after validation), while a DANGEROUS floor is
+        # required approval regardless, so approval can never go missing.
+        approval_required = self.tools.requires_approval(capability, arguments)
         approval_decision: bool | None = None
         if (
             approval_required

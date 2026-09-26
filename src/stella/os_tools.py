@@ -403,6 +403,14 @@ class ScreenReadTool(Tool):
             and arguments["scope"] in {"active_window", "full_screen"}
         )
 
+    def argument_risk(self, arguments: Mapping[str, object]) -> RiskLevel | None:
+        # An explicit full-desktop capture sees every window, not just
+        # the focused one — a materially larger blast radius, so it costs
+        # an approval. The focused-window scope keeps its SENSITIVE floor.
+        if isinstance(arguments, Mapping) and arguments.get("scope") == "full_screen":
+            return RiskLevel.DANGEROUS
+        return None
+
     def preview(self, request: ApprovalRequest) -> ActionPreview | None:
         scope = request.arguments.get("scope")
         if scope not in {"active_window", "full_screen"}:

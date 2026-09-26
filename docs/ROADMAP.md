@@ -216,10 +216,21 @@ working and helping me, even if not the fastest."
     ships as the brain config. (3) Routing-question conformance
     and calibration on Stella-shaped inputs — ties directly into
     the B4 provider conformance suite.
-- **B1. Argument-aware risk classification.** *Explicitly deferred by
-  the user.* Today risk is per-capability and hard-coded; a classifier
-  would have to be proven not to weaken the exact-match approval
-  boundary before it earns a place.
+- **B1. Argument-aware risk classification — done.** The deferral's
+  condition (must not weaken the exact-match approval boundary) is
+  satisfied structurally: `Tool.argument_risk` is application-owned code
+  and the dispatcher takes the **maximum** of the capability floor and
+  any argument elevation, so elevation can only ever add scrutiny —
+  a DANGEROUS floor never loses its approval for any arguments, and
+  `ApprovalRequest` exact-match verification is untouched. Two honest
+  rules ship today: a credential-named path (`.env…`, `*secret*`,
+  `*.pem/.key`…) read through `filesystem_read` escalates to an approval,
+  and `screen_read` with `scope=full_screen` does too (every window, not
+  the focused one). `execute` re-derives the effective risk after
+  validation (defense in depth) and the audit line records the risk
+  actually applied. Proof: `tests/test_argument_risk.py` (monotonicity
+  over every capability × argument samples, token-match regression,
+  validation-before-elevation ordering).
 - **B2. Semantic memory retrieval — done.** The
   `LocalHashEmbeddingProvider` is wired into memory recall
   (`src/stella/semantic_memory.py`, `src/stella/stella.py`) with the two
@@ -246,9 +257,18 @@ working and helping me, even if not the fastest."
   Ollama passes input verbatim), and an unreachable backend returns no
   vector — the turn degrades to keyword recall with an honest
   `SemanticSearchUnavailableEvent`, never a fake similarity.
-- **B3. Memory-scale policies.** As stored memory grows: bounded
-  retrieval windows, dedupe guidance, and forgetting tools that stay
-  approval-gated.
+- **B3. Memory-scale policies — done.** Per-turn recall now carries at
+  most `MAX_RECALL_WINDOW = 16` best-scoring candidates from each
+  relevance-sorted query into fusion and the conversation merge (the
+  brain-facing cap stays `MAX_RETRIEVED_MEMORIES = 5`; the index
+  reconciler still sees the full store — bounding recall is not bounding
+  maintenance). A second write of an already-stored fact still stores
+  (guidance never vetoes or silently prunes) but the result honestly
+  names the existing copy and points at `memory_update`; the match is
+  the same normalized term set recall uses, guarded to ≥2 terms so
+  single-word facts can never shadow others. `memory_forget` was already
+  an approval-gated DANGEROUS capability and a test now re-proves the
+  gate rather than assuming it (`tests/test_memory_scale.py`).
 - **B4. Provider conformance suite.** One test harness that any
   OpenAI-compatible endpoint or Ollama model must pass, so provider
   swaps are verified rather than hoped for.

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Some ordinary requests now cost an approval (and one fewer floods recall)
+
+- **Argument-aware risk (Stage B1).** Risk is no longer purely
+  per-capability: two trusted, additive rules raise scrutiny for
+  specifically dangerous shapes. Reading a credential-bearing file
+  (`.env`, `secrets/…`, `*.pem`…) through `filesystem_read` now requires
+  an approval like a write does, and an explicit full-screen
+  `screen_read` requires one because it captures every window, not just
+  the focused one. The mechanism can only ever **add** approvals: the
+  effective risk of a call is the maximum of the capability's floor and
+  the argument elevation, so no argument phrasing can demote a dangerous
+  capability, the exact-`ApprovalRequest` match is untouched, and an
+  audit line honestly records the risk that was actually applied
+  (`tests/test_argument_risk.py` proves all of this).
+- **Memory scale policies (Stage B3).** Per-turn recall is bounded to the
+  best-scoring 16 candidates before fusion (a large store can no longer
+  make every turn scan everything), a repeated memory write still stores
+  but now honestly notes the existing copy and suggests `memory_update`
+  instead of growing duplicates, and the approval gate on `memory_forget`
+  is re-proved by tests rather than assumed (`tests/test_memory_scale.py`).
+
 ### The Ollama brain was losing most of its own instructions
 
 - **Silent truncation found by measurement, not mood.** Every decision

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### The System-1 router gate: measured, and it says no (Stage B0)
+
+- **All three B0 prerequisites are now facts, not hopes** (research
+  report 18). Coexistence passed: the shipping brain plus a resident
+  Laya sidecar fit in 5745/6141 MiB with no mutual eviction. But the
+  router's whole premise — that a cheap classifier can decide "does
+  this turn need a tool?" — failed on Stella's own decision corpus:
+  authored routing questions scored AUROC 0.550 and the verbatim
+  shipped `router_questions` preset 0.567, a coin flip biased to
+  silence 16 of the 18 tool-requiring turns at any sane threshold.
+- **`SystemOneRouter` is a recorded non-build decision.** No code was
+  written for it, which is the point of measuring before building;
+  Laya keeps its already-validated B5 event-bus role, and ~1.4 GiB of
+  VRAM stays headroom. The decision reopens only at AUROC ≳ 0.75 on
+  the re-runnable calibration bench.
+
 ### A provider swap is now a measured claim, not a hope (Stage B4)
 
 - **One written contract.** `src/stella/conformance.py` states the

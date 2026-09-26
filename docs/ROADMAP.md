@@ -160,9 +160,11 @@ working and helping me, even if not the fastest."
 
 ## Stage B — sharper judgment and scale
 
-- **B0. System-1 decision router (Laya) — design sketch only, no
-  code.** A small non-autoregressive classifier (Laya 0.3.20,
-  421M) consulted *before* the language-model Brain, so cheap
+- **B0. System-1 decision router (Laya) — resolved by measurement as
+  a non-build (report 18).** The sketch stays written down because a
+  future act classifier could reopen it. A small non-autoregressive
+  classifier (Laya 0.3.20, 421M) consulted *before* the language-model
+  Brain, so cheap
   always-on awareness informs (never replaces) the expensive
   decision.
   - *Slot.* One advisory call at a new safe point in
@@ -216,6 +218,25 @@ working and helping me, even if not the fastest."
     ships as the brain config. (3) Routing-question conformance
     and calibration on Stella-shaped inputs — ties directly into
     the B4 provider conformance suite.
+    *Measured 2026-09-26 (research report 18): gate (2) PASSED —
+    the shipping brain (warm `qwen3:4b` at `num_ctx=8192`, 3804 MiB)
+    plus resident Laya (1448 MiB) coexist at 5745/6141 MiB with
+    every call answered, no mutual eviction, and a working cold
+    brain reload under Laya (Laya's latencies in that run were
+    contaminated by an unrelated CPU-bound experiment; timing never
+    enters the gate-2 question). Gate (3) FAILED — over the 30
+    report-15 decision cases, "does this turn need a tool" scored
+    AUROC 0.550 with Stella-authored noul questions and 0.567 with
+    the verbatim shipped `laya.presets.router_questions`
+    `needs_tools` control: coin-flip, and biased to silence 16–17
+    of the 18 tool-requiring turns at threshold 0.5; the capability
+    bucket choice lands 14/30. **Verdict: `SystemOneRouter` is not
+    built** — a measured non-build decision, reopened only by an
+    act classifier beating AUROC ~0.75 on this corpus
+    (`~/tools/bench_laya_routing_calibration.py` re-runnable) or a
+    different model with a routing-shaped signal. Laya's B5
+    Tier-1 event-bus role is a different, still-valid measurement
+    and stands.*
 - **B1. Argument-aware risk classification — done.** The deferral's
   condition (must not weaken the exact-match approval boundary) is
   satisfied structurally: `Tool.argument_risk` is application-owned code

@@ -269,9 +269,25 @@ working and helping me, even if not the fastest."
   single-word facts can never shadow others. `memory_forget` was already
   an approval-gated DANGEROUS capability and a test now re-proves the
   gate rather than assuming it (`tests/test_memory_scale.py`).
-- **B4. Provider conformance suite.** One test harness that any
-  OpenAI-compatible endpoint or Ollama model must pass, so provider
-  swaps are verified rather than hoped for.
+- **B4. Provider conformance suite — done.** One written contract
+  (`CONFORMANCE_CASES` in `src/stella/conformance.py`: 16 named
+  obligations) replayed twice. Offline: a loopback simulated provider
+  answers in each dialect's real wire shapes (clean/fenced/prose
+  decision JSON, stringified and malformed tool arguments, the
+  reserved `tool_final` marker, invented capabilities, REQUIRED-guard
+  overrides, empty replies, HTTP 500s) while the actual client classes
+  and `LLMBrain` decide — 61 case×dialect checks across OpenAI-compat
+  (Responses API), Ollama compat, Ollama native and llama-server
+  compat, deterministic and GPU-free (`tests/test_conformance.py`),
+  plus a prompt-fit tripwire asserting the decision prompt keeps
+  fitting `num_ctx=8192`. Live:
+  `~/tools/bench_provider_conformance.py` re-asks the endpoint-only
+  obligations against the shipping model — measured 2026-09-26 on
+  `qwen3:4b`: honest HTTP 404 for an unknown model, the full decision
+  prompt evaluated (`prompt_eval_count=3442` vs the size estimate,
+  the report-15 question made checkable), and a clean native
+  `datetime` tool call over compat. B0's routing-question calibration
+  (gate 3) reuses this case-table shape on the live half.
 - **B5. Two-tier event bus — done.** Compendium item 5, built exactly
   as reports 02/12 measured it (`src/stella/event_bus.py`,
   `src/stella/laya_judge.py`, `src/stella/laya_runner.py`). Events

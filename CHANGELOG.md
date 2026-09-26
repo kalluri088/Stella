@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### A provider swap is now a measured claim, not a hope (Stage B4)
+
+- **One written contract.** `src/stella/conformance.py` states the
+  obligations Stella's decision path depends on from any provider as
+  data: 16 named cases (clean, code-fenced and prose-embedded decision
+  JSON; replies with no JSON failing closed to silence; native tool
+  calls with dict, JSON-string and malformed arguments; the reserved
+  `tool_final` marker stripped before the dispatcher; invented
+  capabilities refused by the trusted dispatcher; the REQUIRED answer
+  guard; an HTTP 500 surfacing as an error, never as a fake reply).
+- **Proven offline on the real clients.** A loopback simulated provider
+  replays each case's wire shape at all four shipped clients
+  (OpenAI-compat via the Responses API, Ollama compat, Ollama native
+  `/api/chat`, llama-server compat) through the actual `LLMBrain`
+  decision path — 61 case×dialect checks, deterministic, no GPU, no
+  network beyond 127.0.0.1 (`tests/test_conformance.py`).
+- **Proven live on the shipping endpoint.** The same script re-asks the
+  endpoint-only obligations
+  (`~/tools/bench_provider_conformance.py`, measured today on
+  `qwen3:4b` at `num_ctx=8192`): a nonexistent model returns an honest
+  HTTP 404; the whole real decision prompt was evaluated
+  (`prompt_eval_count=3442` vs a 4,149-token size estimate — the
+  written, checkable form of the report-15 truncation question); the
+  compat tool channel delivered a clean native `datetime` call.
+- **A prompt-bloat tripwire ships as a test:** the decision prompt must
+  keep fitting the wired context budget, so a future prompt grows
+  caught by the suite, not by a silently truncated answer.
+
 ### Some ordinary requests now cost an approval (and one fewer floods recall)
 
 - **Argument-aware risk (Stage B1).** Risk is no longer purely

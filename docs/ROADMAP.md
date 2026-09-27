@@ -540,6 +540,15 @@ inside that session, not before); D5 waits behind the voice work.
   (report 20), so this is an experiment, not a plan: `think=false`
   scoped to first response turns, measured on the full decision
   corpus with ≥6 passes per arm; adopt only if strict passes hold.
+  *Measured 2026-09-27 (research report 26,
+  `~/tools/bench_think_off.py`, global arms because scoping to
+  first-response turns was the hypothesis under test): REJECTED.
+  think-off scored 23/30 strict vs think-on's 22/30 — inside the
+  flake band, not a win — and the claimed latency benefit inverted:
+  arm median 24.8 s vs 21.6 s, with the plain fast-path cases the
+  trick targets 2–4× *slower* off (`route-read` 11.3 → 47.7 s). A
+  scoped variant has nothing to capture; the shipped line is
+  untouched and this parked idea is definitively answered.*
 
 Explicitly **not** adopted from this input: the always-listening
 hands-free loop and any wake word (both remain on the out-of-scope

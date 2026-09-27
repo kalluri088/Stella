@@ -25,9 +25,12 @@ class FakeServer:
         self.calls.append((method, path, body))
         best = None
         for route_method, prefix, payload in self.routes:
-            if method == route_method and path.startswith(prefix):
-                if best is None or len(prefix) >= len(best[0]):
-                    best = (prefix, payload)
+            if (
+                method == route_method
+                and path.startswith(prefix)
+                and (best is None or len(prefix) >= len(best[0]))
+            ):
+                best = (prefix, payload)
         if best is not None:
             if isinstance(best[1], Exception):
                 raise best[1]

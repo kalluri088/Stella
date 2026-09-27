@@ -25,7 +25,6 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
 
 from stella.tools import RiskLevel, Tool, ToolResult
 
@@ -34,8 +33,8 @@ from stella.tools import RiskLevel, Tool, ToolResult
 # ---------------------------------------------------------------------------
 
 # transport(method, url, token, body) -> (status, decoded JSON object)
-Transport: TypeAlias = Callable[
-    [str, str, str, "dict[str, object] | None"], tuple[int, object]
+type Transport = Callable[
+    [str, str, str, dict[str, object] | None], tuple[int, object]
 ]
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8741"
@@ -61,7 +60,7 @@ def _urllib_transport(
     method: str,
     url: str,
     token: str,
-    body: "dict[str, object] | None",
+    body: dict[str, object] | None,
     *,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> tuple[int, object]:
@@ -103,8 +102,8 @@ class OutlineClient:
         method: str,
         path: str,
         *,
-        query: "Mapping[str, object] | None" = None,
-        body: "dict[str, object] | None" = None,
+        query: Mapping[str, object] | None = None,
+        body: dict[str, object] | None = None,
     ) -> object:
         url = self.base_url.rstrip("/") + path
         if query:
@@ -148,11 +147,11 @@ def _healthz(client: OutlineClient) -> bool:
     transport = client.transport
     if transport is _urllib_transport:
 
-        def transport(  # noqa: F811 - narrow the probe timeout
+        def transport(
             method: str,
             url: str,
             token: str,
-            body: "dict[str, object] | None",
+            body: dict[str, object] | None,
         ) -> tuple[int, object]:
             return _urllib_transport(
                 method, url, token, body, timeout=PROBE_TIMEOUT_SECONDS
@@ -192,10 +191,9 @@ def _optional_text(arguments: Mapping[str, object], key: str, maxlen: int) -> bo
     return isinstance(value, str) and bool(value.strip()) and len(value) <= maxlen
 
 
-def _optional_int(arguments: Mapping[str, object], key: str) -> bool:
-    value = arguments.get(key)
-    return value is None or (
-        isinstance(value, int) and not isinstance(value, bool)
+def _int_in_range(value: object, low: int, high: int) -> bool:
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
     )
 
 
@@ -218,13 +216,20 @@ def _epoch_ms_ok(value: object) -> bool:
     return True
 
 
+def _local_now() -> dt.datetime:
+    """Now, timezone-aware and in the machine's local zone."""
+
+    return dt.datetime.now(dt.UTC).astimezone()
+
+
 def _format_when(epoch_ms: object) -> str:
     if not isinstance(epoch_ms, int):
         return ""
-    local = dt.datetime.fromtimestamp(epoch_ms / 1000)
-    if local.date() == dt.date.today():
+    local = dt.datetime.fromtimestamp(epoch_ms / 1000, dt.UTC).astimezone()
+    today = _local_now().date()
+    if local.date() == today:
         return f"today {local.strftime('%H:%M')}"
-    if local.date() == dt.date.today() + dt.timedelta(days=1):
+    if local.date() == today + dt.timedelta(days=1):
         return f"tomorrow {local.strftime('%H:%M')}"
     return local.strftime("%a %Y-%m-%d %H:%M")
 
@@ -245,7 +250,7 @@ def _render(lines: list[str]) -> ToolResult:
 
 
 def _local_tz_offset_minutes() -> int:
-    offset = dt.datetime.now().astimezone().utcoffset()
+    offset = _local_now().utcoffset()
     return int(offset.total_seconds() // 60) if offset else 0
 
 
@@ -360,7 +365,7 @@ class OutlineSearchTool(Tool):
                 "/api/v1/tasks",
                 query={
                     "status": "open",
-                    "due_before": int(dt.datetime.now().timestamp() * 1000),
+                    "due_before": int(_local_now().timestamp() * 1000),
                     "limit": MAX_OUTPUT_LINES,
                 },
             )
@@ -374,7 +379,7 @@ class OutlineSearchTool(Tool):
                 "GET",
                 "/api/v1/events",
                 query={
-                    "start": int(dt.datetime.now().timestamp() * 1000),
+                    "start": int(_local_now().timestamp() * 1000),
                     "limit": MAX_OUTPUT_LINES,
                 },
             )
@@ -489,23 +494,10 @@ class OutlineCreateTool(Tool):
         if not _optional_text(arguments, "body", MAX_BODY_CHARS):
             return False
         amount = arguments.get("amount_ml")
-        if amount is not None and (
-            not isinstance(amount, int) or isinstance(amount, bool)
-            or not 1 <= amount <= 5000
-        ):
-            return False
         duration = arguments.get("duration_ms")
-        if duration is not None and (
-            not isinstance(duration, int) or isinstance(duration, bool)
-            or not 1_000 <= duration <= 86_400_000
-        ):
-            return False
-        kind = arguments["kind"]
-        if kind == "water" and not isinstance(amount, int):
-            return False
-        if kind == "timer" and not isinstance(duration, int):
-            return False
-        return True
+        return (amount is None or _int_in_range(amount, 1, 5000)) and (
+            duration is None or _int_in_range(duration, 1_000, 86_400_000)
+        )
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):

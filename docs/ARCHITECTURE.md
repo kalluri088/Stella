@@ -429,6 +429,20 @@ values. The trace is observational only: it cannot select decisions, grant
 approval, execute tools, write memory, or replace the existing step trace and
 tool audit.
 
+### Outline app tools
+
+`stella.outline_tools` adds three opt-in capabilities for the Outline task
+app (`~/Projects/Outline`): `outline_search` (SAFE), `outline_create` and
+`outline_update` (both SENSITIVE, exact-argument approval). They speak the
+server's loopback HTTP API with stdlib `urllib` only — no new dependency,
+no direct database access; the token comes from `OUTLINE_TOKEN` or the
+server's own data directory. Registration follows the desktop-tools rule:
+the `STELLA_OUTLINE` flag *and* a live `/healthz` probe (quarter-second
+timeout) must both answer, so a stopped Outline server means the model
+never sees capabilities that could only fail. No delete is exposed. What
+comes back from Outline is framed as stored data, never instructions, and
+bounded (`MAX_OUTPUT_LINES`).
+
 ### Desktop tools
 
 `stella.os_tools` adds three opt-in capabilities for a Hyprland session:
@@ -653,6 +667,7 @@ described in the architecture above, not here):
 │       ├── ollama_embedding.py # Ollama /api/embed provider
 │       ├── openai_client.py   # OpenAI-compatible client
 │       ├── os_tools.py        # opt-in Hyprland screen/focus/type tools
+│       ├── outline_tools.py   # opt-in Outline app search/create/update tools
 │       ├── persona.py         # style files, edit snapshot history, reflection
 │       ├── proactivity.py     # due-reminder surface during interaction
 │       ├── reminders.py       # one-shot reminder store

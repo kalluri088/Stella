@@ -1444,6 +1444,25 @@ class StellaWindow:
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._outline_tools_var = tk.BooleanVar(
+            value=settings.outline_tools_enabled
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Outline app tools (search, create, update)",
+            variable=self._outline_tools_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text=(
+                "Adds outline_search, outline_create and outline_update "
+                "for the Outline task app over its local API. The tools "
+                "appear only while an Outline server is reachable; "
+                "reading never asks for approval, writing always does."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -1489,6 +1508,7 @@ class StellaWindow:
             transcripts_enabled=self._transcripts_var.get(),
             semantic_memory_enabled=self._semantic_var.get(),
             os_tools_enabled=self._os_tools_var.get(),
+            outline_tools_enabled=self._outline_tools_var.get(),
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],

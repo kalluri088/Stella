@@ -199,6 +199,13 @@ def action_summary(request: ApprovalRequest) -> str:
     if desktop is not None:
         return desktop
 
+    # Outline capabilities likewise (stella.outline_tools).
+    from stella.outline_tools import outline_tool_summaries
+
+    outline = outline_tool_summaries(request.capability, request.arguments)
+    if outline is not None:
+        return outline
+
     arguments = request.arguments
 
     def quoted(key: str) -> str | None:

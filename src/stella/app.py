@@ -62,6 +62,7 @@ from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
 from stella.ollama_embedding import OllamaEmbeddingProvider
 from stella.openai_client import OpenAILLMClient
 from stella.os_tools import build_desktop_tools
+from stella.outline_tools import build_outline_tools
 from stella.persona import (
     PersonaLoader,
     ReflectionStore,
@@ -385,6 +386,17 @@ def os_tools_env_override() -> bool | None:
     return _env_toggle("STELLA_OS_TOOLS")
 
 
+def outline_tools_env_override() -> bool | None:
+    """The STELLA_OUTLINE override, or None when it says nothing.
+
+    These tools read and modify the user's Outline app over its local
+    API; they are strictly opt-in, and registration is additionally
+    gated on a reachable Outline server (stella.outline_tools).
+    """
+
+    return _env_toggle("STELLA_OUTLINE")
+
+
 SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
 
 
@@ -476,6 +488,7 @@ class StellaSettings:
     semantic_db: str = field(default_factory=default_semantic_db)
     semantic_memory_enabled: bool = False
     os_tools_enabled: bool = False
+    outline_tools_enabled: bool = False
     semantic_provider: str = "local-hash"
     semantic_embed_model: str = "nomic-embed-text"
     workspace: str = field(default_factory=default_workspace)
@@ -605,6 +618,7 @@ class StellaSettings:
         semantic_memory_enabled: bool = False,
         semantic_provider: str = "local-hash",
         os_tools_enabled: bool = False,
+        outline_tools_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -612,6 +626,7 @@ class StellaSettings:
         semantic_override = semantic_env_override()
         provider_override = semantic_provider_env_override()
         os_override = os_tools_env_override()
+        outline_override = outline_tools_env_override()
         return cls(
             provider=provider,
             model=model,
@@ -629,6 +644,11 @@ class StellaSettings:
             ),
             os_tools_enabled=(
                 os_tools_enabled if os_override is None else os_override
+            ),
+            outline_tools_enabled=(
+                outline_tools_enabled
+                if outline_override is None
+                else outline_override
             ),
             semantic_provider=(
                 semantic_provider if provider_override is None
@@ -664,6 +684,7 @@ class StellaSettings:
             transcripts_enabled=transcripts_env_override() is True,
             semantic_memory_enabled=semantic_env_override() is True,
             os_tools_enabled=os_tools_env_override() is True,
+            outline_tools_enabled=outline_tools_env_override() is True,
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
             ),
@@ -855,6 +876,12 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # 03/11/13). Off or unavailable means the model never sees them.
     if settings.os_tools_enabled:
         for tool in build_desktop_tools(os.environ):
+            tools.register(tool)
+    # Outline capabilities are doubly gated too: an explicit opt-in flag
+    # and a reachable Outline server with a readable token. A server
+    # that is not running means the model never sees these tools.
+    if settings.outline_tools_enabled:
+        for tool in build_outline_tools(os.environ):
             tools.register(tool)
     stella = Stella(
         brain=LLMBrain(llm, tools, persona=PersonaLoader()),

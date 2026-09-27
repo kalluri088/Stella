@@ -9,7 +9,7 @@ The rule she never breaks: **nothing that changes your system happens without
 your explicit approval.** And she never claims something worked unless she
 checked that it did.
 
-## What she can do (as of 1.1.0)
+## What she can do (as of 1.2.0)
 
 - **Chat** — a desktop window or the terminal, with your choice of model.
 - **Remember** — say "remember that …" and she asks first; the Memories tab
@@ -38,6 +38,10 @@ checked that it did.
   fetch a web page for you to read (after asking, with the URL shown).
 - **Talk and listen** — press the mic button, speak; replies can be spoken
   back. There is no always-on listening and no wake word.
+- **Use your desktop (opt-in)** — with one setting on, Stella can read the
+  focused Hyprland window, focus or move windows, and type into the window
+  you nominate. Everything else about her is unchanged: the screen-wide
+  read asks first, and nothing leaves your machine.
 - **Personality** — a written persona (`~/.config/stella/persona.md`) you
   create with `stella persona` or a preset (`snark`, `warm`, `terse`), and
   can change in chat: she proposes a diff, you approve it. Ask to "be
@@ -88,7 +92,7 @@ can grant themselves permission.
 From a release: download the `.whl` file and run
 
 ```bash
-uv tool install ./stella-1.1.0-py3-none-any.whl
+uv tool install ./stella-1.2.0-py3-none-any.whl
 ```
 
 From source:
@@ -96,7 +100,7 @@ From source:
 ```bash
 git clone https://github.com/kalluri088/Stella && cd Stella
 uv build
-uv tool install ./dist/stella-1.1.0-py3-none-any.whl
+uv tool install ./dist/stella-1.2.0-py3-none-any.whl
 ```
 
 This gives you two commands: `stella-ui` (desktop window) and `stella`

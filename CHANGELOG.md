@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-09-27
 
 ### Stella can be interrupted by voice (Stage B7, opt-in barge-in)
 

@@ -158,7 +158,7 @@ working and helping me, even if not the fastest."
   while the build-first safety net (a bad config cannot destroy the
   working session) stands for every other change.
 
-## Stage B — sharper judgment and scale
+## Stage B — sharper judgment and scale (complete — released in 1.2.0)
 
 - **B0. System-1 decision router (Laya) — resolved by measurement as
   a non-build (report 18).** The sketch stays written down because a
@@ -393,7 +393,7 @@ working and helping me, even if not the fastest."
   by user decision — full evidence and next steps in research
   report 19.
 
-## Stage C — personality
+## Stage C — personality (complete — released in 1.2.0)
 
 Stella's character becomes durable, editable data — while the trust
 model stays exactly as in Stage A: the model proposes, the app decides,
@@ -467,10 +467,11 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
 
 ## Packaging and release
 
-- The repository has no git remote yet; the first push happens only when
-  the user provides a remote URL.
-- The `v1.0.0` tag stays where it is. Versions follow semver per
-  milestone: **1.1.0 = Stage A complete**, 1.2.0 = Stage B, and so on.
+- The repository is published on GitHub as `origin`; branches are
+  pushed only with the user's explicit approval, never force-pushed.
+- The `v1.0.0` and `v1.1.0` tags stay where they are. Versions follow
+  semver per milestone: **1.1.0 = Stage A complete**, **1.2.0 = Stages
+  B and C complete**, and so on.
 - Every release gets a `CHANGELOG.md` section written from the user's
   point of view, and work lands as one commit per deliverable.
 

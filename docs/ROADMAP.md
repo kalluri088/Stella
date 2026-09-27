@@ -391,7 +391,8 @@ working and helping me, even if not the fastest."
   capture all live at once). The human double-talk acceptance is
   therefore NOT taken; barge-in stays off by default and parked
   by user decision — full evidence and next steps in research
-  report 19.
+  report 19. External endpointing data that may inform the tuning
+  half of that resume order arrived 2026-09-27 (Stage D, D4).
 
 ## Stage C — personality (complete — released in 1.2.0)
 
@@ -440,6 +441,84 @@ code no text file can influence (`src/stella/persona.py`,
   approval matching is untouched, and reflection still has no write
   path of its own. The editor copy predates the `$EDITOR` session;
   mid-edit states are not versioned.
+
+## Stage D — conversational voice and decision speed (planned)
+
+Source of the direction: a third-party local-voice-agent walkthrough
+(the "Pythagoras" video transcript reviewed 2026-09-27) whose stack —
+a 35B MoE with all experts on CPU, Whisper STT, a quantized TTS model
+and Silero VAD — reached ~2.5–3.5 s voice turns on one 12 GB card.
+None of his numbers are verified on this machine; they are research
+input, not facts (rule 14). What qualifies each item here is a
+*demonstrated Stella weakness* it aims at: the parked barge-in
+blocker (report 19), the prefill-dominated decision turn (reports
+15 and 20 measured ~5.0k tokens in, ~110 characters out), and the
+silent gap a voice user hears while tools work. The trust model is
+untouched by every item: streaming carries final response text only,
+the ear proposes nothing, and any spoken filler is chosen by
+application code, never by the model.
+
+Work order agreed 2026-09-27: D1 is mic-free and can run any time;
+D2–D4 land together in a dedicated TTS/STT session (barge-in resumes
+inside that session, not before); D5 waits behind the voice work.
+
+- **D1. Prefill bench for the llama.cpp brain line.** Reports 15/20
+  showed decision turns are prefill-dominated, and our ngram-mod
+  draft acceptance measures only ~0.44–0.45 on real decisions
+  (report 09's synthetic +20 % did not transfer). The external
+  walkthrough claimed a micro-batch raise (128 → 1024) took page-read
+  prefill from ~200 to ~800 tok/s, and that MTP speculation made tool
+  calls markedly faster — both knobs `BRAIN_LAUNCH_ARGS` has never
+  tuned. Bench outside the repo (`~/tools/`, temp ports, never the
+  live 8080 or 8093): shipped line vs `-ub 1024` vs partial expert
+  offload (replacing all-or-nothing `-cmoe`) vs an MTP-capable
+  variant, measuring prompt-eval t/s, VRAM and real-corpus decision
+  wall time. Adopt only on measured prefill gain with no VRAM
+  regression and no strict-pass regression under the standing
+  ≥6-pass A/B rule.
+- **D2. TTS lookahead queue.** The walkthrough's biggest conversational
+  win was synthesizing the *next* sentence while the current one
+  plays (a queue of finished sentences, depth ~2), so the speaker
+  never waits on synthesis mid-reply. Stella already starts speech
+  while the reply is still being written; the open question is
+  whether our per-sentence synthesis is sequential against playback.
+  Measure first; if it is, add a bounded lookahead. The queue may
+  hold final response text only — never decisions — and the existing
+  Cancel path must flush it like it flushes playback today.
+- **D3. Voice narration of tool work, application-owned.** His
+  "quieter and worse" problem: while the agent reads a tool result,
+  the user hears nothing and can't tell working from stuck. Stella's
+  version: the runtime picks a phrase from a fixed pre-authored set
+  per trace-activity kind the moment that activity starts, and a
+  voice-context style note asks for brief replies. No model-authored
+  narration text, no effect on approvals, risk or the audit record —
+  spoken filler is presentation of events the app already knows.
+- **D4. Barge-in unblock with external endpointing data (extends
+  report 19, which B7's live blocker defers to).** Two observations
+  from the walkthrough map onto the parked ear's tuning: a deliberate
+  ~1 s trailing-silence wait before answering is kept on purpose
+  (shorter interrupts the user's thinking pauses), and hesitations
+  ("um") count as speech — speech-state hysteresis, not a raw
+  per-frame floor. Resume order stays as report 19 records it: first
+  the playback-stretch blocker itself (xrun/pw-top instrumentation
+  during a live reply, possibly delayed ear arming, then a proper
+  re-measure), only then endpointing tuning. Echo cancellation as a
+  prerequisite is independently re-confirmed by his setup.
+- **D5. First-response thinking-off experiment (gated).** His trick:
+  reasoning is off for the first spoken reply — nobody should wait
+  on a thinking phase to hear "hi" — and stays on for tool work.
+  Our own bake-off says quality comes *from* the thinking channel
+  (report 20), so this is an experiment, not a plan: `think=false`
+  scoped to first response turns, measured on the full decision
+  corpus with ≥6 passes per arm; adopt only if strict passes hold.
+
+Explicitly **not** adopted from this input: the always-listening
+hands-free loop and any wake word (both remain on the out-of-scope
+list), KV-cache save/restore between sessions (no demonstrated
+Stella weakness; we run one active conversation), per-persona tool
+behavior (C5's standing non-goal), and his single-card VRAM plan
+(it is a 12 GB plan for a different stack — only the *method*,
+piece-by-piece measured budgeting, transfers).
 
 ## Deferred designs and their non-negotiable constraints
 

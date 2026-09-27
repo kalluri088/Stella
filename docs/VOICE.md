@@ -96,6 +96,47 @@ STELLA_SPEECH_COMMAND="$HOME/tools/stella-speak-server" \
 STELLA_SPEECH_RESIDENT=on uv run stella-ui
 ```
 
+## Spoken conversation turns
+
+A voice turn counts as a *spoken conversation* only when the transcript
+arrives from the microphone **and** "Speak replies" is on. The bridge makes
+that call at the trusted application edge, and a spoken turn changes exactly
+two things — both presentation-only:
+
+- **Brevity.** The turn reaches the core with an audio-modality input
+  envelope, and the runtime then attaches one fixed, application-authored
+  style note to the final-answer prompt: the answer will be heard, so it
+  should be one or two short spoken sentences, with no lists, code, markdown
+  or unreadable symbols. Voice input with speech output switched off stays
+  the ordinary text path — the microphone alone does not make a turn spoken;
+  being *heard* does.
+- **Work narration (D3).** The runtime reports the phase a turn has just
+  entered — deciding, or dispatching a selected tool — and the application
+  may speak a short filler phrase **it wrote itself**, chosen from the fixed
+  set in `NARRATION_PHRASES` ("Let me think about that." / "Working on that
+  now."). This answers the "quieter and worse" problem: a listening user can
+  tell Stella is working from Stella being stuck. The model never authors
+  narration, narration decides nothing, and no approval, risk or audit
+  behavior changes — it is presentation of an event the application already
+  knows.
+
+The narration rules the tests enforce:
+
+- One phrase at a time. The bridge has a single narration slot; a busy slot
+  drops the new phrase — narration never queues up behind itself.
+- It can never slow a turn. The phase observer only takes the slot;
+  synthesis and playback happen on a daemon thread while the worker keeps
+  working.
+- The answer *is* the narration. When reply speech starts, a phrase that has
+  not begun playing is discarded unheard; so do **Stop speaking** and
+  **Cancel**.
+- A failed narration is silent — no error line, no retry — because the real
+  reply is what the user asked for, and it reports its own problems.
+- The "answering" phase has no phrases by design: its speech is the reply.
+- Approval prompts are never narrated and never described by a phrase;
+  narration is phase-level only, so nothing spoken pressures the answer to
+  an approval question.
+
 ## Barge-in (optional interrupt-by-voice)
 
 By default Stella's microphone is only live between a **Listen** press and its

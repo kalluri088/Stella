@@ -5,7 +5,14 @@ from unittest.mock import patch
 import pytest
 
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
-from stella.context import MAX_RETRIEVED_MEMORIES, Context
+from stella.context import (
+    MAX_RETRIEVED_MEMORIES,
+    Context,
+    InputEnvelope,
+    InputModality,
+    InputPart,
+    InputProvenance,
+)
 from stella.llm import (
     LLMClient,
     Message,
@@ -20,7 +27,7 @@ from stella.memory import (
     MemoryWriteRequest,
     SQLiteMemory,
 )
-from stella.stella import Stella
+from stella.stella import VOICE_STYLE_NOTE, Stella
 from stella.tools import (
     ActionPreview,
     ActionReceipt,
@@ -2165,3 +2172,99 @@ def test_turn_without_should_cancel_is_unchanged() -> None:
     assert result.cancelled is False
     assert tool.arguments == [{"message": "go"}]
     assert result.response == "answer"
+
+
+# ---- D3: presentation-only activity observer and voice style note
+
+
+def _two_step_stella() -> tuple[Stella, RecordingLLM]:
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "work"},
+                capability="record",
+            ),
+            Decision(DecisionKind.ANSWER),
+        ]
+    )
+    llm = RecordingLLM(response="done")
+    return (
+        Stella(
+            brain, llm, RecordingTool(), InMemoryMemory(), max_tool_steps=2
+        ),
+        llm,
+    )
+
+
+def test_activity_observer_reports_turn_phases_in_order() -> None:
+    stella, _ = _two_step_stella()
+    activities: list[str] = []
+
+    result = stella.process(
+        Context(user_input="check it"), on_activity=activities.append
+    )
+
+    assert result.response == "done"
+    # thinking before the first decision, working before the tool runs,
+    # thinking again for the second decision, answering before synthesis.
+    assert activities == ["thinking", "working", "thinking", "answering"]
+
+
+def test_broken_activity_observer_never_breaks_the_turn() -> None:
+    stella, _ = _two_step_stella()
+
+    def explode(kind: str) -> None:
+        raise RuntimeError("narration is on fire")
+
+    result = stella.process(Context(user_input="check it"), on_activity=explode)
+
+    assert result.response == "done"
+    assert result.decision.kind is DecisionKind.ANSWER
+
+
+def test_activity_observer_adds_no_trace_or_authority_change() -> None:
+    with_observer, _ = _two_step_stella()
+    without_observer, _ = _two_step_stella()
+    seen: list[str] = []
+
+    first = with_observer.process(
+        Context(user_input="check it"), on_activity=seen.append
+    )
+    second = without_observer.process(Context(user_input="check it"))
+
+    assert first.interaction_trace == second.interaction_trace
+
+
+def test_voice_style_note_only_joins_spoken_synthesis() -> None:
+    audio = Context(
+        user_input="what is on?",
+        input_envelope=InputEnvelope(
+            (
+                InputPart(
+                    modality=InputModality.AUDIO,
+                    provenance=InputProvenance.USER,
+                    content="what is on?",
+                ),
+            )
+        ),
+    )
+    spoken_stella, spoken_llm = _two_step_stella()
+    typed_stella, typed_llm = _two_step_stella()
+
+    spoken_stella.process(audio)
+    typed_stella.process(Context(user_input="what is on?"))
+
+    note = VOICE_STYLE_NOTE
+    spoken_messages = spoken_llm.messages[-1]
+    typed_messages = typed_llm.messages[-1]
+    assert any(
+        isinstance(message, Message)
+        and message.role == "system"
+        and message.content == note
+        for message in spoken_messages
+    )
+    assert not any(
+        isinstance(message, Message) and message.content == note
+        for message in typed_messages
+    )

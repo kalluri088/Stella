@@ -513,6 +513,15 @@ inside that session, not before); D5 waits behind the voice work.
   voice-context style note asks for brief replies. No model-authored
   narration text, no effect on approvals, risk or the audit record —
   spoken filler is presentation of events the app already knows.
+  *Shipped 2026-09-27:* `Stella.process` gained a presentation-only
+  `on_activity` observer (`"thinking"` / `"working"` / `"answering"`,
+  exceptions swallowed, consulted by nothing that decides anything) and
+  a fixed voice-style note that joins synthesis only when the input
+  envelope carries audio modality. The bridge narrates from
+  `NARRATION_PHRASES` on a single non-stacking slot, off the worker
+  thread, only for true spoken turns (voice input *and* speech output
+  on); reply speech, **Cancel** and **Stop speaking** all retire an
+  unheard phrase. See `docs/VOICE.md`, "Spoken conversation turns".
 - **D4. Barge-in unblock with external endpointing data (extends
   report 19, which B7's live blocker defers to).** Two observations
   from the walkthrough map onto the parked ear's tuning: a deliberate

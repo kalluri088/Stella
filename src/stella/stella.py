@@ -16,6 +16,7 @@ from stella.context import (
     MAX_RECALL_WINDOW,
     Context,
     InputEnvelope,
+    InputModality,
     RetrievalSource,
     ToolObservation,
     limit_tool_output,
@@ -79,6 +80,15 @@ from stella.vision import VisionProvider
 MAX_HANDLED_PROACTIVE_EVENTS = 512
 MAX_SEMANTIC_SUPPLEMENT = 2
 MEMORY_MUTATION_ACTIONS = frozenset({"write", "update", "delete"})
+
+# D3: a voice-asked answer is heard, not read. This fixed, application-
+# authored note is the only style influence the voice path adds; the
+# model never authors narration text.
+VOICE_STYLE_NOTE = (
+    "The user asked by voice and will hear this answer read aloud. "
+    "Say it in one or two short spoken sentences: no lists, no code, "
+    "no markdown, no symbols that cannot be read aloud."
+)
 
 
 def _tool_call_key(capability: str | None, arguments: dict) -> str:
@@ -167,6 +177,7 @@ class Stella:
         self,
         context: Context,
         should_cancel: Callable[[], bool] | None = None,
+        on_activity: Callable[[str], None] | None = None,
     ) -> StellaResult:
         """Process a context according to the brain's decision.
 
@@ -184,9 +195,29 @@ class Stella:
         before synthesis — stay recorded). Cancellation can still never
         interrupt an approval prompt or a dispatched tool midway; those
         steps stay atomic and land before the next checkpoint.
+
+        ``on_activity`` is an optional presentation-only observer (D3):
+        it is called with ``"thinking"`` just before a brain decision,
+        ``"working"`` just before a selected tool is dispatched, and
+        ``"answering"`` just before the final response is synthesized.
+        Nothing depends on it — no trace event, approval or risk
+        decision consults it, and an exception it raises is swallowed,
+        so narration can never break or bend a turn.
         """
 
         trace = InteractionTrace()
+        spoken_request = any(
+            part.modality is InputModality.AUDIO
+            for part in context.input_envelope.parts
+        )
+
+        def notify(kind: str) -> None:
+            if on_activity is None:
+                return
+            try:
+                on_activity(kind)
+            except Exception:  # noqa: BLE001, S110 - presentation is inert
+                pass
         conversation_history = select_conversation_history(
             context.conversation_history
         )
@@ -321,6 +352,7 @@ class Stella:
             )
 
         def decide_turn(decision_context: Context) -> Decision:
+            notify("thinking")
             if should_cancel is not None:
                 return self.brain.decide(
                     decision_context, should_cancel=should_cancel
@@ -328,6 +360,13 @@ class Stella:
             return self.brain.decide(decision_context)
 
         def synthesise(messages: list[Message]) -> str:
+            notify("answering")
+            if spoken_request:
+                messages = [
+                    messages[0],
+                    Message(role="system", content=VOICE_STYLE_NOTE),
+                    *messages[1:],
+                ]
             if should_cancel is not None:
                 return self.llm.chat(messages, should_cancel=should_cancel)
             return self.llm.chat(messages)
@@ -441,6 +480,7 @@ class Stella:
                     )
                 else:
                     executed_call_keys.add(call_key)
+                    notify("working")
                     tool_result, approval_denied = self._execute_tool(
                         decision.capability, arguments, trace
                     )
@@ -759,6 +799,7 @@ class Stella:
         vision_provider: VisionProvider | None = None,
         video_provider: VideoProvider | None = None,
         video_sampling: VideoSampling | None = None,
+        on_activity: Callable[[str], None] | None = None,
     ) -> StellaResult:
         """Normalize one typed input envelope, then use the text path."""
 
@@ -773,7 +814,8 @@ class Stella:
             Context(
                 user_input=normalized.text,
                 input_envelope=normalized.envelope,
-            )
+            ),
+            on_activity=on_activity,
         )
 
     @staticmethod

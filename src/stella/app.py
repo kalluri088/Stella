@@ -15,6 +15,7 @@ import datetime as dt
 import itertools
 import os
 import queue
+import random
 import shlex
 import shutil
 import threading
@@ -24,12 +25,17 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from stella.audio import TranscriptionProvider
-from stella.audio_output import SpeechProvider, sentence_chunks
+from stella.audio_output import (
+    SpeechOutput,
+    SpeechProvider,
+    sentence_chunks,
+)
 from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
     Context,
+    InputEnvelope,
     InputModality,
     InputPart,
     InputProvenance,
@@ -251,6 +257,8 @@ class StellaSession:
         self,
         user_input: str,
         should_cancel: Callable[[], bool] | None = None,
+        on_activity: Callable[[str], None] | None = None,
+        spoken: bool = False,
     ) -> TurnOutcome:
         started = time.monotonic()
 
@@ -263,14 +271,32 @@ class StellaSession:
             context = Context(
                 user_input=user_input,
                 conversation_history=list(self.history),
+                # A spoken conversation turn declares its audio modality
+                # here — the only place that knows the answer will be
+                # heard. The transcript text is the content; the discarded
+                # recording never enters the conversation.
+                input_envelope=(
+                    InputEnvelope(
+                        (
+                            InputPart(
+                                modality=InputModality.AUDIO,
+                                provenance=InputProvenance.USER,
+                                content=user_input,
+                            ),
+                        )
+                    )
+                    if spoken
+                    else None
+                ),
             )
-            result = (
-                self.stella.process(context)
-                if should_cancel is None
-                # Only applications that understand cancellation receive
-                # it; the keyword never reaches embedding test stubs.
-                else self.stella.process(context, should_cancel=should_cancel)
-            )
+            options: dict[str, object] = {}
+            if should_cancel is not None:
+                options["should_cancel"] = should_cancel
+            if on_activity is not None:
+                options["on_activity"] = on_activity
+            # Keywords appear only when set: applications (and embedding
+            # test stubs) that understand neither still get process(context).
+            result = self.stella.process(context, **options)
         except KeyboardInterrupt:
             self._record_turn(user_input, cancelled=True)
             return timed(interrupted=True)
@@ -914,6 +940,22 @@ def drain_persona_proposals(
     return handled
 
 
+# D3: application-authored narration for spoken conversation turns. These
+# fixed phrases tell a listening user that Stella is busy rather than
+# stuck; the model never authors them and they change no decision. No
+# entry exists for "answering" — the reply itself is that phase's speech.
+NARRATION_PHRASES: dict[str, tuple[str, ...]] = {
+    "thinking": (
+        "Let me think about that.",
+        "One moment, I'm thinking.",
+    ),
+    "working": (
+        "Working on that now.",
+        "One second, I'm taking care of it.",
+    ),
+}
+
+
 class VoicePanel:
     """Trusted application-layer orchestration of the voice periphery.
 
@@ -1051,6 +1093,34 @@ class VoicePanel:
         def abort() -> None:
             # Cloud providers expose no handle; their partial artifact
             # stays in the provider temp dir and is swept at shutdown.
+            cancel_command = getattr(speech, "cancel", None)
+            if cancel_command is not None:
+                cancel_command()
+
+        return run_cancellable(work, should_cancel, on_cancel=abort)
+
+    def synthesize_phrase(
+        self, text: str, should_cancel: CancelCheck | None = None
+    ) -> str:
+        """Render one application-authored phrase, as reply speech does.
+
+        Narration is fixed text the application itself wrote (D3), never
+        model output: it goes through the same bounded provider call with
+        the same abandonable cancel path as a real reply.
+        """
+
+        speech = self._speech
+        if speech is None:
+            raise VoiceError(
+                self._output_notice
+                or "Voice output is not available right now."
+            )
+
+        def work() -> str:
+            artifact = speech.speak(SpeechOutput(text))
+            return artifact.reference
+
+        def abort() -> None:
             cancel_command = getattr(speech, "cancel", None)
             if cancel_command is not None:
                 cancel_command()
@@ -1444,6 +1514,9 @@ class StellaBridge:
         self._speech_consumer: threading.Thread | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._turn_cancel = threading.Event()
+        # D3 narration: one non-blocking slot plus a per-turn retire event.
+        self._narration_lock = threading.Lock()
+        self._narration_dead: threading.Event | None = None
         self._events: queue.Queue[UiEvent] = queue.Queue()
         self._ready = threading.Event()
         self._thread = threading.Thread(
@@ -1584,6 +1657,7 @@ class StellaBridge:
 
         self._turn_cancel.set()
         self.approvals.deny_outstanding()
+        self._flush_narration()
         self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
@@ -1633,10 +1707,26 @@ class StellaBridge:
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
 
-    def _handle_turn(self, user_input: str) -> TurnOutcome:
+    def _handle_turn(
+        self, user_input: str, spoken: bool = False
+    ) -> TurnOutcome:
         session = self._require_session()
         self._check_due_reminders()
-        outcome = session.run_turn(user_input, should_cancel=self._should_cancel)
+        dead = threading.Event()
+        self._narration_dead = dead
+
+        def observe(kind: str) -> None:
+            self._narrate(kind, dead)
+
+        # A spoken turn gains two things and only two things: the core
+        # sees the audio modality (briefer, speakable answers) and the
+        # activity observer (filler the application itself authored).
+        outcome = session.run_turn(
+            user_input,
+            should_cancel=self._should_cancel,
+            on_activity=observe if spoken else None,
+            spoken=spoken,
+        )
         self._emit("turn", outcome)
         # The History panel tracks what the turn actually did without
         # waiting for the user to press Refresh; turns that touched no
@@ -1683,6 +1773,87 @@ class StellaBridge:
 
         if self._voice is not None:
             self._voice.speech_enabled = bool(enabled)
+
+    def _voice_conversation(self) -> bool:
+        """True when a voice turn is a spoken conversation.
+
+        Spoken-ness is decided at the trusted application edge: the
+        audio-modality envelope — with its brevity note and its work
+        narration — applies only when the answer will actually be heard.
+        A voice-typed turn with speech output off stays an ordinary
+        text turn.
+        """
+
+        panel = self._voice
+        return (
+            panel is not None
+            and panel.speech_enabled
+            and panel.output_available
+        )
+
+    def _narrate(self, kind: str, dead: threading.Event | None) -> None:
+        """Offer one fixed narration phrase without ever blocking the turn.
+
+        Runs on the worker thread inside a live turn, so nothing audible
+        happens here: it takes the single narration slot with a
+        non-blocking lock — a busy slot drops the phrase, narration never
+        stacks — and hands synthesis and playback to a daemon thread.
+        Only :data:`NARRATION_PHRASES` text is ever spoken, and only for
+        kinds that have phrases.
+        """
+
+        if dead is None or dead.is_set() or self._should_cancel():
+            return
+        phrases = NARRATION_PHRASES.get(kind)
+        panel = self._voice
+        if not phrases or panel is None:
+            return
+        if not self._narration_lock.acquire(blocking=False):
+            return
+        if dead.is_set() or self._should_cancel():
+            self._narration_lock.release()
+            return
+        threading.Thread(
+            target=self._speak_narration,
+            args=(panel, random.choice(phrases), dead),
+            name="stella-narration",
+            daemon=True,
+        ).start()
+
+    def _speak_narration(
+        self, panel: VoicePanel, phrase: str, dead: threading.Event
+    ) -> None:
+        """Synthesize and play one filler phrase off the worker thread.
+
+        Narration is decoration: every failure — synthesis, playback, or
+        a player stopped underneath it — stays silent, because the real
+        reply the user asked for is still coming and reports itself.
+        """
+
+        try:
+            try:
+                path = panel.synthesize_phrase(phrase, self._should_cancel)
+            except Exception:  # noqa: BLE001 - decoration fails silently
+                return
+            if dead.is_set() or self._should_cancel():
+                panel.dispose_artifact(path)
+                return
+            try:
+                panel.play(path)
+            except Exception:  # noqa: BLE001, S110 - decoration is silent
+                pass
+            finally:
+                panel.dispose_artifact(path)
+        finally:
+            self._narration_lock.release()
+
+    def _flush_narration(self) -> None:
+        """Retire this turn's narration: nothing of it may follow onto
+        the speakers once the reply speaks, the user cancels, or playback
+        is stopped."""
+
+        if self._narration_dead is not None:
+            self._narration_dead.set()
 
     def post_listen_start(self) -> None:
         def handle() -> None:
@@ -1734,8 +1905,15 @@ class StellaBridge:
                 self._emit("voice_error", str(error))
                 return
             self._emit("voice_transcript", transcript)
-            # From here the transcript follows the exact typed-input path.
-            self._speak_after(self._handle_turn(transcript))
+            # From here the transcript follows the exact typed-input path,
+            # with one honest addition: when this really is a spoken
+            # conversation (the answer will be heard), the turn is marked
+            # spoken for brevity and narration.
+            self._speak_after(
+                self._handle_turn(
+                    transcript, spoken=self._voice_conversation()
+                )
+            )
 
         self._post(handle)
 
@@ -1758,6 +1936,7 @@ class StellaBridge:
         speaking" was never a request to pause until the next sentence.
         """
 
+        self._flush_narration()
         self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
@@ -1776,6 +1955,9 @@ class StellaBridge:
             # A cancelled turn never grows a voice: the user asked to
             # stop, so nothing is synthesized and nothing is played.
             return
+        # The answer is now the narration: work filler must not follow
+        # the reply onto the speakers (phrases already audible finish).
+        self._flush_narration()
         chunks = sentence_chunks(outcome.response)
         if len(chunks) > 1:
             # A9: the first sentence should be speaking while the rest

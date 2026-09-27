@@ -78,6 +78,20 @@
   and restarted on the next sentence; a broken worker degrades to no
   speech with the text reply untouched, and artifact paths are always
   Stella's own — a path from a worker reply is never trusted.
+- **Spoken turns narrate their own work (D3).** A listening user could
+  not tell Stella working from Stella stuck, so spoken conversation
+  turns (voice input *and* "Speak replies" on) now say so out loud:
+  `Stella.process` reports the phase it is entering — `"thinking"`,
+  `"working"`, `"answering"` — through a presentation-only observer
+  that decides nothing, and the application speaks one short phrase it
+  wrote itself from the fixed `NARRATION_PHRASES` set. The model never
+  authors narration; approvals, risk and the audit record are
+  untouched. Narration can never slow a turn (a busy single slot
+  drops phrases, synthesis runs off the worker thread, failures stay
+  silent) and is retired unheard the moment reply speech, **Cancel**
+  or **Stop speaking** arrives. The same spoken turns also earn a
+  fixed application-authored style note — the audio-modality envelope
+  asks the answer to be one or two short speakable sentences.
 
 ## 1.2.0 — 2026-09-27
 

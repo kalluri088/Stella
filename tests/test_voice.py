@@ -19,6 +19,7 @@ import time
 import pytest
 
 from stella.app import (
+    NARRATION_PHRASES,
     StellaApplication,
     StellaBridge,
     StellaSession,
@@ -207,8 +208,15 @@ class FakeTranscriber(TranscriptionProvider):
 
 
 class FakeSpeech(SpeechProvider):
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        hold: threading.Event | None = None,
+    ) -> None:
         self.error = error
+        # When set, the request is recorded immediately but the artifact
+        # only arrives once the test releases the event: a slow render.
+        self.hold = hold
         self.spoken: list[str] = []
         self.disposed = False
         self.directory = tempfile.mkdtemp(prefix="stella-test-speech-")
@@ -220,6 +228,8 @@ class FakeSpeech(SpeechProvider):
         path = os.path.join(self.directory, f"reply-{len(self.spoken)}.wav")
         with open(path, "wb") as audio:
             audio.write(b"RIFF")
+        if self.hold is not None:
+            assert self.hold.wait(5)
         return SpeechArtifact(reference=path)
 
     def dispose(self) -> None:
@@ -288,6 +298,36 @@ def make_answer_stella(
         ToolDispatcher(tools if tools is not None else [EchoTool()]),
         memory if memory is not None else InMemoryMemory(),
     )
+
+
+class NarratingStella:
+    """Minimal core: reports one activity, records contexts, can stall."""
+
+    def __init__(self, gate: threading.Event | None = None) -> None:
+        self.gate = gate
+        self.contexts: list[Context] = []
+        # The bridge rebinds its panels against the core's memory and
+        # reads the tool audit trail after every turn, so the fake must
+        # carry both like the real Stella does.
+        self.memory = InMemoryMemory()
+        self.tools = ToolDispatcher([])
+
+    def process(
+        self,
+        context: Context,
+        should_cancel=None,
+        on_activity=None,
+    ) -> StellaResult:
+        del should_cancel
+        self.contexts.append(context)
+        if on_activity is not None:
+            on_activity("thinking")
+        if self.gate is not None:
+            assert self.gate.wait(5)
+        return StellaResult(
+            decision=Decision(kind=DecisionKind.ANSWER),
+            response="the action completed",
+        )
 
 
 def make_voice_bridge(stella: Stella, panel: VoicePanel) -> StellaBridge:
@@ -685,6 +725,161 @@ def test_unavailable_microphone_never_claims_to_be_listening() -> None:
 
     assert all(event.payload != "listening" for event in events)
     assert "microphone cannot be used" in events[-1].payload
+    bridge.stop()
+
+
+# ------------------------------------------------------- D3: spoken turns
+
+
+def settle(predicate, seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_run_turn_spoken_flag_builds_audio_envelope() -> None:
+    stella = NarratingStella()
+    session = StellaSession(stella)  # type: ignore[arg-type]
+
+    session.run_turn("say this", spoken=True)
+    session.run_turn("type this")
+
+    spoken_part = stella.contexts[0].input_envelope.parts[0]
+    typed_part = stella.contexts[1].input_envelope.parts[0]
+    assert spoken_part.modality is InputModality.AUDIO
+    assert spoken_part.content == "say this"
+    assert typed_part.modality is InputModality.TEXT
+
+
+def test_spoken_voice_turn_reaches_the_core_with_audio_modality() -> None:
+    stella = NarratingStella()
+    panel = make_panel(speech=FakeSpeech())
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(stella, panel)  # type: ignore[arg-type]
+
+    bridge.post_listen_start()
+    wait_for_event(bridge, "voice_state")
+    bridge.post_listen_stop()
+    wait_for_event(bridge, "turn")
+
+    part = stella.contexts[-1].input_envelope.parts[0]
+    assert part.modality is InputModality.AUDIO
+    assert part.content == "hello voice"
+    bridge.stop()
+
+
+def test_voice_turn_without_speech_output_stays_a_text_turn() -> None:
+    # Spoken-ness is decided at the application edge: voice input with
+    # the "Speak replies" box off is a text turn wearing a microphone.
+    stella = NarratingStella()
+    bridge = make_voice_bridge(stella, make_panel())  # type: ignore[arg-type]
+
+    bridge.post_listen_start()
+    wait_for_event(bridge, "voice_state")
+    bridge.post_listen_stop()
+    wait_for_event(bridge, "turn")
+
+    assert (
+        stella.contexts[-1].input_envelope.parts[0].modality
+        is InputModality.TEXT
+    )
+    bridge.stop()
+
+
+def test_narration_is_spoken_before_the_reply() -> None:
+    synth_gate = threading.Event()
+    turn_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    stella = NarratingStella(gate=turn_gate)
+    bridge = make_voice_bridge(stella, panel)  # type: ignore[arg-type]
+
+    bridge.post_listen_start()
+    wait_for_event(bridge, "voice_state")
+    bridge.post_listen_stop()
+
+    # The application's own phrase is mid-render while the turn waits.
+    assert settle(lambda: speech.spoken != [])
+    assert speech.spoken[0] in NARRATION_PHRASES["thinking"]
+    synth_gate.set()
+    # The phrase reaches the speakers before the reply exists at all.
+    assert settle(lambda: len(player.played) == 1)
+    turn_gate.set()
+    wait_for_event(bridge, "turn")
+
+    assert settle(lambda: len(speech.spoken) == 2)
+    assert speech.spoken[1] == "the action completed"
+    assert settle(lambda: len(player.played) == 2)
+    # The work phrase reaches the speakers first; the reply follows.
+    assert player.played[0].endswith("reply-1.wav")
+    assert player.played[1].endswith("reply-2.wav")
+    bridge.stop()
+
+
+def test_typed_turn_is_never_narrated() -> None:
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge.post_turn("hello")
+    wait_for_event(bridge, "turn")
+
+    assert speech.spoken == ["the action completed"]
+    bridge.stop()
+
+
+def test_narration_never_stacks() -> None:
+    synth_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    panel = make_panel(speech=speech)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    dead = threading.Event()
+
+    bridge._narrate("thinking", dead)
+    assert settle(lambda: speech.spoken != [])
+    # One phrase owns the single slot; a second activity is dropped,
+    # not queued: narration must never pile up behind itself.
+    bridge._narrate("working", dead)
+    time.sleep(0.2)
+    assert len(speech.spoken) == 1
+
+    synth_gate.set()
+    assert settle(lambda: bridge._narration_lock.acquire(blocking=False))
+    bridge._narration_lock.release()
+    bridge.stop()
+
+
+def test_answering_is_never_narrated() -> None:
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._narrate("answering", threading.Event())
+    assert speech.spoken == []
+    bridge.stop()
+
+
+def test_flushed_narration_never_reaches_a_speaker() -> None:
+    synth_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    dead = threading.Event()
+
+    bridge._narrate("thinking", dead)
+    assert settle(lambda: speech.spoken != [])
+    dead.set()
+    synth_gate.set()
+
+    assert settle(lambda: os.listdir(speech.directory) == [])
+    assert player.played == []
     bridge.stop()
 
 

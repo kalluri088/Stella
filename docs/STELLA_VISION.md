@@ -53,6 +53,20 @@ Stella is not:
 Stella may eventually become more capable, but additional capability must
 serve the core loop rather than replace it with a larger framework.
 
+### Direction of ambition (agreed 2026-09-27)
+
+The stated ambition is a JARVIS-like *feel*: immediate, spoken, aware of
+what is on the desk, and proactive within its limits. That is a statement
+about experience quality, and it is compatible with everything above —
+what the rejection targets is a Jarvis **clone** whose identity depends
+on theatrics or unrestricted automation. The ambition therefore names
+what the capabilities should add up to (voice turns that respond fast
+enough to feel like conversation, screen and workspace awareness used
+with consent, proactive help that raises awareness without ever raising
+authority), while every such capability still runs through the same
+trust model: the model proposes, the runtime authorizes, nothing listens
+unless told to.
+
 ## The original MVP goal
 
 The original MVP goal is to build the smallest version that proves Stella

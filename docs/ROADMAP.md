@@ -549,6 +549,39 @@ behavior (C5's standing non-goal), and his single-card VRAM plan
 (it is a 12 GB plan for a different stack — only the *method*,
 piece-by-piece measured budgeting, transfers).
 
+## Stage E — agreed-stack capabilities (planned 2026-09-27)
+
+The measured model choices are registered in `docs/MODELS.md` — that
+file, not prose scattered across stages, is the authority on what runs
+where, and a swap there requires its stated evidence bar. Two decided
+items are still awaiting implementation:
+
+- **E1. Web capability (TinyFish Search+Fetch).** Decided and
+  live-verified (report 22 is the ticket): key in the environment only
+  (`TINYFISH_API_KEY`), keyless ddgs+stdlib fallback stays the
+  demonstrated secondary path. The provider budget (1000 fetch-urls/day,
+  500 searches/hour) is enforced by the *runtime*, never by the model;
+  `fetch` builds on the existing `NetworkReadTool` machinery (pinned
+  DNS, peer-validated), not the spike's regex guard; results remain
+  untrusted input inside `<<<UNTRUSTED_WEB_CONTENT>>>` with per-page
+  caps.
+- **E2. Tier-0 pre-router (Cactus Needle 3 + LoRA).** Experimental,
+  NOT shipped, and never wired into `src/` before its decision card
+  exists. Open blockers per report 23: false-call rate (corpus v2
+  rebalance), a usable confidence gate (the current head is
+  policy-suppressed and uninformative), and an idle-machine latency
+  re-measurement. If it ever lands it must obey the fast-path router
+  constraints below — it may pre-select among existing SAFE-checked
+  capabilities only, never bypass dispatcher, risk, approval, audit or
+  step limits.
+
+Direction note (user, 2026-09-27): the ambition is a *JARVIS-like
+feel* — immediate, spoken, aware of the desk, proactive within rule 8.
+That ambition changes what we build *toward*, not the trust model it
+runs through: the Vision's non-goals stand, and wake-word/always-
+listening remain on the out-of-scope list until that section is
+deliberately rewritten with a measured case for them.
+
 ## Deferred designs and their non-negotiable constraints
 
 Two reviewed-but-unbuilt designs whose constraints must survive if either is

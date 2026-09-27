@@ -476,6 +476,17 @@ inside that session, not before); D5 waits behind the voice work.
   wall time. Adopt only on measured prefill gain with no VRAM
   regression and no strict-pass regression under the standing
   ≥6-pass A/B rule.
+  *Measured 2026-09-27 (research report 25,
+  `~/tools/bench_prefill_flags.py`, six arms): the shipped line
+  stays.* `-ub` genuinely doubles-to-triples *fresh* prefill
+  (316 → 523 → 754 t/s on the 5.3k-token decision prompt) but the
+  server's prompt cache means a live session re-prefills ~60–800
+  tokens per turn, so the gain pays once per brain start and the
+  real-corpus medians moved only within noise; `-ub 2048` also
+  costs +264 MiB VRAM. `-ncmoe 44` recovered no VRAM and no speed,
+  and `--spec-type draft-mtp` cannot load gpt-oss weights at all.
+  Every modified arm drew more of the known peg-500 flake than
+  base (0/12), which alone fails the quality gate's premise.
 - **D2. TTS lookahead queue.** The walkthrough's biggest conversational
   win was synthesizing the *next* sentence while the current one
   plays (a queue of finished sentences, depth ~2), so the speaker
@@ -485,6 +496,15 @@ inside that session, not before); D5 waits behind the voice work.
   Measure first; if it is, add a bounded lookahead. The queue may
   hold final response text only — never decisions — and the existing
   Cancel path must flush it like it flushes playback today.
+  *Measured first, as promised (research report 24): the queue
+  already existed and synthesis already overlaps playback — the real
+  per-sentence cost is a >3 s fixed process+model-load floor (idle
+  A/B median 3.65 s vs 1.80 s steady inference).* D2 shipped as
+  `ResidentSpeechProvider` (`STELLA_SPEECH_RESIDENT=on`,
+  environment-only): one line-JSON worker per session, retired and
+  restarted on death or timeout, degrading to no speech with the
+  text reply untouched. The Cancel path is unchanged — it kills the
+  in-flight worker call and the queue drains as before.
 - **D3. Voice narration of tool work, application-owned.** His
   "quieter and worse" problem: while the agent reads a tool result,
   the user hears nothing and can't tell working from stuck. Stella's

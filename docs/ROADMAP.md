@@ -15,7 +15,7 @@ mechanism — not an aspiration.
    only the application-owned `ToolDispatcher` executes anything, and
    only for capabilities registered by trusted code
    (`src/stella/tools.py`, `src/stella/brain.py`; see
-   `docs/TOOL_DISPATCHER.md`).
+   `docs/TOOL_EXECUTION.md`).
 2. **Memory is selective and user-controlled.** Nothing is stored without
    an approval whose `ApprovalRequest` matches the exact content, and
    tool outputs report honestly (`src/stella/memory.py`;
@@ -440,6 +440,30 @@ code no text file can influence (`src/stella/persona.py`,
   approval matching is untouched, and reflection still has no write
   path of its own. The editor copy predates the `$EDITOR` session;
   mid-edit states are not versioned.
+
+## Deferred designs and their non-negotiable constraints
+
+Two reviewed-but-unbuilt designs whose constraints must survive if either is
+ever picked up (extracted from the archived streaming and fast-path reviews):
+
+- **Response streaming** — stream only final response text, never Brain
+  decisions, memory writes, capability validation, approvals, tool execution,
+  or multi-step transitions: partial structured JSON must never trigger an
+  action. A future design adds a separate optional streaming capability rather
+  than changing `chat()`'s return type, keeps the provider-agnostic interface
+  free of OpenAI-specific events, and must prove streaming does not alter
+  decisions, authorization, audit records, memory writes, or step limits.
+  Measured TTFT (~1.6 s) says the win is modest until the final-response path
+  is separated from the structured decision JSON.
+- **Fast-path local router** — limited to existing `SAFE` fixed-argument
+  capabilities (`datetime` first, `system_info` later, only after observing
+  real false-positive behavior), a short documented exact-phrase allowlist
+  that returns no match on ambiguity, construction of fixed arguments in
+  trusted code, execution through the existing tool's own validation, and a
+  trusted locally formatted response (routing to a tool while keeping LLM
+  synthesis saves nothing). It must never bypass dispatcher, risk, approval,
+  audit, or step limits, never turn natural-language text into filesystem
+  paths or write arguments, and never become a second hidden decision system.
 
 ## Packaging and release
 

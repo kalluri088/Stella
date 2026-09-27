@@ -236,13 +236,14 @@ Each future capability should be evaluated against the core question: does it
 help Stella make a better bounded decision from context, memory, tools, and
 outcomes?
 
-## Current MVP boundaries
+## Current boundaries
 
-The current MVP intentionally includes:
+The current system intentionally includes:
 
 - one local user/session assumption;
 - explicit context assembly;
-- deterministic lexical memory retrieval;
+- deterministic lexical memory retrieval, with opt-in provider-backed
+  semantic recall over Stella's own local vector storage;
 - explicit memory writes;
 - a small approved tool set;
 - trusted validation, risk, approval, and audit handling;
@@ -252,28 +253,29 @@ The current MVP intentionally includes:
 - one-shot due-task event evaluation with explicit, scoped delegation;
 - trusted one-shot event handoff with process-local duplicate suppression;
 - synchronous user-facing proactivity results without delivery infrastructure;
+- one-shot reminders surfaced during a real interaction;
 - a bounded provider-neutral input envelope with text compatibility;
 - one-shot audio-to-text normalization through a provider-neutral boundary;
 - one-shot image-to-text normalization through a provider-neutral boundary;
 - one-shot speech rendering through a provider-neutral boundary; and
 - one-shot finite video observation through a provider-neutral boundary; and
+- explicit end-to-end cancellation of a turn, including its voice periphery;
+- an approval-gated persona/style subsystem with snapshot-revertible writes; and
 - answer, clarification, tool, and no-op outcomes.
 
-It intentionally does not yet include:
+It intentionally does not include:
 
-- embeddings, vector databases, or semantic retrieval;
 - automatic storage of all conversation or tool output;
 - unbounded planning, retries, autonomous loops, or background execution;
-- event ingress, notification delivery, scheduling, reminders, or background
-  proactive work;
-- audio capture, wake words, continuous listening, interruption, and
-  provider-specific speech or vision integrations; image/video/environment
-  processing beyond their boundaries, and interface rendering;
+- generalized event ingress, notification delivery, background schedulers,
+  daemons, or heartbeats;
+- wake words, continuous listening, or always-on audio; interruption is
+  user-initiated, never ambient;
 - continuous video or environment observation, camera or desktop capture, and
-  raw-media retention;
-- a personality or identity subsystem;
+  raw-media retention; image/video stay at their one-shot boundaries with no
+  provider-specific processing behind them;
 - multi-user memory ownership and migration;
-- a plugin marketplace or broad tool ecosystem; or
+- a plugin marketplace or broad tool ecosystem; and
 - streaming, speculative execution, caching, and general latency redesign.
 
 These are boundaries, not permanent prohibitions. They should be reconsidered

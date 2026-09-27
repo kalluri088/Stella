@@ -196,7 +196,7 @@ CREATE TABLE memories (
 )
 ```
 
-SQLite is used at this stage because it provides local persistence with no separate service or dependency while keeping the existing `Memory` boundary intact. Existing databases are upgraded with compatibility defaults for semantic user memory. The database stores only explicitly requested `MemoryItem` content and metadata; it does not store conversation history. `MemoryScope` is a trusted local ownership boundary, not authentication or a multi-user identity system.
+SQLite is used at this stage because it provides local persistence with no separate service or dependency while keeping the existing `Memory` boundary intact. Existing databases are upgraded with compatibility defaults for semantic user memory. The database stores only explicitly requested `MemoryItem` content and metadata; it does not store conversation history. `MemoryScope` is a trusted local ownership boundary, not authentication or a multi-user identity system. One consequence for any future multi-user work: rows written before a scope existed have no factual owner — legacy databases must keep them in an explicit unassigned scope rather than have ownership guessed or defaulted to the first authenticated user.
 
 Memory is opt-in: it only stores items passed to `store()`. It does not automatically save conversation messages or interact with `Context`. Retrieval and writing are separate operations.
 
@@ -316,13 +316,20 @@ that registers approved tools by exact `Tool.name`, rejects duplicate names,
 performs lookup and validation, and reads the trusted risk classification
 before execution. `DANGEROUS` tools additionally require an exact
 application-produced `ToolApproval`; missing or mismatched approval fails
-closed. The normal CLI currently registers `DateTimeTool`,
-`SystemInfoTool`, `EchoTool`, the workspace-scoped `FileSystemReadTool`, and
-the approval-required `FileSystemWriteTool` and `FileSystemDeleteTool`
-together, and `NetworkReadTool`. It also registers the memory tools:
-`memory_list` is `SENSITIVE`, while `memory_update` and `memory_forget` are
+closed. The normal CLI registers eighteen capabilities: the safe
+`DateTimeTool` and `SystemInfoTool`, the workspace-scoped filesystem and
+workspace tools (`filesystem_read` is `SENSITIVE`; `filesystem_write`,
+`filesystem_edit` and `filesystem_delete` are `DANGEROUS` with exact approval),
+`NetworkReadTool` (`DANGEROUS`), the memory tools (`memory_list` is
+`SENSITIVE`, while `memory_write`, `memory_update` and `memory_forget` are
 `DANGEROUS` and require exact application approval before they mutate stored
-memory. Their outputs stay user-facing: remembered content without internal
+memory), the reminder tools `reminder_create` (`DANGEROUS`), `reminder_list`
+(`SENSITIVE`), and `reminder_cancel` (`DANGEROUS`) managing the user's own
+one-shot reminders through a trusted `stella.reminders` store (see
+`REMINDERS.md`), and `PersonaEditTool` (`DANGEROUS`, limited to the two
+persona files; see `PERSONA.md`). `EchoTool` exists for tests but is
+deliberately unregistered: an echo capability lets a confused model "succeed"
+by parroting the user. Their outputs stay user-facing: remembered content without internal
 database ids, an honest "No stored memories." when empty, a failure when no
 memory matches, and a disclosed count when several memories matched an
 ambiguous update query. The Phase 3 reminder tools `reminder_create`
@@ -587,17 +594,22 @@ The content is not automatically stored or treated as an instruction.
 
 ## Intentionally not implemented yet
 
-The following are intentionally outside the current MVP foundation:
+The following are outside the current system (things that have shipped are
+described in the architecture above, not here):
 
-- Unbounded LLM-based planning or multi-step decision-making
-- Automatic context assembly, summarization, or retrieval
-- Automatic memory capture, learning, or memory writes without an explicit Brain request
-- File-backed memory formats other than the minimal SQLite table, embeddings, vector databases, or external persistence services
-- Memory migrations, ranking, semantic search, and multi-user data management
+- Unbounded LLM-based planning or decision-making — the tool loop is bounded
+  by `max_tool_steps` and the limit result is deterministic
+- Summarization, compaction, or learned context compression; retrieval is
+  bounded and observable, not silently rewriting history
+- Automatic memory capture or memory writes without an explicit Brain request
+- External embedding services or vector databases — semantic recall uses
+  Stella's own SQLite vector storage with the local MiniLM or Ollama providers
+  (see `semantic_memory.py`, `ROADMAP.md` B2.1)
+- Multi-user data management and shared workspaces
 - Plugin registries, permissions, external APIs, subprocesses, or shell execution
-- Personality, generalized event ingress, background notification delivery,
-  autonomous loops, schedulers, daemons, or heartbeats — reminder checks
-  happen only during a real user interaction (see `REMINDERS.md`)
+- Generalized event ingress, background notification delivery, autonomous
+  loops, schedulers, daemons, or heartbeats — reminder checks happen only
+  during a real user interaction (see `REMINDERS.md`)
 - Audio capture and output are limited to the explicit one-utterance desktop
   voice mode in `stella.voice` (see `VOICE.md`); there is no wake word,
   continuous listening, or streaming. Vision providers remain interfaces only;
@@ -623,10 +635,14 @@ The following are intentionally outside the current MVP foundation:
 │       ├── app.py             # shared application layer + settings
 │       ├── audio.py           # recording boundary
 │       ├── audio_output.py    # playback boundary
+│       ├── barge_in.py        # opt-in Silero VAD voice-interrupt ear (Stage B7)
 │       ├── brain.py           # structured decisions from the LLM
 │       ├── cli.py             # terminal front-end
+│       ├── conformance.py     # provider conformance suite harness (Stage B4)
+│       ├── config.py          # settings and first-run configuration
 │       ├── context.py         # conversation/context assembly
 │       ├── event_bus.py       # two-tier intention routing (rules, then laya)
+│       ├── history.py         # durable action-history store
 │       ├── laya_judge.py      # subprocess Tier-1 judge client
 │       ├── laya_runner.py     # line-JSON server for the laya venv
 │       ├── llama_server.py    # Stella-owned llama.cpp brain process
@@ -637,6 +653,7 @@ The following are intentionally outside the current MVP foundation:
 │       ├── ollama_embedding.py # Ollama /api/embed provider
 │       ├── openai_client.py   # OpenAI-compatible client
 │       ├── os_tools.py        # opt-in Hyprland screen/focus/type tools
+│       ├── persona.py         # style files, edit snapshot history, reflection
 │       ├── proactivity.py     # due-reminder surface during interaction
 │       ├── reminders.py       # one-shot reminder store
 │       ├── semantic_memory.py # provider-neutral semantic retrieval + local fallback

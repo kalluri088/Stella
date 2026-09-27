@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### The window learned to change its clothes (dark and light themes)
+
+- **One palette became two.** `src/stella/ui.py` replaced its
+  hard-coded dark constants with `Theme` dataclasses carrying a full
+  dark and a full light palette (surfaces, fields, text, accent,
+  status colors, bubbles), tuned for a minimal, quiet look in both
+  modes. Every widget builder reads the active palette; nothing else
+  about the window's behavior moved.
+- **Live toggle, remembered choice.** A Light/Dark button in the
+  header switches without restarting or interrupting anything: ttk
+  styles are re-applied, the plain Tk widgets (transcript, composer,
+  lists, open approval dialogs with their previews) are recolored in
+  place. The choice persists in a `ui-theme` file beside
+  `config.json` and is loaded at launch; unreadable state falls back
+  to dark.
+- **Presentation only, by construction.** The bridge contract,
+  transcript wording, approval exactness and the setup wizard are
+  untouched; the theme file stores one word. `docs/UI.md` documents
+  the design; two focused window tests cover the recolor, the
+  persisted choice and the fallback.
+
 ## 1.2.0 — 2026-09-27
 
 ### Stella can be interrupted by voice (Stage B7, opt-in barge-in)

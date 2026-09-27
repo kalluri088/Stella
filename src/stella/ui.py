@@ -21,7 +21,8 @@ import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from pathlib import Path
 from tkinter import ttk
 
 from stella import config
@@ -32,6 +33,7 @@ from stella.app import (
     TurnOutcome,
     UiEvent,
     build_application,
+    default_data_dir,
     outcome_status,
 )
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
@@ -48,23 +50,110 @@ _SEMANTIC_PROVIDER_BY_LABEL = {
     label: value for value, label in _SEMANTIC_PROVIDER_LABELS.items()
 }
 
-# One dark palette shared by the window, the dialogs and the setup
-# wizard. Everything here is presentation only: the bridge contract,
-# transcript wording and approval exactness are untouched by styling.
-_WINDOW = "#151821"
-_SURFACE = "#1c2029"
-_SURFACE_ALT = "#252a37"
-_FIELD = "#2b3140"
-_TEXT = "#e9ecf3"
-_TEXT_DIM = "#98a2b6"
-_ACCENT = "#8fb2ff"
-_ACCENT_STRONG = "#4f6ef7"
-_ON_ACCENT = "#0f1219"
-_ERROR = "#ff9a8d"
-_OK = "#8fe3b0"
-_REMINDER = "#d3b5ff"
-_USER_BUBBLE = "#24304a"
-_STELLA_BUBBLE = "#1f2b28"
+# Two complete palettes — dark and light — shared by the window, the
+# dialogs and the setup wizard. Everything here is presentation only:
+# the bridge contract, transcript wording and approval exactness are
+# untouched by styling. Widgets read colors from the module-level
+# ``THEME`` at build time; switching themes re-runs the ttk style setup
+# and recolors the handful of plain Tk widgets that styles cannot reach.
+@dataclass(frozen=True)
+class Theme:
+    window: str
+    surface: str
+    surface_alt: str
+    field: str
+    text: str
+    text_dim: str
+    accent: str
+    accent_strong: str
+    accent_hover: str
+    on_accent: str
+    error: str
+    ok: str
+    reminder: str
+    user_bubble: str
+    stella_bubble: str
+
+
+_DARK_THEME = Theme(
+    window="#101319",
+    surface="#171b23",
+    surface_alt="#212630",
+    field="#272e3b",
+    text="#e9ecf3",
+    text_dim="#98a2b6",
+    accent="#8fb2ff",
+    accent_strong="#4f6ef7",
+    accent_hover="#6f8bff",
+    on_accent="#0f1219",
+    error="#ff9a8d",
+    ok="#8fe3b0",
+    reminder="#d3b5ff",
+    user_bubble="#232e47",
+    stella_bubble="#1d2925",
+)
+
+_LIGHT_THEME = Theme(
+    window="#f2f3f7",
+    surface="#ffffff",
+    surface_alt="#e7eaf1",
+    field="#eceef4",
+    text="#1c2029",
+    text_dim="#5d6678",
+    accent="#2f56c4",
+    accent_strong="#2f56c4",
+    accent_hover="#4469d6",
+    on_accent="#ffffff",
+    error="#b3362b",
+    ok="#1e7f4f",
+    reminder="#6b3fa0",
+    user_bubble="#e6ecfa",
+    stella_bubble="#e6f3ea",
+)
+
+THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
+DEFAULT_THEME = "dark"
+
+THEME = _DARK_THEME
+_theme_name = DEFAULT_THEME
+
+
+def current_theme_name() -> str:
+    return _theme_name
+
+
+def apply_theme(name: str) -> Theme:
+    """Point every widget builder at the named palette."""
+
+    global THEME, _theme_name
+    THEME = THEMES.get(name, _DARK_THEME)
+    _theme_name = name if name in THEMES else DEFAULT_THEME
+    return THEME
+
+
+def _theme_choice_path() -> Path:
+    return default_data_dir() / "ui-theme"
+
+
+def load_theme_choice() -> str:
+    """The last theme the user picked; unreadable state falls back to dark."""
+
+    try:
+        raw = _theme_choice_path().read_text(encoding="utf-8").strip().casefold()
+    except OSError:
+        return DEFAULT_THEME
+    return raw if raw in THEMES else DEFAULT_THEME
+
+
+def save_theme_choice(name: str) -> None:
+    if name not in THEMES:
+        return
+    try:
+        path = _theme_choice_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name + "\n", encoding="utf-8")
+    except OSError:  # pragma: no cover - styling state is never critical
+        pass
 
 _FONT_CANDIDATES = (
     "Inter",
@@ -114,24 +203,24 @@ def _configure_styles(root: tk.Misc) -> None:
         style.theme_use("clam")
     style.configure(
         ".",
-        background=_SURFACE,
-        foreground=_TEXT,
-        fieldbackground=_FIELD,
+        background=THEME.surface,
+        foreground=THEME.text,
+        fieldbackground=THEME.field,
         padding=6,
     )
-    style.configure("Toplevel", background=_SURFACE)
-    style.configure("TFrame", background=_SURFACE)
-    style.configure("Card.TFrame", background=_SURFACE_ALT)
-    style.configure("TLabel", background=_SURFACE, foreground=_TEXT)
-    style.configure("Dim.TLabel", foreground=_TEXT_DIM)
+    style.configure("Toplevel", background=THEME.surface)
+    style.configure("TFrame", background=THEME.surface)
+    style.configure("Card.TFrame", background=THEME.surface_alt)
+    style.configure("TLabel", background=THEME.surface, foreground=THEME.text)
+    style.configure("Dim.TLabel", foreground=THEME.text_dim)
     style.configure(
         "Status.TLabel",
-        foreground=_ACCENT,
+        foreground=THEME.accent,
         font=(ui_family, ui_size, "italic"),
     )
     style.configure(
         "Brand.TLabel",
-        foreground=_ACCENT,
+        foreground=THEME.accent,
         font=(ui_family, ui_size + 5, "bold"),
     )
     style.configure(
@@ -139,119 +228,119 @@ def _configure_styles(root: tk.Misc) -> None:
     )
     style.configure(
         "TButton",
-        background=_FIELD,
-        foreground=_TEXT,
-        bordercolor=_SURFACE_ALT,
-        lightcolor=_SURFACE_ALT,
-        darkcolor=_SURFACE_ALT,
+        background=THEME.field,
+        foreground=THEME.text,
+        bordercolor=THEME.surface_alt,
+        lightcolor=THEME.surface_alt,
+        darkcolor=THEME.surface_alt,
         focusthickness=0,
         padding=(14, 7),
     )
     style.map(
         "TButton",
-        background=[("disabled", _SURFACE_ALT), ("active", _ACCENT_STRONG)],
-        foreground=[("disabled", _TEXT_DIM), ("active", _ON_ACCENT)],
+        background=[("disabled", THEME.surface_alt), ("active", THEME.accent_strong)],
+        foreground=[("disabled", THEME.text_dim), ("active", THEME.on_accent)],
     )
     style.configure(
         "Accent.TButton",
-        background=_ACCENT_STRONG,
-        foreground=_ON_ACCENT,
-        bordercolor=_ACCENT_STRONG,
-        lightcolor=_ACCENT_STRONG,
-        darkcolor=_ACCENT_STRONG,
+        background=THEME.accent_strong,
+        foreground=THEME.on_accent,
+        bordercolor=THEME.accent_strong,
+        lightcolor=THEME.accent_strong,
+        darkcolor=THEME.accent_strong,
     )
     style.map(
         "Accent.TButton",
-        background=[("disabled", _SURFACE_ALT), ("active", "#6f8bff")],
-        foreground=[("disabled", _TEXT_DIM)],
+        background=[("disabled", THEME.surface_alt), ("active", THEME.accent_hover)],
+        foreground=[("disabled", THEME.text_dim)],
     )
     style.configure(
         "TMenubutton",
-        background=_FIELD,
-        foreground=_TEXT,
-        bordercolor=_SURFACE_ALT,
+        background=THEME.field,
+        foreground=THEME.text,
+        bordercolor=THEME.surface_alt,
         focusthickness=0,
         padding=(10, 5),
     )
-    style.map("TMenubutton", background=[("active", _ACCENT_STRONG)])
+    style.map("TMenubutton", background=[("active", THEME.accent_strong)])
     style.configure(
-        "TNotebook", background=_SURFACE, borderwidth=0, tabmargins=(2, 0, 2, 0)
+        "TNotebook", background=THEME.surface, borderwidth=0, tabmargins=(2, 0, 2, 0)
     )
     style.configure(
         "TNotebook.Tab",
-        background=_SURFACE_ALT,
-        foreground=_TEXT_DIM,
-        padding=(14, 7),
+        background=THEME.surface_alt,
+        foreground=THEME.text_dim,
+        padding=(18, 9),
     )
     style.map(
         "TNotebook.Tab",
-        background=[("selected", _FIELD)],
-        foreground=[("selected", _TEXT)],
+        background=[("selected", THEME.field)],
+        foreground=[("selected", THEME.text)],
     )
     style.configure(
         "TEntry",
-        insertcolor=_TEXT,
-        bordercolor=_SURFACE_ALT,
-        lightcolor=_SURFACE_ALT,
-        darkcolor=_SURFACE_ALT,
-        fieldbackground=_FIELD,
-        foreground=_TEXT,
+        insertcolor=THEME.text,
+        bordercolor=THEME.surface_alt,
+        lightcolor=THEME.surface_alt,
+        darkcolor=THEME.surface_alt,
+        fieldbackground=THEME.field,
+        foreground=THEME.text,
         padding=7,
     )
-    style.configure("TLabel.TSeparator", background=_SURFACE)
+    style.configure("TLabel.TSeparator", background=THEME.surface)
     style.configure(
-        "TCheckbutton", background=_SURFACE, foreground=_TEXT, padding=4
+        "TCheckbutton", background=THEME.surface, foreground=THEME.text, padding=4
     )
     style.map(
         "TCheckbutton",
-        background=[("active", _SURFACE)],
-        foreground=[("disabled", _TEXT_DIM)],
-        indicatorcolor=[("selected", _ACCENT)],
+        background=[("active", THEME.surface)],
+        foreground=[("disabled", THEME.text_dim)],
+        indicatorcolor=[("selected", THEME.accent)],
     )
-    style.configure("TRadiobutton", background=_SURFACE, foreground=_TEXT)
+    style.configure("TRadiobutton", background=THEME.surface, foreground=THEME.text)
     style.map(
         "TRadiobutton",
-        background=[("active", _SURFACE)],
-        indicatorcolor=[("selected", _ACCENT)],
+        background=[("active", THEME.surface)],
+        indicatorcolor=[("selected", THEME.accent)],
     )
     style.configure(
         "TCombobox",
-        fieldbackground=_FIELD,
-        background=_FIELD,
-        foreground=_TEXT,
-        arrowcolor=_TEXT_DIM,
-        bordercolor=_SURFACE_ALT,
-        lightcolor=_SURFACE_ALT,
-        darkcolor=_SURFACE_ALT,
+        fieldbackground=THEME.field,
+        background=THEME.field,
+        foreground=THEME.text,
+        arrowcolor=THEME.text_dim,
+        bordercolor=THEME.surface_alt,
+        lightcolor=THEME.surface_alt,
+        darkcolor=THEME.surface_alt,
     )
     style.map(
         "TCombobox",
-        fieldbackground=[("readonly", _FIELD)],
-        selectbackground=[("readonly", _FIELD)],
-        selectforeground=[("readonly", _TEXT)],
+        fieldbackground=[("readonly", THEME.field)],
+        selectbackground=[("readonly", THEME.field)],
+        selectforeground=[("readonly", THEME.text)],
     )
     style.configure(
         "TScrollbar",
-        background=_SURFACE_ALT,
-        troughcolor=_SURFACE,
-        bordercolor=_SURFACE,
-        arrowcolor=_TEXT_DIM,
+        background=THEME.surface_alt,
+        troughcolor=THEME.surface,
+        bordercolor=THEME.surface,
+        arrowcolor=THEME.text_dim,
         relief="flat",
     )
-    style.map("TScrollbar", background=[("active", _ACCENT_STRONG)])
-    root.option_add("*Menu*background", _FIELD)
-    root.option_add("*Menu*foreground", _TEXT)
-    root.option_add("*Menu*activeBackground", _ACCENT_STRONG)
-    root.option_add("*Menu*activeForeground", _ON_ACCENT)
+    style.map("TScrollbar", background=[("active", THEME.accent_strong)])
+    root.option_add("*Menu*background", THEME.field)
+    root.option_add("*Menu*foreground", THEME.text)
+    root.option_add("*Menu*activeBackground", THEME.accent_strong)
+    root.option_add("*Menu*activeForeground", THEME.on_accent)
 
 
 def _style_listbox(box: tk.Listbox) -> None:
     """Theme a plain tk.Listbox to match the ttk widgets around it."""
     box.configure(
-        background=_FIELD,
-        foreground=_TEXT,
-        selectbackground=_ACCENT_STRONG,
-        selectforeground=_ON_ACCENT,
+        background=THEME.field,
+        foreground=THEME.text,
+        selectbackground=THEME.accent_strong,
+        selectforeground=THEME.on_accent,
         highlightthickness=0,
         borderwidth=0,
         relief="flat",
@@ -280,16 +369,16 @@ class StellaWindow:
         root.title("Stella")
         root.geometry("1180x680")
         root.minsize(920, 560)
-        root.configure(background=_SURFACE)
+        root.configure(background=THEME.surface)
         _configure_styles(root)
 
         main = ttk.Frame(root)
-        main.pack(fill="both", expand=True, padx=12, pady=12)
+        main.pack(fill="both", expand=True, padx=16, pady=14)
 
         chat = ttk.Frame(main)
         chat.pack(side="left", fill="both", expand=True)
         header = ttk.Frame(chat)
-        header.pack(fill="x", pady=(0, 8))
+        header.pack(fill="x", pady=(0, 10))
         ttk.Label(header, text="Stella", style="Brand.TLabel").pack(
             side="left"
         )
@@ -297,16 +386,21 @@ class StellaWindow:
             header,
             text="local-first · your conversation stays on this machine",
             style="Dim.TLabel",
-        ).pack(side="left", padx=(12, 0), pady=(6, 0))
+        ).pack(side="left", padx=(12, 0), pady=(7, 0))
+        self._theme_button = ttk.Button(
+            header, text=self._theme_button_text(),
+            command=self._toggle_theme, width=11,
+        )
+        self._theme_button.pack(side="right")
         transcript_frame = ttk.Frame(chat)
         transcript_frame.pack(fill="both", expand=True)
         self._chat = tk.Text(
             transcript_frame,
             wrap="word",
             state="disabled",
-            background=_WINDOW,
-            foreground=_TEXT,
-            insertbackground=_TEXT,
+            background=THEME.window,
+            foreground=THEME.text,
+            insertbackground=THEME.text,
             borderwidth=0,
             highlightthickness=0,
             relief="flat",
@@ -332,14 +426,14 @@ class StellaWindow:
             input_frame,
             height=3,
             wrap="word",
-            background=_FIELD,
-            foreground=_TEXT,
-            insertbackground=_TEXT,
+            background=THEME.field,
+            foreground=THEME.text,
+            insertbackground=THEME.text,
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground=_SURFACE_ALT,
-            highlightcolor=_ACCENT_STRONG,
+            highlightbackground=THEME.surface_alt,
+            highlightcolor=THEME.accent_strong,
             padx=10,
             pady=8,
             font="TkTextFont",
@@ -386,6 +480,60 @@ class StellaWindow:
         # beat later, never during construction.
         root.after(250, self._bridge.post_persona_drain)
 
+    # ------------------------------------------------------ theme switch
+
+    def _theme_button_text(self) -> str:
+        return "Light mode" if current_theme_name() == "dark" else "Dark mode"
+
+    def _toggle_theme(self) -> None:
+        name = "light" if current_theme_name() == "dark" else "dark"
+        apply_theme(name)
+        save_theme_choice(name)
+        self._restyle()
+        self._theme_button.configure(text=self._theme_button_text())
+
+    def _restyle(self) -> None:
+        """Repaint everything ttk styles do not already cover.
+
+        Re-running ``_configure_styles`` restyles all ttk widgets live;
+        plain Tk widgets (the transcript, the composer, the lists, any
+        open approval dialog) carry their colors directly and must be
+        recolored here.
+        """
+        _configure_styles(self._root)
+        theme = THEME
+        self._root.configure(background=theme.surface)
+        self._chat.configure(
+            background=theme.window,
+            foreground=theme.text,
+            insertbackground=theme.text,
+        )
+        self._configure_chat_tags()
+        self._input.configure(
+            background=theme.field,
+            foreground=theme.text,
+            insertbackground=theme.text,
+            highlightbackground=theme.surface_alt,
+            highlightcolor=theme.accent_strong,
+        )
+        for box in (
+            self._memory_list,
+            self._reminder_list,
+            self._history_list,
+        ):
+            _style_listbox(box)
+        for dialog in self._dialogs:
+            dialog.configure(background=theme.surface)
+            box = getattr(dialog, "preview_box", None)
+            if box is not None:
+                box.configure(
+                    background=theme.window,
+                    foreground=theme.text_dim,
+                    highlightbackground=theme.surface_alt,
+                )
+                box.tag_configure("added", foreground=theme.ok)
+                box.tag_configure("removed", foreground=theme.error)
+
     # ----------------------------------------------------------- chat
 
     def _configure_chat_tags(self) -> None:
@@ -408,7 +556,7 @@ class StellaWindow:
         # on the blank spacer line.
         chat.tag_configure(
             "bubble-stella",
-            background=_STELLA_BUBBLE,
+            background=THEME.stella_bubble,
             lmargin1=14,
             lmargin2=14,
             rmargin=150,
@@ -417,7 +565,7 @@ class StellaWindow:
         )
         chat.tag_configure(
             "bubble-user",
-            background=_USER_BUBBLE,
+            background=THEME.user_bubble,
             lmargin1=150,
             lmargin2=150,
             rmargin=14,
@@ -425,13 +573,13 @@ class StellaWindow:
             spacing1=8,
             spacing3=0,
         )
-        chat.tag_configure("head-stella", foreground=_OK, font=self._head_font)
-        chat.tag_configure("body-stella", foreground=_TEXT)
-        chat.tag_configure("head-user", foreground=_ACCENT, font=self._head_font)
-        chat.tag_configure("body-user", foreground="#e6ecf7")
+        chat.tag_configure("head-stella", foreground=THEME.ok, font=self._head_font)
+        chat.tag_configure("body-stella", foreground=THEME.text)
+        chat.tag_configure("head-user", foreground=THEME.accent, font=self._head_font)
+        chat.tag_configure("body-user", foreground=THEME.text)
         chat.tag_configure(
             "note",
-            foreground=_TEXT_DIM,
+            foreground=THEME.text_dim,
             font=self._italic_font,
             lmargin1=14,
             lmargin2=14,
@@ -441,7 +589,7 @@ class StellaWindow:
         )
         chat.tag_configure(
             "error",
-            foreground=_ERROR,
+            foreground=THEME.error,
             lmargin1=14,
             lmargin2=14,
             rmargin=14,
@@ -450,14 +598,14 @@ class StellaWindow:
         )
         chat.tag_configure(
             "reminder",
-            foreground=_REMINDER,
+            foreground=THEME.reminder,
             lmargin1=14,
             lmargin2=14,
             rmargin=14,
             spacing1=8,
             spacing3=0,
         )
-        chat.tag_configure("gap", background=_WINDOW)
+        chat.tag_configure("gap", background=THEME.window)
 
     def _line(self, text: str, role: str = "note") -> None:
         chat = self._chat
@@ -768,7 +916,7 @@ class StellaWindow:
         dialog = tk.Toplevel(self._root)
         dialog.title("Stella needs approval")
         dialog.resizable(False, False)
-        dialog.configure(background=_SURFACE)
+        dialog.configure(background=THEME.surface)
 
         def answer(approved: bool) -> None:
             self._bridge.resolve_approval(token, approved)
@@ -804,17 +952,17 @@ class StellaWindow:
                 font="TkFixedFont",
                 state="disabled",
                 wrap="none",
-                background=_WINDOW,
-                foreground=_TEXT_DIM,
+                background=THEME.window,
+                foreground=THEME.text_dim,
                 relief="flat",
                 borderwidth=0,
                 highlightthickness=1,
-                highlightbackground=_SURFACE_ALT,
+                highlightbackground=THEME.surface_alt,
                 padx=8,
                 pady=6,
             )
-            box.tag_configure("added", foreground=_OK)
-            box.tag_configure("removed", foreground=_ERROR)
+            box.tag_configure("added", foreground=THEME.ok)
+            box.tag_configure("removed", foreground=THEME.error)
             box.pack(padx=10, pady=(0, 4))
             dialog.preview_box = box
             lines = list(preview.detail_lines)
@@ -1262,7 +1410,7 @@ class SetupDialog:
         dialog = tk.Toplevel(parent)
         dialog.title("Welcome to Stella")
         dialog.resizable(False, False)
-        dialog.configure(background=_SURFACE)
+        dialog.configure(background=THEME.surface)
         _configure_styles(parent)
         self._dialog = dialog
         ttk.Label(
@@ -1465,6 +1613,7 @@ class SetupDialog:
 def main() -> None:
     """Launch the Stella desktop window."""
 
+    apply_theme(load_theme_choice())
     settings = config.resolve_settings()
     if settings is None:
         root = tk.Tk()

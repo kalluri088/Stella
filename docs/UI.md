@@ -127,6 +127,26 @@ display, and can never approve a tool or change permissions.
   and **Cancel** beside Send also silences any spoken audio. See `VOICE.md`
   for providers, privacy behavior, and controls.
 
+## Appearance and themes
+
+The window ships two complete minimalist palettes — **dark** (the
+default) and **light** — defined once as `Theme` dataclasses in
+`stella.ui` and read by every widget builder through the module-level
+`THEME`. A "Light mode"/"Dark mode" button in the header switches
+live: the ttk styles are re-applied (they repaint all styled widgets),
+the few plain Tk widgets (transcript, composer, the three lists, any
+open approval dialog and its preview box) are recolored explicitly,
+and nothing is rebuilt — a running turn, a recording, or a pending
+approval is never interrupted by a theme change.
+
+The choice persists in a one-word `ui-theme` file next to
+`config.json` under the Stella data directory and is loaded at
+launch, so the window opens the way the user last left it; an absent
+or unreadable file falls back to dark. This file holds only the
+palette name — no configuration, no secrets, no conversation — and
+writing it can never affect authorization: approvals, transcripts
+and the bridge contract are styling-independent.
+
 ## How approvals stay trusted
 
 `ToolDispatcher` still decides what requires approval and validates it. When a

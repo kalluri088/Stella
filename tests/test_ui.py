@@ -16,6 +16,7 @@ import tkinter as tk
 import pytest
 
 from stella import config as stella_config
+from stella import ui as stella_ui
 from stella.app import (
     StellaApplication,
     StellaBridge,
@@ -956,3 +957,59 @@ def test_window_history_tab_lists_dispatched_actions() -> None:
 
     assert any("echo" in row and "done" in row for row in rows)
     assert "recorded" not in "".join(rows)
+
+
+def test_theme_toggle_recolors_window_and_persists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # The theme is presentation only: toggling must repaint the window
+    # and remember the choice, without touching the bridge contract.
+    monkeypatch.setattr(
+        stella_ui, "_theme_choice_path", lambda: tmp_path / "ui-theme"
+    )
+    original = stella_ui.current_theme_name()
+    try:
+        root, window, bridge, _ = make_window()
+        try:
+            assert window._chat.cget("background") == str(
+                stella_ui.THEMES[original].window
+            )
+            window._toggle_theme()
+            root.update()
+            other = "light" if original == "dark" else "dark"
+            assert stella_ui.current_theme_name() == other
+            assert window._chat.cget("background") == str(
+                stella_ui.THEMES[other].window
+            )
+            assert window._root.cget("background") == str(
+                stella_ui.THEMES[other].surface
+            )
+            assert (tmp_path / "ui-theme").read_text().strip() == other
+            assert window._theme_button.cget("text") == (
+                "Dark mode" if other == "light" else "Light mode"
+            )
+            window._toggle_theme()
+            root.update()
+            assert window._chat.cget("background") == str(
+                stella_ui.THEMES[original].window
+            )
+            assert (tmp_path / "ui-theme").read_text().strip() == original
+        finally:
+            bridge.stop()
+            root.destroy()
+    finally:
+        stella_ui.apply_theme(original)
+
+
+def test_theme_choice_falls_back_to_default(tmp_path) -> None:
+    monkeypatch_path = tmp_path / "ui-theme"
+    original = stella_ui._theme_choice_path
+    stella_ui._theme_choice_path = lambda: monkeypatch_path
+    try:
+        assert stella_ui.load_theme_choice() == stella_ui.DEFAULT_THEME
+        monkeypatch_path.write_text("light\n", encoding="utf-8")
+        assert stella_ui.load_theme_choice() == "light"
+        monkeypatch_path.write_text("hotdog\n", encoding="utf-8")
+        assert stella_ui.load_theme_choice() == stella_ui.DEFAULT_THEME
+    finally:
+        stella_ui._theme_choice_path = original

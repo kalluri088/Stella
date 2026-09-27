@@ -50,6 +50,7 @@ from stella.voice import (
     CommandTranscriptionProvider,
     Player,
     Recorder,
+    ResidentSpeechProvider,
     SubprocessPlayer,
     SubprocessRecorder,
     VoiceError,
@@ -1638,3 +1639,143 @@ def test_cancel_just_after_synthesis_discards_the_artifact() -> None:
         assert os.listdir(speech.directory) == []
     finally:
         bridge.stop()
+
+
+# ---------------------------------------------------- resident speech (D2)
+
+_RESIDENT_FAKE = """
+import json, sys
+print(json.dumps({"ready": True}), flush=True)
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req["text"] == "boom":
+        print(json.dumps({"id": req["id"], "ok": False,
+                          "error": "voice unavailable"}), flush=True)
+        continue
+    if req["text"] == "silent":
+        continue
+    open(req["output"], "wb").write(b"RIFF")
+    print(json.dumps({"id": req["id"], "ok": True}), flush=True)
+"""
+
+
+def _resident(timeout: float = 10.0, ready_timeout: float = 10.0):
+    return ResidentSpeechProvider(
+        [sys.executable, "-c", _RESIDENT_FAKE],
+        timeout=timeout,
+        ready_timeout=ready_timeout,
+    )
+
+
+def test_resident_worker_serves_every_sentence_from_one_process() -> None:
+    provider = _resident()
+    first = provider.speak(SpeechOutput(text="first sentence"))
+    pid_after_first = provider._process.pid
+    second = provider.speak(SpeechOutput(text="second sentence"))
+    try:
+        assert os.path.exists(first.reference)
+        assert os.path.exists(second.reference)
+        assert first.reference != second.reference
+        # The whole point of D2: no per-sentence reload.
+        assert provider._process.pid == pid_after_first
+    finally:
+        provider.dispose()
+    assert not os.path.exists(first.reference)
+    assert not os.path.exists(second.reference)
+
+
+def test_resident_worker_refusal_surfaces_honestly() -> None:
+    provider = _resident()
+    try:
+        with pytest.raises(VoiceError, match="voice unavailable"):
+            provider.speak(SpeechOutput(text="boom"))
+    finally:
+        provider.dispose()
+
+
+def test_resident_worker_timeout_retires_it_and_the_next_call_recovers() -> None:
+    provider = _resident(timeout=0.5)
+    try:
+        with pytest.raises(VoiceError, match="too long or stopped"):
+            provider.speak(SpeechOutput(text="silent"))
+        # A retired worker is replaced, not trusted: the next sentence
+        # starts a fresh process and succeeds.
+        artifact = provider.speak(SpeechOutput(text="after the timeout"))
+        try:
+            assert os.path.exists(artifact.reference)
+        finally:
+            provider.dispose()
+    finally:
+        provider.dispose()
+
+
+def test_resident_worker_that_never_becomes_ready_fails_at_startup() -> None:
+    provider = ResidentSpeechProvider(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        ready_timeout=0.3,
+    )
+    try:
+        with pytest.raises(VoiceError, match="did not become ready"):
+            provider.speak(SpeechOutput(text="hello"))
+    finally:
+        provider.dispose()
+
+
+def test_resident_cancel_aborts_the_in_flight_sentence() -> None:
+    provider = _resident()
+    raised: list[BaseException] = []
+
+    def speak() -> None:
+        try:
+            provider.speak(SpeechOutput(text="silent"))
+        except BaseException as error:  # noqa: BLE001 - captured for the assert
+            raised.append(error)
+
+    thread = threading.Thread(target=speak, daemon=True)
+    thread.start()
+    time.sleep(0.3)
+    provider.cancel()
+    thread.join(timeout=5)
+    provider.dispose()
+    assert len(raised) == 1
+    assert isinstance(raised[0], VoiceError)
+    assert "cancelled" in str(raised[0])
+
+
+def test_resident_missing_command_fails_honestly() -> None:
+    provider = ResidentSpeechProvider(
+        ["/definitely/not/here", "x"], ready_timeout=5.0
+    )
+    try:
+        with pytest.raises(VoiceError, match="not found"):
+            provider.speak(SpeechOutput(text="hello"))
+    finally:
+        provider.dispose()
+
+
+def test_build_voice_selects_the_resident_provider_only_with_a_command() -> None:
+    from stella.app import _build_speech_provider
+
+    panel = build_voice(
+        StellaSettings(
+            model="test",
+            voice_speech="auto",
+            speech_command="/usr/bin/env fake-worker",
+            speech_resident=True,
+        )
+    )
+    try:
+        assert isinstance(panel._speech, ResidentSpeechProvider)
+    finally:
+        panel.dispose()
+    # Resident without a command is meaningless (auto/espeak stays a
+    # plain per-call command) and must not be selected.
+    assert not isinstance(
+        _build_speech_provider(
+            StellaSettings(model="test", voice_speech="off", speech_resident=True)
+        ),
+        ResidentSpeechProvider,
+    )

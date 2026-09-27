@@ -104,6 +104,7 @@ from stella.voice import (
     OpenAITranscriptionProvider,
     Player,
     Recorder,
+    ResidentSpeechProvider,
     SubprocessPlayer,
     SubprocessRecorder,
     VoiceError,
@@ -459,6 +460,7 @@ class StellaSettings:
     speech_model: str = "tts-1"
     speech_voice: str = "alloy"
     speech_command: str | None = None
+    speech_resident: bool = False
     voice_barge_in: str = "off"
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
@@ -556,6 +558,7 @@ class StellaSettings:
             "speech_model": os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
             "speech_voice": os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
             "speech_command": os.environ.get("STELLA_SPEECH_COMMAND"),
+            "speech_resident": _env_toggle("STELLA_SPEECH_RESIDENT") is True,
             "voice_barge_in": barge_mode,
             "vad_model": os.environ.get(
                 "STELLA_VAD_MODEL", default_vad_model()
@@ -1174,7 +1177,15 @@ def _build_speech_provider(
     if settings.voice_speech == "off":
         return None
     if settings.speech_command:
-        return CommandSpeechProvider(shlex.split(settings.speech_command))
+        command = shlex.split(settings.speech_command)
+        if settings.speech_resident:
+            # D2: one resident worker keeps the model loaded across
+            # sentences; the per-sentence start-up floor of a plain
+            # command provider is what users hear as inter-sentence
+            # silence. Without a command there is nothing to keep
+            # resident, so this path never applies to auto/espeak.
+            return ResidentSpeechProvider(command)
+        return CommandSpeechProvider(command)
     if settings.voice_speech == "auto":
         for binary in ("espeak-ng", "espeak"):
             if shutil.which(binary):

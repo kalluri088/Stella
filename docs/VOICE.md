@@ -65,6 +65,37 @@ The consequences users should know:
 - Chunk order is reply order; every artifact is removed once heard, and a
   newer reply retires the previous reply's unplayed queue.
 
+## Resident synthesis worker
+
+Measuring the Kokoro command path sentence by sentence (research report 24)
+showed the per-sentence cost is almost entirely fixed start-up — interpreter
+launch plus model load, over 3 s every call — while the synthesis itself runs
+at roughly 0.4× real time. Chunking cannot remove that floor because each
+chunk pays it again. `STELLA_SPEECH_RESIDENT=on` takes it out by keeping **one
+long-lived worker process** instead of one process per sentence: the first
+sentence pays the start-up, every later sentence pays only synthesis.
+
+The worker speaks a tiny line-JSON protocol (the same shape the laya judge
+uses): it prints `{"ready": true}` once its model is loaded, then answers each
+request line `{"id": int, "text": str, "output": str}` with `{"id": int,
+"ok": bool, "error": str}` after writing a playable file to `output`. Stella
+chooses the artifact paths in its own temporary directory and never trusts a
+path from a worker reply. A worker that dies, times out or answers badly is
+retired on the spot and a fresh one starts for the next sentence; a broken
+worker degrades to no speech with the text reply still fully available, and
+the plain `STELLA_SPEECH_COMMAND` path is one env var away. (On this
+machine `~/tools/stella-speak-server` is such a worker for the local Kokoro
+install; it lives outside the repository like all bench/tooling scripts.)
+
+The flag only matters when `STELLA_SPEECH_COMMAND` is set — there is nothing
+to make resident otherwise — and it is environment-only like all voice
+configuration.
+
+```bash
+STELLA_SPEECH_COMMAND="$HOME/tools/stella-speak-server" \
+STELLA_SPEECH_RESIDENT=on uv run stella-ui
+```
+
 ## Barge-in (optional interrupt-by-voice)
 
 By default Stella's microphone is only live between a **Listen** press and its
@@ -181,6 +212,8 @@ is mandatory and nothing fails at startup when audio tools are absent.
   wrapper). Executed without a shell.
 - `STELLA_SPEECH_COMMAND` — a local command template containing `{text}` and
   `{output}` that writes one audio file (for example a `piper` wrapper).
+- `STELLA_SPEECH_RESIDENT` — `off` (default) or `on`; only meaningful with
+  `STELLA_SPEECH_COMMAND` (see "Resident synthesis worker").
 - `STELLA_TRANSCRIPTION_MODEL` (default `whisper-1`), `STELLA_SPEECH_MODEL`
   (default `tts-1`), `STELLA_SPEECH_VOICE` (default `alloy`) — OpenAI
   identifiers when the cloud path is selected.
@@ -226,5 +259,6 @@ decision path.
   OpenAI path.
 - Playback is one subprocess per chunk and strictly sequential; a chunked
   reply keeps at most a few synthesized sentences ahead of the speakers.
+  Synthesis is one process per sentence unless the resident worker is enabled.
   There is still no mixing, ducking, or overlap between artifacts.
 - Voice mode is desktop-UI only; the CLI remains text-only.

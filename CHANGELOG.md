@@ -60,6 +60,25 @@
   the design; two focused window tests cover the recolor, the
   persisted choice and the fallback.
 
+### Stage D: voice latency, measured before anything was built
+
+- **Resident synthesis worker (D2).** Measuring Kokoro sentence by
+  sentence (research report 24) showed the per-sentence wait is almost
+  entirely fixed start-up — a >3 s floor of interpreter launch plus
+  model load on *every* `STELLA_SPEECH_COMMAND` call, median 3.65 s
+  per short sentence on an idle machine — while synthesis itself runs
+  at roughly 0.4× real time. `ResidentSpeechProvider` in
+  `src/stella/voice.py` keeps one long-lived worker alive across
+  sentences (line-JSON protocol, same shape as the laya judge), so the
+  idle A/B median drops to 1.80 s per sentence and the start-up is
+  paid once per session (cold worker ≈2.6 s). Opt-in via
+  `STELLA_SPEECH_RESIDENT=on`, meaningful only alongside
+  `STELLA_SPEECH_COMMAND`, environment-only like all voice settings.
+  A dead, timed-out or badly-answering worker is retired on the spot
+  and restarted on the next sentence; a broken worker degrades to no
+  speech with the text reply untouched, and artifact paths are always
+  Stella's own — a path from a worker reply is never trusted.
+
 ## 1.2.0 — 2026-09-27
 
 ### Stella can be interrupted by voice (Stage B7, opt-in barge-in)

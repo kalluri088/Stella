@@ -12,7 +12,9 @@ as soon as transcription is done, so nothing is persisted by default.
 
 from __future__ import annotations
 
+import json
 import os
+import queue
 import shutil
 import signal
 import subprocess
@@ -36,6 +38,7 @@ __all__ = [
     "OpenAITranscriptionProvider",
     "Player",
     "Recorder",
+    "ResidentSpeechProvider",
     "SubprocessPlayer",
     "SubprocessRecorder",
     "VoiceError",
@@ -483,6 +486,222 @@ class CommandSpeechProvider(SpeechProvider):
 
     def dispose(self) -> None:
         shutil.rmtree(self._directory, ignore_errors=True)
+
+
+class ResidentSpeechProvider(SpeechProvider):
+    """Render text through ONE long-lived synthesis worker process.
+
+    ``command`` names a line-JSON server: it prints ``{"ready": true}``
+    once its model is loaded, then answers one request per line —
+    ``{"id": int, "text": str, "output": str}`` in, ``{"id": int,
+    "ok": bool, "error": str}`` out — and writes a playable file to
+    ``output``. The worker starts lazily and survives between
+    sentences, so the interpreter start-up and model load that a
+    per-sentence command pays every time (~3–4 s measured for Kokoro,
+    research report 24) are paid once per session instead. The same
+    ``{text}``/``{output}`` template understood by
+    :class:`CommandSpeechProvider` is NOT valid here: a worker that
+    speaks this protocol is a different program by design, and the
+    two providers stay separately selectable so a machine without one
+    keeps the old behaviour (D2 degradation rule: a broken worker
+    degrades to no speech, and the text reply stays available).
+
+    A worker that dies, times out or answers badly is retired on the
+    spot; the next sentence starts a fresh one. Nothing a worker says
+    is trusted beyond "the file exists at the path we chose": the
+    artifact reference is this provider's own bounded temp directory,
+    never a path from the worker's reply.
+    """
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        timeout: float = 60.0,
+        ready_timeout: float = 180.0,
+    ) -> None:
+        if not command:
+            raise ValueError("a resident speech worker needs a command")
+        self._command = list(command)
+        self._timeout = timeout
+        self._ready_timeout = ready_timeout
+        self._directory = tempfile.mkdtemp(prefix="stella-speech-")
+        self._counter = 0
+        self._request_id = 0
+        self._process: subprocess.Popen[str] | None = None
+        self._lines: queue.Queue[str | None] | None = None
+        self._cancel_requested = False
+        self._lock = threading.Lock()
+        self._request_lock = threading.Lock()
+
+    def cancel(self) -> None:
+        """Abort a running synthesis; the worker is retired, not reused."""
+
+        with self._lock:
+            process = self._process
+            self._cancel_requested = True
+        if process is not None:
+            _cancel_process_tree(process)
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                    self._lines = None
+
+    def speak(self, output: SpeechOutput) -> SpeechArtifact:
+        bounded = output.text[:MAX_SPEECH_TEXT_CHARS]
+        with self._request_lock:
+            self._counter += 1
+            path = os.path.join(
+                self._directory, f"reply-{self._counter}-{os.getpid()}.wav"
+            )
+            with self._lock:
+                self._ensure_worker_locked()
+                process = self._process
+                lines = self._lines
+                assert process is not None and lines is not None
+                assert process.stdin is not None
+                self._request_id += 1
+                request_id = self._request_id
+                try:
+                    process.stdin.write(
+                        json.dumps(
+                            {"id": request_id, "text": bounded, "output": path}
+                        )
+                        + "\n"
+                    )
+                    process.stdin.flush()
+                except OSError as error:
+                    self._retire_locked()
+                    raise VoiceError(
+                        f"Resident speech worker broke ({error})."
+                    ) from error
+            reply = self._await_reply(lines, process, request_id)
+            with self._lock:
+                cancelled = self._cancel_requested
+                self._cancel_requested = False
+            if cancelled:
+                raise VoiceError("Resident speech was cancelled.")
+            if reply is None:
+                with self._lock:
+                    self._retire_locked()
+                raise VoiceError(
+                    "Resident speech took too long or stopped answering."
+                )
+            if not reply.get("ok"):
+                detail = str(reply.get("error", ""))[:120] or "worker refused"
+                raise VoiceError(f"Resident speech failed ({detail}).")
+            if not os.path.exists(path):
+                raise VoiceError("Resident speech produced no audio file.")
+            return SpeechArtifact(reference=path)
+
+    def dispose(self) -> None:
+        with self._lock:
+            self._retire_locked()
+        shutil.rmtree(self._directory, ignore_errors=True)
+
+    def _ensure_worker_locked(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            return
+        if self._process is not None:
+            self._retire_locked()
+        try:
+            process = subprocess.Popen(
+                self._command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+            )
+        except FileNotFoundError as error:
+            raise VoiceError(
+                "The configured resident speech command was not found."
+            ) from error
+        except OSError as error:
+            raise VoiceError(f"Resident speech could not start ({error}).") from error
+        assert process.stdout is not None
+        self._process = process
+        lines: queue.Queue[str | None] = queue.Queue()
+        self._lines = lines
+        threading.Thread(
+            target=self._pump_stdout, args=(process.stdout, lines), daemon=True
+        ).start()
+        ready = self._await_line(lines, process, self._ready_timeout)
+        payload = _json_line(ready)
+        if payload is None or not payload.get("ready"):
+            reason = str((payload or {}).get("error", ""))[:120]
+            self._retire_locked()
+            suffix = f": {reason}" if reason else ""
+            raise VoiceError(
+                "The resident speech worker did not become ready" + suffix
+            )
+
+    def _await_reply(
+        self,
+        lines: queue.Queue[str | None],
+        process: subprocess.Popen[str],
+        request_id: int,
+    ) -> dict | None:
+        """Next good reply for this id; stale or unreadable lines are skipped."""
+
+        while True:
+            raw = self._await_line(lines, process, self._timeout)
+            if raw is None:
+                return None
+            payload = _json_line(raw)
+            if payload is None:
+                continue
+            if payload.get("id") == request_id:
+                return payload
+
+    def _await_line(
+        self,
+        lines: queue.Queue[str | None],
+        process: subprocess.Popen[str],
+        timeout: float,
+    ) -> str | None:
+        try:
+            line = lines.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if line is None:  # worker EOF mid-request
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                process.kill()
+            return None
+        return line
+
+    def _pump_stdout(self, stream, sink: queue.Queue[str | None]) -> None:
+        for line in stream:
+            sink.put(line)
+        sink.put(None)
+
+    def _retire_locked(self) -> None:
+        process, self._process = self._process, None
+        self._lines = None
+        if process is not None:
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                process.kill()
+                process.wait(timeout=5)
+
+
+def _json_line(raw: str | None) -> dict | None:
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 class OpenAISpeechProvider(SpeechProvider):

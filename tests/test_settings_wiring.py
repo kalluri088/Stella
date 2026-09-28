@@ -35,6 +35,7 @@ OVERRIDE_FIELDS = {
     "semantic_provider_env_override": "semantic_provider",
     "os_tools_env_override": "os_tools_enabled",
     "outline_tools_env_override": "outline_tools_enabled",
+    "web_tools_env_override": "web_tools_enabled",
 }
 
 # Settings checkbox that writes each opt-in field into the save dict.
@@ -43,6 +44,7 @@ UI_VARS = {
     "semantic_memory_enabled": "self._semantic_var",
     "os_tools_enabled": "self._os_tools_var",
     "outline_tools_enabled": "self._outline_tools_var",
+    "web_tools_enabled": "self._web_tools_var",
 }
 
 

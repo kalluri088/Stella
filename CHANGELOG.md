@@ -44,6 +44,32 @@
   transports only — no network, no key) plus the report-22 live passes
   of both backends; full suite green on this branch.
 
+### Three conventions became tested invariants (quality cycle)
+
+- **Containment, at any depth (report 32, #18).** `.gitignore` now
+  guards `stella_workspace/` and `SECURITY-AUDIT.md` with unanchored
+  patterns, so a nested copy (e.g. `stella_workspace/SECURITY-AUDIT.md`)
+  can never slip through. `tests/test_containment.py` pins it: the
+  patterns are present and unanchored, `git check-ignore` agrees at root
+  and at depth, and neither name is tracked. No pre-commit hook, no CI,
+  and neither file is ever committed — the guarantee is the ignore rule
+  plus a test, not tooling.
+- **The settings-wiring drift guard (#3).** A capability toggle touches
+  six places (app.py override, `StellaSettings` field, `from_saved`,
+  `from_environment`, `config._CONFIG_FIELDS`, the Settings checkbox and
+  its save entry). `tests/test_settings_wiring.py` asserts every
+  `*_env_override()` has a matching entry in all of them — test-only, no
+  runtime change. It already paid for itself: landing the web capability
+  left the web fields out of the guard's tables, the guard failed, and
+  this cycle added them.
+- **Every DANGEROUS approval card names what it changes (#2).** Five
+  memory/reminder tools returned no preview and showed a bare card; each
+  now has an honest, side-effect-free one (`memory_update` reads the
+  current value, `reminder_create` mirrors the validator so it never
+  advertises a reminder execution would reject). A registry-wide test
+  asserts no DANGEROUS tool inherits the base empty preview; the web
+  tools landed already compliant. See `docs/APPROVAL_BOUNDARY.md`.
+
 ## 1.3.0 — 2026-09-28
 
 ### The palettes now follow the Outline app Stella talks to

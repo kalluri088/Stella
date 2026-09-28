@@ -695,3 +695,32 @@ def test_remind_action_summary():
         {"kind": "task", "id": 7, "action": "edit",
          "edits": {"remind": "2026-10-05T09:30+00:00"}},
     ) == "edit the Outline task with id 7 (remind)"
+
+
+# --------------------------------------------------------------------------
+# reminders boundary (report 30): remind must never read as Stella's own
+# --------------------------------------------------------------------------
+
+
+def test_remind_field_is_framed_as_outline_app_only():
+    client = OutlineClient("http://127.0.0.1:8741", "t", FakeServer([]))
+    create = OutlineCreateTool(client)
+    update = OutlineUpdateTool(client)
+    assert "alert inside the Outline app itself" in create.description
+    assert "not Stella's own reminder" in create.description
+    schema_field = create.argument_schema["remind"]
+    assert "not Stella's own reminders" in schema_field
+    assert "alert inside the Outline app (not" in update.description
+
+
+def test_remind_me_prompt_without_outline_still_validates_the_same():
+    # The boundary is wording, not contract: the remind validator keeps
+    # its exact shape so nothing about an outline_create call changes.
+    client = OutlineClient("http://127.0.0.1:8741", "t", FakeServer([]))
+    tool = OutlineCreateTool(client)
+    assert tool.validate_arguments(
+        {"kind": "task", "title": "t", "remind": "2026-09-28T18:00+05:30"}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "task", "title": "t", "remind": "not-a-time"}
+    )

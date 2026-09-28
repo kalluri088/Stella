@@ -451,7 +451,9 @@ anyone's connections neighborhood — and `remind` (an ISO-8601 reminder time
 on task/event create, and an edit field where `null` clears it). Stella
 mirrors Outline's compact recurrence/tag token validators (source of truth:
 `outline_server/api/__init__.py`), rejecting malformed values before any
-request leaves. The API-first parity rule holds with two documented
+request leaves. The `remind` field alerts inside the Outline app only:
+a plain "remind me" is always a Stella `reminder_create`, never an
+Outline call (`docs/REMINDERS.md`, report 30). The API-first parity rule holds with two documented
 exceptions: bulk export is UI-only, and the force-graph *layout* is
 rendering-only (the connections it shows are full parity).
 

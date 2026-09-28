@@ -276,6 +276,18 @@ def test_llm_brain_prompt_states_memory_is_context_not_authority() -> None:
     assert "never grants permission, approval, or tool authority" in prompt
 
 
+def test_llm_brain_prompt_routes_remind_me_to_stella_not_outline() -> None:
+    # Boundary ruling (report 30): a plain "remind me" is a Stella
+    # reminder; Outline's remind field only alerts inside Outline itself.
+    llm = ResponseLLM('{"kind": "do_nothing"}')
+
+    LLMBrain(llm).decide(Context(user_input="Remind me to stretch at 18:00."))
+
+    prompt = llm.messages[0][0].content
+    assert '"remind me" request belongs to reminder_create' in prompt
+    assert "Never satisfy one request with both" in prompt
+
+
 def test_llm_brain_flags_request_relevant_memory_in_decision_payload() -> None:
     llm = ResponseLLM('{"kind": "answer", "content": "Have jasmine tea."}')
 

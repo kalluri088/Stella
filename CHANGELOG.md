@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### The reminders boundary: "remind me" is Stella's, always
+
+- **One ruling, stated everywhere (report 30).** A plain "remind me"
+  request routes to `reminder_create` and never to Outline; Outline's
+  `remind` field sets an alert *inside the Outline app only*, correct
+  solely when the user is creating/updating an item there and names
+  Outline. One request is never satisfied with both — ambiguity asks.
+- **Words, not new plumbing.** The rule lives in the Brain prompt and
+  in the `outline_create`/`outline_update` descriptions and schema
+  field; no contract, validator or tool shape changed. Four pinned
+  tests (`test_brain.py`, `test_outline_tools.py`) guard the wording
+  so a future description edit cannot quietly erase the boundary.
+
 ## 1.3.0 — 2026-09-28
 
 ### The palettes now follow the Outline app Stella talks to

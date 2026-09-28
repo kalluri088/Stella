@@ -33,6 +33,16 @@ expired creation requests are rejected deterministically rather than being
 silently accepted. When the user's stated time is ambiguous or missing, the
 Brain is instructed to ask instead of inventing a due time.
 
+One boundary is deliberate (research report 30): a plain "remind me" is
+always a Stella `reminder_create`, never an Outline operation. Outline's
+`remind` field — alert times on Outline tasks and events — sets an alert
+*inside the Outline app only*, and is correct solely when the user is
+creating or updating an item in Outline itself and names Outline. One
+request is never satisfied with both systems; when the target is unclear
+the Brain is instructed to ask. The rule lives in the Brain prompt and in
+the `outline_create`/`outline_update` tool descriptions, and is pinned by
+tests in `test_brain.py` and `test_outline_tools.py`.
+
 ## Storage and scheduling
 
 `stella.reminders` provides a `ReminderStore` interface with an

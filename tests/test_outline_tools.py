@@ -38,7 +38,7 @@ class FakeServer:
         return 404, {"error": {"code": "not_found", "message": "no route " + path}}
 
 
-def server_routes(**extra):
+def server_routes(extra=(), **named):
     routes = [
         ("GET", "/healthz", {"ok": True, "version": "1.0"}),
         ("GET", "/api/v1/today", {
@@ -70,20 +70,20 @@ def server_routes(**extra):
         ("POST", "/api/v1/notes", {"id": 44, "body": "soil was dry"}),
         ("POST", "/api/v1/projects", {"id": 45, "title": "Inbox"}),
         ("POST", "/api/v1/people", {"id": 46, "name": "Ada"}),
-        ("POST", "/api/v1/tasks/7/complete", {"id": 7, "title": "standup", "status": "done"}),
-        ("PATCH", "/api/v1/tasks/7", {"id": 7, "title": "standup", "due_at": 2}),
+        ("POST", "/api/v1/tasks/7/complete", {"item": {"id": 7, "title": "standup", "status": "done"}}),
+        ("PATCH", "/api/v1/tasks/7", {"item": {"id": 7, "title": "standup", "due_at": 2}}),
         ("PATCH", "/api/v1/timers/2", {"id": 2, "label": "pasta", "state": "paused"}),
         ("PATCH", "/api/v1/projects/5", {"id": 5, "title": "Garden", "status": "archived"}),
     ]
-    routes.extend(extra.items())
+    routes.extend([*extra, *named.items()])
     return routes
 
 
-def client(**extra):
+def client(*extra, **named):
     return OutlineClient(
         base_url="http://127.0.0.1:8741",
         token="t",
-        transport=FakeServer(server_routes(**extra)),
+        transport=FakeServer(server_routes(extra, **named)),
     )
 
 
@@ -277,6 +277,18 @@ def test_update_task_complete_and_timer_pause():
     assert tool.execute({"kind": "project", "id": 5, "action": "archive"}).success
 
 
+def test_complete_reports_next_recurrence():
+    tool = OutlineUpdateTool(
+        client(("POST", "/api/v1/tasks/8/complete", {
+            "item": {"id": 8, "title": "water plants", "status": "done"},
+            "next_task": {"id": 9, "title": "water plants", "status": "open"},
+        }))
+    )
+    result = tool.execute({"kind": "task", "id": 8, "action": "complete"})
+    assert result.success
+    assert "next occurrence #9" in result.output
+
+
 def test_update_validation_matrix():
     tool = OutlineUpdateTool(client())
     assert not tool.validate_arguments({"kind": "task", "id": 0, "action": "complete"})
@@ -341,3 +353,345 @@ def test_saved_settings_flag_respects_env_override(monkeypatch):
         provider="ollama", model="x", outline_tools_enabled=True
     )
     assert settings.outline_tools_enabled is False
+
+
+# --------------------------------------------------------------------------
+# v1.1 parity: edit, event reschedule, links, recurrence, tags, graph, export note
+# --------------------------------------------------------------------------
+
+
+def test_create_task_recurrence_and_tags_reach_the_api():
+    srv = FakeServer(server_routes())
+    tool = OutlineCreateTool(OutlineClient("http://127.0.0.1:8741", "t", srv))
+    result = tool.execute(
+        {
+            "kind": "task",
+            "title": "water plants",
+            "recurrence": "every:120",
+            "tags": ["Garden", "chore", "garden"],
+        }
+    )
+    assert result.success
+    post = next(c for c in srv.calls if c[0] == "POST" and c[1] == "/api/v1/tasks")
+    assert post[2]["recurrence"] == "every:120"
+    assert post[2]["tags"] == ["garden", "chore"]
+
+
+def test_create_rejects_bad_recurrence_and_tags():
+    tool = OutlineCreateTool(client())
+    base = {"kind": "task", "title": "x"}
+    assert not tool.validate_arguments({**base, "recurrence": "daily; rm -rf /"})
+    assert not tool.validate_arguments({**base, "recurrence": "every:59"})
+    assert not tool.validate_arguments({**base, "recurrence": "every:525601"})
+    assert not tool.validate_arguments({**base, "recurrence": "yearly"})
+    assert not tool.validate_arguments({**base, "tags": ["<script>"]})
+    assert not tool.validate_arguments({**base, "tags": ["ok", "a" * 41]})
+    assert not tool.validate_arguments({**base, "tags": ["x"] * 21})
+    assert tool.validate_arguments({**base, "recurrence": "weekdays"})
+    assert tool.validate_arguments({**base, "recurrence": "every:525600"})
+    assert tool.validate_arguments({**base, "tags": ["ok_1"]})
+
+
+def test_create_event_custom_duration():
+    srv = FakeServer(server_routes())
+    result = OutlineCreateTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute(
+        {
+            "kind": "event",
+            "title": "workshop",
+            "due_at": "2026-10-01T09:00",
+            "duration_ms": 7_200_000,
+        }
+    )
+    assert result.success
+    post = next(c for c in srv.calls if c[0] == "POST" and c[1] == "/api/v1/events")
+    assert post[2]["ends_at"] - post[2]["starts_at"] == 7_200_000
+
+
+def test_update_task_edit_maps_fields():
+    srv = FakeServer(server_routes())
+    tool = OutlineUpdateTool(OutlineClient("http://127.0.0.1:8741", "t", srv))
+    result = tool.execute(
+        {
+            "kind": "task",
+            "id": 7,
+            "action": "edit",
+            "edits": {
+                "title": "standup v2",
+                "body": "new room",
+                "priority": 3,
+                "recurrence": "every:120",
+                "tags": ["Work", "dailyx"],
+            },
+        }
+    )
+    assert result.success and "edited" in result.output
+    patch = next(c for c in srv.calls if c[0] == "PATCH")
+    assert patch[2] == {
+        "title": "standup v2",
+        "notes": "new room",
+        "priority": 3,
+        "recurrence": "every:120",
+        "tags": ["work", "dailyx"],
+    }
+
+
+def test_update_edit_clear_values_and_validation():
+    tool = OutlineUpdateTool(client())
+    assert tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit",
+         "edits": {"recurrence": None, "tags": []}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit", "edits": {}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit", "edits": {"status": "done"}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit", "edits": {"priority": 5}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "note", "id": 2, "action": "edit", "edits": {"title": "x"}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit", "edits": {"title": "x"},
+         "due_at": "2026-10-01T09:00"}
+    )
+    assert tool.validate_arguments(
+        {"kind": "project", "id": 5, "action": "edit", "edits": {"body": "notes"}}
+    )
+
+
+def test_update_event_reschedule_preserves_duration():
+    routes = server_routes([
+        (
+            "GET",
+            "/api/v1/events/21",
+            {"id": 21, "title": "dentist", "starts_at": 1_700_000_000_000,
+             "ends_at": 1_700_007_200_000},
+        ),
+        (
+            "PATCH",
+            "/api/v1/events/21",
+            {"id": 21, "title": "dentist", "starts_at": 2, "ends_at": 3},
+        ),
+    ])
+    srv = FakeServer(routes)
+    tool = OutlineUpdateTool(OutlineClient("http://127.0.0.1:8741", "t", srv))
+    result = tool.execute(
+        {"kind": "event", "id": 21, "action": "reschedule",
+         "due_at": "2026-10-05T14:00+00:00"}
+    )
+    assert result.success
+    patch = next(c for c in srv.calls if c[0] == "PATCH")
+    start = patch[2]["starts_at"]
+    assert start == 1_791_208_800_000  # 2026-10-05T14:00Z
+    assert patch[2]["ends_at"] == start + 7_200_000
+
+
+def test_update_link_attach_and_detach():
+    routes = server_routes([
+        ("GET", "/api/v1/people", {"items": [{"id": 46, "name": "Ada"}]}),
+        ("POST", "/api/v1/links", {"id": 3, "person_id": 46, "owner_kind": "task",
+                                   "owner_id": 7, "role": "with"}),
+        ("GET", "/api/v1/links", {"items": [{"id": 3, "person_id": 46,
+                                             "role": "with", "name": "Ada"}]}),
+        ("DELETE", "/api/v1/links", {"deleted": True, "id": 3}),
+    ])
+    srv = FakeServer(routes)
+    tool = OutlineUpdateTool(OutlineClient("http://127.0.0.1:8741", "t", srv))
+    attached = tool.execute(
+        {"kind": "link", "id": 7, "action": "attach", "person": "ada", "to": "task"}
+    )
+    assert attached.success and "Linked" in attached.output
+    post = next(c for c in srv.calls if c[0] == "POST")
+    assert post[2] == {"person_id": 46, "owner_kind": "task", "owner_id": 7}
+    detached = tool.execute(
+        {"kind": "link", "id": 7, "action": "detach", "person": "Ada", "to": "task"}
+    )
+    assert detached.success and "Unlinked" in detached.output
+    assert any(c[0] == "DELETE" and "/api/v1/links/3" in c[1] for c in srv.calls)
+    assert not tool.validate_arguments(
+        {"kind": "link", "id": 7, "action": "attach", "person": "Ada"}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "link", "id": 7, "action": "attach", "person": "Ada",
+         "to": "water"}
+    )
+
+
+def test_link_attach_unknown_person_fails_cleanly():
+    tool = OutlineUpdateTool(client())  # no GET /people route -> empty items
+    result = tool.execute(
+        {"kind": "link", "id": 7, "action": "attach", "person": "Nobody",
+         "to": "task"}
+    )
+    assert not result.success and "create one first" in result.output
+
+
+def test_search_tag_lists_open_tasks():
+    routes = server_routes([
+        ("GET", "/api/v1/tasks", {
+            "items": [{"id": 12, "title": "drink water", "due_at": None,
+                       "status": "open", "tags": ["health"]}],
+            "next_before_id": None,
+        }),
+    ])
+    srv = FakeServer(routes)
+    result = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute({"tag": "health"})
+    assert result.success and "[task#12] drink water #health" in result.output
+    assert any("tag=health" in path for _, path, _ in srv.calls)
+    tool = OutlineSearchTool(client())
+    assert not tool.validate_arguments({"tag": "no spaces!"})
+    assert tool.validate_arguments({"tag": "health"})
+
+
+def test_search_person_detail_with_links():
+    routes = server_routes([
+        ("GET", "/api/v1/people", {"items": [{"id": 46, "name": "Ada"}]}),
+        ("GET", "/api/v1/people/46", {
+            "id": 46, "name": "Ada", "phone": "555-0100", "email": "",
+            "notes": "likes graphs",
+        }),
+        ("GET", "/api/v1/people/46/entities", {"items": [
+            {"id": 5, "title": "write paper", "kind": "task", "when_ms": None},
+        ]}),
+    ])
+    result = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", FakeServer(routes))
+    ).execute({"kind": "person", "query": "Ada"})
+    assert result.success
+    assert "[person#46] Ada" in result.output
+    assert "phone: 555-0100" in result.output
+    assert "linked [task#5] write paper" in result.output
+
+
+def test_search_graph_renders_connections_as_text():
+    routes = server_routes([
+        ("GET", "/api/v1/people", {"items": [{"id": 46, "name": "Ada"}]}),
+        ("GET", "/api/v1/graph", {
+            "nodes": [
+                {"id": "person:46", "kind": "person", "label": "Ada", "weight": 1},
+                {"id": "task:5", "kind": "task", "label": "write paper",
+                 "weight": 1},
+            ],
+            "edges": [{"source": "person:46", "target": "task:5",
+                       "role": "with"}],
+        }),
+    ])
+    result = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", FakeServer(routes))
+    ).execute({"kind": "graph", "query": "Ada"})
+    assert result.success
+    assert 'person "Ada" —with→ task "write paper"' in result.output
+    tool = OutlineSearchTool(client())
+    assert not tool.validate_arguments({"kind": "graph"})  # query required
+
+
+def test_new_action_summaries():
+    assert outline_tool_summaries(
+        "outline_update",
+        {"kind": "task", "id": 7, "action": "edit",
+         "edits": {"title": "secret value", "tags": ["hidden"]}},
+    ) == "edit the Outline task with id 7 (tags, title)"
+    assert outline_tool_summaries(
+        "outline_update",
+        {"kind": "link", "id": 7, "action": "attach", "person": "Ada",
+         "to": "task"},
+    ) == 'link the person "Ada" to the Outline task with id 7'
+    assert outline_tool_summaries(
+        "outline_create",
+        {"kind": "task", "title": "t", "recurrence": "weekly", "tags": ["a"]},
+    ) == 'add a new task to Outline: "t" repeating "weekly" tagged a'
+
+
+# --------------------------------------------------------------------------
+# v1.2 parity: reminders
+# --------------------------------------------------------------------------
+
+
+def test_create_task_remind_reaches_the_api():
+    srv = FakeServer(server_routes())
+    result = OutlineCreateTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute(
+        {"kind": "task", "title": "station dropoff", "remind": "2026-10-05T09:30+00:00"}
+    )
+    assert result.success
+    post = next(c for c in srv.calls if c[0] == "POST" and c[1] == "/api/v1/tasks")
+    assert post[2]["remind_at"] == 1_791_192_600_000  # 2026-10-05T09:30Z
+
+
+def test_create_event_remind_reaches_the_api():
+    srv = FakeServer(server_routes())
+    result = OutlineCreateTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute(
+        {"kind": "event", "title": "sync", "due_at": "2026-10-01T09:00+00:00",
+         "remind": "2026-10-01T08:45+00:00"}
+    )
+    assert result.success
+    post = next(c for c in srv.calls if c[0] == "POST" and c[1] == "/api/v1/events")
+    assert post[2]["remind_at"] == 1_790_844_300_000  # 2026-10-01T06:45Z
+
+
+def test_create_rejects_bad_remind_and_other_kinds():
+    tool = OutlineCreateTool(client())
+    assert tool.validate_arguments(
+        {"kind": "task", "title": "x", "remind": "2026-10-05T09:30+00:00"}
+    )
+    assert not tool.validate_arguments({"kind": "task", "title": "x", "remind": "soon"})
+    assert not tool.validate_arguments({"kind": "task", "title": "x", "remind": 123})
+    # remind is only a task/event affordance
+    assert not tool.validate_arguments(
+        {"kind": "note", "title": "x", "remind": "2026-10-05T09:30+00:00"}
+    )
+
+
+def test_update_edit_remind_maps_and_clears():
+    tool = OutlineUpdateTool(client())
+    assert tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit",
+         "edits": {"remind": "2026-10-05T09:30+00:00"}}
+    )
+    assert tool.validate_arguments(
+        {"kind": "event", "id": 2, "action": "edit", "edits": {"remind": None}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "edit", "edits": {"remind": "9am"}}
+    )
+    srv = FakeServer(server_routes())
+    result = OutlineUpdateTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute(
+        {"kind": "task", "id": 7, "action": "edit",
+         "edits": {"remind": "2026-10-05T09:30+00:00"}}
+    )
+    assert result.success
+    patch = next(c for c in srv.calls if c[0] == "PATCH")
+    assert patch[2] == {"remind_at": 1_791_192_600_000}
+
+
+def test_remind_shown_in_task_lines():
+    routes = server_routes([
+        ("GET", "/api/v1/tasks", {"items": [
+            {"id": 9, "title": "ferry tickets", "due_at": 1_791_192_600_000,
+             "remind_at": 1_791_181_000_000},
+        ], "next_before_id": None}),
+    ])
+    result = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", FakeServer(routes))
+    ).execute({"kind": "task", "when": "overdue"})
+    assert result.success and "remind" in result.output
+
+
+def test_remind_action_summary():
+    assert outline_tool_summaries(
+        "outline_update",
+        {"kind": "task", "id": 7, "action": "edit",
+         "edits": {"remind": "2026-10-05T09:30+00:00"}},
+    ) == "edit the Outline task with id 7 (remind)"

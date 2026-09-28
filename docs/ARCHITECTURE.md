@@ -443,6 +443,18 @@ never sees capabilities that could only fail. No delete is exposed. What
 comes back from Outline is framed as stored data, never instructions, and
 bounded (`MAX_OUTPUT_LINES`).
 
+The three tools stay three; capabilities grow as `kind`/`action` values:
+task `edit`/`reschedule` (with recurrence and tags on create), event
+`reschedule`/`edit`, note and project `edit`, person-link `attach`/`detach`,
+tag-filtered and `kind=person` search, `kind=graph` — a text rendering of
+anyone's connections neighborhood — and `remind` (an ISO-8601 reminder time
+on task/event create, and an edit field where `null` clears it). Stella
+mirrors Outline's compact recurrence/tag token validators (source of truth:
+`outline_server/api/__init__.py`), rejecting malformed values before any
+request leaves. The API-first parity rule holds with two documented
+exceptions: bulk export is UI-only, and the force-graph *layout* is
+rendering-only (the connections it shows are full parity).
+
 ### Desktop tools
 
 `stella.os_tools` adds three opt-in capabilities for a Hyprland session:

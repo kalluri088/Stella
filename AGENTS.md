@@ -22,6 +22,15 @@ implementation live in `docs/ARCHITECTURE.md` (structure) and
 13. Add complexity only when a real problem demands it.
 14. Research informs architecture; it does not dictate architecture.
 15. Prefer a small understandable system over a framework-shaped system.
+16. Outline parity is API-first: the Outline HTTP API is the single capability
+    surface, and Stella's `outline_tools.py` and the Outline web UI are both
+    thin clients of it. A new Outline capability is not done until Stella can
+    drive it too — except the documented non-parities recorded in that
+    module's docstring (bulk export, and the graph *layout*; graph
+    *connections* are full parity via link tools and `kind=graph` search).
+    Keep exactly three tools — grow capabilities inside `kind`/`action`
+    values, never add verbs. Recurrence/tag token validators are mirrored
+    from the Outline server; change both sides together.
 
 ## How to work here
 

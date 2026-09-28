@@ -445,7 +445,11 @@ code no text file can influence (`src/stella/persona.py`,
   path of its own. The editor copy predates the `$EDITOR` session;
   mid-edit states are not versioned.
 
-## Stage D — conversational voice and decision speed (planned)
+## Stage D — conversational voice and decision speed (complete)
+
+All five items carry measured outcomes (2026-09-27→28): D1 keeps the
+shipped brain line, D2 and D3 shipped, D4 unparked and accepted
+barge-in with the `auto` default, D5 was tested and rejected.
 
 Source of the direction: a third-party local-voice-agent walkthrough
 (the "Pythagoras" video transcript reviewed 2026-09-27) whose stack —

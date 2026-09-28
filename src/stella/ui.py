@@ -748,7 +748,10 @@ class StellaWindow:
                 )
             else:
                 chat.insert("end", text, (bubble, f"body-{role}"))
-            chat.insert("end", "\n", (bubble,))
+            # The line's own newline is deliberately untagged: a tagged
+            # newline paints its background across the whole line width,
+            # which turns a bubble into a full-width stripe.
+            chat.insert("end", "\n")
             chat.insert("end", "\n", ("gap",))
         elif role == "reminder" or role == "error":
             chat.insert("end", text + "\n", (role,))

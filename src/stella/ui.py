@@ -100,13 +100,13 @@ _DARK_THEME = Theme(
 )
 
 _LIGHT_THEME = Theme(
-    window="#fafaf9",
+    window="#ffffff",
     rail="#fafaf9",
     surface="#fafaf9",
     card="#ffffff",
     surface_alt="#e7e5e4",
     border="#e7e5e4",
-    field="#fafaf9",
+    field="#f5f5f4",
     text="#1c1917",
     text_dim="#78716c",
     accent="#0d9488",
@@ -117,7 +117,7 @@ _LIGHT_THEME = Theme(
     ok="#0d9488",
     reminder="#d97706",
     user_bubble="#f5f5f4",
-    stella_bubble="#ccfbf1",
+    stella_bubble="#f0fdfa",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
@@ -698,6 +698,9 @@ class StellaWindow:
             spacing1=10,
             spacing3=0,
         )
+        # Tk paints a tagged line's background across the whole display
+        # line regardless of margins, so bubbles read as calm full-width
+        # rows: tinted bands with the text pushed to their side.
         chat.tag_configure(
             "bubble-user",
             background=THEME.user_bubble,

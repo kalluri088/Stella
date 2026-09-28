@@ -16,7 +16,11 @@
 - **Rail, panels, buttons.** The nav rail shares the background tone
   like Outline's sidebar, the active item lifts onto the panel
   color, and buttons/fields keep a line-colored border so they read
-  on both surfaces.
+  on both surfaces. Light mode was rebuilt around white content
+  panels on the `#FAFAF9` page (the transcript itself is white,
+  fields are stone-100), and message bands are calm tints — Tk
+  paints a tagged line's background across the whole display line,
+  so bubbles read as full-width rows, not floating pills.
 - **Still presentation only.** No behavior, contract or wording
   changed; the full suite (1230 tests) passes with the new palettes.
 

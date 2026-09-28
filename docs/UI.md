@@ -138,9 +138,14 @@ buttons stack beside the input; the other sections are header + card
 layouts. While a turn runs the status line shows a quiet braille
 spinner after the elapsed seconds — display only.
 
-Two complete minimalist palettes — **dark** (the default) and
-**light** — are defined once as `Theme` dataclasses in `stella.ui`
-and read by every widget builder through the module-level `THEME`.
+Two complete palettes — **dark** (the default) and **light** — are
+modelled on the Outline knowledge-base app's published theme (its
+`shared/styles/theme.ts`): near-black sidebar `#08090C`, background
+`#111319`, white content in light mode, accent blue `#0366D6` /
+link blue `#137FFB`, success `#3AD984`, danger `#ED2651`, purple
+`#9E5CF7`, and the slate text grays. They are defined once as `Theme`
+dataclasses in `stella.ui` and read by every widget builder through the
+module-level `THEME`.
 The toggle sits at the bottom of the rail and switches live: the ttk
 styles are re-applied (they repaint all styled widgets), the few plain
 Tk widgets (transcript, composer, the three lists, any open approval

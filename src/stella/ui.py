@@ -59,6 +59,7 @@ _SEMANTIC_PROVIDER_BY_LABEL = {
 @dataclass(frozen=True)
 class Theme:
     window: str
+    rail: str
     surface: str
     card: str
     surface_alt: str
@@ -78,43 +79,45 @@ class Theme:
 
 
 _DARK_THEME = Theme(
-    window="#0d1017",
-    surface="#131722",
-    card="#171c29",
-    surface_alt="#1f2534",
-    border="#272f42",
-    field="#1d2333",
-    text="#e8ebf4",
-    text_dim="#8b93a8",
-    accent="#7aa2ff",
-    accent_strong="#4c6ef5",
-    accent_hover="#6f8bff",
-    on_accent="#0d1017",
-    error="#ff8787",
-    ok="#63d6a0",
-    reminder="#c7a2ff",
-    user_bubble="#1d2a4a",
-    stella_bubble="#16281f",
+    window="#111319",
+    rail="#08090c",
+    surface="#111319",
+    card="#181c25",
+    surface_alt="#2a2f3e",
+    border="#262b38",
+    field="#262d36",
+    text="#e6e6e6",
+    text_dim="#7d90a8",
+    accent="#137ffb",
+    accent_strong="#0366d6",
+    accent_hover="#2b8ffc",
+    on_accent="#ffffff",
+    error="#ed2651",
+    ok="#3ad984",
+    reminder="#9e5cf7",
+    user_bubble="#152638",
+    stella_bubble="#16281e",
 )
 
 _LIGHT_THEME = Theme(
-    window="#f6f7fb",
+    window="#ffffff",
+    rail="#eff2f6",
     surface="#ffffff",
     card="#ffffff",
-    surface_alt="#eef0f6",
-    border="#dfe3ec",
-    field="#f1f3f9",
-    text="#171a21",
-    text_dim="#5c6474",
-    accent="#3b5bdb",
-    accent_strong="#364fc7",
-    accent_hover="#4c6ef5",
+    surface_alt="#d7e0ea",
+    border="#dae1e9",
+    field="#eff2f6",
+    text="#111319",
+    text_dim="#66778f",
+    accent="#0366d6",
+    accent_strong="#024da2",
+    accent_hover="#137ffb",
     on_accent="#ffffff",
-    error="#c92a2a",
-    ok="#2b8a3e",
-    reminder="#6741d9",
-    user_bubble="#e7edfd",
-    stella_bubble="#e6f5ea",
+    error="#ed2651",
+    ok="#128a29",
+    reminder="#9e5cf7",
+    user_bubble="#e7effa",
+    stella_bubble="#e8f3ea",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
@@ -220,7 +223,7 @@ def _configure_styles(root: tk.Misc) -> None:
     )
     style.configure("Toplevel", background=THEME.surface)
     style.configure("TFrame", background=THEME.surface)
-    style.configure("Rail.TFrame", background=THEME.window)
+    style.configure("Rail.TFrame", background=THEME.rail)
     style.configure("Card.TFrame", background=THEME.card)
     style.configure("TLabel", background=THEME.surface, foreground=THEME.text)
     style.configure("Card.TLabel", background=THEME.card)
@@ -228,6 +231,16 @@ def _configure_styles(root: tk.Misc) -> None:
         "CardDim.TLabel", background=THEME.card, foreground=THEME.text_dim
     )
     style.configure("Dim.TLabel", foreground=THEME.text_dim)
+    # Rail labels sit on the sidebar color, not the content surface.
+    style.configure(
+        "RailDim.TLabel", background=THEME.rail, foreground=THEME.text_dim
+    )
+    style.configure(
+        "RailBrand.TLabel",
+        background=THEME.rail,
+        foreground=THEME.accent,
+        font=(ui_family, ui_size + 4, "bold"),
+    )
     style.configure(
         "Status.TLabel",
         foreground=THEME.accent,
@@ -285,11 +298,11 @@ def _configure_styles(root: tk.Misc) -> None:
     # onto the content surface with the accent color.
     style.configure(
         "Nav.TButton",
-        background=THEME.window,
+        background=THEME.rail,
         foreground=THEME.text_dim,
-        bordercolor=THEME.window,
-        lightcolor=THEME.window,
-        darkcolor=THEME.window,
+        bordercolor=THEME.rail,
+        lightcolor=THEME.rail,
+        darkcolor=THEME.rail,
         focusthickness=0,
         relief="flat",
         anchor="w",
@@ -439,10 +452,10 @@ class StellaWindow:
         brand = ttk.Frame(rail, style="Rail.TFrame")
         brand.pack(fill="x", pady=(18, 14), padx=4)
         ttk.Label(
-            brand, text="✦  Stella", style="Brand.TLabel"
+            brand, text="✦  Stella", style="RailBrand.TLabel"
         ).pack(side="left", padx=(16, 0))
         ttk.Label(
-            brand, text="local-first", style="Dim.TLabel"
+            brand, text="local-first", style="RailDim.TLabel"
         ).pack(side="left", padx=(8, 0), pady=(5, 0))
         self._nav_buttons: dict[str, ttk.Button] = {}
         self._sections: dict[str, ttk.Frame] = {}
@@ -468,7 +481,7 @@ class StellaWindow:
         ttk.Label(
             rail,
             text="your conversation stays\non this machine",
-            style="Dim.TLabel",
+            style="RailDim.TLabel",
             justify="left",
         ).pack(side="bottom", padx=16, pady=(0, 10), anchor="w")
 

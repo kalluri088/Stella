@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### The palettes now follow the Outline app's colour scheme
+
+- **Real source, real values.** Both `Theme` palettes were rebuilt
+  from Outline's published `shared/styles/theme.ts`: dark mode uses
+  its veryDarkBlue sidebar `#08090C`, almostBlack background
+  `#111319`, menu surface `#181C25`, input field `#262D36`, slate
+  text grays, accent `#0366D6` and link blue `#137FFB`; light mode
+  uses white content, warm-grey sidebar `#EFF2F6`, slateLight
+  borders `#DAE1E9` and the same accent blues. Success `#3AD984`,
+  danger `#ED2651` and brand purple `#9E5CF7` are shared, with a
+  darker green for light-mode text.
+- **A rail of its own.** The nav rail got a dedicated `rail` palette
+  token (Outline's sidebar color, darker than the content) plus
+  rail-matched brand and dim labels, so the brand block, menu and
+  footer blend into the sidebar instead of sitting on color patches.
+- **Still presentation only.** No behavior, contract or wording
+  changed; the full suite (1230 tests) passes with the new palettes.
+
 ### The window was redesigned around a navigation rail
 
 - **Notebook gone.** The cramped side tabs became a full-height nav

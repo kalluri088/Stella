@@ -14,6 +14,16 @@
   field; no contract, validator or tool shape changed. Four pinned
   tests (`test_brain.py`, `test_outline_tools.py`) guard the wording
   so a future description edit cannot quietly erase the boundary.
+- **Two refinements from the 21-tool re-measure (report 32).** The
+  selection bench, run on the shipped 18-tool registry plus the Outline
+  trio, found qwen3:4b confidently mis-routing two shapes the report-30
+  ruling didn't reach. A reminder can now be stated to notify **only
+  this user**: "remind the team …" is *not* a `reminder_create` (the
+  model asks instead of storing a reminder the user alone would get).
+  And a vague **"what's on today?"** is the user's own schedule —
+  `reminder_list`, with Outline reached for only when named (`outline_search`
+  had become an attractor for it). Prompt words plus one pinned test; no
+  new tool, validator, or capability.
 
 ### Stage E: the web capability (E1)
 

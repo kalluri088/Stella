@@ -43,6 +43,21 @@ the Brain is instructed to ask. The rule lives in the Brain prompt and in
 the `outline_create`/`outline_update` tool descriptions, and is pinned by
 tests in `test_brain.py` and `test_outline_tools.py`.
 
+Two refinements to that boundary came out of the 21-tool selection
+re-measure (research report 32), which found qwen3:4b confidently
+mis-routing two shapes even after the report-30 rule. First, **a reminder
+can notify only this user**: a request to remind some *other* person or
+group ("remind the team to submit demos") is not something `reminder_create`
+can fulfil — the model is instructed to `kind=ask` rather than silently
+store a reminder the user alone would receive. Second, **a vague schedule
+question is the user's own**: "what's on today?" maps to `reminder_list`,
+and the model reaches for Outline only when the user names it — the
+re-measure had shown `outline_search` acting as an attractor that turned a
+personal-schedule ask into a document-app lookup. Both rulings live in the
+Brain prompt and are pinned in `test_brain.py`; neither adds a tool, a
+validator, or a new capability, keeping to the model-proposes/runtime-
+authorizes and three-tools-only invariants.
+
 ## Storage and scheduling
 
 `stella.reminders` provides a `ReminderStore` interface with an

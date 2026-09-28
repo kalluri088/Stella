@@ -288,6 +288,22 @@ def test_llm_brain_prompt_routes_remind_me_to_stella_not_outline() -> None:
     assert "Never satisfy one request with both" in prompt
 
 
+def test_llm_brain_prompt_routes_team_reminders_and_vague_asks() -> None:
+    # Boundary rulings (report 32): a reminder can only notify the user,
+    # so a team-addressed request must ask rather than store a reminder the
+    # user alone would get; a vague "what's on today?" is the user's own
+    # schedule (reminder_list), not Outline unless the user names Outline.
+    llm = ResponseLLM('{"kind": "do_nothing"}')
+
+    LLMBrain(llm).decide(Context(user_input="Remind me to stretch at 18:00."))
+
+    prompt = llm.messages[0][0].content
+    assert "A reminder can notify only this user" in prompt
+    assert "not something reminder_create can do" in prompt
+    assert "use reminder_list, and" in prompt
+    assert "reach for Outline only when the user names it" in prompt
+
+
 def test_llm_brain_flags_request_relevant_memory_in_decision_payload() -> None:
     llm = ResponseLLM('{"kind": "answer", "content": "Have jasmine tea."}')
 

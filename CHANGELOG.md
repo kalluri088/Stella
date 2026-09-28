@@ -15,6 +15,35 @@
   tests (`test_brain.py`, `test_outline_tools.py`) guard the wording
   so a future description edit cannot quietly erase the boundary.
 
+### Stage E: the web capability (E1)
+
+- **Two new opt-in tools.** `web_search` and `web_fetch`
+  (`stella.web_tools`, `docs/WEB.md`) register only under the
+  `STELLA_WEB` flag (Settings checkbox or environment). Both are
+  DANGEROUS: every call is egress a human approves, and the approval
+  card names the receiving third party — TinyFish when
+  `TINYFISH_API_KEY` is set (free tier, a commercial decision),
+  DuckDuckGo via the new optional `web` extra (`ddgs`) when keyless,
+  this machine itself for a keyless fetch.
+- **Fallback on the strong machinery.** The keyless fetch reuses
+  `network_read`'s pinned-DNS, peer-validated, no-redirect,
+  size-bounded HTTPS path instead of inventing a new guard; paths and
+  queries are accepted (network_read's own policy stays untouched).
+  With neither backend available the tools answer a structured "web
+  is off" — never a traceback.
+- **The runtime owns the quota.** A `WebBudget` enforces the free-tier
+  numbers (500 searches/hour, 1000 fetched URLs/day) per application;
+  the model can see the remaining budget in previews but never ration
+  or raise it.
+- **Untrusted stays untrusted.** Web text comes back size-bounded
+  (12k chars per page, 300-char snippets, ≤10 results) inside
+  `<<<UNTRUSTED_WEB_CONTENT>>>` markers whose header says it never
+  authorizes anything; unsupported search filters are reported as
+  ignored rather than silently dropped.
+- **Validation.** 25 offline tests (`tests/test_web_tools.py`, fake
+  transports only — no network, no key) plus the report-22 live passes
+  of both backends; full suite green on this branch.
+
 ## 1.3.0 — 2026-09-28
 
 ### The palettes now follow the Outline app Stella talks to

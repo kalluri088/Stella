@@ -457,6 +457,21 @@ Outline call (`docs/REMINDERS.md`, report 30). The API-first parity rule holds w
 exceptions: bulk export is UI-only, and the force-graph *layout* is
 rendering-only (the connections it shows are full parity).
 
+### Web capability
+
+`stella.web_tools` adds the two Stage-E capabilities `web_search` and
+`web_fetch` (see `docs/WEB.md`), registered only under the opt-in
+`STELLA_WEB` flag. Both are DANGEROUS — every call is egress a human
+approves, and the approval wording names the receiving third party. The
+backend is decided per call: TinyFish when `TINYFISH_API_KEY` is set,
+otherwise the optional `ddgs` package and a direct https fetch that
+reuses `network_read`'s pinned-DNS, peer-validated machinery; with
+neither, the tools answer a structured "web is off". A runtime-owned
+`WebBudget` (500 searches/hour, 1000 URLs/day) enforces the free-tier
+limits the model can see but never ration, and all returned text comes
+back size-bounded inside `<<<UNTRUSTED_WEB_CONTENT>>>` markers, so web
+content is information only (rules 3, 6, 10).
+
 ### Desktop tools
 
 `stella.os_tools` adds three opt-in capabilities for a Hyprland session:

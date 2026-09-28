@@ -21,6 +21,11 @@ embed = ["sentence-transformers>=3.0"]
 # pip 'silero-vad' package is deliberately not the route: it drags CUDA
 # torch in with it (research report 08).
 barge-in = ["onnxruntime>=1.17"]
+# Keyless web search fallback for the web capability: the raw DuckDuckGo
+# endpoints are bot-walled from this machine, the ddgs package is the
+# working path (research report 22). With a TinyFish key the tools run
+# without this extra; without either, they answer "web is off".
+web = ["ddgs>=9.0"]
 
 [project.scripts]
 stella = "stella.cli:main"

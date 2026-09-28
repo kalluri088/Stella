@@ -588,8 +588,8 @@ piece-by-piece measured budgeting, transfers).
 
 The measured model choices are registered in `docs/MODELS.md` — that
 file, not prose scattered across stages, is the authority on what runs
-where, and a swap there requires its stated evidence bar. Two decided
-items are still awaiting implementation:
+where, and a swap there requires its stated evidence bar. One decided
+item is still awaiting implementation:
 
 - **E1. Web capability (TinyFish Search+Fetch).** Decided and
   live-verified (report 22 is the ticket): key in the environment only
@@ -599,7 +599,11 @@ items are still awaiting implementation:
   `fetch` builds on the existing `NetworkReadTool` machinery (pinned
   DNS, peer-validated), not the spike's regex guard; results remain
   untrusted input inside `<<<UNTRUSTED_WEB_CONTENT>>>` with per-page
-  caps.
+  caps. *Implemented 2026-09-28 as `stella.web_tools` (`web_search`,
+  `web_fetch`) behind `STELLA_WEB`, with `ddgs` shipped as the optional
+  `web` extra and a runtime `WebBudget`; see `docs/WEB.md`. The live
+  key-path run from `src/` is still worth doing once, like every model
+  claim here.*
 - **E2. Tier-0 pre-router (Cactus Needle 3 + LoRA).** Experimental,
   NOT shipped, and never wired into `src/` before its decision card
   exists. Open blockers per report 23: false-call rate (corpus v2

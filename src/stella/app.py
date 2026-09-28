@@ -116,6 +116,7 @@ from stella.voice import (
     SubprocessRecorder,
     VoiceError,
 )
+from stella.web_tools import build_web_tools
 
 __all__ = [
     "ApprovalBroker",
@@ -397,6 +398,18 @@ def outline_tools_env_override() -> bool | None:
     return _env_toggle("STELLA_OUTLINE")
 
 
+def web_tools_env_override() -> bool | None:
+    """The STELLA_WEB override, or None when it says nothing.
+
+    These tools send data off the machine (queries to a search backend,
+    fetches to arbitrary sites); they are strictly opt-in. Unlike the
+    Outline tools there is no reachability probe — the keyless path
+    degrades to a structured "web is off" instead (report 22).
+    """
+
+    return _env_toggle("STELLA_WEB")
+
+
 SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
 
 
@@ -489,6 +502,7 @@ class StellaSettings:
     semantic_memory_enabled: bool = False
     os_tools_enabled: bool = False
     outline_tools_enabled: bool = False
+    web_tools_enabled: bool = False
     semantic_provider: str = "local-hash"
     semantic_embed_model: str = "nomic-embed-text"
     workspace: str = field(default_factory=default_workspace)
@@ -619,6 +633,7 @@ class StellaSettings:
         semantic_provider: str = "local-hash",
         os_tools_enabled: bool = False,
         outline_tools_enabled: bool = False,
+        web_tools_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -627,6 +642,7 @@ class StellaSettings:
         provider_override = semantic_provider_env_override()
         os_override = os_tools_env_override()
         outline_override = outline_tools_env_override()
+        web_override = web_tools_env_override()
         return cls(
             provider=provider,
             model=model,
@@ -649,6 +665,9 @@ class StellaSettings:
                 outline_tools_enabled
                 if outline_override is None
                 else outline_override
+            ),
+            web_tools_enabled=(
+                web_tools_enabled if web_override is None else web_override
             ),
             semantic_provider=(
                 semantic_provider if provider_override is None
@@ -685,6 +704,7 @@ class StellaSettings:
             semantic_memory_enabled=semantic_env_override() is True,
             os_tools_enabled=os_tools_env_override() is True,
             outline_tools_enabled=outline_tools_env_override() is True,
+            web_tools_enabled=web_tools_env_override() is True,
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
             ),
@@ -882,6 +902,13 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # that is not running means the model never sees these tools.
     if settings.outline_tools_enabled:
         for tool in build_outline_tools(os.environ):
+            tools.register(tool)
+    # The web capability is a single gate: the flag. There is nothing to
+    # probe — without a TinyFish key the search falls to the keyless ddgs
+    # path, and if that is unavailable the tools answer "web is off"
+    # rather than pretending (report 22).
+    if settings.web_tools_enabled:
+        for tool in build_web_tools(os.environ):
             tools.register(tool)
     stella = Stella(
         brain=LLMBrain(llm, tools, persona=PersonaLoader()),

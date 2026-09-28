@@ -95,5 +95,7 @@ also rejects localhost regardless of model output.
 ## Intentionally not implemented
 
 Stella does not support HTTP, redirects, arbitrary headers, cookies, URL
-queries, credentials, POST or other methods, search, crawling, HTML parsing,
-file downloads, retries, caching, proxy discovery, or unrestricted egress.
+queries, credentials, POST or other methods, crawling, file downloads,
+retries, caching, proxy discovery, or unrestricted egress. Search and
+HTML-page reading exist separately in the opt-in web capability
+(`docs/WEB.md`); `network_read` itself stays exactly this narrow.

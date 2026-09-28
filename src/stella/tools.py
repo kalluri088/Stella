@@ -206,6 +206,14 @@ def action_summary(request: ApprovalRequest) -> str:
     if outline is not None:
         return outline
 
+    # Web capabilities too (stella.web_tools); the wording names which
+    # third party the data leaves for, so it stays with the tools.
+    from stella.web_tools import web_tool_summaries
+
+    web = web_tool_summaries(request.capability, request.arguments)
+    if web is not None:
+        return web
+
     arguments = request.arguments
 
     def quoted(key: str) -> str | None:

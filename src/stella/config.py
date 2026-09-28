@@ -42,6 +42,7 @@ _CONFIG_FIELDS = (
     "semantic_provider",
     "os_tools_enabled",
     "outline_tools_enabled",
+    "web_tools_enabled",
 )
 
 
@@ -360,4 +361,5 @@ def resolve_settings() -> StellaSettings | None:
         semantic_provider=raw.get("semantic_provider", "local-hash"),
         os_tools_enabled=raw.get("os_tools_enabled") is True,
         outline_tools_enabled=raw.get("outline_tools_enabled") is True,
+        web_tools_enabled=raw.get("web_tools_enabled") is True,
     )

@@ -1463,6 +1463,24 @@ class StellaWindow:
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._web_tools_var = tk.BooleanVar(value=settings.web_tools_enabled)
+        ttk.Checkbutton(
+            frame,
+            text="Web capability (search, page fetch)",
+            variable=self._web_tools_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text=(
+                "Adds web_search and web_fetch. Every use asks you first "
+                "and names where the data goes: a TinyFish key (free tier, "
+                "a commercial decision) or the keyless ddgs/https path. "
+                "Page text comes back marked as untrusted. Needs the "
+                "stella[web] extra for the keyless fallback."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -1509,6 +1527,7 @@ class StellaWindow:
             semantic_memory_enabled=self._semantic_var.get(),
             os_tools_enabled=self._os_tools_var.get(),
             outline_tools_enabled=self._outline_tools_var.get(),
+            web_tools_enabled=self._web_tools_var.get(),
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],

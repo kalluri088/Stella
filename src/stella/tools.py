@@ -1873,6 +1873,18 @@ class MemoryWriteTool(Tool):
             and bool(arguments["content"].strip())
         )
 
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        if not self.validate_arguments(request.arguments):
+            return None
+        content = str(request.arguments["content"])
+        body = content.splitlines() or [content]
+        lines = [f"will store this new memory ({len(content)} characters):"]
+        lines.extend(f"+ {line}" for line in body[:MAX_PREVIEW_LINES])
+        return ActionPreview(
+            detail_lines=tuple(lines),
+            truncated=len(body) > MAX_PREVIEW_LINES,
+        )
+
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
@@ -1953,6 +1965,29 @@ class MemoryUpdateTool(Tool):
             )
         )
 
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        if not self.validate_arguments(request.arguments):
+            return None
+        matches = self.memory.retrieve(str(request.arguments["query"]))
+        if not matches:
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        "no stored memory matches this query; "
+                        "the update would do nothing."
+                    ),
+                )
+            )
+        target = matches[0]
+        lines = [
+            f"will replace memory {target.id}"
+            + (f" (best of {len(matches)} matches)" if len(matches) > 1 else "")
+            + ":",
+            f"- current: {target.content}",
+            f"+ new: {request.arguments['content']}",
+        ]
+        return ActionPreview(detail_lines=tuple(lines))
+
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
@@ -2029,6 +2064,32 @@ class MemoryForgetTool(Tool):
             and bool(arguments["query"].strip())
         )
 
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        if not self.validate_arguments(request.arguments):
+            return None
+        matches = self.memory.retrieve(str(request.arguments["query"]))
+        if not matches:
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        "no stored memory matches this query; "
+                        "the forget would do nothing."
+                    ),
+                )
+            )
+        count = len(matches)
+        lines = [
+            f"will delete {count} matching memor{'y' if count == 1 else 'ies'}:"
+        ]
+        lines.extend(
+            f"- memory {item.id}: {item.content}"
+            for item in matches[:MAX_PREVIEW_LINES]
+        )
+        return ActionPreview(
+            detail_lines=tuple(lines),
+            truncated=count > MAX_PREVIEW_LINES,
+        )
+
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
@@ -2092,6 +2153,43 @@ class ReminderCreateTool(Tool):
             and bool(arguments["content"].strip())
             and isinstance(arguments["due_at"], str)
             and bool(arguments["due_at"].strip())
+        )
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        if not self.validate_arguments(request.arguments):
+            return None
+        content = str(request.arguments["content"])
+        raw_due = str(request.arguments["due_at"])
+        try:
+            due = dt.datetime.fromisoformat(raw_due)
+        except ValueError:
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        f"the due time {raw_due!r} cannot be understood; "
+                        "creating this reminder would fail."
+                    ),
+                )
+            )
+        error = reminder_validation_error(
+            content, due, dt.datetime.now(dt.UTC)
+        )
+        if error is not None:
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        f"{error} creating this reminder would fail.",
+                    )
+                )
+            )
+        body = content.splitlines() or [content]
+        lines = [
+            f"will remind at {due.isoformat()}:",
+            *(f"+ {line}" for line in body[:MAX_PREVIEW_LINES]),
+        ]
+        return ActionPreview(
+            detail_lines=tuple(lines),
+            truncated=len(body) > MAX_PREVIEW_LINES,
         )
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
@@ -2222,6 +2320,50 @@ class ReminderCancelTool(Tool):
             and set(arguments) == {"query"}
             and isinstance(arguments["query"], str)
             and bool(arguments["query"].strip())
+        )
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        if not self.validate_arguments(request.arguments):
+            return None
+        query = str(request.arguments["query"]).casefold()
+        matches = tuple(
+            reminder
+            for reminder in self.reminders.pending()
+            if query in reminder.content.casefold()
+        )
+        if not matches:
+            return ActionPreview(
+                detail_lines=(
+                    (
+                        "no pending reminder matches this description; "
+                        "cancelling would do nothing."
+                    ),
+                )
+            )
+        if len(matches) > 1:
+            lines = [
+                (
+                    f"{len(matches)} pending reminders match; "
+                    "as executed, nothing would be cancelled:"
+                ),
+                *(
+                    f"? reminder {r.id}: {r.content} "
+                    f"(due {r.due_at.isoformat()})"
+                    for r in matches[:MAX_PREVIEW_LINES]
+                ),
+            ]
+            return ActionPreview(
+                detail_lines=tuple(lines),
+                truncated=len(matches) > MAX_PREVIEW_LINES,
+            )
+        target = matches[0]
+        return ActionPreview(
+            detail_lines=(
+                (
+                    f"will cancel reminder {target.id}: {target.content} "
+                    f"(due {target.due_at.isoformat()})."
+                ),
+            )
         )
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:

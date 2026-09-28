@@ -690,7 +690,9 @@ def test_handled_proactive_event_history_is_bounded() -> None:
 
 def approve_everything(
     request: ApprovalRequest,
+    preview: object = None,
 ) -> ToolApproval:
+    # preview is display-only; the approval binds to the exact request.
     return ToolApproval(request=request, approved=True)
 
 

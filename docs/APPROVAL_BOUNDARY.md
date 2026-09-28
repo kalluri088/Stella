@@ -206,7 +206,23 @@ preview read (or report on) anything. Previews are bounded (60 lines /
   content that would be lost;
 - `network_read`: the validated URL only — deliberately no DNS lookup,
   because execution re-validates every resolved address and resolving
-  twice would introduce a rebinding race of the preview's own making.
+  twice would introduce a rebinding race of the preview's own making;
+- `memory_write` / `memory_update` / `memory_forget`: the exact fact being
+  stored, the current text replaced by the new text (with the match count
+  when several memories match), or the memories that would be deleted —
+  read-only store lookups, and a "would do nothing" card when nothing
+  matches;
+- `reminder_create` / `reminder_cancel`: the content and exact due time
+  being scheduled, or the one pending reminder being cancelled — with an
+  honest card when the time cannot be parsed or when several reminders
+  match and cancelling would do nothing.
+
+The invariant is registry-wide and tested (`tests/test_approval_previews.py`):
+every DANGEROUS capability implements `preview`; the gated desktop tool
+`key_send` (DANGEROUS) names its exact keystroke target, and the Outline
+capabilities are SENSITIVE (exact-argument approval) rather than
+DANGEROUS. A DANGEROUS card without detail lines is treated as drift and
+fails the suite.
 
 A preview is display-only and never part of the authorization token:
 `ApprovalRequest`/`ToolApproval` equality, the dispatcher's exact-match

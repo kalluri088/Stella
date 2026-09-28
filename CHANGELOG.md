@@ -2,21 +2,21 @@
 
 ## Unreleased
 
-### The palettes now follow the Outline app's colour scheme
+### The palettes now follow the Outline app Stella talks to
 
 - **Real source, real values.** Both `Theme` palettes were rebuilt
-  from Outline's published `shared/styles/theme.ts`: dark mode uses
-  its veryDarkBlue sidebar `#08090C`, almostBlack background
-  `#111319`, menu surface `#181C25`, input field `#262D36`, slate
-  text grays, accent `#0366D6` and link blue `#137FFB`; light mode
-  uses white content, warm-grey sidebar `#EFF2F6`, slateLight
-  borders `#DAE1E9` and the same accent blues. Success `#3AD984`,
-  danger `#ED2651` and brand purple `#9E5CF7` are shared, with a
-  darker green for light-mode text.
-- **A rail of its own.** The nav rail got a dedicated `rail` palette
-  token (Outline's sidebar color, darker than the content) plus
-  rail-matched brand and dim labels, so the brand block, menu and
-  footer blend into the sidebar instead of sitting on color patches.
+  from the CSS custom properties of the local Outline app
+  (`127.0.0.1:8741`, the very app `stella.outline_tools` serves):
+  dark mode uses its warm near-black `#141210` background, `#1F1C1A`
+  panels, `#33302D` lines, `#E7E5E4`/`#A8A29E` stone text and the
+  teal accent `#2DD4BF` with `#134E4A` soft fills; light mode uses
+  `#FAFAF9` background, white panels, `#E7E5E4` lines and teal
+  `#0D9488`. Amber `#D97706` marks reminders, red `#DC2626`/`#EF4444`
+  errors.
+- **Rail, panels, buttons.** The nav rail shares the background tone
+  like Outline's sidebar, the active item lifts onto the panel
+  color, and buttons/fields keep a line-colored border so they read
+  on both surfaces.
 - **Still presentation only.** No behavior, contract or wording
   changed; the full suite (1230 tests) passes with the new palettes.
 

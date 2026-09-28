@@ -79,45 +79,45 @@ class Theme:
 
 
 _DARK_THEME = Theme(
-    window="#111319",
-    rail="#08090c",
-    surface="#111319",
-    card="#181c25",
-    surface_alt="#2a2f3e",
-    border="#262b38",
-    field="#262d36",
-    text="#e6e6e6",
-    text_dim="#7d90a8",
-    accent="#137ffb",
-    accent_strong="#0366d6",
-    accent_hover="#2b8ffc",
-    on_accent="#ffffff",
-    error="#ed2651",
-    ok="#3ad984",
-    reminder="#9e5cf7",
-    user_bubble="#152638",
-    stella_bubble="#16281e",
+    window="#141210",
+    rail="#141210",
+    surface="#141210",
+    card="#1f1c1a",
+    surface_alt="#33302d",
+    border="#33302d",
+    field="#141210",
+    text="#e7e5e4",
+    text_dim="#a8a29e",
+    accent="#2dd4bf",
+    accent_strong="#2dd4bf",
+    accent_hover="#5eead4",
+    on_accent="#141210",
+    error="#ef4444",
+    ok="#2dd4bf",
+    reminder="#d97706",
+    user_bubble="#292524",
+    stella_bubble="#134e4a",
 )
 
 _LIGHT_THEME = Theme(
-    window="#ffffff",
-    rail="#eff2f6",
-    surface="#ffffff",
+    window="#fafaf9",
+    rail="#fafaf9",
+    surface="#fafaf9",
     card="#ffffff",
-    surface_alt="#d7e0ea",
-    border="#dae1e9",
-    field="#eff2f6",
-    text="#111319",
-    text_dim="#66778f",
-    accent="#0366d6",
-    accent_strong="#024da2",
-    accent_hover="#137ffb",
+    surface_alt="#e7e5e4",
+    border="#e7e5e4",
+    field="#fafaf9",
+    text="#1c1917",
+    text_dim="#78716c",
+    accent="#0d9488",
+    accent_strong="#0d9488",
+    accent_hover="#0f766e",
     on_accent="#ffffff",
-    error="#ed2651",
-    ok="#128a29",
-    reminder="#9e5cf7",
-    user_bubble="#e7effa",
-    stella_bubble="#e8f3ea",
+    error="#dc2626",
+    ok="#0d9488",
+    reminder="#d97706",
+    user_bubble="#f5f5f4",
+    stella_bubble="#ccfbf1",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
@@ -263,14 +263,14 @@ def _configure_styles(root: tk.Misc) -> None:
     style.configure(
         "Heading.TLabel", font=(ui_family, ui_size + 1, "bold")
     )
-    # Flat buttons: no bevel, one quiet fill, accent on hover.
+    # Flat buttons: quiet fill, a line-color border, accent on hover.
     style.configure(
         "TButton",
         background=THEME.field,
         foreground=THEME.text,
-        bordercolor=THEME.field,
-        lightcolor=THEME.field,
-        darkcolor=THEME.field,
+        bordercolor=THEME.surface_alt,
+        lightcolor=THEME.surface_alt,
+        darkcolor=THEME.surface_alt,
         focusthickness=0,
         relief="flat",
         padding=(14, 7),
@@ -295,7 +295,7 @@ def _configure_styles(root: tk.Misc) -> None:
         foreground=[("disabled", THEME.text_dim)],
     )
     # Navigation rail: flat full-width entries, the active one lifted
-    # onto the content surface with the accent color.
+    # onto the panel surface with the accent color.
     style.configure(
         "Nav.TButton",
         background=THEME.rail,
@@ -310,16 +310,16 @@ def _configure_styles(root: tk.Misc) -> None:
     )
     style.map(
         "Nav.TButton",
-        background=[("active", THEME.surface)],
+        background=[("active", THEME.card)],
         foreground=[("active", THEME.text)],
     )
     style.configure(
         "NavActive.TButton",
-        background=THEME.surface,
+        background=THEME.card,
         foreground=THEME.accent,
-        bordercolor=THEME.surface,
-        lightcolor=THEME.surface,
-        darkcolor=THEME.surface,
+        bordercolor=THEME.card,
+        lightcolor=THEME.card,
+        darkcolor=THEME.card,
         font=(ui_family, ui_size, "bold"),
         anchor="w",
         padding=(16, 9),

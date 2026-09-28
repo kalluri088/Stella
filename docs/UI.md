@@ -139,11 +139,13 @@ layouts. While a turn runs the status line shows a quiet braille
 spinner after the elapsed seconds — display only.
 
 Two complete palettes — **dark** (the default) and **light** — are
-modelled on the Outline knowledge-base app's published theme (its
-`shared/styles/theme.ts`): near-black sidebar `#08090C`, background
-`#111319`, white content in light mode, accent blue `#0366D6` /
-link blue `#137FFB`, success `#3AD984`, danger `#ED2651`, purple
-`#9E5CF7`, and the slate text grays. They are defined once as `Theme`
+modelled on the Outline app Stella integrates with (the CSS custom
+properties served by the app at `127.0.0.1:8741`): dark mode
+`#141210` background, `#1F1C1A` panels, `#33302D` lines, stone text
+grays and teal accent `#2DD4BF`; light mode `#FAFAF9` background,
+white panels, `#E7E5E4` lines and teal `#0D9488`. Stella reply bubbles
+use Outline's soft teal `#134E4A` / `#CCFBF1`, reminders amber
+`#D97706`. They are defined once as `Theme`
 dataclasses in `stella.ui` and read by every widget builder through the
 module-level `THEME`.
 The toggle sits at the bottom of the rail and switches live: the ttk

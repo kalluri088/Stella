@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.0 — 2026-09-28
+
 ### The palettes now follow the Outline app Stella talks to
 
 - **Real source, real values.** Both `Theme` palettes were rebuilt
@@ -110,6 +112,29 @@
   because the live data also showed what a raw-mic ear does (uncancelled
   playback registers as speech, and the ear cancels Stella herself).
   `on` still forces the old always-arm behaviour, `off` still vetoes.
+
+### Stella can work with the Outline app (opt-in tools)
+
+- **Three tools, doubly gated.** `outline_search`, `outline_create`
+  and `outline_update` drive the local Outline app over its HTTP
+  API — tasks, events, notes, projects, people and the connections
+  graph. Registration requires BOTH the opt-in (Settings checkbox or
+  `STELLA_OUTLINE=on`) AND a reachable Outline server with a
+  readable token (`~/.local/share/outline/outline.token`, never
+  model-supplied): a server that is not running means the model
+  simply never sees these tools.
+- **Reads are silent, writes need approval.** Consistent with every
+  other capability: search never asks, create/update always show the
+  exact change first. Tool output is framed as stored data, never
+  instructions, and bounded.
+- **API-first parity** (AGENTS.md rule 16): capabilities grow inside
+  the three verbs as `kind`/`action` values — task/event
+  `reschedule`, `edit`, an ISO-8601 `remind` field, person
+  attach/detach, `kind=graph` neighborhood rendering — with
+  Stella mirroring the Outline server's recurrence and tag-token
+  validators, so malformed values are rejected before any request
+  leaves. Documented non-parities: bulk export (UI-only) and the
+  force-graph layout (rendering-only).
 
 ## 1.2.0 — 2026-09-27
 

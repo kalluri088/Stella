@@ -605,10 +605,19 @@ items are still awaiting implementation:
   exists. Open blockers per report 23: false-call rate (corpus v2
   rebalance), a usable confidence gate (the current head is
   policy-suppressed and uninformative), and an idle-machine latency
-  re-measurement. If it ever lands it must obey the fast-path router
-  constraints below — it may pre-select among existing SAFE-checked
-  capabilities only, never bypass dispatcher, risk, approval, audit or
-  step limits.
+  re-measurement. Registry-size assumption restated by report 31: the
+  report-19 verdict was measured at a fixed 13-tool registry, and the
+  re-measure at the shipped 18-tool registry (20 with E1) shows the
+  blockers are contract-level, not size-level — abstention stays
+  0/49, the memory/reminder boundary stays 6/6 wrong, and extending
+  the trigger prefix to the new capabilities changes zero routing
+  decisions. No prefix rebuild is warranted; only the domain-split
+  precursor (≤5 tools per instance) reopens this. The old 0.18 s
+  envelope is idle-machine-only: today's control measured 0.93 s at
+  13 tools and 1.02 s at 18 under normal load. If it ever lands it
+  must obey the fast-path router constraints below — it may
+  pre-select among existing SAFE-checked capabilities only, never
+  bypass dispatcher, risk, approval, audit or step limits.
 
 Direction note (user, 2026-09-27): the ambition is a *JARVIS-like
 feel* — immediate, spoken, aware of the desk, proactive within rule 8.

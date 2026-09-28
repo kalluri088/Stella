@@ -982,7 +982,7 @@ def test_theme_toggle_recolors_window_and_persists(
                 stella_ui.THEMES[other].window
             )
             assert window._root.cget("background") == str(
-                stella_ui.THEMES[other].surface
+                stella_ui.THEMES[other].window
             )
             assert (tmp_path / "ui-theme").read_text().strip() == other
             assert window._theme_button.cget("text") == (
@@ -1013,3 +1013,25 @@ def test_theme_choice_falls_back_to_default(tmp_path) -> None:
         assert stella_ui.load_theme_choice() == stella_ui.DEFAULT_THEME
     finally:
         stella_ui._theme_choice_path = original
+
+
+def test_nav_rail_switches_sections() -> None:
+    # The rail replaces the old notebook: clicking a section shows its
+    # panel and marks the nav button active, without touching the bridge.
+    root, window, bridge, _ = make_window()
+    try:
+        assert window._section == "chat"
+        window._nav_buttons["memories"].invoke()
+        assert window._section == "memories"
+        assert str(window._nav_buttons["memories"]["style"]) == (
+            "NavActive.TButton"
+        )
+        assert str(window._nav_buttons["chat"]["style"]) == "Nav.TButton"
+        window._nav_buttons["settings"].invoke()
+        assert window._section == "settings"
+        assert str(window._nav_buttons["settings"]["style"]) == (
+            "NavActive.TButton"
+        )
+    finally:
+        bridge.stop()
+        root.destroy()

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### The window was redesigned around a navigation rail
+
+- **Notebook gone.** The cramped side tabs became a full-height nav
+  rail (Chat, Memories, Reminders, History, Settings); every section
+  now owns the whole content area as a header + card layout, and the
+  active item is lifted onto the content surface in the accent color.
+- **Chat got a real stage.** The transcript sits in a framed card with
+  roomier bubbles, the composer is a card with stacked Send/Cancel,
+  and a quiet braille spinner marks the working status between the
+  elapsed-second updates.
+- **Flat, modern styling.** All buttons are bevel-less with an accent
+  hover; new palettes (v2) give both dark and light modes deeper
+  neutrals, one accent, and a subtle border token for cards and
+  fields. The theme toggle moved to the bottom of the rail.
+- **Same contract, new chrome.** Every bridge command, approval
+  exactness, transcript wording and widget name the tests drive
+  (including the "Stella is working · " prefix) is preserved; one new
+  test covers rail section switching.
+
 ### The window learned to change its clothes (dark and light themes)
 
 - **One palette became two.** `src/stella/ui.py` replaced its

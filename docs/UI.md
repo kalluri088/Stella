@@ -91,7 +91,7 @@ display, and can never approve a tool or change permissions.
   due reminders unprompted: a ticker posts a reminder check onto the
   worker thread every few seconds, so an idle Stella still informs (the
   CLI keeps firing on the next interaction by design).
-- History: a tab lists what Stella recently did — capability, time and
+- History: a section lists what Stella recently did — capability, time and
   honest outcome, newest first — from the durable action history, so
   earlier sessions are visible too. Entries are metadata only; file
   contents and tool output never appear.
@@ -129,15 +129,24 @@ display, and can never approve a tool or change permissions.
 
 ## Appearance and themes
 
-The window ships two complete minimalist palettes — **dark** (the
-default) and **light** — defined once as `Theme` dataclasses in
-`stella.ui` and read by every widget builder through the module-level
-`THEME`. A "Light mode"/"Dark mode" button in the header switches
-live: the ttk styles are re-applied (they repaint all styled widgets),
-the few plain Tk widgets (transcript, composer, the three lists, any
-open approval dialog and its preview box) are recolored explicitly,
-and nothing is rebuilt — a running turn, a recording, or a pending
-approval is never interrupted by a theme change.
+The window is built around a full-height **navigation rail** (Chat,
+Memories, Reminders, History, Settings) instead of the old side
+notebook, so every panel uses the full window; the active section is
+lifted onto the content surface in the accent color. Chat is a framed
+transcript card with roomy speech bubbles and a card composer whose
+buttons stack beside the input; the other sections are header + card
+layouts. While a turn runs the status line shows a quiet braille
+spinner after the elapsed seconds — display only.
+
+Two complete minimalist palettes — **dark** (the default) and
+**light** — are defined once as `Theme` dataclasses in `stella.ui`
+and read by every widget builder through the module-level `THEME`.
+The toggle sits at the bottom of the rail and switches live: the ttk
+styles are re-applied (they repaint all styled widgets), the few plain
+Tk widgets (transcript, composer, the three lists, any open approval
+dialog and its preview box) are recolored explicitly, and nothing is
+rebuilt — a running turn, a recording, or a pending approval is never
+interrupted by a theme change.
 
 The choice persists in a one-word `ui-theme` file next to
 `config.json` under the Stella data directory and is loaded at

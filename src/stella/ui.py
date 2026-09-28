@@ -60,7 +60,9 @@ _SEMANTIC_PROVIDER_BY_LABEL = {
 class Theme:
     window: str
     surface: str
+    card: str
     surface_alt: str
+    border: str
     field: str
     text: str
     text_dim: str
@@ -76,43 +78,50 @@ class Theme:
 
 
 _DARK_THEME = Theme(
-    window="#101319",
-    surface="#171b23",
-    surface_alt="#212630",
-    field="#272e3b",
-    text="#e9ecf3",
-    text_dim="#98a2b6",
-    accent="#8fb2ff",
-    accent_strong="#4f6ef7",
+    window="#0d1017",
+    surface="#131722",
+    card="#171c29",
+    surface_alt="#1f2534",
+    border="#272f42",
+    field="#1d2333",
+    text="#e8ebf4",
+    text_dim="#8b93a8",
+    accent="#7aa2ff",
+    accent_strong="#4c6ef5",
     accent_hover="#6f8bff",
-    on_accent="#0f1219",
-    error="#ff9a8d",
-    ok="#8fe3b0",
-    reminder="#d3b5ff",
-    user_bubble="#232e47",
-    stella_bubble="#1d2925",
+    on_accent="#0d1017",
+    error="#ff8787",
+    ok="#63d6a0",
+    reminder="#c7a2ff",
+    user_bubble="#1d2a4a",
+    stella_bubble="#16281f",
 )
 
 _LIGHT_THEME = Theme(
-    window="#f2f3f7",
+    window="#f6f7fb",
     surface="#ffffff",
-    surface_alt="#e7eaf1",
-    field="#eceef4",
-    text="#1c2029",
-    text_dim="#5d6678",
-    accent="#2f56c4",
-    accent_strong="#2f56c4",
-    accent_hover="#4469d6",
+    card="#ffffff",
+    surface_alt="#eef0f6",
+    border="#dfe3ec",
+    field="#f1f3f9",
+    text="#171a21",
+    text_dim="#5c6474",
+    accent="#3b5bdb",
+    accent_strong="#364fc7",
+    accent_hover="#4c6ef5",
     on_accent="#ffffff",
-    error="#b3362b",
-    ok="#1e7f4f",
-    reminder="#6b3fa0",
-    user_bubble="#e6ecfa",
-    stella_bubble="#e6f3ea",
+    error="#c92a2a",
+    ok="#2b8a3e",
+    reminder="#6741d9",
+    user_bubble="#e7edfd",
+    stella_bubble="#e6f5ea",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
 DEFAULT_THEME = "dark"
+
+# Frame characters for the working-status spinner (100 ms tick).
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 THEME = _DARK_THEME
 _theme_name = DEFAULT_THEME
@@ -206,12 +215,18 @@ def _configure_styles(root: tk.Misc) -> None:
         background=THEME.surface,
         foreground=THEME.text,
         fieldbackground=THEME.field,
+        borderwidth=0,
         padding=6,
     )
     style.configure("Toplevel", background=THEME.surface)
     style.configure("TFrame", background=THEME.surface)
-    style.configure("Card.TFrame", background=THEME.surface_alt)
+    style.configure("Rail.TFrame", background=THEME.window)
+    style.configure("Card.TFrame", background=THEME.card)
     style.configure("TLabel", background=THEME.surface, foreground=THEME.text)
+    style.configure("Card.TLabel", background=THEME.card)
+    style.configure(
+        "CardDim.TLabel", background=THEME.card, foreground=THEME.text_dim
+    )
     style.configure("Dim.TLabel", foreground=THEME.text_dim)
     style.configure(
         "Status.TLabel",
@@ -221,19 +236,30 @@ def _configure_styles(root: tk.Misc) -> None:
     style.configure(
         "Brand.TLabel",
         foreground=THEME.accent,
-        font=(ui_family, ui_size + 5, "bold"),
+        font=(ui_family, ui_size + 4, "bold"),
+    )
+    style.configure(
+        "Section.TLabel",
+        font=(ui_family, ui_size + 2, "bold"),
+    )
+    style.configure(
+        "SectionCard.TLabel",
+        background=THEME.card,
+        font=(ui_family, ui_size + 2, "bold"),
     )
     style.configure(
         "Heading.TLabel", font=(ui_family, ui_size + 1, "bold")
     )
+    # Flat buttons: no bevel, one quiet fill, accent on hover.
     style.configure(
         "TButton",
         background=THEME.field,
         foreground=THEME.text,
-        bordercolor=THEME.surface_alt,
-        lightcolor=THEME.surface_alt,
-        darkcolor=THEME.surface_alt,
+        bordercolor=THEME.field,
+        lightcolor=THEME.field,
+        darkcolor=THEME.field,
         focusthickness=0,
+        relief="flat",
         padding=(14, 7),
     )
     style.map(
@@ -248,46 +274,66 @@ def _configure_styles(root: tk.Misc) -> None:
         bordercolor=THEME.accent_strong,
         lightcolor=THEME.accent_strong,
         darkcolor=THEME.accent_strong,
+        relief="flat",
     )
     style.map(
         "Accent.TButton",
         background=[("disabled", THEME.surface_alt), ("active", THEME.accent_hover)],
         foreground=[("disabled", THEME.text_dim)],
     )
+    # Navigation rail: flat full-width entries, the active one lifted
+    # onto the content surface with the accent color.
+    style.configure(
+        "Nav.TButton",
+        background=THEME.window,
+        foreground=THEME.text_dim,
+        bordercolor=THEME.window,
+        lightcolor=THEME.window,
+        darkcolor=THEME.window,
+        focusthickness=0,
+        relief="flat",
+        anchor="w",
+        padding=(16, 9),
+    )
+    style.map(
+        "Nav.TButton",
+        background=[("active", THEME.surface)],
+        foreground=[("active", THEME.text)],
+    )
+    style.configure(
+        "NavActive.TButton",
+        background=THEME.surface,
+        foreground=THEME.accent,
+        bordercolor=THEME.surface,
+        lightcolor=THEME.surface,
+        darkcolor=THEME.surface,
+        font=(ui_family, ui_size, "bold"),
+        anchor="w",
+        padding=(16, 9),
+    )
     style.configure(
         "TMenubutton",
         background=THEME.field,
         foreground=THEME.text,
-        bordercolor=THEME.surface_alt,
+        bordercolor=THEME.field,
+        lightcolor=THEME.field,
+        darkcolor=THEME.field,
         focusthickness=0,
+        relief="flat",
         padding=(10, 5),
     )
     style.map("TMenubutton", background=[("active", THEME.accent_strong)])
     style.configure(
-        "TNotebook", background=THEME.surface, borderwidth=0, tabmargins=(2, 0, 2, 0)
-    )
-    style.configure(
-        "TNotebook.Tab",
-        background=THEME.surface_alt,
-        foreground=THEME.text_dim,
-        padding=(18, 9),
-    )
-    style.map(
-        "TNotebook.Tab",
-        background=[("selected", THEME.field)],
-        foreground=[("selected", THEME.text)],
-    )
-    style.configure(
         "TEntry",
         insertcolor=THEME.text,
-        bordercolor=THEME.surface_alt,
-        lightcolor=THEME.surface_alt,
-        darkcolor=THEME.surface_alt,
+        bordercolor=THEME.border,
+        lightcolor=THEME.border,
+        darkcolor=THEME.border,
         fieldbackground=THEME.field,
         foreground=THEME.text,
         padding=7,
     )
-    style.configure("TLabel.TSeparator", background=THEME.surface)
+    style.configure("TSeparator", background=THEME.border)
     style.configure(
         "TCheckbutton", background=THEME.surface, foreground=THEME.text, padding=4
     )
@@ -295,6 +341,12 @@ def _configure_styles(root: tk.Misc) -> None:
         "TCheckbutton",
         background=[("active", THEME.surface)],
         foreground=[("disabled", THEME.text_dim)],
+        indicatorcolor=[("selected", THEME.accent)],
+    )
+    style.configure("Card.TCheckbutton", background=THEME.card)
+    style.map(
+        "Card.TCheckbutton",
+        background=[("active", THEME.card)],
         indicatorcolor=[("selected", THEME.accent)],
     )
     style.configure("TRadiobutton", background=THEME.surface, foreground=THEME.text)
@@ -309,9 +361,9 @@ def _configure_styles(root: tk.Misc) -> None:
         background=THEME.field,
         foreground=THEME.text,
         arrowcolor=THEME.text_dim,
-        bordercolor=THEME.surface_alt,
-        lightcolor=THEME.surface_alt,
-        darkcolor=THEME.surface_alt,
+        bordercolor=THEME.border,
+        lightcolor=THEME.border,
+        darkcolor=THEME.border,
     )
     style.map(
         "TCombobox",
@@ -322,8 +374,8 @@ def _configure_styles(root: tk.Misc) -> None:
     style.configure(
         "TScrollbar",
         background=THEME.surface_alt,
-        troughcolor=THEME.surface,
-        bordercolor=THEME.surface,
+        troughcolor=THEME.card,
+        bordercolor=THEME.card,
         arrowcolor=THEME.text_dim,
         relief="flat",
     )
@@ -341,10 +393,13 @@ def _style_listbox(box: tk.Listbox) -> None:
         foreground=THEME.text,
         selectbackground=THEME.accent_strong,
         selectforeground=THEME.on_accent,
-        highlightthickness=0,
+        highlightthickness=1,
+        highlightbackground=THEME.border,
+        highlightcolor=THEME.border,
         borderwidth=0,
         relief="flat",
         activestyle="none",
+        selectborderwidth=0,
         font="TkDefaultFont",
     )
 
@@ -363,67 +418,100 @@ class StellaWindow:
         self._speaking = False
         self._turn_started: float | None = None
         self._cancelling = False
-        self._shown_seconds = -1
+        self._pulse = 0
         self._dialogs: list[tk.Toplevel] = []
         self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
         root.geometry("1180x680")
         root.minsize(920, 560)
-        root.configure(background=THEME.surface)
+        root.configure(background=THEME.window)
         _configure_styles(root)
 
-        main = ttk.Frame(root)
-        main.pack(fill="both", expand=True, padx=16, pady=14)
+        # Layout: a full-height navigation rail on the left, one section
+        # of content on the right. The rail replaces the old notebook so
+        # every panel gets the full window instead of a narrow side tab.
+        outer = ttk.Frame(root)
+        outer.pack(fill="both", expand=True)
 
-        chat = ttk.Frame(main)
-        chat.pack(side="left", fill="both", expand=True)
-        header = ttk.Frame(chat)
-        header.pack(fill="x", pady=(0, 10))
-        ttk.Label(header, text="Stella", style="Brand.TLabel").pack(
-            side="left"
-        )
+        rail = ttk.Frame(outer, style="Rail.TFrame", width=180)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+        brand = ttk.Frame(rail, style="Rail.TFrame")
+        brand.pack(fill="x", pady=(18, 14), padx=4)
         ttk.Label(
-            header,
-            text="local-first · your conversation stays on this machine",
-            style="Dim.TLabel",
-        ).pack(side="left", padx=(12, 0), pady=(7, 0))
+            brand, text="✦  Stella", style="Brand.TLabel"
+        ).pack(side="left", padx=(16, 0))
+        ttk.Label(
+            brand, text="local-first", style="Dim.TLabel"
+        ).pack(side="left", padx=(8, 0), pady=(5, 0))
+        self._nav_buttons: dict[str, ttk.Button] = {}
+        self._sections: dict[str, ttk.Frame] = {}
+        self._section = "chat"
+        for key, label in (
+            ("chat", "✎  Chat"),
+            ("memories", "▤  Memories"),
+            ("reminders", "◷  Reminders"),
+            ("history", "≡  History"),
+            ("settings", "⚙  Settings"),
+        ):
+            button = ttk.Button(
+                rail, text=label, style="Nav.TButton",
+                command=lambda name=key: self._show_section(name),
+            )
+            button.pack(fill="x", padx=10, pady=1)
+            self._nav_buttons[key] = button
         self._theme_button = ttk.Button(
-            header, text=self._theme_button_text(),
-            command=self._toggle_theme, width=11,
+            rail, text=self._theme_button_text(),
+            command=self._toggle_theme, style="Nav.TButton",
         )
-        self._theme_button.pack(side="right")
-        transcript_frame = ttk.Frame(chat)
-        transcript_frame.pack(fill="both", expand=True)
+        self._theme_button.pack(side="bottom", fill="x", padx=10, pady=(0, 14))
+        ttk.Label(
+            rail,
+            text="your conversation stays\non this machine",
+            style="Dim.TLabel",
+            justify="left",
+        ).pack(side="bottom", padx=16, pady=(0, 10), anchor="w")
+
+        content = ttk.Frame(outer)
+        content.pack(side="left", fill="both", expand=True, padx=14, pady=14)
+
+        chat = ttk.Frame(content)
+        self._sections["chat"] = chat
+        transcript_card = ttk.Frame(chat, style="Card.TFrame")
+        transcript_card.pack(fill="both", expand=True)
         self._chat = tk.Text(
-            transcript_frame,
+            transcript_card,
             wrap="word",
             state="disabled",
             background=THEME.window,
             foreground=THEME.text,
             insertbackground=THEME.text,
             borderwidth=0,
-            highlightthickness=0,
+            highlightthickness=1,
+            highlightbackground=THEME.border,
             relief="flat",
-            padx=10,
-            pady=12,
+            padx=14,
+            pady=14,
             font="TkTextFont",
             spacing1=4,
             spacing2=2,
         )
         scrollbar = ttk.Scrollbar(
-            transcript_frame, command=self._chat.yview
+            transcript_card, command=self._chat.yview
         )
         self._chat.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        self._chat.pack(side="left", fill="both", expand=True)
+        self._chat.pack(side="left", fill="both", expand=True, padx=(1, 0))
         self._configure_chat_tags()
         self._status = ttk.Label(chat, text="", anchor="w",
                                  style="Status.TLabel")
-        self._status.pack(fill="x", pady=(8, 2))
-        input_frame = ttk.Frame(chat)
-        input_frame.pack(fill="x")
+        self._status.pack(fill="x", pady=(10, 4))
+        composer = ttk.Frame(chat, style="Card.TFrame")
+        composer.pack(fill="x")
+        input_row = ttk.Frame(composer, style="Card.TFrame")
+        input_row.pack(fill="x", padx=8, pady=(8, 2))
         self._input = tk.Text(
-            input_frame,
+            input_row,
             height=3,
             wrap="word",
             background=THEME.field,
@@ -432,46 +520,49 @@ class StellaWindow:
             relief="flat",
             borderwidth=0,
             highlightthickness=1,
-            highlightbackground=THEME.surface_alt,
+            highlightbackground=THEME.border,
             highlightcolor=THEME.accent_strong,
-            padx=10,
-            pady=8,
+            padx=12,
+            pady=10,
             font="TkTextFont",
         )
         self._input.pack(side="left", fill="both", expand=True)
+        button_col = ttk.Frame(input_row, style="Card.TFrame")
+        button_col.pack(side="left", fill="y", padx=(8, 0))
         send_button = ttk.Button(
-            input_frame, text="Send", command=self._send,
+            button_col, text="Send", command=self._send,
             style="Accent.TButton",
         )
-        send_button.pack(side="left", fill="y", padx=(6, 0))
+        send_button.pack(fill="x")
         self._cancel_button = ttk.Button(
-            input_frame, text="Cancel", command=self._cancel_turn,
+            button_col, text="Cancel", command=self._cancel_turn,
             state="disabled",
         )
-        self._cancel_button.pack(side="left", fill="y", padx=(6, 0))
+        self._cancel_button.pack(fill="x", pady=(6, 0))
         self._input.bind("<Control-Return>", lambda _event: self._send())
+        hint_row = ttk.Frame(composer, style="Card.TFrame")
+        hint_row.pack(fill="x", padx=10, pady=(0, 6))
         ttk.Label(
-            chat,
-            text="Ctrl+Enter sends; Enter adds a new line.",
-            style="Dim.TLabel",
-        ).pack(anchor="w", pady=(4, 0))
-        self._build_voice_row(chat, bridge)
+            hint_row,
+            text="Ctrl+Enter sends · Enter adds a new line",
+            style="CardDim.TLabel",
+        ).pack(side="left")
+        self._build_voice_row(composer, bridge)
+        self._show_section("chat")
 
-        notebook = ttk.Notebook(main)
-        notebook.pack(side="left", fill="y", padx=(14, 0))
-        self._build_memory_tab(notebook)
-        self._build_reminder_tab(notebook)
-        self._build_history_tab(notebook)
-        self._build_settings_tab(notebook, settings)
+        self._build_memory_section(content)
+        self._build_reminder_section(content)
+        self._build_history_section(content)
+        self._build_settings_section(content, settings)
 
         self._line(
-            "Ask Stella anything. The tabs manage memories, reminders, "
-            "recent actions, and the minimal local settings."
+            "Ask Stella anything. The menu on the left manages memories, "
+            "reminders, recent actions, and the minimal local settings."
         )
         bridge.post_memories()
         bridge.post_reminders()
-        # Action history is durable, so the History tab shows what Stella
-        # did in earlier sessions, not only in this window.
+        # Action history is durable, so the History section shows what
+        # Stella did in earlier sessions, not only in this window.
         bridge.post_history()
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._tick)
@@ -479,6 +570,36 @@ class StellaWindow:
         # loop above to already be running, so they are requested one
         # beat later, never during construction.
         root.after(250, self._bridge.post_persona_drain)
+
+    # ------------------------------------------------------------ sections
+
+    def _show_section(self, name: str) -> None:
+        previous = self._sections.get(self._section)
+        if previous is not None:
+            previous.pack_forget()
+        self._section = name
+        self._sections[name].pack(fill="both", expand=True)
+        for key, button in self._nav_buttons.items():
+            button.configure(
+                style="NavActive.TButton" if key == name else "Nav.TButton"
+            )
+
+    def _section_header(self, parent: ttk.Frame, title: str, note: str) -> None:
+        header = ttk.Frame(parent)
+        header.pack(fill="x", pady=(0, 10))
+        ttk.Label(header, text=title, style="Section.TLabel").pack(
+            side="left"
+        )
+        ttk.Label(header, text=note, style="Dim.TLabel").pack(
+            side="left", padx=(12, 0), pady=(4, 0)
+        )
+
+    def _section_card(self, parent: ttk.Frame) -> ttk.Frame:
+        card = ttk.Frame(parent, style="Card.TFrame")
+        card.pack(fill="both", expand=True)
+        inner = ttk.Frame(card, style="Card.TFrame")
+        inner.pack(fill="both", expand=True, padx=14, pady=14)
+        return inner
 
     # ------------------------------------------------------ theme switch
 
@@ -502,18 +623,19 @@ class StellaWindow:
         """
         _configure_styles(self._root)
         theme = THEME
-        self._root.configure(background=theme.surface)
+        self._root.configure(background=theme.window)
         self._chat.configure(
             background=theme.window,
             foreground=theme.text,
             insertbackground=theme.text,
+            highlightbackground=theme.border,
         )
         self._configure_chat_tags()
         self._input.configure(
             background=theme.field,
             foreground=theme.text,
             insertbackground=theme.text,
-            highlightbackground=theme.surface_alt,
+            highlightbackground=theme.border,
             highlightcolor=theme.accent_strong,
         )
         for box in (
@@ -529,7 +651,7 @@ class StellaWindow:
                 box.configure(
                     background=theme.window,
                     foreground=theme.text_dim,
-                    highlightbackground=theme.surface_alt,
+                    highlightbackground=theme.border,
                 )
                 box.tag_configure("added", foreground=theme.ok)
                 box.tag_configure("removed", foreground=theme.error)
@@ -557,20 +679,20 @@ class StellaWindow:
         chat.tag_configure(
             "bubble-stella",
             background=THEME.stella_bubble,
-            lmargin1=14,
-            lmargin2=14,
-            rmargin=150,
-            spacing1=8,
+            lmargin1=16,
+            lmargin2=16,
+            rmargin=160,
+            spacing1=10,
             spacing3=0,
         )
         chat.tag_configure(
             "bubble-user",
             background=THEME.user_bubble,
-            lmargin1=150,
-            lmargin2=150,
-            rmargin=14,
+            lmargin1=160,
+            lmargin2=160,
+            rmargin=16,
             justify="right",
-            spacing1=8,
+            spacing1=10,
             spacing3=0,
         )
         chat.tag_configure("head-stella", foreground=THEME.ok, font=self._head_font)
@@ -656,7 +778,7 @@ class StellaWindow:
     def _begin_turn_timer(self) -> None:
         self._turn_started = time.monotonic()
         self._cancelling = False
-        self._shown_seconds = -1
+        self._pulse = 0
 
     def _cancel_turn(self) -> None:
         if not self._busy or self._cancelling:
@@ -677,8 +799,8 @@ class StellaWindow:
     # ------------------------------------------------------------ voice
 
     def _build_voice_row(self, chat: ttk.Frame, bridge: StellaBridge) -> None:
-        row = ttk.Frame(chat)
-        row.pack(fill="x", pady=(2, 0))
+        row = ttk.Frame(chat, style="Card.TFrame")
+        row.pack(fill="x", padx=8, pady=(2, 0))
         mic_ok, speech_ok = bridge.voice_capabilities()
         self._mic_button = ttk.Button(
             row, text="Listen", command=self._toggle_listen, width=10
@@ -702,6 +824,7 @@ class StellaWindow:
             text="Speak replies",
             variable=self._speak_var,
             command=self._toggle_speech,
+            style="Card.TCheckbutton",
             state="normal" if speech_ok else "disabled",
         )
         self._speak_toggle.pack(side="left", padx=4)
@@ -709,7 +832,7 @@ class StellaWindow:
             self._mic_button.configure(state="disabled")
         ttk.Label(
             chat,
-            style="Dim.TLabel",
+            style="CardDim.TLabel",
             text=(
                 "Voice input is not available here (no capture command or "
                 "transcription provider)."
@@ -717,7 +840,7 @@ class StellaWindow:
                 else "Listening and speaking are explicit; recordings are "
                 "removed right after transcription."
             ),
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w", padx=10, pady=(2, 6))
 
     def _toggle_listen(self) -> None:
         if self._busy:
@@ -852,9 +975,15 @@ class StellaWindow:
             self._status.configure(text="Stella is stopping...")
             return
         seconds = int(time.monotonic() - self._turn_started)
-        if seconds != self._shown_seconds:
-            self._shown_seconds = seconds
-            self._status.configure(text=f"Stella is working · {seconds} s")
+        # A quiet braille spinner says "alive" between the whole-second
+        # updates; the asserted prefix stays exactly "Stella is working · ".
+        self._pulse = (self._pulse + 1) % len(_SPINNER)
+        self._status.configure(
+            text=(
+                f"Stella is working · {seconds} s  "
+                f"{_SPINNER[self._pulse]}"
+            )
+        )
 
     def _handle_event(self, event: UiEvent) -> None:
         kind, payload = event.kind, event.payload
@@ -957,7 +1086,7 @@ class StellaWindow:
                 relief="flat",
                 borderwidth=0,
                 highlightthickness=1,
-                highlightbackground=THEME.surface_alt,
+                highlightbackground=THEME.border,
                 padx=8,
                 pady=6,
             )
@@ -1005,23 +1134,28 @@ class StellaWindow:
 
     # --------------------------------------------------------- memories
 
-    def _build_memory_tab(self, notebook: ttk.Notebook) -> None:
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="Memories")
+    def _build_memory_section(self, parent: ttk.Frame) -> None:
+        frame = ttk.Frame(parent)
+        self._sections["memories"] = frame
+        self._section_header(
+            frame, "Memories", "what Stella has been told to remember"
+        )
         row = ttk.Frame(frame)
-        row.pack(fill="x", padx=6, pady=6)
-        self._memory_search = ttk.Entry(row, width=28)
+        row.pack(fill="x", pady=(0, 8))
+        self._memory_search = ttk.Entry(row)
         self._memory_search.pack(side="left", fill="x", expand=True)
         ttk.Button(
             row, text="Search", command=self._refresh_memories
-        ).pack(side="left", padx=4)
+        ).pack(side="left", padx=(8, 0))
+        card = ttk.Frame(frame, style="Card.TFrame")
+        card.pack(fill="both", expand=True)
         self._memory_list = tk.Listbox(
-            frame, exportselection=False, width=48, height=18
+            card, exportselection=False, height=16
         )
         _style_listbox(self._memory_list)
-        self._memory_list.pack(padx=6)
+        self._memory_list.pack(fill="both", expand=True, padx=12, pady=12)
         actions = ttk.Frame(frame)
-        actions.pack(fill="x", padx=6, pady=4)
+        actions.pack(fill="x", pady=(8, 0))
         ttk.Button(
             actions, text="Refresh", command=self._refresh_all_memories
         ).pack(side="left")
@@ -1029,9 +1163,9 @@ class StellaWindow:
             actions, text="Forget selected", command=self._forget_memory
         ).pack(side="left", padx=6)
         self._memory_status = ttk.Label(
-            frame, text="", wraplength=340, style="Dim.TLabel"
+            frame, text="", wraplength=460, style="Dim.TLabel"
         )
-        self._memory_status.pack(padx=6, pady=4, anchor="w")
+        self._memory_status.pack(pady=(6, 0), anchor="w")
 
     def _refresh_memories(self) -> None:
         self._bridge.post_memories(self._memory_search.get())
@@ -1059,31 +1193,38 @@ class StellaWindow:
 
     # -------------------------------------------------------- reminders
 
-    def _build_reminder_tab(self, notebook: ttk.Notebook) -> None:
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="Reminders")
+    def _build_reminder_section(self, parent: ttk.Frame) -> None:
+        frame = ttk.Frame(parent)
+        self._sections["reminders"] = frame
+        self._section_header(
+            frame, "Reminders", "one-shot promises Stella keeps locally"
+        )
+        card = ttk.Frame(frame, style="Card.TFrame")
+        card.pack(fill="both", expand=True)
         self._reminder_list = tk.Listbox(
-            frame, exportselection=False, width=48, height=14
+            card, exportselection=False, height=10
         )
         _style_listbox(self._reminder_list)
-        self._reminder_list.pack(padx=6, pady=(6, 2))
-        add_row = ttk.Frame(frame)
-        add_row.pack(fill="x", padx=6, pady=2)
-        ttk.Label(add_row, text="What:").pack(side="left")
-        self._reminder_content = ttk.Entry(add_row, width=30)
+        self._reminder_list.pack(fill="both", expand=True, padx=12, pady=12)
+        form = ttk.Frame(frame)
+        form.pack(fill="x", pady=(10, 0))
+        add_row = ttk.Frame(form)
+        add_row.pack(fill="x", pady=2)
+        ttk.Label(add_row, text="What:", width=11).pack(side="left")
+        self._reminder_content = ttk.Entry(add_row)
         self._reminder_content.pack(side="left", fill="x", expand=True)
-        due_row = ttk.Frame(frame)
-        due_row.pack(fill="x", padx=6, pady=2)
-        ttk.Label(due_row, text="Due (ISO):").pack(side="left")
-        self._reminder_due = ttk.Entry(due_row, width=30)
+        due_row = ttk.Frame(form)
+        due_row.pack(fill="x", pady=2)
+        ttk.Label(due_row, text="Due (ISO):", width=11).pack(side="left")
+        self._reminder_due = ttk.Entry(due_row)
         self._reminder_due.pack(side="left", fill="x", expand=True)
         ttk.Label(
-            frame,
+            form,
             style="Dim.TLabel",
             text="Example due time: 2026-01-01T09:00:00+00:00",
-        ).pack(padx=6, anchor="w")
+        ).pack(anchor="w", padx=(86, 0))
         actions = ttk.Frame(frame)
-        actions.pack(fill="x", padx=6, pady=4)
+        actions.pack(fill="x", pady=(8, 0))
         ttk.Button(
             actions, text="Add reminder", command=self._add_reminder
         ).pack(side="left")
@@ -1095,8 +1236,8 @@ class StellaWindow:
         ttk.Button(
             actions, text="Refresh", command=self._refresh_reminders
         ).pack(side="left")
-        self._reminder_status = ttk.Label(frame, text="", wraplength=340)
-        self._reminder_status.pack(padx=6, pady=4, anchor="w")
+        self._reminder_status = ttk.Label(frame, text="", wraplength=460)
+        self._reminder_status.pack(pady=(6, 0), anchor="w")
 
     def _refresh_reminders(self) -> None:
         self._bridge.post_reminders()
@@ -1134,26 +1275,30 @@ class StellaWindow:
 
     # ---------------------------------------------------------- history
 
-    def _build_history_tab(self, notebook: ttk.Notebook) -> None:
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="History")
+    def _build_history_section(self, parent: ttk.Frame) -> None:
+        frame = ttk.Frame(parent)
+        self._sections["history"] = frame
+        self._section_header(
+            frame, "History", "what Stella recently did, newest first"
+        )
+        card = ttk.Frame(frame, style="Card.TFrame")
+        card.pack(fill="both", expand=True)
         self._history_list = tk.Listbox(
-            frame, exportselection=False, width=64, height=18
+            card, exportselection=False, height=16
         )
         _style_listbox(self._history_list)
-        self._history_list.pack(padx=6, pady=(6, 2))
+        self._history_list.pack(fill="both", expand=True, padx=12, pady=12)
         actions = ttk.Frame(frame)
-        actions.pack(fill="x", padx=6, pady=4)
+        actions.pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Refresh", command=self._refresh_history).pack(
             side="left"
         )
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="What Stella recently did, newest first. Kept between "
-            "launches; metadata only, never file contents.",
+            text="Kept between launches; metadata only, never file contents.",
             wraplength=460,
-        ).pack(padx=6, anchor="w")
+        ).pack(pady=(6, 0), anchor="w")
 
     def _refresh_history(self) -> None:
         self._bridge.post_history()
@@ -1168,15 +1313,18 @@ class StellaWindow:
 
     # --------------------------------------------------------- settings
 
-    def _build_settings_tab(
-        self, notebook: ttk.Notebook, settings: StellaSettings
+    def _build_settings_section(
+        self, parent: ttk.Frame, settings: StellaSettings
     ) -> None:
-        frame = ttk.Frame(notebook)
-        notebook.add(frame, text="Settings")
+        frame = ttk.Frame(parent)
+        self._sections["settings"] = frame
+        self._section_header(
+            frame, "Settings", "the minimal local configuration"
+        )
         self._panel_settings = settings
         self._settings_fields: dict[str, ttk.Entry] = {}
         provider_row = ttk.Frame(frame)
-        provider_row.pack(fill="x", padx=6, pady=4)
+        provider_row.pack(fill="x", pady=4)
         ttk.Label(provider_row, text="Provider:").pack(side="left")
         self._provider = ttk.Combobox(
             provider_row,

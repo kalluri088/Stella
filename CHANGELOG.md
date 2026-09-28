@@ -92,6 +92,20 @@
   or **Stop speaking** arrives. The same spoken turns also earn a
   fixed application-authored style note — the audio-modality envelope
   asks the answer to be one or two short speakable sentences.
+- **Barge-in accepted for live use; the default becomes `auto` (D4).**
+  The playback-stretch blocker that parked the ear (report 19) did not
+  reproduce under instrumentation: full plays up to 7 s measured
+  1.01–1.02× real time with the ear armed, no xruns, no `pw-play`
+  errors (reports 28–29). The human double-talk acceptance passed 3/3
+  (383 / 128 / 127 ms voice-onset-to-cancel, bar ≤500 ms) with zero
+  false fires on silent controls, and hesitant-speech analysis ("um"
+  sample through the shipped judge) showed the 5-frame streak is not
+  fragile — no endpointing change was made. `STELLA_VOICE_BARGE_IN`
+  now defaults to `auto`: the ear arms only when `STELLA_BARGE_SOURCE`
+  names the capture — declaring an echo-cancelled mic *is* the enable,
+  because the live data also showed what a raw-mic ear does (uncancelled
+  playback registers as speech, and the ear cancels Stella herself).
+  `on` still forces the old always-arm behaviour, `off` still vetoes.
 
 ## 1.2.0 — 2026-09-27
 

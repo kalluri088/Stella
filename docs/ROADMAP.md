@@ -393,6 +393,9 @@ working and helping me, even if not the fastest."
   by user decision — full evidence and next steps in research
   report 19. External endpointing data that may inform the tuning
   half of that resume order arrived 2026-09-27 (Stage D, D4).
+  *Unparked and accepted 2026-09-28: see D4's measured outcome
+  below — the stretch did not reproduce under instrumentation and
+  the double-talk acceptance passed.*
 
 ## Stage C — personality (complete — released in 1.2.0)
 
@@ -533,6 +536,25 @@ inside that session, not before); D5 waits behind the voice work.
   during a live reply, possibly delayed ear arming, then a proper
   re-measure), only then endpointing tuning. Echo cancellation as a
   prerequisite is independently re-confirmed by his setup.
+  *Measured 2026-09-27→28 (research reports 28–29, four instrumented
+  live sessions, `~/tools/d4_analyze.py` over per-play ratio +
+  pw-top + journal evidence): the stretch did NOT reproduce — full
+  plays up to 7.0 s ran at 1.01–1.02× with the ear armed, zero xruns,
+  empty `pw-play` stderr — so delayed arming and the resident-worker
+  control were never needed, and report 19's blocker closes as
+  cannot-reproduce-under-instrumentation. Human acceptance PASSED:
+  Round A 3/3 ≤500 ms (383/128/127 ms onset→cancel), Round B zero
+  false fires with echo residual measured at `prob` 0.60 peak.
+  Endpointing tuning: a hesitant "um" human sample plus TTS dip
+  analysis showed the 5-frame streak never breaks on real speech
+  (in-speech dips ≤2 frames; hard-reset/leaky/hysteresis fire
+  identically) — no judge change, per the no-demonstrated-weakness
+  rule. Consequence: `STELLA_VOICE_BARGE_IN` default flipped from
+  `off` to `auto` — the ear arms when `STELLA_BARGE_SOURCE` names
+  the (echo-cancelled) capture, never on an undeclared raw mic,
+  because uncancelled playback was measured to register as speech
+  (23% voiced frames). The raw-mic trap is why plain `on` is not
+  the default.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

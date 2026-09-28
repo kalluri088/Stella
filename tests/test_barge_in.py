@@ -222,12 +222,12 @@ def clear_voice_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_barge_in_defaults_are_off_and_conservative(
+def test_barge_in_defaults_are_auto_and_conservative(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clear_voice_env(monkeypatch)
     fields = StellaSettings._environment_fields()
-    assert fields["voice_barge_in"] == "off"
+    assert fields["voice_barge_in"] == "auto"
     assert fields["barge_threshold"] == 0.5
     assert fields["barge_source"] is None
     assert fields["vad_model"] == default_vad_model()
@@ -246,10 +246,34 @@ def test_invalid_barge_in_settings_exit_at_configuration(
         StellaSettings._environment_fields()
 
 
-def test_build_barge_in_off_is_none_and_on_without_a_model_is_a_message(
+def test_build_barge_in_auto_arms_only_on_a_named_source(
     tmp_path,
 ) -> None:
+    # Default auto with no declared source: the ear stays out of the
+    # picture entirely — not even the model is looked for (a raw mic
+    # hears the speakers and live measurement showed it self-fires).
     assert build_barge_in(StellaSettings(model="m")) is None
+    # auto + an explicitly named (echo-cancelled) source arms the ear:
+    # an absent model then surfaces as the usual one friendly error.
+    settings = StellaSettings(
+        model="m",
+        barge_source="ec_mic",
+        vad_model=str(tmp_path / "absent.onnx"),
+    )
+    with pytest.raises(VoiceError):
+        build_barge_in(settings)
+    # off never arms, even with a source; on arms even without one.
+    assert (
+        build_barge_in(
+            StellaSettings(
+                model="m",
+                voice_barge_in="off",
+                barge_source="ec_mic",
+                vad_model=str(tmp_path / "absent.onnx"),
+            )
+        )
+        is None
+    )
     settings = StellaSettings(
         model="m",
         voice_barge_in="on",

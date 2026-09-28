@@ -140,7 +140,7 @@ The narration rules the tests enforce:
 ## Barge-in (optional interrupt-by-voice)
 
 By default Stella's microphone is only live between a **Listen** press and its
-stop. `STELLA_VOICE_BARGE_IN=on` adds one opt-in exception: while Stella is
+stop. Barge-in adds one controlled exception: while Stella is
 speaking, a small listener ("the ear") watches the microphone for the user's
 voice, and a confirmed utterance does exactly what the **Cancel** button
 already does — stop the audio and cancel the turn. The detector has no other
@@ -148,17 +148,25 @@ authority: it cannot approve tools, cannot inject text, and produces one
 interruption per speaking episode. Outside of speech playback the ear is not
 running at all, so there is still no always-on listening.
 
-> **Known issue (live testing, 2026-09-26):** on the developer's rig, enabling
-> the ear broke Stella's *playback* — the first one or two sentences of each
-> reply were stretched and glitched even though the detector never fired
-> (A/B verified: identical UI with the ear off plays perfectly). The stretch
-> only reproduces inside the fully loaded UI (brain, speech synthesis and the
-> live capture stream all at once), not in any isolated harness, so the
-> mechanism is still open (leading hypothesis: PipeWire real-time starvation
-> on the busy machine). Barge-in therefore stays **off by default and is not
-> yet accepted for live use**; the research report
-> (`~/research/19-barge-in-live.md`) records every measurement and the next
-> debugging steps. Text UI, push-to-talk voice, and chunked speech are
+The default mode is `auto`: the ear arms only once you have named a capture
+source with `STELLA_BARGE_SOURCE` — which is also the documented way to point
+it at an echo-cancelled microphone. Declaring the source *is* enabling the
+feature; no second variable is needed.
+
+> **Resolved and accepted (live testing, 2026-09-26 → 2026-09-28):** an
+> earlier round of live testing found that enabling the ear appeared to break
+> Stella's *playback* — the first one or two sentences of each reply seemed
+> stretched and glitched (research report 19; leading hypothesis: PipeWire
+> real-time starvation on the busy machine). Instrumented sessions with
+> per-play ratio measurement (research reports 28–29) did **not** reproduce
+> it: full plays up to 7 s ran at 1.01–1.02× real time with the ear armed,
+> `pw-play` stderr stayed empty, and the probe logged no xruns. The human
+> double-talk acceptance passed: three interrupted replies at 383 / 128 /
+> 127 ms from voice onset to cancel (bar ≤500 ms), and two silent controls
+> with zero false fires. Barge-in is therefore accepted for live use, but
+> only on the echo-cancelled path the measurement was made on — see
+> the caveat below for why the default still refuses to arm an ear pointed
+> at a raw mic. Text UI, push-to-talk voice, and chunked speech are
 > unaffected.
 
 Detection is fully local: raw 16 kHz mono capture (`pw-record`, falling back to
@@ -167,22 +175,24 @@ five consecutive voiced frames (about 160 ms) above both a probability and an
 energy threshold count as the user talking. Nothing is recorded, buffered for
 transcription, or persisted — the only output is the interrupt itself.
 
-Setup (all of it optional; off is the default and needs nothing):
+Setup (all of it optional; the default needs nothing and arms no ear):
 
 ```bash
 uv sync --extra barge-in            # adds onnxruntime only
 # Put the Silero VAD ONNX model somewhere readable, e.g.
 #   ~/models/silero/silero_vad.onnx   (or point STELLA_VAD_MODEL elsewhere)
-STELLA_VOICE_BARGE_IN=on uv run stella-ui
+STELLA_BARGE_SOURCE=ec_mic uv run stella-ui   # auto-arms the ear
 ```
 
 Environment variables (voice config is environment-only and is never written
 to `config.json`):
 
-- `STELLA_VOICE_BARGE_IN` — `off` (default) or `on`.
+- `STELLA_VOICE_BARGE_IN` — `auto` (default: arms only when
+  `STELLA_BARGE_SOURCE` names a capture), `on` (arm on any source, including
+  the system default) or `off` (never).
 - `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file.
-- `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic` (default: the
-  system's default source).
+- `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic`. Under `auto`
+  this doubles as the enable switch; unset, the ear never arms.
 - `STELLA_BARGE_THRESHOLD` — VAD probability in (0, 1), default `0.5`.
 
 Echo cancellation is the make-or-break prerequisite: without it Stella's own
@@ -203,8 +213,11 @@ pactl set-default-sink ec_out
 pactl set-default-source ec_mic
 ```
 
-Stella's playback and recordings then follow the cancelled pair automatically;
-`STELLA_BARGE_SOURCE=ec_mic` is only needed if the defaults are left elsewhere.
+Stella's playback and recordings then follow the cancelled pair automatically.
+Under `auto` you should still pass `STELLA_BARGE_SOURCE=ec_mic`: naming the
+cancelled source is what arms the ear, because Stella cannot tell a
+cancelled pair from a raw mic on its own — and the measured cost of getting
+that wrong is the ear interrupting Stella's own voice every reply.
 With a Bluetooth headset the echo path is ~40 dB down by itself, so the raw
 devices are fine — route Bluetooth around the `ec_*` pair, because pulling SCO
 through echo-cancel triggers codec switches (measured, research report 08).

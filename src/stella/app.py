@@ -336,7 +336,7 @@ class StellaSession:
 
 
 VOICE_MODES = {"auto", "openai", "off"}
-BARGE_MODES = {"off", "on"}
+BARGE_MODES = {"auto", "off", "on"}
 ENV_ON = {"1", "true", "on", "yes"}
 ENV_OFF = {"0", "false", "off", "no"}
 
@@ -487,7 +487,7 @@ class StellaSettings:
     speech_voice: str = "alloy"
     speech_command: str | None = None
     speech_resident: bool = False
-    voice_barge_in: str = "off"
+    voice_barge_in: str = "auto"
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
     barge_threshold: float = 0.5
@@ -520,10 +520,10 @@ class StellaSettings:
             raise SystemExit(
                 "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
             )
-        barge_mode = os.environ.get("STELLA_VOICE_BARGE_IN", "off").casefold()
+        barge_mode = os.environ.get("STELLA_VOICE_BARGE_IN", "auto").casefold()
         if barge_mode not in BARGE_MODES:
             raise SystemExit(
-                "STELLA_VOICE_BARGE_IN must be 'on' or 'off'"
+                "STELLA_VOICE_BARGE_IN must be 'auto', 'on' or 'off'"
             )
         raw_threshold = os.environ.get("STELLA_BARGE_THRESHOLD", "0.5")
         try:
@@ -1199,13 +1199,23 @@ def build_voice(settings: StellaSettings) -> VoicePanel:
 def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     """Assemble the barge-in ear, or None when the feature is off.
 
+    The default mode is ``auto``: the ear arms only when the user has
+    named a capture source with ``STELLA_BARGE_SOURCE`` — the documented
+    way to point it at an echo-cancelled microphone. Without that
+    declaration the raw mic hears the speakers directly and live
+    measurement (research report 29) showed uncancelled playback frames
+    self-firing the interrupt, so an un-armed ear is the safe default;
+    ``on`` arms on the system default source anyway, ``off`` never.
+
     Unlike :func:`build_voice` this raises :class:`VoiceError` when
     barge-in was explicitly asked for but cannot work (missing extra,
     missing model): the reason must surface once as a message instead
     of the feature silently doing nothing forever.
     """
 
-    if settings.voice_barge_in != "on":
+    if settings.voice_barge_in == "off":
+        return None
+    if settings.voice_barge_in == "auto" and settings.barge_source is None:
         return None
     vad = SileroVad(settings.vad_model)
     return BargeInListener(

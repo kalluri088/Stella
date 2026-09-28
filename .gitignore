@@ -8,5 +8,9 @@ opencode.json
 .pytest_cache/
 /dist/
 *.egg-info/
-/stella_workspace/
-/SECURITY-AUDIT.md
+# Local-only names that must never be committed, at any depth: the audit
+# report and the app's own workspace dir (AGENTS.md; guarded by
+# tests/test_containment.py). Unanchored on purpose — a root-anchored
+# pattern lets a nested copy slip through.
+stella_workspace/
+SECURITY-AUDIT.md

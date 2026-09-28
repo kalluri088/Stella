@@ -25,7 +25,10 @@ All four accept exactly one relative path (writes/edits also take `content`):
   default `./stella_workspace`) and is resolved to its canonical path when the
   tool is created. The model receives the capability description and schema,
   but the description is not authorization; the trusted dispatcher and tool
-  enforce the boundary.
+  enforce the boundary. The default directory (and the local-only
+  `SECURITY-AUDIT.md`) are unanchored `.gitignore` patterns — never
+  committable, at any depth or in any worktree — pinned by
+  `tests/test_containment.py`.
 - Paths must be non-empty relative strings with no NUL characters and no `..`
   component. Absolute and drive-qualified paths are rejected. The resolved
   candidate must remain beneath the canonical workspace (`relative_to()`

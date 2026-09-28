@@ -513,7 +513,11 @@ provider environment variables) wins, otherwise the non-secret saved
 configuration written by the first-run setup dialog is loaded from
 `config.json`, otherwise the UI opens setup and the CLI reports that none is
 configured. `StellaSettings.from_environment()` remains for the
-environment-variable path. `StellaSession` holds the conversation `Message` history and
+environment-variable path. Each opt-in capability is wired across six
+touchpoints — env override, `Settings` field, `from_saved`,
+`from_environment`, `_CONFIG_FIELDS`, and the Settings checkbox — and
+`tests/test_settings_wiring.py` fails if any one of them drifts.
+`StellaSession` holds the conversation `Message` history and
 runs one turn through `Stella.process()` with shared error and display rules,
 and the small panel classes (`MemoryPanel`, `ReminderPanel`, `ApprovalBroker`,
 and `VoicePanel`) expose memory, reminder, approval, and voice operations only

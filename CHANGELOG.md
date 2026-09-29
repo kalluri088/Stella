@@ -69,6 +69,7 @@
   with a pixel-measured probe), so the band runs edge to edge for
   messages of any length, and the widget test pins the newline tags
   instead of their absence.
+
 ### Provider presets, and your API key is now kept
 
 - Setup and Settings replace the three provider choices with a real

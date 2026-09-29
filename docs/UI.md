@@ -62,6 +62,11 @@ display, and can never approve a tool or change permissions.
 
 - Conversation: send multi-line messages (Ctrl+Return or Send), see replies,
   honest error lines, and continuous history within the window session.
+  Up/Down arrows in the composer recall the messages this window sent,
+  newest first, like a terminal: they only fire when the cursor is on
+  the first (Up) or last (Down) line, so multi-line editing keeps
+  normal cursor keys, and pressing Down past the newest entry restores
+  the draft the recall started from.
   While a turn runs, the status line counts elapsed seconds
   ("Stella is working · 12 s") so a slow local model reads as slow, not
   broken, and a **Cancel** button appears beside Send. Cancel stops the
@@ -73,9 +78,10 @@ display, and can never approve a tool or change permissions.
   executing action, and the cancelled turn is discarded whole from the
   conversation. A cancel while an approval dialog is open denies that
   action (fail-closed) and dismisses the dialog; nothing executes.
-  Every finished turn also ends with how long it took in the transcript
-  ("… (took 47 s)", in Stella's plain reply) — display-only, the stored
-  conversation never carries that text.
+  Every finished turn also ends with how long it took and when it
+  finished in the transcript ("… (took 47 s · 14:32)", in Stella's
+  plain reply) — display-only, the stored conversation never carries
+  that text.
   The CLI keeps Ctrl+C as its immediate-stop equivalent.
 - Approvals: a dialog shows "Stella wants to: <capability and arguments>"
   for every `DANGEROUS` action, with Allow and Cancel, plus a read-only

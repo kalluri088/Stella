@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### The composer remembers what you sent
+
+- Up/Down arrows walk the messages this window sent, newest first,
+  like any terminal: Up recalls, Up again goes older, Down comes back,
+  and Down past the newest entry restores the half-typed draft the
+  recall started from. The arrows only fire when the cursor is on the
+  very first (Up) or very last (Down) line, so editing a multi-line
+  message keeps normal cursor movement; repeated sends are stored
+  once.
+- Every finished turn now says *when* it finished as well as how long
+  it took: "(took 47 s · 14:32)". Like the duration, the clock time is
+  display-only — the stored conversation never carries it.
+
+### `stella verify-backup`
+
+- Answers "will this restore work" without restoring: it checks a
+  backup directory read-only — the manifest, SQLite's integrity check
+  on every stored database exactly as archived, and the config the
+  manifest promises — and touches no live state. A database too
+  damaged to even open now reports broken instead of raising.
+
 ### One LLM call for cheap read-only answers
 
 - Report 35's second target: tools whose successful output is already

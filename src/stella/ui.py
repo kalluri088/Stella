@@ -1063,13 +1063,14 @@ class StellaWindow:
     @staticmethod
     def _duration_tail(outcome: TurnOutcome) -> str:
         # A6: every finished turn says how long it took, so a slow local
-        # model reads as slow rather than broken. Display only; the
-        # stored conversation never carries this text.
+        # model reads as slow rather than broken — and when it finished,
+        # so an old answer is never mistaken for a current one.
+        # Display only; the stored conversation never carries this text.
         if outcome.duration_seconds is None:
             return ""
         seconds = outcome.duration_seconds
         text = f"{seconds:.1f} s" if seconds < 10 else f"{seconds:.0f} s"
-        return f" (took {text})"
+        return f" (took {text} · {time.strftime('%H:%M')})"
 
     # ------------------------------------------------------ event pump
 

@@ -9,6 +9,7 @@ dialog denies rather than fabricates authorization.
 
 import datetime as dt
 import os
+import re
 import threading
 import time
 import tkinter as tk
@@ -532,14 +533,16 @@ def test_window_cancel_during_approval_denies_and_executes_nothing() -> None:
 
 
 def test_duration_tail_formats_every_finished_turn() -> None:
+    # The clock time is wall-clock, so the tests match its shape, not
+    # its value: "(took 1.2 s · 14:32)".
     assert StellaWindow._duration_tail(TurnOutcome()) == ""
-    assert (
-        StellaWindow._duration_tail(TurnOutcome(duration_seconds=1.24))
-        == " (took 1.2 s)"
+    assert re.fullmatch(
+        r" \(took 1\.2 s · \d\d:\d\d\)",
+        StellaWindow._duration_tail(TurnOutcome(duration_seconds=1.24)),
     )
-    assert (
-        StellaWindow._duration_tail(TurnOutcome(duration_seconds=47.4))
-        == " (took 47 s)"
+    assert re.fullmatch(
+        r" \(took 47 s · \d\d:\d\d\)",
+        StellaWindow._duration_tail(TurnOutcome(duration_seconds=47.4)),
     )
 
 

@@ -82,5 +82,13 @@ and response shapes for both backends, ignored-filter reporting, the
 "web is off" path, budget refusal and bucket rollover, every validator
 bound, marker wrapping and caps, previews, summaries, and the
 `STELLA_WEB` settings override. No test touches the network or a real
-key. The end-to-end behavior against the live providers is the report-22
-spike (5/5 with a real key; keyless ddgs/fetch verified on this machine).
+key. Beyond the suite, the keyless paths were run live from `src/` on
+2026-09-29: a ddgs search returned real titled/link/snippet rows (with
+`recency_minutes` honestly reported as ignored), a pinned-DNS fetch of
+a public page came back marker-wrapped, and with no key and no extra
+the search answered the structured "web is off". A dead TinyFish key
+was rejected as a clean `INVALID_API_KEY` failure — the error shape
+the fakes simulate. The TinyFish request/response shapes themselves
+are the report-22 spike's live 5/5 of 2026-09-27; the provider-side
+key expired afterward, so the keyed path still needs one live pass
+with a fresh key.

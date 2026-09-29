@@ -8,6 +8,9 @@ own observations) can see proof the action happened.
 
 import datetime as dt
 
+from test_outline_tools import client as outline_client
+from test_outline_tools import server_routes
+
 from stella.memory import InMemoryMemory, MemoryItem
 from stella.outline_tools import (
     OutlineClient,
@@ -29,8 +32,6 @@ from stella.tools import (
     ToolDispatcher,
     _audit_entry,
 )
-from tests.test_outline_tools import client as outline_client
-from tests.test_outline_tools import server_routes
 
 TEA = "The user prefers jasmine tea in the evening."
 

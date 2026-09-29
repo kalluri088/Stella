@@ -76,6 +76,12 @@ class Theme:
     reminder: str
     user_bubble: str
     stella_bubble: str
+    # Speaker-label colors are explicit theme fields, not aliases of the
+    # brand accent: accent == ok in every palette, so deriving both labels
+    # from brand colors renders "You:" and "Stella:" in one hue and erases
+    # the role separation. Keep these two distinct in every theme.
+    user_head: str
+    stella_head: str
 
 
 _DARK_THEME = Theme(
@@ -97,6 +103,8 @@ _DARK_THEME = Theme(
     reminder="#d97706",
     user_bubble="#292524",
     stella_bubble="#134e4a",
+    user_head="#e7e5e4",
+    stella_head="#2dd4bf",
 )
 
 _LIGHT_THEME = Theme(
@@ -116,8 +124,15 @@ _LIGHT_THEME = Theme(
     error="#dc2626",
     ok="#0d9488",
     reminder="#d97706",
-    user_bubble="#f5f5f4",
-    stella_bubble="#f0fdfa",
+    # Both bands sit on a pure-white transcript, so they must be visibly
+    # apart from the background *and* from each other: a neutral warm gray
+    # for the user, a saturated mint for Stella (echoing the teal brand).
+    # The previous pair (#f5f5f4 / #f0fdfa) were near-identical off-whites
+    # that washed out against #ffffff, leaving no role separation.
+    user_bubble="#e7e5e4",
+    stella_bubble="#ccfbf1",
+    user_head="#1c1917",
+    stella_head="#0d9488",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
@@ -711,9 +726,18 @@ class StellaWindow:
             spacing1=10,
             spacing3=0,
         )
-        chat.tag_configure("head-stella", foreground=THEME.ok, font=self._head_font)
+        chat.tag_configure(
+            "head-stella", foreground=THEME.stella_head, font=self._head_font
+        )
         chat.tag_configure("body-stella", foreground=THEME.text)
-        chat.tag_configure("head-user", foreground=THEME.accent, font=self._head_font)
+        # The user and Stella speaker labels use their own explicit theme
+        # colors. accent == ok in both palettes, so a teal "You:" beside a
+        # teal "Stella:" said nothing about who spoke; the user head is a
+        # neutral and the Stella head the brand teal, distinct on every
+        # theme, while the bands already separate by hue and side.
+        chat.tag_configure(
+            "head-user", foreground=THEME.user_head, font=self._head_font
+        )
         chat.tag_configure("body-user", foreground=THEME.text)
         chat.tag_configure(
             "note",
@@ -750,24 +774,30 @@ class StellaWindow:
         chat.configure(state="normal")
         if role in ("user", "stella"):
             bubble = "bubble-user" if role == "user" else "bubble-stella"
-            split = text.find(": ")
+            first, *rest = text.split("\n")
+            split = first.find(": ")
             if 0 < split <= 20:
                 chat.insert(
                     "end",
-                    text[: split + 2],
+                    first[: split + 2],
                     (bubble, f"head-{role}"),
                 )
                 chat.insert(
                     "end",
-                    text[split + 2 :],
+                    first[split + 2 :],
                     (bubble, f"body-{role}"),
                 )
             else:
-                chat.insert("end", text, (bubble, f"body-{role}"))
-            # The line's own newline is deliberately untagged: a tagged
-            # newline paints its background across the whole line width,
-            # which turns a bubble into a full-width stripe.
+                chat.insert("end", first, (bubble, f"body-{role}"))
+            # Every hard newline is deliberately untagged, not just the
+            # message's last one: a tagged newline paints its background
+            # across the whole line width, which turns a bubble into a
+            # full-width stripe. Multi-line replies (lists, paragraphs)
+            # hit this on every internal line break.
             chat.insert("end", "\n")
+            for line in rest:
+                chat.insert("end", line, (bubble, f"body-{role}"))
+                chat.insert("end", "\n")
             chat.insert("end", "\n", ("gap",))
         elif role == "reminder" or role == "error":
             chat.insert("end", text + "\n", (role,))

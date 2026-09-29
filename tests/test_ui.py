@@ -191,6 +191,30 @@ def test_window_conversation_round_trip() -> None:
         root.destroy()
 
 
+def test_transcript_separates_roles_in_the_widget_tree() -> None:
+    # The palette file guards the colors; this guards that the window
+    # actually paints them: the two speaker labels carry distinct
+    # foregrounds (the retired accent==ok alias made them identical),
+    # and every hard newline inside a multi-line bubble stays untagged
+    # so no internal line paints a full-width stripe through the chat.
+    root, window, bridge, _ = make_window()
+    try:
+        chat = window._chat
+        before = int(chat.index("end-1c").split(".")[0])
+        window._line("Stella: first line\nsecond line", role="stella")
+        user_head = str(chat.tag_cget("head-user", "foreground")).lower()
+        stella_head = str(chat.tag_cget("head-stella", "foreground")).lower()
+        assert user_head != stella_head
+        for line in (before, before + 1):
+            # X.end is the line's newline character itself; a bubble's
+            # tags must stop before it, or Tk paints a full-width stripe.
+            assert chat.tag_names(f"{line}.end") == ()
+        assert "bubble-stella" in chat.tag_names(f"{before}.0")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_window_informs_about_due_reminder_while_idle() -> None:
     # Stage A D1: with no user input at all, the bridge tick must place
     # the due reminder into the transcript through the existing pump.

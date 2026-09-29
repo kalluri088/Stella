@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### The transcript says who is speaking (UI role separation)
+
+- **Three rendering defects, one fix.** The user/Stella separation in
+  the Tk transcript was buggy in ways that all erased the role line:
+  both speaker labels were painted from brand fields where
+  `accent == ok`, so "You:" and "Stella:" shared one hue; the
+  light-theme bubbles (`#f5f5f4` / `#f0fdfa`) sat ~11 RGB apart on a
+  white background and washed out entirely; and `_line` kept only the
+  message's *final* newline untagged, so every internal hard break in
+  a multi-line reply painted a full-width background stripe through
+  the chat.
+- **Structure, not tuned values.** `Theme` gained explicit
+  `user_head`/`stella_head` fields (a neutral and the brand teal,
+  distinct in every palette) and the light bubbles moved to a
+  saturated gray/mint pair; `_line` now leaves *every* hard newline
+  untagged, so a bubble's band covers exactly its own lines. A future
+  theme cannot re-collide the labels because the colors are fields,
+  not derivations.
+- **Guarded on both sides.** `tests/test_ui_theme.py` (headless,
+  always runs) pins the palette distances — it rejects the old light
+  pair and old label alias numerically; a display-gated widget test
+  proves the window actually paints distinct label foregrounds and
+  untagged newlines. Verified live with screenshots of a multi-line
+  exchange in both themes.
+
 ### The reminders boundary: "remind me" is Stella's, always
 
 - **One ruling, stated everywhere (report 30).** A plain "remind me"

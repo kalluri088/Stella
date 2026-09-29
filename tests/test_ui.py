@@ -195,18 +195,24 @@ def test_transcript_separates_roles_in_the_widget_tree() -> None:
     # The palette file guards the colors; this guards that the window
     # actually paints them: the user's message renders as a "> "
     # blockquote on the quote band, and Stella's reply as plain text
-    # with no label, no band and no background of its own. Every hard
-    # newline stays untagged so a band never drags past its message.
+    # with no label, no band and no background of its own. Each line's
+    # newline carries its own line tag: Tk only stretches a tagged
+    # line's background to the full display width when the newline has
+    # the tag, so an untagged newline would shrink a "Hi" band to four
+    # pixels.
     root, window, bridge, _ = make_window()
     try:
         chat = window._chat
         before = int(chat.index("end-1c").split(".")[0])
         window._line("You: first line\nsecond line", role="user")
         window._line("Stella: plain reply", role="stella")
-        for line in (before, before + 1, before + 3):
-            # X.end is the line's newline character itself; the gap
-            # lines (before + 2, before + 4) are tagged by design.
-            assert chat.tag_names(f"{line}.end") == ()
+        for line in (before, before + 1):
+            # X.end is the line's newline character itself.
+            assert chat.tag_names(f"{line}.end") == ("quote",)
+        assert chat.tag_names(f"{before + 3}.end") == ("stella",)
+        # The blank spacer lines belong to the gap, never to the band.
+        assert chat.tag_names(f"{before + 2}.end") == ("gap",)
+        assert chat.tag_names(f"{before + 4}.end") == ("gap",)
         assert chat.get(f"{before}.0", f"{before}.2") == "> "
         assert "quote" in chat.tag_names(f"{before}.0")
         assert "quote" in chat.tag_names(f"{before + 1}.2")

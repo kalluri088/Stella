@@ -789,22 +789,28 @@ class StellaWindow:
             if role == "user":
                 # The "> " marker replaces the "You:" label: a quote line
                 # announces itself. Every hard line of the message gets
-                # its own marker, like a blockquote.
+                # its own marker, like a blockquote. Each line's newline
+                # carries the line tag too: Tk only paints a tagged
+                # line's background across the full display width when
+                # the newline itself has the tag — an untagged newline
+                # leaves the band as wide as the text (a "Hi" quote
+                # would otherwise be a 40-pixel stripe).
                 for line in (body, *rest):
                     chat.insert("end", "> ", ("quote", "head-user"))
                     chat.insert("end", line, ("quote", "body-user"))
-                    chat.insert("end", "\n")
+                    chat.insert("end", "\n", ("quote",))
             else:
                 # Stella's reply carries no label and no band: it starts
                 # flush at the quote marker's left margin, plain, like a
-                # terminal assistant's own output.
+                # terminal assistant's own output. Its newlines are
+                # tagged with the (background-free) "stella" line tag for
+                # the same reason — the tag must own the whole line.
                 for line in (body, *rest):
                     chat.insert("end", line, ("stella", "body-stella"))
-                    chat.insert("end", "\n")
-            # Every hard newline is deliberately untagged, not just the
-            # message's last one: a tagged newline paints its background
-            # across the whole line width, so the final one would drag
-            # the quote band through the blank gap line.
+                    chat.insert("end", "\n", ("stella",))
+            # The blank spacer line is its own "\n" carrying only "gap",
+            # so the window background repaints just that line; the
+            # quote band stops at the message's last line.
             chat.insert("end", "\n", ("gap",))
         elif role == "reminder" or role == "error":
             chat.insert("end", text + "\n", (role,))

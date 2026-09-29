@@ -57,7 +57,8 @@
   terminal uses: **the user's message is a `>` blockquote** — a
   marker on every hard line and one band that spans the *whole*
   window (the transcript Text and content frame carry no horizontal
-  padding on the chat page) — and **Stella answers in plain
+  padding, and the scrollbar floats over the text instead of
+  reserving a column) — and **Stella answers in plain
   left-aligned text**: no band, and no "Stella:" label at all.
 - **Structure, not tuned values.** `Theme` gained explicit
   `user_quote`/`user_head` fields (the retired `stella_bubble` and

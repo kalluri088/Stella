@@ -530,8 +530,13 @@ class StellaWindow:
             transcript_card, command=self._chat.yview
         )
         self._chat.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self._chat.pack(side="left", fill="both", expand=True, padx=(1, 0))
+        # The scrollbar floats over the transcript instead of packing
+        # beside it: the quote band paints the whole display line, and
+        # a packed scrollbar would reserve a dead column at the right
+        # edge. Text stays clear of it through the tags' rmargin —
+        # backgrounds ignore margins and still run edge to edge.
+        scrollbar.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+        self._chat.pack(fill="both", expand=True)
         self._configure_chat_tags()
         self._status = ttk.Label(chat, text="", anchor="w",
                                  style="Status.TLabel")
@@ -716,11 +721,15 @@ class StellaWindow:
         # the full display line, and the Text carries no horizontal
         # padding). Stella answers in plain left-aligned text with no
         # label; marker and band are the whole separation.
+        # rmargin keeps every line's text clear of the overlaid
+        # scrollbar; the painted band ignores margins and still runs
+        # edge to edge.
         chat.tag_configure(
             "quote",
             background=THEME.user_quote,
             lmargin1=16,
             lmargin2=34,
+            rmargin=18,
             spacing1=10,
             spacing3=0,
         )
@@ -728,6 +737,7 @@ class StellaWindow:
             "stella",
             lmargin1=16,
             lmargin2=16,
+            rmargin=18,
             spacing1=10,
             spacing3=0,
         )
@@ -745,7 +755,7 @@ class StellaWindow:
             font=self._italic_font,
             lmargin1=14,
             lmargin2=14,
-            rmargin=14,
+            rmargin=18,
             spacing1=6,
             spacing3=0,
         )
@@ -754,7 +764,7 @@ class StellaWindow:
             foreground=THEME.error,
             lmargin1=14,
             lmargin2=14,
-            rmargin=14,
+            rmargin=18,
             spacing1=8,
             spacing3=0,
         )
@@ -763,7 +773,7 @@ class StellaWindow:
             foreground=THEME.reminder,
             lmargin1=14,
             lmargin2=14,
-            rmargin=14,
+            rmargin=18,
             spacing1=8,
             spacing3=0,
         )

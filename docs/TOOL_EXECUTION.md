@@ -53,6 +53,7 @@ for the orchestration details.
 | `filesystem_write` / `filesystem_edit` / `filesystem_delete` | DANGEROUS | `FILESYSTEM.md` |
 | `workspace_list` / `workspace_find` / `workspace_search` | SENSITIVE (inherited from read) | `WORKSPACE_ASSISTANT.md` |
 | `network_read` | DANGEROUS | `NETWORK_READ.md` |
+| `web_search` / `web_fetch` | DANGEROUS (only registered when the web capability is enabled) | `WEB.md` |
 | `memory_list` | SENSITIVE | `OUTCOME_MEMORY.md` |
 | `memory_write` / `memory_update` / `memory_forget` | DANGEROUS | `OUTCOME_MEMORY.md` |
 | `reminder_create` / `reminder_cancel` | DANGEROUS | `REMINDERS.md` |
@@ -109,6 +110,32 @@ the final response call. Real-model validation at their milestones confirmed
 the full Brain → exact-capability check → argument validation → execution →
 final-response path (e.g. `What time is it?` → `{"kind":"time"}` → local time
 with offset); logs of those runs live in git history, not here.
+
+## Terminal tools and the `tool_final` fast path
+
+A `kind=tool` decision may carry the reserved marker `"tool_final": true`
+(when calling a tool directly, the same signal is a reserved argument the
+runtime strips before execution). It is the model *proposing* that this one
+observation is the whole answer; whether anything may be rendered from it
+verbatim is a runtime property: `Tool.terminal`, defined in the
+application-owned tool class, default `False`. A model field named
+`terminal` is not read and grants nothing.
+
+When the marker is set, the call is the turn's first and only tool step, the
+observation succeeded, and the tool declares itself terminal
+(`datetime`, `system_info`, `reminder_list`), the response is built directly
+from that observation — for terminal tools rendered verbatim — and the
+middle re-decision call is skipped. A failed observation, a non-terminal
+tool, or a multi-step plan keeps the honest synthesis path unchanged.
+Approval, risk classification, memory-write gating, tool-output limits,
+step trace and audit records all run before the fast path and are never
+affected by it: `tool_final` can make a turn cheaper, never more powerful.
+`Tool.terminal` is the one place tool output reaches the user without model
+synthesis, so it is an opt-in trust decision: only capabilities whose
+successful output is fully constructed by trusted code — a value from a
+fixed allowlist (`datetime`, `system_info`) or the user's own stored
+reminder rows (`reminder_list`) — may set it. A tool that could
+echo fetched or file-sourced text stays on the synthesized path.
 
 ## Verification & receipts (mutating tools)
 

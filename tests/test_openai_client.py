@@ -247,3 +247,119 @@ def test_openai_decision_call_sends_max_output_tokens_only_when_configured(
     calls = openai.return_value.responses.create.call_args_list
     assert calls[0].kwargs["max_output_tokens"] == 8192
     assert "max_output_tokens" not in calls[1].kwargs
+def test_chat_dialect_declares_tools_in_chat_shape_and_normalizes_calls(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    response = MagicMock()
+    response.choices[0].message = SimpleNamespace(
+        content=None,
+        tool_calls=[
+            SimpleNamespace(
+                function=SimpleNamespace(
+                    name="system_info", arguments='{"kind":"hostname"}'
+                )
+            )
+        ],
+    )
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value = response
+        client = OpenAILLMClient(model="test-model", tool_dialect="chat")
+
+        result = client.chat_with_tools(
+            [Message(role="user", content="What is the hostname?")],
+            [
+                LLMToolDefinition(
+                    name="system_info",
+                    description="Reads host information.",
+                    arguments={"kind": "hostname|platform|cpu"},
+                )
+            ],
+        )
+
+    openai.return_value.responses.create.assert_not_called()
+    request = openai.return_value.chat.completions.create.call_args.kwargs
+    assert request["tool_choice"] == "auto"
+    assert request["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "system_info",
+                "description": "Reads host information.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "description": "hostname|platform|cpu",
+                        }
+                    },
+                    "required": ["kind"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    assert result.content is None
+    assert result.tool_calls[0].name == "system_info"
+    assert result.tool_calls[0].arguments == {"kind": "hostname"}
+
+
+def test_chat_dialect_survives_stringified_and_malformed_arguments(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    response = MagicMock()
+    response.choices[0].message = SimpleNamespace(
+        content="thinking",
+        tool_calls=[
+            SimpleNamespace(function=SimpleNamespace(name="echo", arguments="not json")),
+            SimpleNamespace(function=SimpleNamespace(name="echo", arguments="[1, 2]")),
+            SimpleNamespace(function=None),
+        ],
+    )
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value = response
+        client = OpenAILLMClient(model="test-model", tool_dialect="chat")
+        result = client.chat_with_tools([], [])
+
+    assert result.content == "thinking"
+    assert [call.arguments for call in result.tool_calls] == [{}, {}, {}]
+    assert result.tool_calls[2].name == ""
+
+
+def test_default_dialect_still_routes_to_the_responses_api(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    with patch("stella.openai_client.OpenAI") as openai:
+        client = OpenAILLMClient(model="test-model")
+        client.chat_with_tools([], [])
+    openai.return_value.responses.create.assert_called_once()
+    openai.return_value.chat.completions.create.assert_not_called()
+
+
+def test_unknown_tool_dialect_is_refused_at_construction() -> None:
+    with pytest.raises(ValueError):
+        OpenAILLMClient(model="test-model", tool_dialect="graphql")
+
+
+def test_chat_dialect_sends_the_decision_budget_as_max_tokens(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    with patch("stella.openai_client.OpenAI") as openai:
+        capped = OpenAILLMClient(
+            model="test-model",
+            tool_dialect="chat",
+            decision_max_output_tokens=4096,
+        )
+        capped.chat_with_tools([], [])
+        plain = OpenAILLMClient(model="test-model", tool_dialect="chat")
+        plain.chat_with_tools([], [])
+
+    calls = openai.return_value.chat.completions.create.call_args_list
+    assert calls[0].kwargs["max_tokens"] == 4096
+    assert "max_tokens" not in calls[1].kwargs

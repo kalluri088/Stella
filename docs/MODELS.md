@@ -9,7 +9,13 @@ decision corpus, and 6 passes per case before it can ship.
 ## Decision brain
 
 - **Shipped:** `qwen3:4b` Thinking-2507 through Ollama (system
-  service), `num_ctx=8192`, temperature 0. It wins because it scores
+  service), `num_ctx=8192`, temperature 0, per-call-kind output-token
+  caps 8192 decision / 2048 answer (report 44). `STELLA_OLLAMA_THINK`
+  is a tri-state knob that sends nothing by default: measured on this
+  line, `think:false` was slower and answered with ~1 kB of prose
+  ramble per decision — the reasoning channel stays (report 26's
+  kill-gate doctrine, now with provider-line evidence).
+  It wins because it scores
   28/30 strict decisions on the production path, its quality comes
   from its reasoning channel, and Ollama beat a self-run llama.cpp
   line on identical weights (report 20).

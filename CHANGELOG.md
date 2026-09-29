@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Turns stop paying for words the model didn't need to write
+
+- Report 35's first target — decode time is the whole turn: the two
+  call kinds now carry separate output-token budgets end to end
+  (decision 8192, answer 2048 by default; `STELLA_DECISION_MAX_TOKENS`
+  / `STELLA_ANSWER_MAX_TOKENS`, 0 removes a cap). They are deliberately
+  generous backstops against rambling completions, never truncators of
+  legitimate work — a 20k-character outline body still fits the
+  decision budget. Ollama's native endpoint also gained a
+  `STELLA_OLLAMA_THINK` toggle (`0`/`1`) for hybrid-reasoning models
+  like qwen3: measured on the live stack, thinking roughly doubles
+  per-call time. The shipped default *sends nothing* — report 26's
+  kill gate says the reasoning channel stays untouched until a corpus
+  run on this provider line proves think-off costs nothing.
+
 ### The wait now says what it is doing
 
 - Report 35's third target: between the first decision and the answer a

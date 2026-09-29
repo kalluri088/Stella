@@ -379,9 +379,18 @@ class SpyClient:
 
     last: SpyClient | None = None
 
-    def __init__(self, *, model: str, base_url: str) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        answer_max_output_tokens: int | None = None,
+        decision_max_output_tokens: int | None = None,
+    ) -> None:
         self.model = model
         self.base_url = base_url
+        self.answer_max_output_tokens = answer_max_output_tokens
+        self.decision_max_output_tokens = decision_max_output_tokens
         SpyClient.last = self
 
 

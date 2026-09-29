@@ -36,6 +36,13 @@ class OllamaLLMClient(OpenAILLMClient):
     ``native=True`` switches to Ollama's own /api/chat endpoint, which is
     the only way to set per-request options such as ``num_ctx``: the
     compatibility endpoint silently ignores them on Ollama 0.33.x.
+
+    ``think`` maps to Ollama's top-level hybrid-reasoning switch (``None``
+    never sends it; ``False`` is what report 35 target 1 wants for the
+    qwen3 stack — measured on Ollama 0.33.3, non-thinking models accept
+    ``think: false`` harmlessly). The inherited per-call-kind token budgets
+    reach the native endpoint as ``options.num_predict``, with the
+    decision budget on tool calls and the answer budget on plain chat.
     """
 
     def __init__(
@@ -46,10 +53,20 @@ class OllamaLLMClient(OpenAILLMClient):
         *,
         native: bool = False,
         num_ctx: int | None = None,
+        answer_max_output_tokens: int | None = None,
+        decision_max_output_tokens: int | None = None,
+        think: bool | None = None,
     ) -> None:
-        super().__init__(model=model, base_url=base_url, api_key=api_key)
+        super().__init__(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            answer_max_output_tokens=answer_max_output_tokens,
+            decision_max_output_tokens=decision_max_output_tokens,
+        )
         self.native = native
         self.num_ctx = num_ctx
+        self.think = think
         self.native_url = native_chat_url(base_url)
 
     def chat(
@@ -59,9 +76,11 @@ class OllamaLLMClient(OpenAILLMClient):
     ) -> str:
         if self.native:
             return (
-                self._native_chat(messages, should_cancel=should_cancel).get(
-                    "content"
-                )
+                self._native_chat(
+                    messages,
+                    should_cancel=should_cancel,
+                    budget=self.answer_max_output_tokens,
+                ).get("content")
                 or ""
             )
         return super().chat(messages, should_cancel=should_cancel)
@@ -75,7 +94,10 @@ class OllamaLLMClient(OpenAILLMClient):
     ) -> LLMResponse:
         if self.native:
             message = self._native_chat(
-                messages, tools, should_cancel=should_cancel
+                messages,
+                tools,
+                should_cancel=should_cancel,
+                budget=self.decision_max_output_tokens,
             )
             return LLMResponse(
                 content=message.get("content") or None,
@@ -88,6 +110,10 @@ class OllamaLLMClient(OpenAILLMClient):
             "model": self.model,
             "messages": self._messages(messages),
         }
+        if self.decision_max_output_tokens is not None:
+            # Compatibility endpoint: max_tokens is a standard completions
+            # field (unlike num_ctx, which 0.33.x ignores here).
+            request["max_tokens"] = self.decision_max_output_tokens
         if tools:
             request["tools"] = [
                 self._chat_tool_definition(tool) for tool in tools
@@ -114,8 +140,15 @@ class OllamaLLMClient(OpenAILLMClient):
         messages: list[MessageInput],
         tools: list[LLMToolDefinition] | None = None,
         should_cancel: CancelCheck | None = None,
+        *,
+        budget: int | None = None,
     ) -> dict[str, Any]:
-        """POST one non-streaming request to Ollama's native /api/chat."""
+        """POST one non-streaming request to Ollama's native /api/chat.
+
+        ``budget`` is the caller-kind's output-token cap (decision calls
+        pass theirs, plain chat passes the answer's): the caller knows
+        the call kind, ``_native_chat`` stays transport-only.
+        """
 
         request: dict[str, object] = {
             "model": self.model,
@@ -127,8 +160,15 @@ class OllamaLLMClient(OpenAILLMClient):
                 self._chat_tool_definition(tool) for tool in tools
             ]
             request["tool_choice"] = "auto"
+        if self.think is not None:
+            request["think"] = self.think
+        options: dict[str, object] = {}
         if self.num_ctx is not None:
-            request["options"] = {"num_ctx": self.num_ctx}
+            options["num_ctx"] = self.num_ctx
+        if budget is not None:
+            options["num_predict"] = budget
+        if options:
+            request["options"] = options
         body = json.dumps(request).encode("utf-8")
         url = urllib.parse.urlsplit(self.native_url)
         secure = url.scheme == "https"

@@ -259,7 +259,15 @@ class LlamaServerLLMClient(OllamaLLMClient):
         model: str,
         base_url: str,
         api_key: str = "stella-local",
+        *,
+        answer_max_output_tokens: int | None = None,
+        decision_max_output_tokens: int | None = None,
     ) -> None:
         super().__init__(
-            model=model, base_url=base_url, api_key=api_key, native=False
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            native=False,
+            answer_max_output_tokens=answer_max_output_tokens,
+            decision_max_output_tokens=decision_max_output_tokens,
         )

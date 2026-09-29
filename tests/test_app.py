@@ -1950,3 +1950,39 @@ def test_run_turn_reports_elapsed_seconds_for_every_outcome() -> None:
     ).run_turn("boom")
     assert failed.duration_seconds is not None
     assert failed.error_message is not None
+
+
+def test_decode_budget_settings_default_override_and_off(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("STELLA_MODEL", "qwen3:4b")
+    monkeypatch.setenv("STELLA_LLM_PROVIDER", "ollama")
+    for name in (
+        "STELLA_DECISION_MAX_TOKENS",
+        "STELLA_ANSWER_MAX_TOKENS",
+        "STELLA_OLLAMA_THINK",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = StellaSettings.from_environment()
+    assert settings.decision_max_tokens == 8192
+    assert settings.answer_max_tokens == 2048
+    # Report 26's kill gate: the shipped default never touches the
+    # reasoning channel; the toggle only speaks when asked.
+    assert settings.ollama_think is None
+
+    monkeypatch.setenv("STELLA_DECISION_MAX_TOKENS", "0")
+    monkeypatch.setenv("STELLA_ANSWER_MAX_TOKENS", "300")
+    monkeypatch.setenv("STELLA_OLLAMA_THINK", "1")
+    settings = StellaSettings.from_environment()
+    assert settings.decision_max_tokens is None
+    assert settings.answer_max_tokens == 300
+    assert settings.ollama_think is True
+
+    monkeypatch.setenv("STELLA_OLLAMA_THINK", "0")
+    settings = StellaSettings.from_environment()
+    assert settings.ollama_think is False
+
+    monkeypatch.setenv("STELLA_ANSWER_MAX_TOKENS", "many")
+    with pytest.raises(SystemExit, match="STELLA_ANSWER_MAX_TOKENS"):
+        StellaSettings.from_environment()

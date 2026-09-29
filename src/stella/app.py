@@ -355,6 +355,31 @@ def _env_toggle(name: str) -> bool | None:
     return None
 
 
+# Per-call-kind decode caps (report 35 target 1): the decision default must
+# comfortably exceed the largest legitimate tool-argument payload — a
+# 20k-character outline body is ~5k tokens — so budgets backstop runaway
+# decoding without ever truncating honest work.
+DEFAULT_DECISION_MAX_TOKENS = 8192
+DEFAULT_ANSWER_MAX_TOKENS = 2048
+
+
+def _env_token_budget(name: str, default: int) -> int | None:
+    """Parse an output-token budget; 0 means send no cap at all."""
+
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise SystemExit(
+            f"{name} must be a whole number of tokens (0 removes the cap)"
+        )
+    return value or None
+
+
 def transcripts_env_override() -> bool | None:
     """The STELLA_TRANSCRIPTS override, or None when it says nothing.
 
@@ -519,6 +544,9 @@ class StellaSettings:
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
     barge_threshold: float = 0.5
+    decision_max_tokens: int | None = DEFAULT_DECISION_MAX_TOKENS
+    answer_max_tokens: int | None = DEFAULT_ANSWER_MAX_TOKENS
+    ollama_think: bool | None = None
 
     def __post_init__(self) -> None:
         if self.semantic_provider not in SEMANTIC_PROVIDERS:
@@ -619,6 +647,17 @@ class StellaSettings:
             ),
             "barge_source": os.environ.get("STELLA_BARGE_SOURCE") or None,
             "barge_threshold": barge_threshold,
+            "decision_max_tokens": _env_token_budget(
+                "STELLA_DECISION_MAX_TOKENS", DEFAULT_DECISION_MAX_TOKENS
+            ),
+            "answer_max_tokens": _env_token_budget(
+                "STELLA_ANSWER_MAX_TOKENS", DEFAULT_ANSWER_MAX_TOKENS
+            ),
+            # Absent means "send nothing": report 26's kill gate says the
+            # reasoning channel stays the shipped default until a corpus
+            # run on THIS provider line proves think-off costs nothing.
+            # STELLA_OLLAMA_THINK=0 forces it off, =1 forces it on.
+            "ollama_think": _env_toggle("STELLA_OLLAMA_THINK"),
         }
 
     @classmethod
@@ -805,6 +844,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             base_url=settings.ollama_base_url,
             native=True,
             num_ctx=8192,
+            decision_max_output_tokens=settings.decision_max_tokens,
+            answer_max_output_tokens=settings.answer_max_tokens,
+            think=settings.ollama_think,
         )
     elif settings.provider == "openai":
         if not os.environ.get("OPENAI_API_KEY"):
@@ -815,6 +857,8 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         llm = OpenAILLMClient(
             model=settings.model,
             base_url=settings.openai_base_url,
+            decision_max_output_tokens=settings.decision_max_tokens,
+            answer_max_output_tokens=settings.answer_max_tokens,
         )
     elif settings.provider == "llama":
         brain_server = LlamaBrainServer(
@@ -828,6 +872,8 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         llm = LlamaServerLLMClient(
             model=settings.model,
             base_url=brain_server.base_url,
+            decision_max_output_tokens=settings.decision_max_tokens,
+            answer_max_output_tokens=settings.answer_max_tokens,
         )
     else:
         raise SystemExit(

@@ -164,8 +164,13 @@ development, or running several configurations side by side:
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
 | `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
+| `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
+| `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |
 
-Normal users never need any of these.
+Normal users never need any of these. One environment fact no setting
+can fix: Ollama shares the machine's GPU with everything else, and turn
+times roughly double while another GPU job runs (report 35) — that is a
+scheduling choice, not a Stella configuration.
 
 ## Using the window
 

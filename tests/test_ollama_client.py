@@ -179,6 +179,10 @@ def test_cli_selects_ollama_provider(monkeypatch) -> None:
         # and Ollama truncates the head silently below that (research
         # report 15, Ollama's own prompt_eval_count).
         num_ctx=8192,
+        # Report 35 target 1: per-call-kind decode caps, thinking off.
+        decision_max_output_tokens=8192,
+        answer_max_output_tokens=2048,
+        think=None,
     )
     assert stella.brain.llm is ollama_client.return_value
 
@@ -202,6 +206,9 @@ def test_cli_honours_custom_ollama_base_url(monkeypatch) -> None:
         # and Ollama truncates the head silently below that (research
         # report 15, Ollama's own prompt_eval_count).
         num_ctx=8192,
+        decision_max_output_tokens=8192,
+        answer_max_output_tokens=2048,
+        think=None,
     )
 
 

@@ -206,3 +206,44 @@ def test_openai_client_cancel_returns_while_the_request_is_stuck(
 
     release.set()
     assert elapsed < 5
+
+
+def test_openai_chat_sends_max_tokens_only_when_budget_configured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value.choices[
+            0
+        ].message.content = "hi"
+        capped = OpenAILLMClient(model="test-model", answer_max_output_tokens=2048)
+        capped.chat([Message(role="user", content="hi")])
+        uncapped = OpenAILLMClient(model="test-model")
+        uncapped.chat([Message(role="user", content="hi")])
+
+    calls = openai.return_value.chat.completions.create.call_args_list
+    assert calls[0].kwargs["max_tokens"] == 2048
+    assert "max_tokens" not in calls[1].kwargs
+
+
+def test_openai_decision_call_sends_max_output_tokens_only_when_configured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        client = OpenAILLMClient(model="test-model", decision_max_output_tokens=8192)
+        client.chat_with_tools(
+            [Message(role="user", content="hi")],
+            [LLMToolDefinition(name="echo", description="", arguments={})],
+        )
+        plain = OpenAILLMClient(model="test-model")
+        plain.chat_with_tools(
+            [Message(role="user", content="hi")],
+            [LLMToolDefinition(name="echo", description="", arguments={})],
+        )
+
+    calls = openai.return_value.responses.create.call_args_list
+    assert calls[0].kwargs["max_output_tokens"] == 8192
+    assert "max_output_tokens" not in calls[1].kwargs

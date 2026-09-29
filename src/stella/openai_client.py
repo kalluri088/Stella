@@ -20,15 +20,27 @@ from stella.llm import (
 
 
 class OpenAILLMClient(LLMClient):
-    """Minimal chat client backed by the official OpenAI SDK."""
+    """Minimal chat client backed by the official OpenAI SDK.
+
+    The two output-token budgets are per-call-kind decode caps (report 35
+    target 1): ``answer_max_output_tokens`` bounds plain ``chat`` text and
+    ``decision_max_output_tokens`` bounds tool-call decisions. A budget of
+    ``None`` (the default) sends no cap at all, so an unconfigured client
+    behaves exactly as before.
+    """
 
     def __init__(
         self,
         model: str,
         base_url: str | None = None,
         api_key: str | None = None,
+        *,
+        answer_max_output_tokens: int | None = None,
+        decision_max_output_tokens: int | None = None,
     ) -> None:
         self.model = model
+        self.answer_max_output_tokens = answer_max_output_tokens
+        self.decision_max_output_tokens = decision_max_output_tokens
         self.client = OpenAI(
             api_key=api_key if api_key is not None else os.environ["OPENAI_API_KEY"],
             base_url=base_url,
@@ -39,11 +51,14 @@ class OpenAILLMClient(LLMClient):
         messages: list[MessageInput],
         should_cancel: CancelCheck | None = None,
     ) -> str:
+        request: dict[str, object] = {
+            "model": self.model,
+            "messages": self._messages(messages),
+        }
+        if self.answer_max_output_tokens is not None:
+            request["max_tokens"] = self.answer_max_output_tokens
         response = run_cancellable(
-            lambda: self.client.chat.completions.create(
-                model=self.model,
-                messages=self._messages(messages),
-            ),
+            lambda: self.client.chat.completions.create(**request),
             should_cancel,
         )
         return response.choices[0].message.content or ""
@@ -57,15 +72,18 @@ class OpenAILLMClient(LLMClient):
     ) -> LLMResponse:
         """Use Responses API native calls with provider-neutral normalization."""
 
+        request: dict[str, object] = {
+            "model": self.model,
+            "input": self._messages(messages),
+            "tools": [
+                self._responses_tool_definition(tool) for tool in tools
+            ],
+            "tool_choice": tool_choice.value,
+        }
+        if self.decision_max_output_tokens is not None:
+            request["max_output_tokens"] = self.decision_max_output_tokens
         response = run_cancellable(
-            lambda: self.client.responses.create(
-                model=self.model,
-                input=self._messages(messages),
-                tools=[
-                    self._responses_tool_definition(tool) for tool in tools
-                ],
-                tool_choice=tool_choice.value,
-            ),
+            lambda: self.client.responses.create(**request),
             should_cancel,
         )
         calls = tuple(

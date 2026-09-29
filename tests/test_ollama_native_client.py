@@ -349,3 +349,88 @@ def test_compat_mode_remains_default_and_untouched() -> None:
         messages=[{"role": "user", "content": "hi"}],
     )
     assert result == "hello"
+
+
+def test_native_decision_call_caps_decode_and_turns_thinking_off(
+    connections,
+) -> None:
+    connections.install({"role": "assistant", "content": "", "tool_calls": []})
+    client = make_client(
+        native=True,
+        num_ctx=8192,
+        decision_max_output_tokens=8192,
+        answer_max_output_tokens=2048,
+        think=False,
+    )
+
+    client.chat_with_tools(
+        [Message(role="user", content="hi")],
+        [LLMToolDefinition(name="echo", description="", arguments={})],
+    )
+
+    payload = sent_payload(connections.connections[-1])
+    assert payload["options"] == {"num_ctx": 8192, "num_predict": 8192}
+    assert payload["think"] is False
+
+
+def test_native_chat_uses_the_answer_budget(connections) -> None:
+    connections.install({"role": "assistant", "content": "a joke"})
+    client = make_client(
+        native=True,
+        decision_max_output_tokens=8192,
+        answer_max_output_tokens=2048,
+    )
+
+    client.chat([Message(role="user", content="tell a joke")])
+
+    payload = sent_payload(connections.connections[-1])
+    assert payload["options"] == {"num_predict": 2048}
+    # Answer prose never hides a tool decision: no thinking switch is
+    # needed per call kind — the client-level knob applies to both.
+    assert "think" not in payload
+
+
+def test_native_think_true_is_sent_explicitly(connections) -> None:
+    connections.install({"role": "assistant", "content": "x"})
+    client = make_client(native=True, think=True)
+
+    client.chat([Message(role="user", content="hi")])
+
+    assert sent_payload(connections.connections[-1])["think"] is True
+
+
+def test_native_knobs_absent_by_default_send_nothing(connections) -> None:
+    connections.install({"role": "assistant", "content": "x"})
+    client = make_client(native=True)
+
+    client.chat([Message(role="user", content="hi")])
+
+    payload = sent_payload(connections.connections[-1])
+    assert "think" not in payload
+    assert "options" not in payload
+
+
+def test_compat_decision_call_sends_max_tokens() -> None:
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value = (
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="hi", tool_calls=None
+                        )
+                    )
+                ]
+            )
+        )
+        client = OllamaLLMClient(
+            model="qwen3:4b", decision_max_output_tokens=8192
+        )
+
+        client.chat_with_tools(
+            [Message(role="user", content="hi")],
+            [LLMToolDefinition(name="echo", description="", arguments={})],
+        )
+
+    request = openai.return_value.chat.completions.create.call_args.kwargs
+    assert request["max_tokens"] == 8192

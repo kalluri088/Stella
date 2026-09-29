@@ -433,6 +433,19 @@ class Tool(ABC):
 
         return None
 
+    @property
+    def terminal(self) -> bool:
+        """Whether this tool's successful output is already user-facing text.
+
+        Report 35 target 2: when the Brain marks a call to a terminal tool
+        ``tool_final``, Stella renders the output verbatim instead of paying
+        for a second LLM call to rephrase it. Only display-ready, non-secret
+        output qualifies; the default False keeps synthesis for everything
+        else, so a tool opts in to being shown exactly as written.
+        """
+
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Shared workspace-boundary helpers. These are the only path authorities for
@@ -708,6 +721,8 @@ class EchoTool(Tool):
 class SystemInfoTool(Tool):
     """Read a small, non-sensitive subset of local system information."""
 
+    terminal = True
+
     @property
     def name(self) -> str:
         return "system_info"
@@ -751,6 +766,8 @@ class SystemInfoTool(Tool):
 
 class DateTimeTool(Tool):
     """Read the host's current local date and time."""
+
+    terminal = True
 
     @property
     def name(self) -> str:
@@ -2296,6 +2313,8 @@ class ReminderCreateTool(Tool):
 class ReminderListTool(Tool):
     """List the pending reminders stored by the trusted reminder store."""
 
+    terminal = True
+
     def __init__(self, reminders: ReminderStore) -> None:
         self.reminders = reminders
 
@@ -2889,6 +2908,12 @@ class ToolDispatcher:
 
         tool = self.get(capability)
         return tool.risk_level if tool is not None else None
+
+    def is_terminal(self, capability: str | None) -> bool:
+        """Return whether an exact capability's output may be shown verbatim."""
+
+        tool = self.get(capability)
+        return tool is not None and tool.terminal
 
     def effective_risk_level(
         self,

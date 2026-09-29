@@ -608,6 +608,53 @@ class Stella:
                                 ),
                             ),
                         )
+                    if (
+                        decision.tool_final
+                        and tool_steps == 1
+                        and tool_result.success
+                        and self.tools.is_terminal(decision.capability)
+                    ):
+                        # Terminal-tool fast path (report 35 target 2): the
+                        # Brain declared this first tool call terminal and the
+                        # tool's own output is display-ready text, so render it
+                        # verbatim and keep the second LLM call out of the turn
+                        # entirely. Failed observations fall through to honest
+                        # synthesis; approval, memory-write gating and
+                        # tool-output limits already ran above and are
+                        # unchanged.
+                        response = self._with_memory_note(
+                            tool_result.output,
+                            memory_write_denied,
+                            index_sync_failed=index_sync_failed,
+                        )
+                        decision = Decision(
+                            DecisionKind.ANSWER, content=response
+                        )
+                        trace.record(
+                            DecisionEvent(
+                                kind=decision.kind.value,
+                                capability=None,
+                                argument_keys=(),
+                                content_chars=len(response),
+                                memory_write_proposed=False,
+                            )
+                        )
+                        step_trace.append(StellaStep(decision))
+                        return StellaResult(
+                            decision,
+                            response=response,
+                            tool_result=tool_result,
+                            retrieved_memories=retrieved_memories,
+                            memory_write=memory_write,
+                            step_trace=step_trace,
+                            interaction_trace=self._complete_trace(
+                                trace,
+                                decision,
+                                response=response,
+                                memory_write=memory_write,
+                                memory_write_requested=memory_write_requested,
+                            ),
+                        )
                     if self.max_tool_steps == 1:
                         try:
                             response = synthesise(

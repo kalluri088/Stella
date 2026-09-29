@@ -42,6 +42,14 @@ class DangerousTool(RecordingTool):
         return RiskLevel.DANGEROUS
 
 
+class TerminalTool(RecordingTool):
+    """Display-ready read-only tool: output may be shown verbatim."""
+
+    name = "clock"
+    description = "Returns the time as user-facing text."
+    terminal = True
+
+
 class SequenceBrain(Brain):
     answer_content_is_final = True
 
@@ -414,3 +422,116 @@ def test_single_step_configuration_keeps_its_existing_path() -> None:
     # max_tool_steps==1 returns with the TOOL decision as metadata, as before
     assert result.decision.kind is DecisionKind.TOOL
     assert len(llm.messages) == 1
+
+
+# ---------------------------------------------------------------------------
+# terminal-tool direct render (report 35 target 2): the tool's own output is
+# the response, so the second LLM call leaves the turn entirely
+# ---------------------------------------------------------------------------
+
+
+def test_terminal_tool_final_turn_makes_no_second_llm_call() -> None:
+    brain = SequenceBrain([tool_decision("clock", True)])
+    stella, tool, llm = build(brain, tool=TerminalTool())
+
+    result = run(stella)
+
+    assert tool.arguments == [{}]
+    assert llm.messages == []  # no synthesis, no re-decision: one call total
+    assert result.response == "tool output"  # verbatim, not rephrased
+    assert result.decision.kind is DecisionKind.ANSWER
+    assert [step.decision.kind for step in result.step_trace] == [
+        DecisionKind.TOOL,
+        DecisionKind.ANSWER,
+    ]
+    kinds = [
+        event.kind
+        for event in result.interaction_trace.events
+        if type(event).__name__ == "DecisionEvent"
+    ]
+    assert kinds == ["tool", "answer"]
+
+
+def test_terminal_tool_final_works_with_a_single_step_budget() -> None:
+    brain = SequenceBrain([tool_decision("clock", True)])
+    stella, _tool, llm = build(brain, tool=TerminalTool(), max_tool_steps=1)
+
+    result = run(stella)
+
+    assert llm.messages == []
+    assert result.decision.kind is DecisionKind.ANSWER
+    assert result.response == "tool output"
+
+
+def test_failed_terminal_observation_still_synthesizes_honestly() -> None:
+    brain = SequenceBrain([tool_decision("clock", True)])
+    failing = TerminalTool(result=ToolResult(success=False, output="clock dead"))
+    stella, _tool, llm = build(brain, tool=failing)
+
+    result = run(stella)
+
+    # verbatim rendering is only for successes; failures keep the synthesis
+    # path so the model reports them with its full context
+    assert len(llm.messages) == 1
+    payload = json.loads(llm.messages[0][-1].content)
+    assert payload["tool_observations"][0]["success"] is False
+    assert result.decision.kind is DecisionKind.ANSWER
+
+
+def test_terminal_tool_without_tool_final_keeps_the_normal_flow() -> None:
+    brain = SequenceBrain(
+        [
+            tool_decision("clock", False),
+            Decision(DecisionKind.ANSWER, content="it is late"),
+        ]
+    )
+    stella, _tool, llm = build(brain, tool=TerminalTool())
+
+    result = run(stella)
+
+    assert brain.decisions == []  # re-decision happened as usual
+    assert llm.messages == []
+    assert result.response == "it is late"
+
+
+def test_non_terminal_tool_final_still_synthesizes() -> None:
+    # The registry-side guarantee: only tools that opted into `terminal`
+    # get verbatim rendering; everything else keeps the synthesis path.
+    brain = SequenceBrain([tool_decision("echo", True)])
+    stella, _tool, llm = build(brain, tool=RecordingTool())
+
+    run(stella)
+
+    assert len(llm.messages) == 1
+
+
+def test_dispatcher_reports_terminal_capabilities() -> None:
+    dispatcher = ToolDispatcher([TerminalTool(), RecordingTool(), EchoTool()])
+    assert dispatcher.is_terminal("clock") is True
+    assert dispatcher.is_terminal("record") is False
+    assert dispatcher.is_terminal("echo") is False
+    assert dispatcher.is_terminal("nonexistent") is False
+    assert dispatcher.is_terminal(None) is False
+
+
+def test_real_display_tools_declare_themselves_terminal() -> None:
+    from stella.reminders import InMemoryReminderStore
+    from stella.tools import (
+        DateTimeTool,
+        ReminderListTool,
+        SystemInfoTool,
+    )
+
+    dispatcher = ToolDispatcher(
+        [
+            DateTimeTool(),
+            SystemInfoTool(),
+            ReminderListTool(InMemoryReminderStore()),
+        ]
+    )
+    assert [dispatcher.is_terminal(name) for name in
+            ("datetime", "system_info", "reminder_list")] == [True] * 3
+    # the default is opt-in: no tool is terminal unless it says so
+    from stella.tools import MemoryListTool
+
+    assert MemoryListTool(InMemoryMemory()).terminal is False

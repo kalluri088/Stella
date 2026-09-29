@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
+from platformdirs import user_data_dir
+
 from stella.tools import ActionReceipt, RiskLevel, Tool, ToolResult
 
 # ---------------------------------------------------------------------------
@@ -128,7 +130,9 @@ def _client_from_environment(env: Mapping[str, str]) -> OutlineClient | None:
 
     Token precedence mirrors the rest of Stella's environment handling:
     ``OUTLINE_TOKEN`` wins, otherwise the server's own data directory
-    (``OUTLINE_DATA_DIR``, default ``~/.local/share/outline``) supplies
+    (``OUTLINE_DATA_DIR``, defaulting to this platform's per-user data
+    directory for the app ``outline`` — on Linux
+    ``$XDG_DATA_HOME/outline`` or ``~/.local/share/outline``) supplies
     ``outline.token``.
     """
 
@@ -138,8 +142,16 @@ def _client_from_environment(env: Mapping[str, str]) -> OutlineClient | None:
     token = (env.get("OUTLINE_TOKEN") or "").strip()
     if not token:
         data_dir = env.get("OUTLINE_DATA_DIR")
-        root = Path(data_dir).expanduser() if data_dir else (
-            Path.home() / ".local" / "share" / "outline"
+        # Same resolution the Outline server itself uses: an explicit
+        # directory wins, otherwise this platform's per-user data
+        # directory with the app name "outline" and no author segment.
+        # On Linux that is exactly ``$XDG_DATA_HOME/outline`` falling back
+        # to ``~/.local/share/outline``, so a token written by either
+        # program is still found by the other.
+        root = (
+            Path(data_dir).expanduser()
+            if data_dir
+            else Path(user_data_dir("outline", appauthor=False))
         )
         try:
             token = (root / "outline.token").read_text("utf-8").strip()

@@ -74,8 +74,8 @@ display, and can never approve a tool or change permissions.
   conversation. A cancel while an approval dialog is open denies that
   action (fail-closed) and dismisses the dialog; nothing executes.
   Every finished turn also ends with how long it took in the transcript
-  ("Stella: … (took 47 s)") — display-only, the stored conversation
-  never carries that text.
+  ("… (took 47 s)", in Stella's plain reply) — display-only, the stored
+  conversation never carries that text.
   The CLI keeps Ctrl+C as its immediate-stop equivalent.
 - Approvals: a dialog shows "Stella wants to: <capability and arguments>"
   for every `DANGEROUS` action, with Allow and Cancel, plus a read-only
@@ -133,7 +133,9 @@ The window is built around a full-height **navigation rail** (Chat,
 Memories, Reminders, History, Settings) instead of the old side
 notebook, so every panel uses the full window; the active section is
 lifted onto the content surface in the accent color. Chat is a framed
-transcript card with roomy speech bubbles and a card composer whose
+transcript card that separates roles the way a terminal does — the
+user's message is a full-width `>` blockquote band, Stella answers in
+plain left-aligned text with no label — and a card composer whose
 buttons stack beside the input; the other sections are header + card
 layouts. While a turn runs the status line shows a quiet braille
 spinner after the elapsed seconds — display only.
@@ -143,9 +145,9 @@ modelled on the Outline app Stella integrates with (the CSS custom
 properties served by the app at `127.0.0.1:8741`): dark mode
 `#141210` background, `#1F1C1A` panels, `#33302D` lines, stone text
 grays and teal accent `#2DD4BF`; light mode `#FAFAF9` background,
-white panels, `#E7E5E4` lines and teal `#0D9488`. Stella reply bubbles
-use Outline's soft teal `#134E4A` / `#CCFBF1`, reminders amber
-`#D97706`. They are defined once as `Theme`
+white panels, `#E7E5E4` lines and teal `#0D9488`. The user's quote
+band is `#292524` / `#E7E5E4` (Stella's reply carries no band),
+reminders amber `#D97706`. They are defined once as `Theme`
 dataclasses in `stella.ui` and read by every widget builder through the
 module-level `THEME`.
 The toggle sits at the bottom of the rail and switches live: the ttk

@@ -43,22 +43,23 @@
   untagged, so every internal hard break painted a stray full-width
   stripe. The fix then moved past tinted bubbles to the separation a
   terminal uses: **the user's message is a `>` blockquote** — a
-  marker on every hard line, a hanging indent, one calm band — and
-  **Stella answers in plain text** under a bold teal head. No side
-  asymmetry, no competing bands.
+  marker on every hard line and one band that spans the *whole*
+  window (the transcript Text and content frame carry no horizontal
+  padding on the chat page) — and **Stella answers in plain
+  left-aligned text**: no band, and no "Stella:" label at all.
 - **Structure, not tuned values.** `Theme` gained explicit
-  `user_quote`/`user_head`/`stella_head` fields (the retired
-  `stella_bubble` is gone: Stella has no band); the `"> "` marker and
-  the "Stella:" head can never re-collide because they are fields,
-  not derivations, and every hard newline stays untagged so a band
-  never drags past its own message.
+  `user_quote`/`user_head` fields (the retired `stella_bubble` and
+  `stella_head` are gone: Stella has neither band nor label); the
+  `"> "` marker can never blend into its band because both colors are
+  fields, not derivations, and every hard newline stays untagged so a
+  band never drags past its own message.
 - **Guarded on both sides.** `tests/test_ui_theme.py` (headless,
   always runs) pins the palette distances — it rejects the old
-  washed-out band and the old label alias numerically; a
+  washed-out band and an unreadable marker numerically; a
   display-gated widget test proves the window actually paints the
-  quote markers, the bandless reply and the untagged newlines.
-  Verified live with screenshots of a multi-line exchange in both
-  themes.
+  quote markers, the label-less bandless reply and the untagged
+  newlines. Verified live with screenshots of a multi-line exchange
+  in both themes.
 
 ### The reminders boundary: "remind me" is Stella's, always
 

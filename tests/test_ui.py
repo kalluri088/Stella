@@ -184,7 +184,7 @@ def test_window_conversation_round_trip() -> None:
             time.sleep(0.02)
         transcript = window._chat.get("1.0", "end")
         assert "> hello window" in transcript
-        assert "Stella: window reply" in transcript
+        assert "window reply" in transcript
         assert window._busy is False
     finally:
         bridge.stop()
@@ -194,18 +194,15 @@ def test_window_conversation_round_trip() -> None:
 def test_transcript_separates_roles_in_the_widget_tree() -> None:
     # The palette file guards the colors; this guards that the window
     # actually paints them: the user's message renders as a "> "
-    # blockquote on the quote band, Stella's reply as plain text under
-    # a distinct head (no band at all), and every hard newline stays
-    # untagged so a band never drags past its own message.
+    # blockquote on the quote band, and Stella's reply as plain text
+    # with no label, no band and no background of its own. Every hard
+    # newline stays untagged so a band never drags past its message.
     root, window, bridge, _ = make_window()
     try:
         chat = window._chat
         before = int(chat.index("end-1c").split(".")[0])
         window._line("You: first line\nsecond line", role="user")
         window._line("Stella: plain reply", role="stella")
-        user_head = str(chat.tag_cget("head-user", "foreground")).lower()
-        stella_head = str(chat.tag_cget("head-stella", "foreground")).lower()
-        assert user_head != stella_head
         for line in (before, before + 1, before + 3):
             # X.end is the line's newline character itself; the gap
             # lines (before + 2, before + 4) are tagged by design.
@@ -214,8 +211,13 @@ def test_transcript_separates_roles_in_the_widget_tree() -> None:
         assert "quote" in chat.tag_names(f"{before}.0")
         assert "quote" in chat.tag_names(f"{before + 1}.2")
         stella_line = before + 3
+        # No "Stella:" label survives into the painted reply, and the
+        # reply carries no band: body-stella sets no background.
+        assert chat.get(f"{stella_line}.0", f"{stella_line}.6") == "plain "
+        assert "Stella:" not in chat.get(f"{stella_line}.0", "end")
         assert "stella" in chat.tag_names(f"{stella_line}.0")
         assert "quote" not in chat.tag_names(f"{stella_line}.0")
+        assert str(chat.tag_cget("body-stella", "background")) in ("", "none")
     finally:
         bridge.stop()
         root.destroy()
@@ -430,7 +432,7 @@ def test_window_shows_elapsed_time_and_cancel_ends_turn_cleanly() -> None:
         pump(root, 0.2)
         transcript = window._chat.get("1.0", "end")
         assert "stopped that request at your cancel" in transcript
-        assert "Stella: window reply" not in transcript
+        assert "window reply" not in transcript
         assert window._status.cget("text") == ""
         assert str(window._cancel_button["state"]) == "disabled"
     finally:
@@ -492,7 +494,7 @@ def test_window_transcript_records_turn_duration() -> None:
             time.sleep(0.02)
         # A6: every completed turn says how long it took, so a slow
         # local model reads as slow, not broken.
-        assert "Stella: window reply (took " in window._chat.get(
+        assert "window reply (took " in window._chat.get(
             "1.0", "end"
         )
     finally:
@@ -551,14 +553,14 @@ def test_window_voice_round_trip_uses_the_shared_session() -> None:
         while time.monotonic() < deadline:
             root.update()
             transcript = window._chat.get("1.0", "end")
-            if "Stella: window reply" in transcript:
+            if "window reply" in transcript:
                 break
             time.sleep(0.02)
 
         # The transcript appears as user input and the reply followed the
         # exact typed conversation path — one Stella, one session.
         assert "> speak to the window" in transcript
-        assert "Stella: window reply" in transcript
+        assert "window reply" in transcript
         assert window._busy is False
         assert window._listening is False
         assert window._mic_button.cget("text") == "Listen"
@@ -630,7 +632,7 @@ def test_window_can_cancel_during_transcribing() -> None:
         assert "cancelled at your request" in transcript
         assert "Nothing was sent" in transcript
         assert "> too late" not in transcript
-        assert "Stella:" not in transcript
+        assert "window reply" not in transcript
         assert window._transcribing is False
         assert str(window._mic_cancel.cget("state")) == "disabled"
         assert window._busy is False

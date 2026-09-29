@@ -74,16 +74,15 @@ class Theme:
     error: str
     ok: str
     reminder: str
-    # The user's quote band. Stella's reply carries no band at all — the
-    # transcript separates roles as a terminal does: "> " blockquote for
-    # the user, plain text under a teal "Stella:" head for the model.
+    # The user's quote band. Stella's reply carries no band and no
+    # label at all: the transcript separates roles as a terminal does —
+    # a full-width "> " blockquote for the user, plain left-aligned
+    # text for the model.
     user_quote: str
-    # Role-label colors are explicit theme fields, not aliases of the
-    # brand accent: accent == ok in every palette, so deriving both labels
-    # from brand colors renders the ">" marker and "Stella:" in one hue and
-    # erases the role separation. Keep these two distinct in every theme.
+    # The ">" marker's color is an explicit theme field, not an alias
+    # of the brand accent: accent == ok in every palette, and a marker
+    # derived from brand fields would read as just another teal widget.
     user_head: str
-    stella_head: str
 
 
 _DARK_THEME = Theme(
@@ -105,7 +104,6 @@ _DARK_THEME = Theme(
     reminder="#d97706",
     user_quote="#292524",
     user_head="#e7e5e4",
-    stella_head="#2dd4bf",
 )
 
 _LIGHT_THEME = Theme(
@@ -130,7 +128,6 @@ _LIGHT_THEME = Theme(
     # (#f5f5f4) of the old two-band design washed out against #ffffff.
     user_quote="#e7e5e4",
     user_head="#1c1917",
-    stella_head="#0d9488",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
@@ -499,7 +496,10 @@ class StellaWindow:
         ).pack(side="bottom", padx=16, pady=(0, 10), anchor="w")
 
         content = ttk.Frame(outer)
-        content.pack(side="left", fill="both", expand=True, padx=14, pady=14)
+        # No horizontal padding here: the chat page's quote band must
+        # reach the window edge. The other pages get their margin in
+        # _show_section, where the padding is page-specific.
+        content.pack(side="left", fill="both", expand=True, padx=0, pady=14)
 
         chat = ttk.Frame(content)
         self._sections["chat"] = chat
@@ -516,7 +516,11 @@ class StellaWindow:
             highlightthickness=1,
             highlightbackground=THEME.border,
             relief="flat",
-            padx=14,
+            # No horizontal internal padding: the user's quote band is
+            # painted across the whole display line, and padx would stop
+            # it short of the window edge. Text indentation lives in the
+            # tags' lmargin instead.
+            padx=0,
             pady=14,
             font="TkTextFont",
             spacing1=4,
@@ -531,7 +535,7 @@ class StellaWindow:
         self._configure_chat_tags()
         self._status = ttk.Label(chat, text="", anchor="w",
                                  style="Status.TLabel")
-        self._status.pack(fill="x", pady=(10, 4))
+        self._status.pack(fill="x", padx=16, pady=(10, 4))
         composer = ttk.Frame(chat, style="Card.TFrame")
         composer.pack(fill="x")
         input_row = ttk.Frame(composer, style="Card.TFrame")
@@ -604,7 +608,11 @@ class StellaWindow:
         if previous is not None:
             previous.pack_forget()
         self._section = name
-        self._sections[name].pack(fill="both", expand=True)
+        # The chat page runs edge to edge so the user's quote band
+        # reaches the window border; every other page keeps the margin.
+        self._sections[name].pack(
+            fill="both", expand=True, padx=0 if name == "chat" else 14
+        )
         for key, button in self._nav_buttons.items():
             button.configure(
                 style="NavActive.TButton" if key == name else "Nav.TButton"
@@ -703,11 +711,11 @@ class StellaWindow:
         # "gap" is configured last so its background wins over the quote
         # band's on the blank spacer line.
         # Terminal-style roles: the user's message is a blockquote — a
-        # "> " marker, a hanging indent past it, and a calm full-width
-        # band (Tk paints a tagged line's background across the whole
-        # display line regardless of margins). Stella answers in plain
-        # text under a bold teal head; the roles differ by marker, band
-        # and head, never by side.
+        # "> " marker, a hanging indent past it, and a band that spans
+        # the whole window (Tk paints a tagged line's background across
+        # the full display line, and the Text carries no horizontal
+        # padding). Stella answers in plain left-aligned text with no
+        # label; marker and band are the whole separation.
         chat.tag_configure(
             "quote",
             background=THEME.user_quote,
@@ -723,14 +731,10 @@ class StellaWindow:
             spacing1=10,
             spacing3=0,
         )
-        chat.tag_configure(
-            "head-stella", foreground=THEME.stella_head, font=self._head_font
-        )
         chat.tag_configure("body-stella", foreground=THEME.text)
-        # The ">" marker and the "Stella:" head use their own explicit
-        # theme colors. accent == ok in both palettes, so deriving both
-        # from brand fields rendered them in one hue and erased the role
-        # line; the marker is a neutral and the head the brand teal.
+        # The ">" marker uses its own explicit theme field, not a brand
+        # derivation: accent == ok in both palettes, and a marker painted
+        # from brand fields would collide with everything else teal.
         chat.tag_configure(
             "head-user", foreground=THEME.user_head, font=self._head_font
         )
@@ -771,8 +775,7 @@ class StellaWindow:
         if role in ("user", "stella"):
             first, *rest = text.split("\n")
             split = first.find(": ")
-            head = first[: split + 2] if 0 < split <= 20 else ""
-            body = first[split + 2 :] if head else first
+            body = first[split + 2 :] if 0 < split <= 20 else first
             if role == "user":
                 # The "> " marker replaces the "You:" label: a quote line
                 # announces itself. Every hard line of the message gets
@@ -782,10 +785,10 @@ class StellaWindow:
                     chat.insert("end", line, ("quote", "body-user"))
                     chat.insert("end", "\n")
             else:
-                chat.insert("end", head, ("stella", "head-stella"))
-                chat.insert("end", body, ("stella", "body-stella"))
-                chat.insert("end", "\n")
-                for line in rest:
+                # Stella's reply carries no label and no band: it starts
+                # flush at the quote marker's left margin, plain, like a
+                # terminal assistant's own output.
+                for line in (body, *rest):
                     chat.insert("end", line, ("stella", "body-stella"))
                     chat.insert("end", "\n")
             # Every hard newline is deliberately untagged, not just the

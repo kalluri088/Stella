@@ -198,11 +198,13 @@ class Stella:
 
         ``on_activity`` is an optional presentation-only observer (D3):
         it is called with ``"thinking"`` just before a brain decision,
-        ``"working"`` just before a selected tool is dispatched, and
-        ``"answering"`` just before the final response is synthesized.
-        Nothing depends on it — no trace event, approval or risk
-        decision consults it, and an exception it raises is swallowed,
-        so narration can never break or bend a turn.
+        ``"working"`` just before a selected tool is dispatched (immedi-
+        ately followed by ``"calling:<capability>"`` carrying the exact
+        tool about to run), and ``"answering"`` just before the final
+        response is synthesized. Nothing depends on it — no trace event,
+        approval or risk decision consults it, and an exception it
+        raises is swallowed, so narration can never break or bend a
+        turn.
         """
 
         trace = InteractionTrace()
@@ -481,6 +483,12 @@ class Stella:
                 else:
                     executed_call_keys.add(call_key)
                     notify("working")
+                    if decision.capability:
+                        # Same moment, one richer kind for text surfaces:
+                        # the capability name is known and safe to show
+                        # (report 35 target 3 — perceived latency). Voice
+                        # narration ignores kinds without phrases.
+                        notify(f"calling:{decision.capability}")
                     tool_result, approval_denied = self._execute_tool(
                         decision.capability, arguments, trace
                     )

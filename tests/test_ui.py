@@ -24,6 +24,7 @@ from stella.app import (
     StellaSession,
     StellaSettings,
     TurnOutcome,
+    UiEvent,
     VoicePanel,
 )
 from stella.audio import TranscriptionProvider
@@ -463,6 +464,54 @@ def test_approval_dialog_shows_read_only_preview_then_answers_request() -> None:
 
 
 # ------------------------------------------------------- working feedback + cancel
+
+
+def test_activity_event_names_the_capability_on_the_status_line() -> None:
+    # Report 35 target 3: the long tool+synthesis stretch no longer reads
+    # as a dead pane — a calling:<capability> event upgrades the status
+    # line to "Stella is calling reminder list · …" and a fresh turn
+    # reverts to the generic wording.
+    root, window, bridge, _ = make_window()
+    try:
+        window._begin_turn_timer()
+        window._busy = True
+        window._render_working_status()
+        assert str(window._status.cget("text")).startswith(
+            "Stella is working · "
+        )
+
+        window._handle_event(UiEvent("activity", "calling:reminder_list"))
+        window._render_working_status()
+        assert str(window._status.cget("text")).startswith(
+            "Stella is calling reminder list · "
+        )
+
+        # A new turn clears the label; narration never sticks.
+        window._begin_turn_timer()
+        window._render_working_status()
+        assert str(window._status.cget("text")).startswith(
+            "Stella is working · "
+        )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_activity_event_carries_no_authority_and_ignores_blank_capability() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._begin_turn_timer()
+        window._busy = True
+        # a calling: event with an empty capability must not blank the
+        # status into "Stella is calling " — it falls back to working
+        window._handle_event(UiEvent("activity", "calling:"))
+        window._render_working_status()
+        assert str(window._status.cget("text")).startswith(
+            "Stella is working · "
+        )
+    finally:
+        bridge.stop()
+        root.destroy()
 
 
 def test_window_shows_elapsed_time_and_cancel_ends_turn_cleanly() -> None:

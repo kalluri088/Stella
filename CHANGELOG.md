@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The wait now says what it is doing
+
+- Report 35's third target: between the first decision and the answer a
+  turn went silent for 6-17 s. The activity observer gained a
+  `calling:<capability>` event fired the instant a validated tool is
+  about to run (app-known name, never model text), and every surface
+  uses it: the CLI prints "(Stella is calling reminder_list...)", the Tk
+  status line upgrades "Stella is working · 7 s" to "Stella is calling
+  reminder list · 7 s", and voice keeps its existing filler untouched.
+
 ### The composer remembers what you sent
 
 - Up/Down arrows walk the messages this window sent, newest first,

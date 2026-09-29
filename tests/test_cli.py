@@ -50,12 +50,76 @@ class RecordingStella:
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def process(self, context: Context) -> StellaResult:
+    def process(self, context: Context, **options) -> StellaResult:
         self.contexts.append(context)
         return StellaResult(
             decision=Decision(DecisionKind.ANSWER),
             response=f"response to {context.user_input}",
         )
+
+
+class NarratingStella(RecordingStella):
+    """Replays the activity sequence a tool turn actually produces."""
+
+    def process(self, context: Context, **options) -> StellaResult:
+        result = super().process(context, **options)
+        activity = options.get("on_activity")
+        if activity is not None:
+            for kind in (
+                "thinking",
+                "working",
+                "calling:reminder_list",
+                "thinking",
+                "answering",
+            ):
+                activity(kind)
+        return result
+
+
+def test_cli_tool_turn_narrates_the_call_and_the_answer() -> None:
+    # Report 35 target 3: no more dead silence across the multi-second
+    # tool+synthesis stretch — the status line names what is running.
+    stella = NarratingStella()
+    statuses: list[str] = []
+    inputs = iter(["what is on my list", "exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=lambda _: None,
+        status_fn=statuses.append,
+    )
+
+    assert statuses == [
+        "Stella is thinking...",
+        "Stella is calling reminder_list...",
+        "Stella is composing the answer...",
+    ]
+
+
+def test_cli_plain_answer_turn_stays_quiet() -> None:
+    # The "composing" line only earns its place after a tool ran; a
+    # direct answer keeps the single thinking line.
+    class AnsweringStella(RecordingStella):
+        def process(self, context: Context, **options) -> StellaResult:
+            result = super().process(context, **options)
+            activity = options.get("on_activity")
+            if activity is not None:
+                activity("thinking")
+                activity("answering")
+            return result
+
+    statuses: list[str] = []
+    inputs = iter(["hello there", "exit"])
+
+    run_cli(
+        AnsweringStella(),
+        input_fn=lambda _: next(inputs),
+        output_fn=lambda _: None,
+        status_fn=statuses.append,
+    )
+
+    assert statuses == ["Stella is thinking..."]
 
 
 class FixedToolBrain(Brain):
@@ -165,7 +229,7 @@ class SilentStella:
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def process(self, context: Context) -> StellaResult:
+    def process(self, context: Context, **options) -> StellaResult:
         self.contexts.append(context)
         return StellaResult(decision=Decision(DecisionKind.DO_NOTHING))
 
@@ -206,7 +270,7 @@ class InterruptingStella:
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def process(self, context: Context) -> StellaResult:
+    def process(self, context: Context, **options) -> StellaResult:
         self.contexts.append(context)
         if len(self.contexts) == 1:
             raise KeyboardInterrupt
@@ -259,7 +323,7 @@ class FlakyStella:
     def __init__(self) -> None:
         self.contexts: list[Context] = []
 
-    def process(self, context: Context) -> StellaResult:
+    def process(self, context: Context, **options) -> StellaResult:
         self.contexts.append(context)
         if len(self.contexts) == 1:
             raise ConnectionError("   connection refused\n  details here")
@@ -518,7 +582,7 @@ class TraceStella:
     def __init__(self, result: StellaResult) -> None:
         self.result = result
 
-    def process(self, context: Context) -> StellaResult:
+    def process(self, context: Context, **options) -> StellaResult:
         return self.result
 
 

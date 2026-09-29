@@ -2218,9 +2218,28 @@ def test_activity_observer_reports_turn_phases_in_order() -> None:
     )
 
     assert result.response == "done"
-    # thinking before the first decision, working before the tool runs,
-    # thinking again for the second decision, answering before synthesis.
-    assert activities == ["thinking", "working", "thinking", "answering"]
+    # thinking before the first decision, working then calling:<cap>
+    # before the tool runs (report 35 target 3), thinking again for the
+    # second decision, answering before synthesis.
+    assert activities == [
+        "thinking",
+        "working",
+        "calling:record",
+        "thinking",
+        "answering",
+    ]
+
+
+def test_activity_observer_names_the_capability_being_called() -> None:
+    stella, _ = _two_step_stella()
+    activities: list[str] = []
+
+    stella.process(Context(user_input="check it"), on_activity=activities.append)
+
+    assert "calling:record" in activities
+    # "working" stays a distinct, capability-free phase so existing voice
+    # narration (which keys on it) is unchanged
+    assert activities.index("working") < activities.index("calling:record")
 
 
 def test_broken_activity_observer_never_breaks_the_turn() -> None:

@@ -442,6 +442,7 @@ class StellaWindow:
         self._turn_started: float | None = None
         self._cancelling = False
         self._pulse = 0
+        self._turn_activity = ""
         self._dialogs: list[tk.Toplevel] = []
         self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
@@ -897,6 +898,7 @@ class StellaWindow:
         self._turn_started = time.monotonic()
         self._cancelling = False
         self._pulse = 0
+        self._turn_activity = ""
 
     def _cancel_turn(self) -> None:
         if not self._busy or self._cancelling:
@@ -1095,11 +1097,15 @@ class StellaWindow:
             return
         seconds = int(time.monotonic() - self._turn_started)
         # A quiet braille spinner says "alive" between the whole-second
-        # updates; the asserted prefix stays exactly "Stella is working · ".
+        # updates; with no activity named yet the asserted prefix stays
+        # exactly "Stella is working · ". A calling:<capability> event
+        # upgrades "working" to "calling reminder list" mid-turn, so the
+        # long tool+synthesis stretch never reads as a dead pane.
         self._pulse = (self._pulse + 1) % len(_SPINNER)
         self._status.configure(
             text=(
-                f"Stella is working · {seconds} s  "
+                f"Stella is {self._turn_activity or 'working'}"
+                f" · {seconds} s  "
                 f"{_SPINNER[self._pulse]}"
             )
         )
@@ -1108,6 +1114,10 @@ class StellaWindow:
         kind, payload = event.kind, event.payload
         if kind == "turn":
             self._handle_turn(payload)
+        elif kind == "activity":
+            # Core-known capability name, never model text.
+            phase = str(payload).removeprefix("calling:").replace("_", " ")
+            self._turn_activity = f"calling {phase}" if phase else ""
         elif kind == "reminder_delivered":
             self._line(f"Reminder: {payload}", role="reminder")
         elif kind == "memories":

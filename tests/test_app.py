@@ -591,6 +591,28 @@ def test_bridge_runs_a_turn_on_the_worker_thread() -> None:
     bridge.stop()
 
 
+def test_bridge_emits_activity_events_naming_the_called_capability() -> None:
+    # Report 35 target 3: text surfaces get the calling:<capability>
+    # event on every turn, spoken or not — the status line's source.
+    stella = make_recording_stella(
+        decisions=[
+            Decision(
+                kind=DecisionKind.TOOL,
+                capability="echo",
+                arguments={"message": "hi"},
+            )
+        ]
+    )
+    bridge = make_bridge(stella)
+
+    bridge.post_turn("echo hi")
+    events = wait_for_event(bridge, "activity")
+
+    activity = next(e.payload for e in events if e.kind == "activity")
+    assert activity == "calling:echo"
+    bridge.stop()
+
+
 def test_bridge_delivers_due_reminders_before_the_turn_event() -> None:
     store = InMemoryReminderStore()
     due = REAL_NOW + dt.timedelta(seconds=1)
@@ -791,7 +813,10 @@ def test_bridge_stays_alive_after_a_failing_turn() -> None:
             self.memory = InMemoryMemory()
 
         def process(
-            self, context: Context, should_cancel=None
+            self,
+            context: Context,
+            should_cancel=None,
+            on_activity=None,
         ) -> StellaResult:
             raise RuntimeError("provider exploded")
 

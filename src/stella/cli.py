@@ -126,7 +126,23 @@ def run_cli(
         # are delivered through the existing bounded proactivity decision.
         _deliver_due_reminders(stella, output_fn, trace=trace)
         status("Stella is thinking...")
-        outcome = session.run_turn(user_input)
+
+        narrating = {"tool_seen": False}
+
+        def narrate(kind: str, narrating: dict = narrating) -> None:
+            # D3 observer, text side: the turn used to go silent between
+            # the first decision and the answer — 6-17 s of unlabelled
+            # wait (report 35 target 3). The capability name is
+            # app-known, never model text, so it is safe to print.
+            if kind.startswith("calling:"):
+                narrating["tool_seen"] = True
+                status(f"Stella is calling {kind.removeprefix('calling:')}...")
+            elif kind == "answering" and narrating["tool_seen"]:
+                # Only after a tool did the answer get earned; turns that
+                # answer directly keep the single quiet thinking line.
+                status("Stella is composing the answer...")
+
+        outcome = session.run_turn(user_input, on_activity=narrate)
         if outcome.interrupted:
             output_fn("Stella stopped that request. Nothing was changed.")
             continue

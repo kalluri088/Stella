@@ -1788,15 +1788,23 @@ class StellaBridge:
         self._narration_dead = dead
 
         def observe(kind: str) -> None:
-            self._narrate(kind, dead)
+            # Text surfaces learn the exact capability being called the
+            # moment the core knows it (report 35 target 3); this is
+            # display-only and independent of spoken filler.
+            if kind.startswith("calling:"):
+                self._emit("activity", kind)
+            if spoken:
+                self._narrate(kind, dead)
 
         # A spoken turn gains two things and only two things: the core
         # sees the audio modality (briefer, speakable answers) and the
-        # activity observer (filler the application itself authored).
+        # activity observer (filler the application itself authored). A
+        # typed turn now also observes, but only to name the running
+        # capability on the status line — never to speak.
         outcome = session.run_turn(
             user_input,
             should_cancel=self._should_cancel,
-            on_activity=observe if spoken else None,
+            on_activity=observe,
             spoken=spoken,
         )
         self._emit("turn", outcome)

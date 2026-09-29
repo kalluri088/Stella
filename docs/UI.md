@@ -69,7 +69,10 @@ display, and can never approve a tool or change permissions.
   the draft the recall started from.
   While a turn runs, the status line counts elapsed seconds
   ("Stella is working · 12 s") so a slow local model reads as slow, not
-  broken, and a **Cancel** button appears beside Send. Cancel stops the
+  broken; once the runtime validates a tool call, the line upgrades to
+  name the capability ("Stella is calling reminder list · 7 s") — the
+  application's own knowledge, never model text — and a **Cancel**
+  button appears beside Send. Cancel stops the
   turn at the next safe point between steps and — since A7 — also
   interrupts a provider request that is still in flight: the native
   Ollama wait is abandoned within about a second and the connection

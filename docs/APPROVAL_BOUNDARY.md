@@ -125,6 +125,13 @@ the CLI application code. `no` and every other response create an explicit
 rejection, so the dispatcher does not execute the action. The LLM's structured
 response is never used as an approval.
 
+A prompt is only ever built for a call that could actually run: the runtime
+validates the capability and its arguments *before* asking, so a malformed
+proposal (missing or malformed arguments, an unknown capability) never
+interrupts the user with an approval that would execute nothing. It receives
+its deterministic parse failure as model feedback instead, and the audit
+trail still records the attempt.
+
 Safe and sensitive tools do not prompt and continue to execute through their
 existing trusted dispatch path. The CLI interaction is synchronous and
 single-action; it is not a persistent approval store, permissions framework,

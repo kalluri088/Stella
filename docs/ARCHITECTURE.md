@@ -622,6 +622,21 @@ proposal after the bound returns the deterministic limit result without
 execution or another final LLM call. The default bound of one preserves the
 single-tool flow above.
 
+A `kind=tool` decision may carry the reserved marker `"tool_final": true`
+(when calling a tool directly, the same signal is one of its arguments; the
+runtime strips it before execution). It declares that this single successful
+observation is the whole answer. The fast path runs only when the marker is
+set, the call was the turn's first and only tool step, and the tool itself
+opts in: `Tool.terminal` is a trusted runtime property, true only for
+capabilities whose successful output is already display-ready, non-secret
+text (`datetime`, `system_info`, `reminder_list`). Then the observation is
+rendered verbatim — for `terminal` tools — or synthesized in one dedicated
+final-response call, and the middle re-decision call is skipped entirely.
+Failed observations, every non-terminal capability, and the honest synthesis
+path are unchanged; approval, memory-write gating, tool-output limits,
+step trace and audit semantics run exactly as before. The marker never
+overrides approval and never applies to multi-step plans.
+
 For a normal terminal session, the CLI repeats this flow synchronously. It adds each user message and displayed response to the next context's conversation history. Typing `exit` or `quit` stops the session without sending that command through Stella.
 
 This is a direct, bounded synchronous coordinator. It does not run in the

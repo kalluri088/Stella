@@ -19,9 +19,11 @@ from stella.llm import LLMClient, LLMResponse
 from stella.persona import (
     ADDONS_HEADER,
     MAX_ADDON_BULLETS,
+    MAX_PENDING_PROPOSALS,
     MAX_PERSONA_BYTES,
     MAX_PERSONA_SNAPSHOTS,
     MAX_REFLECTION_PROPOSALS,
+    MAX_RESOLVED_PROPOSALS,
     PERSONA_INVARIANT,
     PERSONA_MANIFEST_NAME,
     PersonaLoader,
@@ -670,6 +672,45 @@ class _StubApprovalStella:
     def __init__(self, dispatcher, provider) -> None:
         self.tools = dispatcher
         self.approval_provider = provider
+
+
+def test_pending_proposal_queue_is_bounded_keeping_the_newest(tmp_path) -> None:
+    store = ReflectionStore(tmp_path / "t.db")
+    for index in range(MAX_PENDING_PROPOSALS + 25):
+        store.queue_proposal(
+            {"path": "p", "content": "c", "summary": f"proposal {index}"},
+            evidence_lines=1,
+        )
+    pending = store.pending()
+    assert len(pending) == MAX_PENDING_PROPOSALS
+    summaries = [str(p.arguments["summary"]) for p in pending]
+    assert summaries[0] == "proposal 25"  # oldest 25 dropped, newest kept
+    assert summaries[-1] == f"proposal {MAX_PENDING_PROPOSALS + 24}"
+    store.close()
+
+
+def test_resolved_proposals_are_pruned_without_touching_pending(
+    tmp_path,
+) -> None:
+    store = ReflectionStore(tmp_path / "t.db")
+    for index in range(MAX_RESOLVED_PROPOSALS + 10):
+        store.queue_proposal(
+            {"path": "p", "content": "c", "summary": f"old {index}"},
+            evidence_lines=1,
+        )
+        store.resolve(index + 1, approved=True, success=True)
+    store.queue_proposal(
+        {"path": "p", "content": "c", "summary": "still pending"},
+        evidence_lines=1,
+    )
+    resolved = store._connection.execute(
+        "SELECT COUNT(*) FROM persona_proposals WHERE status != 'pending'"
+    ).fetchone()[0]
+    assert resolved == MAX_RESOLVED_PROPOSALS
+    assert [p.arguments["summary"] for p in store.pending()] == [
+        "still pending"
+    ]
+    store.close()
 
 
 def test_drain_applies_only_approved_proposals_through_the_dispatcher(

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### The transcript database now bounds itself completely
+
+- Chat rows were already pruned to the newest 2,000 on every append,
+  but the persona-reflection proposal queue had no bound: resolved
+  rows were never read again yet accumulated forever, and pending
+  proposals grew without end if a user never opened a session to
+  review them. Enqueueing now prunes to the newest 100 pending and 50
+  resolved proposals, so the file stays ~45 KB even after a 400-entry
+  flood.
+
 ### Success paths now carry action receipts
 
 - Report 33's W4: failures always logged rich receipts, but a

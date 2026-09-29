@@ -752,6 +752,11 @@ MAX_TRANSCRIPT_TEXT_CHARS = 2_000
 MAX_REFLECTION_ROWS = 400
 MAX_REFLECTION_SIGNAL_CHARS = 1_500
 MAX_REFLECTION_PROPOSALS = 2
+# Proposal-queue bounds (see MAX_TRANSCRIPT_RECORDS above): the newest
+# pending proposals stay reviewable even if the user never drains the
+# queue, and resolved history stays small; both prune on every enqueue.
+MAX_PENDING_PROPOSALS = 100
+MAX_RESOLVED_PROPOSALS = 50
 # A cancelled turn only counts as friction when Stella had been working
 # on a genuinely long answer; short answers ending fast are not a style
 # complaint.
@@ -983,6 +988,22 @@ class ReflectionStore:
                 int(evidence_lines),
             ),
         )
+        # Newest survive: if the queue overflows, the oldest pending
+        # proposals (stale style signals) and old resolved history go
+        # first. Same on-append retention the transcript table uses.
+        for status, limit in (
+            ("pending", MAX_PENDING_PROPOSALS),
+            ("resolved", MAX_RESOLVED_PROPOSALS),
+        ):
+            clause = (
+                "status = 'pending'" if status == "pending" else "status != 'pending'"
+            )
+            self._connection.execute(
+                f"DELETE FROM persona_proposals WHERE {clause} AND id NOT IN "
+                f"(SELECT id FROM persona_proposals WHERE {clause} "
+                "ORDER BY id DESC LIMIT ?)",
+                (limit,),
+            )
         self._connection.commit()
 
     def pending(self) -> list[PersonaProposal]:

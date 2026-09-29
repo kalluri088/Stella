@@ -5,7 +5,9 @@ were only safe to copy with the process stopped. SQLite's online backup
 API removes that requirement for ``backup`` — each database is copied as
 a consistent snapshot even while Stella holds it open — while
 ``restore`` still replaces the files wholesale and therefore documents
-that Stella must not be running.
+that Stella must not be running. ``verify-backup`` answers "will this
+restore work" by checking the archive read-only, touching no live
+state.
 
 The scope is deliberately the same set of files the runtime resolves
 under ``default_data_dir()``: the state databases plus ``config.json``.
@@ -53,9 +55,14 @@ def _snapshot_database(source: Path, dest: Path) -> None:
 
 
 def _integrity_ok(path: Path) -> bool:
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
     try:
         row = connection.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.Error:
+        return False
     finally:
         connection.close()
     return row is not None and row[0] == "ok"
@@ -103,7 +110,20 @@ def run_backup(
     return 0
 
 
-def _load_manifest(backup_dir: Path, output_fn: Callable[[str], None]) -> dict | None:
+def _load_manifest(
+    backup_dir: Path,
+    output_fn: Callable[[str], None],
+    action: str = "restored",
+) -> dict | None:
+    """Read and sanity-check a backup manifest.
+
+    ``action`` names what would have happened on success, so the
+    rejection lines read correctly for both restore and verify.
+    """
+
+    def reject(reason: str) -> None:
+        output_fn(f"{reason}; nothing was {action}.")
+
     path = backup_dir / MANIFEST_NAME
     if not path.is_file():
         output_fn(f"{backup_dir} has no {MANIFEST_NAME}; it was not written by 'stella backup'.")
@@ -111,23 +131,56 @@ def _load_manifest(backup_dir: Path, output_fn: Callable[[str], None]) -> dict |
     try:
         manifest = json.loads(path.read_text())
     except (OSError, ValueError):
-        output_fn(f"{path} is not readable JSON; nothing was restored.")
+        reject(f"{path} is not readable JSON")
         return None
     if not isinstance(manifest, dict):
-        output_fn(f"{path} does not contain a manifest object; nothing was restored.")
+        reject(f"{path} does not contain a manifest object")
         return None
     if manifest.get("format") != FORMAT_VERSION:
-        output_fn(f"Unsupported backup format {manifest.get('format')!r}; nothing was restored.")
+        reject(f"Unsupported backup format {manifest.get('format')!r}")
         return None
     names = manifest.get("databases")
     if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
-        output_fn("The backup manifest lists no databases; nothing was restored.")
+        reject("The backup manifest lists no databases")
         return None
     missing = [n for n in names if not (backup_dir / n).is_file()]
     if missing:
-        output_fn(f"The backup is missing {', '.join(missing)}; nothing was restored.")
+        reject(f"The backup is missing {', '.join(missing)}")
         return None
     return manifest
+
+
+def run_verify(
+    backup_dir: str | Path,
+    output_fn: Callable[[str], None] = print,
+) -> int:
+    """Check a backup without touching any live state.
+
+    Reads the manifest, runs SQLite's integrity check on every listed
+    database exactly as stored in the archive, and confirms the config
+    the manifest promises is actually there. This is the answer to
+    "will this restore work" without the restore.
+    """
+
+    source = Path(backup_dir)
+    manifest = _load_manifest(source, output_fn, action="verified")
+    if manifest is None:
+        return 2
+    names = manifest["databases"]
+    broken = [name for name in names if not _integrity_ok(source / name)]
+    if broken:
+        output_fn(f"Integrity check failed for {', '.join(broken)}.")
+        output_fn(f"{source} is damaged; do not restore it.")
+        return 1
+    if manifest.get("config") and not (source / CONFIG_NAME).is_file():
+        output_fn(f"The manifest promises {CONFIG_NAME} but the file is missing.")
+        return 1
+    output_fn(
+        f"Backup from {manifest.get('created', 'an unknown time')} is sound: "
+        f"{len(names)} database(s) passed the integrity check"
+        + (" and config.json is present." if manifest.get("config") else ".")
+    )
+    return 0
 
 
 def run_restore(

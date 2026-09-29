@@ -199,7 +199,9 @@ With the local Ollama setup, nothing ever leaves your machine.
 `stella backup <dir>` snapshots exactly these files — every state database
 stays consistent even while Stella runs — plus the config; `stella restore
 <dir>` confirms before replacing anything and keeps what it displaced in a
-`pre-restore-*` directory.
+`pre-restore-*` directory. `stella verify-backup <dir>` answers "will this
+backup restore cleanly" by integrity-checking the archive read-only,
+without touching the live state.
 
 ## Honest limits (no marketing here)
 

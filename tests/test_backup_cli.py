@@ -1,4 +1,5 @@
-"""The `stella backup` / `stella restore` surface over the state databases."""
+"""The `stella backup` / `stella restore` / `stella verify-backup` surface
+over the state databases."""
 
 import json
 import sqlite3
@@ -10,7 +11,7 @@ from stella.app import (
     default_semantic_db,
     default_transcripts_db,
 )
-from stella.backup import DATABASES, run_backup, run_restore
+from stella.backup import DATABASES, run_backup, run_restore, run_verify
 
 
 def _make_db(path, value):
@@ -157,6 +158,77 @@ def test_restore_creates_missing_databases_without_safety_dir(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "pre-restore" not in out
     assert "Restored 2 database(s)" in out
+
+
+def test_verify_accepts_a_good_backup_without_touching_state(tmp_path, capsys):
+    state = tmp_path / "state"
+    state.mkdir()
+    _seed_state(state)
+    dest = tmp_path / "backup"
+    assert run_backup(state, dest) == 0
+    _make_db(state / "stella_memory.db", "mutated after backup")
+    assert run_verify(dest) == 0
+    out = capsys.readouterr().out
+    assert "integrity check" in out
+    assert "config.json is present" in out
+    # The verify is read-only: the live state is exactly as it was.
+    assert _rows(state / "stella_memory.db") == ["live", "mutated after backup"]
+
+
+def test_verify_flags_a_damaged_database(tmp_path, capsys):
+    state = tmp_path / "state"
+    state.mkdir()
+    _seed_state(state)
+    dest = tmp_path / "backup"
+    assert run_backup(state, dest) == 0
+    member = dest / "stella_memory.db"
+    raw = bytearray(member.read_bytes())
+    # Corrupt bytes past the header and page 1's SQLite signature so the
+    # file still opens but fails integrity_check.
+    for offset in range(100, min(len(raw), 900)):
+        raw[offset] ^= 0xFF
+    member.write_bytes(bytes(raw))
+    assert run_verify(dest) == 1
+    out = capsys.readouterr().out
+    assert "Integrity check failed" in out
+    assert "do not restore" in out
+
+
+def test_verify_flags_missing_files_the_manifest_promises(tmp_path, capsys):
+    state = tmp_path / "state"
+    state.mkdir()
+    _seed_state(state)
+    dest = tmp_path / "backup"
+    assert run_backup(state, dest) == 0
+    (dest / "stella_action_history.db").unlink()
+    assert run_verify(dest) == 2
+    assert "nothing was verified" in capsys.readouterr().out
+    (dest / "stella_action_history.db").write_bytes(
+        (state / "stella_action_history.db").read_bytes()
+    )
+    (dest / "config.json").unlink()
+    assert run_verify(dest) == 1
+    assert "config.json" in capsys.readouterr().out
+
+
+def test_cli_dispatch_verify_backup(tmp_path, monkeypatch, capsys):
+    from stella import cli
+
+    state = tmp_path / "state"
+    state.mkdir()
+    _seed_state(state)
+    monkeypatch.setattr(cli, "default_data_dir", lambda: state)
+    dest = tmp_path / "via-cli"
+    try:
+        cli.main(["backup", str(dest)])
+    except SystemExit as exit_code:
+        assert exit_code.code == 0
+    capsys.readouterr()
+    try:
+        cli.main(["verify-backup", str(dest)])
+    except SystemExit as exit_code:
+        assert exit_code.code == 0
+    assert "integrity check" in capsys.readouterr().out
 
 
 def test_cli_dispatch_backup_and_restore(tmp_path, monkeypatch, capsys):

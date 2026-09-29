@@ -19,7 +19,7 @@ from stella.app import (
     drain_persona_proposals,
 )
 from stella.audit import OUTCOMES, run_audit
-from stella.backup import run_backup, run_restore
+from stella.backup import run_backup, run_restore, run_verify
 from stella.brain import Decision
 from stella.config import resolve_settings
 from stella.llm import Message
@@ -839,6 +839,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     restore_parser.add_argument(
         "--yes", action="store_true", help="skip the confirmation prompt"
     )
+    verify_parser = commands.add_parser(
+        "verify-backup",
+        help=(
+            "check a backup directory without touching any live state "
+            "(manifest, integrity of every stored database, config presence)"
+        ),
+    )
+    verify_parser.add_argument(
+        "source", help="a directory written by 'stella backup'"
+    )
     args = parser.parse_args(argv)
     if args.command == "audit":
         raise SystemExit(
@@ -854,6 +864,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(run_backup(default_data_dir(), args.destination))
     if args.command == "restore":
         raise SystemExit(run_restore(args.source, default_data_dir(), yes=args.yes))
+    if args.command == "verify-backup":
+        raise SystemExit(run_verify(args.source))
     if args.command == "persona":
         if args.persona_command == "preset":
             raise SystemExit(apply_persona_preset(args.name, force=args.force))

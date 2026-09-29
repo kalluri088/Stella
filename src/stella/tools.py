@@ -1908,10 +1908,11 @@ class MemoryWriteTool(Tool):
         # refused — the duplicate still lands, and the honest note lets
         # the model (and user) choose memory_update instead next time.
         new_terms = memory_terms(content)
+        listed = self.memory.retrieve()
         duplicates = (
             [
                 item
-                for item in self.memory.retrieve()
+                for item in listed
                 # A rewrite of the same fact shares every content word;
                 # word order alone never changes its meaning here.
                 # frozenset equality also cannot fire on a single term,
@@ -1921,6 +1922,7 @@ class MemoryWriteTool(Tool):
             if len(new_terms) >= 2
             else []
         )
+        exact_before = sum(1 for item in listed if item.content == content)
         stored = self.memory.store(MemoryItem(content=content))
         output = "Stored the memory." if stored else "The memory could not be stored."
         if stored and duplicates:
@@ -1932,6 +1934,17 @@ class MemoryWriteTool(Tool):
                 "If the user is REVISING that fact, use memory_update "
                 "instead of keeping both copies."
             )
+        # Rule 10 receipt: the store said yes, so re-read and prove one
+        # more exact copy exists now than did before the write — a pre-
+        # existing duplicate cannot verify on its twin's strength.
+        receipt = ActionReceipt("write", "failed")
+        if stored:
+            exact_after = sum(
+                1 for item in self.memory.retrieve() if item.content == content
+            )
+            receipt = ActionReceipt(
+                "write", "verified" if exact_after > exact_before else "unverified"
+            )
         return ToolResult(
             success=stored,
             output=output,
@@ -1939,6 +1952,7 @@ class MemoryWriteTool(Tool):
                 action="write",
                 count=1 if stored else 0,
             ),
+            action_receipt=receipt,
         )
 
 
@@ -2015,6 +2029,7 @@ class MemoryUpdateTool(Tool):
                     "fact belongs in the memory_write capability instead."
                 ),
                 memory_action=MemoryAction(action="update", count=0),
+                action_receipt=ActionReceipt("update", "missing"),
             )
         target = matches[0]
         replacement = MemoryItem(
@@ -2033,6 +2048,18 @@ class MemoryUpdateTool(Tool):
             )
         else:
             output = "Updated the matching memory."
+        receipt = ActionReceipt("update", "failed")
+        if updated:
+            remaining = [
+                item for item in self.memory.retrieve() if item.id == target.id
+            ]
+            receipt = ActionReceipt(
+                "update",
+                "verified"
+                if len(remaining) == 1
+                and remaining[0].content == str(arguments["content"])
+                else "unverified",
+            )
         return ToolResult(
             success=updated,
             output=output,
@@ -2041,6 +2068,7 @@ class MemoryUpdateTool(Tool):
                 count=1 if updated else 0,
                 memory_id=target.id,
             ),
+            action_receipt=receipt,
         )
 
 
@@ -2108,21 +2136,32 @@ class MemoryForgetTool(Tool):
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
         matches = self.memory.retrieve(str(arguments["query"]))
-        deleted = sum(
-            1
-            for item in matches
+        deleted_ids = [
+            item.id for item in matches
             if item.id is not None and self.memory.delete(item.id)
-        )
+        ]
+        deleted = len(deleted_ids)
         if deleted == 0:
             return ToolResult(
                 success=False,
                 output="No stored memory matches that description.",
                 memory_action=MemoryAction(action="delete", count=0),
+                action_receipt=ActionReceipt("delete", "missing"),
             )
+        gone = {
+            item.id for item in self.memory.retrieve() if item.id is not None
+        }
+        receipt = ActionReceipt(
+            "delete",
+            "verified"
+            if all(memory_id not in gone for memory_id in deleted_ids)
+            else "unverified",
+        )
         return ToolResult(
             success=True,
             output=f"Removed {deleted} matching memories.",
             memory_action=MemoryAction(action="delete", count=deleted),
+            action_receipt=receipt,
         )
 
 
@@ -2229,7 +2268,14 @@ class ReminderCreateTool(Tool):
             return ToolResult(
                 success=False,
                 output="The reminder could not be created.",
+                action_receipt=ActionReceipt("create", "failed"),
             )
+        # Rule 10 receipt: re-read the pending set, because W2's duplicate
+        # re-proposals came exactly from the model (and the trail) never
+        # seeing proof that the first create landed.
+        landed = any(
+            pending.id == reminder.id for pending in self.reminders.pending()
+        )
         return ToolResult(
             success=True,
             output=(
@@ -2240,6 +2286,9 @@ class ReminderCreateTool(Tool):
                 action="create",
                 reminder_id=reminder.id,
                 content_chars=len(reminder.content),
+            ),
+            action_receipt=ActionReceipt(
+                "create", "verified" if landed else "unverified"
             ),
         )
 
@@ -2393,6 +2442,7 @@ class ReminderCancelTool(Tool):
             return ToolResult(
                 success=False,
                 output="No pending reminder matches that description.",
+                action_receipt=ActionReceipt("cancel", "missing"),
             )
         if len(matches) > 1:
             return ToolResult(
@@ -2408,7 +2458,11 @@ class ReminderCancelTool(Tool):
             return ToolResult(
                 success=False,
                 output="The reminder could not be cancelled.",
+                action_receipt=ActionReceipt("cancel", "failed"),
             )
+        gone = all(
+            pending.id != target.id for pending in self.reminders.pending()
+        )
         return ToolResult(
             success=True,
             output=(
@@ -2418,6 +2472,9 @@ class ReminderCancelTool(Tool):
                 action="cancel",
                 reminder_id=target.id,
                 content_chars=len(target.content),
+            ),
+            action_receipt=ActionReceipt(
+                "cancel", "verified" if gone else "unverified"
             ),
         )
 

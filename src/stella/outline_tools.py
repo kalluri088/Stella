@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
-from stella.tools import RiskLevel, Tool, ToolResult
+from stella.tools import ActionReceipt, RiskLevel, Tool, ToolResult
 
 # ---------------------------------------------------------------------------
 # the HTTP client (stdlib urllib, injectable transport for tests)
@@ -738,6 +738,7 @@ class OutlineCreateTool(Tool):
                                 f"no Outline project titled {json.dumps(project_title)};"
                                 " create it first or drop the project argument"
                             ),
+                            action_receipt=ActionReceipt("create", "missing"),
                         )
                 task_body: dict[str, object] = {
                     "title": title,
@@ -800,9 +801,19 @@ class OutlineCreateTool(Tool):
                     "/api/v1/water",
                     body={"amount_ml": arguments["amount_ml"]},
                 )
+                receipt = (
+                    ActionReceipt(
+                        "create",
+                        "verified"
+                        if isinstance(row, Mapping)
+                        and isinstance(row.get("id"), int)
+                        else "unverified",
+                    )
+                )
                 return ToolResult(
                     success=True,
                     output=f"Logged {arguments['amount_ml']} ml of water in Outline.",
+                    action_receipt=receipt,
                 )
             if kind == "timer":
                 row = client.request(
@@ -826,7 +837,18 @@ class OutlineCreateTool(Tool):
             row = client.request("POST", "/api/v1/people", body={"name": title})
             return _created(kind, row, None)
         except OutlineError as error:
-            return ToolResult(success=False, output=str(error))
+            # Unreachable server means the POST may have landed anyway:
+            # only a rejection from the server itself is a true failure.
+            status = (
+                "unverified"
+                if "could not be reached" in str(error)
+                else "failed"
+            )
+            return ToolResult(
+                success=False,
+                output=str(error),
+                action_receipt=ActionReceipt("create", status),
+            )
 
     def _project_id_by_title(self, title: str) -> int | None:
         return _entity_id_by_title(self._client, "/api/v1/projects", title)
@@ -834,7 +856,17 @@ class OutlineCreateTool(Tool):
 
 def _created(kind: str, row: object, due_at: int | None) -> ToolResult:
     if not isinstance(row, Mapping):
-        return ToolResult(success=False, output="Outline returned no item.")
+        return ToolResult(
+            success=False,
+            output="Outline returned no item.",
+            action_receipt=ActionReceipt("create", "failed"),
+        )
+    # The POST response is the stored row, read back by the server from
+    # its own tables: an integer id is the proof the row exists (Rule 10).
+    receipt = ActionReceipt(
+        "create",
+        "verified" if isinstance(row.get("id"), int) else "unverified",
+    )
     label = row.get("title") or row.get("name") or row.get("label") or ""
     output = f"Created {kind} #{row.get('id')} {json.dumps(str(label))} in Outline."
     if due_at is not None:
@@ -844,7 +876,7 @@ def _created(kind: str, row: object, due_at: int | None) -> ToolResult:
     tags = row.get("tags")
     if isinstance(tags, list) and tags:
         output += " Tagged " + ", ".join(str(tag) for tag in tags[:5]) + "."
-    return ToolResult(success=True, output=_line(output))
+    return ToolResult(success=True, output=_line(output), action_receipt=receipt)
 
 
 # ---------------------------------------------------------------------------
@@ -1137,7 +1169,24 @@ class OutlineUpdateTool(Tool):
             )
             return _updated(kind, item_id, action, row, "")
         except OutlineError as error:
-            return ToolResult(success=False, output=str(error))
+            if kind == "link":
+                receipt_action = (
+                    "link" if action == "attach" else "unlink"
+                )
+            else:
+                receipt_action = "update"
+            # Same rule as outline_create: an unreachable server leaves the
+            # mutation's fate unknown, which is "unverified", not "failed".
+            status = (
+                "unverified"
+                if "could not be reached" in str(error)
+                else "failed"
+            )
+            return ToolResult(
+                success=False,
+                output=str(error),
+                action_receipt=ActionReceipt(receipt_action, status),
+            )
 
     def _link(self, arguments: dict[str, object]) -> ToolResult:
         person = str(arguments["person"]).strip()
@@ -1155,15 +1204,24 @@ class OutlineUpdateTool(Tool):
                         f"no Outline person named {json.dumps(person)};"
                         " create one first (outline_create kind=person)"
                     ),
+                    action_receipt=ActionReceipt("link", "missing"),
                 )
-            client.request(
+            created = client.request(
                 "POST",
                 "/api/v1/links",
                 body={"person_id": person_id, "owner_kind": to, "owner_id": item_id},
             )
+            receipt = ActionReceipt(
+                "link",
+                "verified"
+                if isinstance(created, Mapping)
+                and isinstance(created.get("id"), int)
+                else "unverified",
+            )
             return ToolResult(
                 success=True,
                 output=_line(f'Linked "{person}" to Outline {to} #{item_id}.'),
+                action_receipt=receipt,
             )
         rows = _rows(
             client.request(
@@ -1186,11 +1244,20 @@ class OutlineUpdateTool(Tool):
                 output=_line(
                     f'"{person}" is not linked to Outline {to} #{item_id}.'
                 ),
+                action_receipt=ActionReceipt("unlink", "missing"),
             )
-        client.request("DELETE", f"/api/v1/links/{link_row['id']}")
+        link_id = int(link_row["id"])
+        removed = client.request("DELETE", f"/api/v1/links/{link_id}")
+        receipt = ActionReceipt(
+            "unlink",
+            "verified"
+            if isinstance(removed, Mapping) and removed.get("deleted") is True
+            else "unverified",
+        )
         return ToolResult(
             success=True,
             output=_line(f'Unlinked "{person}" from Outline {to} #{item_id}.'),
+            action_receipt=receipt,
         )
 
 
@@ -1205,7 +1272,17 @@ def _updated(
     kind: str, item_id: int, action: str, row: object, detail: str
 ) -> ToolResult:
     if not isinstance(row, Mapping):
-        return ToolResult(success=False, output="Outline returned no item.")
+        return ToolResult(
+            success=False,
+            output="Outline returned no item.",
+            action_receipt=ActionReceipt("update", "failed"),
+        )
+    # The PATCH response is the server's re-read of the row: an id that
+    # equals the item we asked to change is the proof it exists changed.
+    receipt = ActionReceipt(
+        "update",
+        "verified" if row.get("id") == item_id else "unverified",
+    )
     title = row.get("title") or row.get("label") or ""
     suffix = f" ({detail})" if detail else ""
     return ToolResult(
@@ -1214,6 +1291,7 @@ def _updated(
             f"Updated Outline {kind} #{item_id} {json.dumps(str(title))}:"
             f" {action}.{suffix}"
         ),
+        action_receipt=receipt,
     )
 
 

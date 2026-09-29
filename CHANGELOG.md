@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Success paths now carry action receipts
+
+- Report 33's W4: failures always logged rich receipts, but a
+  *successful* memory write/update/forget, reminder create/cancel, or
+  Outline mutation landed `action_receipt: null` — so `stella audit`
+  had no proof the action happened, and a model that couldn't see its
+  own success re-proposed reminder creates. Every mutation success
+  path now re-reads the resulting state and records a
+  `verified`/`unverified` receipt; missing targets record `missing`,
+  and an unreachable Outline server records `unverified` rather than
+  falsely `failed`.
+
 ## 1.4.0 — 2026-09-29
 
 ### Voice helpers die with Stella

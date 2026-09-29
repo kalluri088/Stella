@@ -21,6 +21,7 @@ import threading
 from collections.abc import Mapping
 from pathlib import Path
 
+from stella.childproc import guarded_popen
 from stella.event_bus import Event, TierOneUnavailable
 
 RUNNER_PATH = Path(__file__).resolve().parent / "laya_runner.py"
@@ -109,7 +110,7 @@ class LayaJudge:
         if self._process is not None:
             return
         try:
-            process = subprocess.Popen(
+            process = guarded_popen(
                 [self._python, str(self._runner_path)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,

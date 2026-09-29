@@ -28,6 +28,7 @@ import urllib.error
 import urllib.request
 from typing import Self
 
+from stella.childproc import guarded_popen
 from stella.ollama_client import OllamaLLMClient
 
 DEFAULT_LLAMA_SERVER_BINARY = "llama-server"
@@ -142,13 +143,13 @@ class LlamaBrainServer:
                 )
             log_handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
                 mode="wb",
-                prefix="stella-brain-",
+                prefix=f"stella-brain-{os.getpid()}-",
                 suffix=".log",
                 delete=False,
             )
             self._log_path = log_handle.name
             try:
-                process = subprocess.Popen(
+                process = guarded_popen(
                     self.command,
                     stdin=subprocess.DEVNULL,
                     stdout=log_handle,

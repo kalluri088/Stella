@@ -32,6 +32,7 @@ from stella.audio_output import (
 )
 from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
+from stella.childproc import sweep_orphaned_children
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
     Context,
@@ -1218,6 +1219,13 @@ def build_voice(settings: StellaSettings) -> VoicePanel:
     a misconfigured transcription or speech command.
     """
 
+    try:
+        # Report 34's backstop: helpers that outlived a SIGKILLed Stella
+        # (or predate PDEATHSIG arming) are reaped before this session's
+        # voice fleet starts. Best-effort cleanup, never a startup risk.
+        sweep_orphaned_children()
+    except Exception:  # noqa: BLE001, S110 - cleanup must not break voice
+        pass
     recorder = SubprocessRecorder()
     player = SubprocessPlayer()
     input_notice: str | None = None

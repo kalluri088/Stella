@@ -34,6 +34,7 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+from stella.childproc import guarded_popen
 from stella.voice import VoiceError, _cancel_process_tree
 
 __all__ = [
@@ -244,7 +245,7 @@ class BargeInListener:
                 return
             self._judge.reset()
             try:
-                process = subprocess.Popen(
+                process = guarded_popen(
                     self._command,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,

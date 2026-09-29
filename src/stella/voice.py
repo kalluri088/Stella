@@ -29,6 +29,7 @@ from stella.audio_output import (
     SpeechOutput,
     SpeechProvider,
 )
+from stella.childproc import guarded_popen
 from stella.context import InputModality, InputPart
 
 __all__ = [
@@ -147,7 +148,7 @@ class SubprocessRecorder(Recorder):
         with self._lock:
             if self._process is not None:
                 raise VoiceError("Stella is already listening.")
-            self._directory = tempfile.mkdtemp(prefix="stella-voice-")
+            self._directory = tempfile.mkdtemp(prefix=f"stella-voice-{os.getpid()}-")
             self._path = os.path.join(self._directory, "capture.wav")
             argv = (
                 ["pw-record", self._path]
@@ -155,7 +156,7 @@ class SubprocessRecorder(Recorder):
                 else ["arecord", "-q", "-f", "cd", "-t", "wav", self._path]
             )
             try:
-                self._process = subprocess.Popen(
+                self._process = guarded_popen(
                     argv,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -247,7 +248,7 @@ class SubprocessPlayer(Player):
             if self._process is not None:
                 raise VoiceError("Stella is already speaking.")
             try:
-                process = subprocess.Popen(
+                process = guarded_popen(
                     argv,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
@@ -324,7 +325,7 @@ class CommandTranscriptionProvider(TranscriptionProvider):
             raise VoiceError("the recording has no readable reference.")
         argv = [part.replace("{input}", audio.reference) for part in self._template]
         try:
-            process = subprocess.Popen(
+            process = guarded_popen(
                 argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -419,7 +420,7 @@ class CommandSpeechProvider(SpeechProvider):
             )
         self._template = list(template)
         self._timeout = timeout
-        self._directory = tempfile.mkdtemp(prefix="stella-speech-")
+        self._directory = tempfile.mkdtemp(prefix=f"stella-speech-{os.getpid()}-")
         self._counter = 0
         self._process: subprocess.Popen[str] | None = None
         self._cancel_requested = False
@@ -447,7 +448,7 @@ class CommandSpeechProvider(SpeechProvider):
             for part in self._template
         ]
         try:
-            process = subprocess.Popen(
+            process = guarded_popen(
                 argv,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -525,7 +526,7 @@ class ResidentSpeechProvider(SpeechProvider):
         self._command = list(command)
         self._timeout = timeout
         self._ready_timeout = ready_timeout
-        self._directory = tempfile.mkdtemp(prefix="stella-speech-")
+        self._directory = tempfile.mkdtemp(prefix=f"stella-speech-{os.getpid()}-")
         self._counter = 0
         self._request_id = 0
         self._process: subprocess.Popen[str] | None = None
@@ -605,7 +606,7 @@ class ResidentSpeechProvider(SpeechProvider):
         if self._process is not None:
             self._retire_locked()
         try:
-            process = subprocess.Popen(
+            process = guarded_popen(
                 self._command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -713,7 +714,7 @@ class OpenAISpeechProvider(SpeechProvider):
         self._client = client
         self._model = model
         self._voice = voice
-        self._directory = tempfile.mkdtemp(prefix="stella-speech-")
+        self._directory = tempfile.mkdtemp(prefix=f"stella-speech-{os.getpid()}-")
         self._counter = 0
 
     def speak(self, output: SpeechOutput) -> SpeechArtifact:

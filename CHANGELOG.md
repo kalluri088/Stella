@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Voice helpers die with Stella
+
+- Every subprocess Stella spawns (recorder, player, barge-in ear,
+  speech/transcription commands, the judge interpreter, llama-server)
+  is now armed with `PR_SET_PDEATHSIG`/`SIGKILL`, so a SIGKILLed
+  Stella can no longer leave `pw-record` orphans writing capture files
+  forever. A boot sweep backs this up: it kills marked children whose
+  Stella is gone and reclaims stale `stella-voice-*`/`stella-speech-*`
+  /`stella-brain-*` temporary directories — including leftovers from
+  pre-PDEATHSIG builds — while protecting any file a live sibling
+  instance still owns.
+
 ### `stella backup` / `stella restore`
 
 - The state databases (memory, reminders, action history, transcripts,

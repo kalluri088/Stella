@@ -36,6 +36,13 @@ unbounded audit state. The durable store is metadata-only: it never contains
 file contents or tool output, and the desktop window shows it in the History
 tab (newest first, capability plus one outcome word).
 
+The terminal counterpart is `stella audit`: it prints the newest records
+(oldest last), filters by capability substring and by outcome
+(`success`, `failure`, `denied`, `approved`; a denial outranks the
+execution fields), accepts `--last N` and `--json` for scripts, and
+opens the database read-only, so reviewing the trail never competes
+with a running session or creates state.
+
 ## Runtime flow
 
 ```text
@@ -71,7 +78,8 @@ newest 256 dispatch attempts remain, in memory or on disk.
 
 This is not a general observability framework. Stella does not yet provide
 structured log sinks, user identity, authentication, configurable redaction
-policies, audit search, or security monitoring. Those decisions should be
+policies, or security monitoring (the newest-window `stella audit` filtering
+is local review, not a search backend). Those decisions should be
 made before shared multi-user operation or broader system-affecting
 capabilities are introduced.
 

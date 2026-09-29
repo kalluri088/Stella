@@ -9,7 +9,7 @@ The rule she never breaks: **nothing that changes your system happens without
 your explicit approval.** And she never claims something worked unless she
 checked that it did.
 
-## What she can do (as of 1.2.0)
+## What she can do (as of 1.3.0)
 
 - **Chat** — a desktop window or the terminal, with your choice of model.
 - **Remember** — say "remember that …" and she asks first; the Memories tab
@@ -52,8 +52,19 @@ checked that it did.
   `stella reflect` turns your observed friction ("too long", cancelled
   rambles) into at most two style proposals, surfaced as approval
   prompts. Reflection never writes on its own. See `docs/PERSONA.md`.
+- **Opt-in tool families** — three gates, each a Settings checkbox or an
+  environment variable: Outline (`STELLA_OUTLINE`) lets her create, search
+  and update your tasks over Outline's local API; desktop
+  (`STELLA_OS_TOOLS`, Hyprland only) lets her read the screen, focus
+  windows and type; web (`STELLA_WEB`) adds search and fetch. Every one
+  of their calls is still an approval prompt.
+  See `docs/WEB.md` and the capability sections of
+  `docs/ARCHITECTURE.md`.
 - **Show her work** — a History tab lists what she recently did, kept
-  between launches (names and outcomes only, never file contents). While a
+  between launches (names and outcomes only, never file contents). The
+  terminal prints the same durable trail with `stella audit` —
+  `--last N`, `--capability`, `--outcome denied`, or `--json` (details in
+  `docs/AUDIT_LOGGING.md`). While a
   turn is running you see it working with elapsed seconds, and a Cancel
   button stops a turn that is taking too long.
 
@@ -148,6 +159,7 @@ development, or running several configurations side by side:
 | `STELLA_SEMANTIC_PROVIDER` | Recall index: `local-hash`, `ollama` or `minilm` (`stella[embed]` extra) | `local-hash` |
 | `STELLA_EMBED_MODEL` | Ollama embedding model name | `nomic-embed-text` |
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
+| `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 
 Normal users never need any of these.
@@ -181,6 +193,10 @@ word-shape hash, by your local Ollama server, or by the CPU MiniLM model.
 No
 telemetry, no accounts, no cloud sync.
 With the local Ollama setup, nothing ever leaves your machine.
+`stella backup <dir>` snapshots exactly these files — every state database
+stays consistent even while Stella runs — plus the config; `stella restore
+<dir>` confirms before replacing anything and keeps what it displaced in a
+`pre-restore-*` directory.
 
 ## Honest limits (no marketing here)
 

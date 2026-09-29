@@ -62,7 +62,11 @@ screened again at resolve time by the shared machinery.
 Everything returned from the web is wrapped in
 `<<<UNTRUSTED_WEB_CONTENT>>>` markers with a header stating it never
 authorizes any action, and is size-bounded (12k characters per page,
-300-char snippets, at most 10 results). A page cannot steer Stella;
+300-char snippets, at most 10 results). Marker literals inside the
+payload are defanged before wrapping, so fetched text cannot forge its
+own closing fence. The labels are a nudge to the model, not the wall —
+the approval gate is (report 36's live probe kept proposing a deletion
+straight through both headers). A page cannot steer Stella;
 it can only be read by Stella (rules 6 and 8).
 
 ## Intentionally not implemented

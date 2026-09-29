@@ -316,7 +316,8 @@ that registers approved tools by exact `Tool.name`, rejects duplicate names,
 performs lookup and validation, and reads the trusted risk classification
 before execution. `DANGEROUS` tools additionally require an exact
 application-produced `ToolApproval`; missing or mismatched approval fails
-closed. The normal CLI registers eighteen capabilities: the safe
+closed. The normal CLI registers this core of capabilities, given by name
+rather than count so the doc cannot drift: the safe
 `DateTimeTool` and `SystemInfoTool`, the workspace-scoped filesystem and
 workspace tools (`filesystem_read` is `SENSITIVE`; `filesystem_write`,
 `filesystem_edit` and `filesystem_delete` are `DANGEROUS` with exact approval),
@@ -327,7 +328,8 @@ memory), the reminder tools `reminder_create` (`DANGEROUS`), `reminder_list`
 (`SENSITIVE`), and `reminder_cancel` (`DANGEROUS`) managing the user's own
 one-shot reminders through a trusted `stella.reminders` store (see
 `REMINDERS.md`), and `PersonaEditTool` (`DANGEROUS`, limited to the two
-persona files; see `PERSONA.md`). `EchoTool` exists for tests but is
+persona files; see `PERSONA.md`). The opt-in Outline, web and desktop tools
+below add to this core only when their gates are open. `EchoTool` exists for tests but is
 deliberately unregistered: an echo capability lets a confused model "succeed"
 by parroting the user. Their outputs stay user-facing: remembered content without internal
 database ids, an honest "No stored memories." when empty, a failure when no
@@ -493,7 +495,8 @@ reached a focus-confirmed window, but the application's reaction is
 unknowable from the compositor. `screen_read` bounds its OCR text
 (`MAX_SCREEN_TEXT_CHARS`) and masks obvious credentials before the model
 sees them, and pixels never persist. Registration is doubly gated — an
-explicit settings flag *and* a real session signature with `hyprctl`, `grim`,
+explicit settings flag (`os_tools_enabled`, env override `STELLA_OS_TOOLS`)
+*and* a real session signature with `hyprctl`, `grim`,
 `tesseract` and `wtype` on `PATH` — so the model never sees a capability
 that could only fail. Risk levels stay application-owned: reads and focus
 are `SENSITIVE`, typing is `DANGEROUS`, all three route through the existing

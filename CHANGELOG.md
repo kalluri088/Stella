@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### The quote band finally spans the whole window
+
+- A short message like `> Hi` wore a band only as wide as its text.
+  Tk stretches a tagged line's background to the full display width
+  only when the line's newline character itself carries the tag, and
+  the transcript deliberately left every newline untagged. Each
+  quote/reply line's newline now carries its own line tag (verified
+  with a pixel-measured probe), so the band runs edge to edge for
+  messages of any length, and the widget test pins the newline tags
+  instead of their absence.
+
 ### Malformed tool calls can no longer interrupt you for approval
 
 - Report 33's W5: an empty-argument or `{"arguments":…,"function":…}`

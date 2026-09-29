@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Malformed tool calls can no longer interrupt you for approval
+
+- Report 33's W5: an empty-argument or `{"arguments":…,"function":…}`
+  envelope from the model used to render a real "approve?" prompt that
+  then executed nothing. The dispatcher now validates before the
+  approval prompt is ever built — uncallable calls get a parse failure
+  as the model's feedback (still audited), and only calls that could
+  actually run are shown to you.
+
 ### The transcript database now bounds itself completely
 
 - Chat rows were already pruned to the newest 2,000 on every append,

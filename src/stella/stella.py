@@ -968,6 +968,18 @@ class Stella:
         # effective risk after validation), while a DANGEROUS floor is
         # required approval regardless, so approval can never go missing.
         approval_required = self.tools.requires_approval(capability, arguments)
+        # W5 (report 33): a call that can never execute must never be
+        # user-visible as "approve?". Malformed model output — an empty
+        # argument object, a wrapped {"arguments":…,"function":…}
+        # envelope — used to prompt first and fail in the dispatcher
+        # after, so the user "approved" nothing. Validate the exact way
+        # the dispatcher will; on failure skip the prompt and let the
+        # dispatcher's deterministic rejection (and its audit row) be
+        # the model's parse feedback.
+        if approval_required:
+            tool = self.tools.get(capability)
+            if tool is not None and not tool.validate_arguments(arguments):
+                approval_required = False
         approval_decision: bool | None = None
         if (
             approval_required

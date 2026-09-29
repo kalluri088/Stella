@@ -575,11 +575,22 @@ class StellaWindow:
         )
         self._cancel_button.pack(fill="x", pady=(6, 0))
         self._input.bind("<Control-Return>", lambda _event: self._send())
+        # Terminal-style recall: Up/Down walk the messages this window
+        # sent, but only when the cursor sits on the first (Up) or last
+        # (Down) line, so multi-line editing keeps normal cursor keys.
+        self._sent_history: list[str] = []
+        self._history_pos: int | None = None
+        self._history_draft = ""
+        self._input.bind("<Up>", lambda _event: self._recall(-1))
+        self._input.bind("<Down>", lambda _event: self._recall(1))
         hint_row = ttk.Frame(composer, style="Card.TFrame")
         hint_row.pack(fill="x", padx=10, pady=(0, 6))
         ttk.Label(
             hint_row,
-            text="Ctrl+Enter sends · Enter adds a new line",
+            text=(
+                "Ctrl+Enter sends · Enter adds a new line "
+                "· ↑/↓ recall what you sent"
+            ),
             style="CardDim.TLabel",
         ).pack(side="left")
         self._build_voice_row(composer, bridge)
@@ -831,11 +842,56 @@ class StellaWindow:
         if not user_input or self._busy:
             return
         self._input.delete("1.0", "end")
+        if not self._sent_history or self._sent_history[-1] != user_input:
+            self._sent_history.append(user_input)
+        self._history_pos = None
+        self._history_draft = ""
         self._line(f"You: {user_input}", role="user")
         self._busy = True
         self._begin_turn_timer()
         self._status.configure(text="Stella is working · 0 s")
         self._bridge.post_turn(user_input)
+
+    def _recall(self, direction: int) -> str:
+        # Up (-1) / Down (+1) through what this window sent. Returning
+        # an empty string lets the Text's normal cursor movement happen
+        # instead: recall only owns the arrow when the cursor is
+        # already on the very first (Up) or very last (Down) line, so
+        # editing a multi-line draft is never hijacked.
+        if not self._sent_history:
+            return ""
+        line, _ = self._input.index("insert").split(".")
+        last_line = int(self._input.index("end-1c").split(".")[0])
+        if direction < 0 and int(line) != 1:
+            return ""
+        if direction > 0 and int(line) != last_line:
+            return ""
+        if direction > 0 and self._history_pos is None:
+            return ""
+        if self._history_pos is None:
+            self._history_draft = self._input.get("1.0", "end").rstrip("\n")
+            self._history_pos = 0
+        else:
+            # pos counts back from the newest entry: Up walks older
+            # (pos grows), Down walks newer (pos shrinks).
+            self._history_pos -= direction
+            if self._history_pos < 0:
+                # Back past the newest entry: restore the draft the
+                # recall started from, and stop browsing.
+                self._history_pos = None
+        if self._history_pos is None:
+            text = self._history_draft
+            self._history_draft = ""
+        else:
+            self._history_pos = min(
+                self._history_pos, len(self._sent_history) - 1
+            )
+            text = self._sent_history[-1 - self._history_pos]
+        self._input.delete("1.0", "end")
+        if text:
+            self._input.insert("1.0", text)
+        self._input.mark_set("insert", "end-1c")
+        return "break"
 
     def _begin_turn_timer(self) -> None:
         self._turn_started = time.monotonic()

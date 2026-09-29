@@ -191,6 +191,60 @@ def test_window_conversation_round_trip() -> None:
         root.destroy()
 
 
+def test_input_recall_walks_sent_messages_like_a_terminal() -> None:
+    root, window, bridge, _ = make_window()
+
+    def send(text: str) -> None:
+        window._input.insert("1.0", text)
+        window._send()
+        deadline = time.monotonic() + 5
+        while window._busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+
+    def typed() -> str:
+        return window._input.get("1.0", "end").rstrip("\n")
+
+    try:
+        send("first message")
+        send("second message")
+        assert typed() == ""
+        # Up walks newest-first and clamps at the oldest entry.
+        assert window._recall(-1) == "break"
+        assert typed() == "second message"
+        window._recall(-1)
+        assert typed() == "first message"
+        window._recall(-1)
+        assert typed() == "first message"
+        # Down walks back; past the newest entry the recall started
+        # from, the untouched draft returns.
+        window._recall(1)
+        assert typed() == "second message"
+        assert window._recall(1) == "break"
+        assert typed() == ""
+        # A draft is stashed on the first Up, not lost to it.
+        window._input.insert("1.0", "half-typed")
+        window._recall(-1)
+        assert typed() == "second message"
+        window._recall(1)
+        assert typed() == "half-typed"
+        # Multi-line editing keeps its cursor keys: Up on a lower line
+        # and Down with nothing being browsed both fall through.
+        window._input.delete("1.0", "end")
+        window._input.insert("1.0", "one\ntwo")
+        window._input.mark_set("insert", "2.0")
+        assert window._recall(-1) == ""
+        window._input.mark_set("insert", "end-1c")
+        assert window._recall(1) == ""
+        # Repeats are stored once, like every shell.
+        send("again")
+        send("again")
+        assert window._sent_history.count("again") == 1
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_transcript_separates_roles_in_the_widget_tree() -> None:
     # The palette file guards the colors; this guards that the window
     # actually paints them: the user's message renders as a "> "

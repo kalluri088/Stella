@@ -602,8 +602,9 @@ item is still awaiting implementation:
   caps. *Implemented 2026-09-28 as `stella.web_tools` (`web_search`,
   `web_fetch`) behind `STELLA_WEB`, with `ddgs` shipped as the optional
   `web` extra and a runtime `WebBudget`; see `docs/WEB.md`. The live
-  key-path run from `src/` is still worth doing once, like every model
-  claim here.*
+  key-path run from `src/` happened 2026-09-29 with a fresh key —
+  search, recency and fetch all behaved through TinyFish — so every
+  Stage-E claim is now live-exercised.*
 - **E2. Tier-0 pre-router (Cactus Needle 3 + LoRA).** Experimental,
   NOT shipped, and never wired into `src/` before its decision card
   exists. Open blockers per report 23: false-call rate (corpus v2

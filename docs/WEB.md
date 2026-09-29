@@ -92,7 +92,10 @@ key. Beyond the suite, the keyless paths were run live from `src/` on
 a public page came back marker-wrapped, and with no key and no extra
 the search answered the structured "web is off". A dead TinyFish key
 was rejected as a clean `INVALID_API_KEY` failure — the error shape
-the fakes simulate. The TinyFish request/response shapes themselves
-are the report-22 spike's live 5/5 of 2026-09-27; the provider-side
-key expired afterward, so the keyed path still needs one live pass
-with a fresh key.
+the fakes simulate — and after a fresh key was installed the same
+day, the keyed path ran live too: TinyFish search returned real
+titled/link/snippet rows through the same envelope, a
+`recency_minutes` search answered the structured "no results", and
+TinyFish fetch came back marker-wrapped with the page title. Every
+claim in this document has now been exercised from `src/` against
+the real providers.

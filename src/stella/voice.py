@@ -29,7 +29,7 @@ from stella.audio_output import (
     SpeechOutput,
     SpeechProvider,
 )
-from stella.childproc import guarded_popen
+from stella.childproc import guarded_popen, recording_finalized_ok
 from stella.context import InputModality, InputPart
 
 __all__ = [
@@ -188,10 +188,13 @@ class SubprocessRecorder(Recorder):
             raise VoiceError(
                 f"Stella could not finish the recording ({error})."
             ) from error
-        # 44 bytes is a bare RIFF/WAVE header: nothing was captured.
-        if returncode not in (0, -signal.SIGINT, 2) or not os.path.exists(
-            path
-        ) or os.path.getsize(path) <= 44:
+        # One call decides whether the recorder finalized its file. The
+        # exit status is interpreted with this platform's conventions
+        # (POSIX reports death-by-signal as a negative code; Windows
+        # reports a console interrupt as an unsigned exit code) and the
+        # capture itself has to exist and be larger than a bare 44-byte
+        # RIFF/WAVE header. An unrecognised status fails closed.
+        if not recording_finalized_ok(returncode, path):
             self.dispose()
             raise VoiceError(
                 "The microphone produced no recording. Check that an input "

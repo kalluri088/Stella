@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### One LLM call for cheap read-only answers
+
+- Report 35's second target: tools whose successful output is already
+  user-facing text now carry a `terminal` flag in the dispatcher
+  contract (`datetime`, `system_info`, `reminder_list`). When the
+  brain marks such a call `tool_final`, the runtime renders the
+  observation verbatim and the turn costs exactly one model call
+  instead of two — halving the dominant latency on those turns.
+  Failed observations and every non-terminal capability keep the
+  honest synthesis path; approval gating is untouched.
+
 ### The quote band finally spans the whole window
 
 - A short message like `> Hi` wore a band only as wide as its text.

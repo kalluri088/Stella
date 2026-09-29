@@ -301,7 +301,11 @@ working and helping me, even if not the fastest."
   (Responses API), Ollama compat, Ollama native and llama-server
   compat, deterministic and GPU-free (`tests/test_conformance.py`),
   plus a prompt-fit tripwire asserting the decision prompt keeps
-  fitting `num_ctx=8192`. Live:
+  fitting `num_ctx=8192`. The provider-keys work (2026-09-29) added a
+  fifth dialect — `openai-chat-compat`, the same `OpenAILLMClient`
+  asked to use Chat Completions function tools, which is how every
+  hosted preset other than OpenAI itself talks — and replayed the
+  whole matrix on it (76 case×dialect checks now). Live:
   `~/tools/bench_provider_conformance.py` re-asks the endpoint-only
   obligations against the shipping model — measured 2026-09-26 on
   `qwen3:4b`: honest HTTP 404 for an unknown model, the full decision

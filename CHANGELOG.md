@@ -69,6 +69,29 @@
   with a pixel-measured probe), so the band runs edge to edge for
   messages of any length, and the widget test pins the newline tags
   instead of their absence.
+### Provider presets, and your API key is now kept
+
+- Setup and Settings replace the three provider choices with a real
+  provider list: Ollama, local llama.cpp, OpenAI, Claude (Anthropic),
+  Grok (xAI), Groq, OpenRouter, Google Gemini, or any other
+  OpenAI-compatible endpoint. Picking one fills in the endpoint and
+  suggests models, and each hosted provider's key is verified against
+  that provider before it is ever stored.
+- A pasted key that clearly belongs to a different provider (a Claude
+  key under OpenAI, say) is refused with a hint to switch presets —
+  offline, before any request is sent and without the key material
+  appearing in the message.
+- Verified keys are stored permanently in `api_keys.json` in Stella's
+  private data directory, mode 0600, written atomically — never in
+  `config.json`, never in an environment variable the UI writes, never
+  shown again (only the last four characters). `OPENAI_API_KEY` still
+  overrides the OpenAI slot for a launch; named presets resolve only
+  against their own stored key. `stella backup` deliberately excludes
+  the key file. See `docs/SECRETS.md`.
+- Under the hood the one OpenAI client learned a second tool dialect:
+  hosted presets that only speak Chat Completions get function tools
+  over that wire, proven on the full conformance matrix; OpenAI itself
+  keeps the Responses API.
 
 ### Malformed tool calls can no longer interrupt you for approval
 

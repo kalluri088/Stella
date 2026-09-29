@@ -62,6 +62,21 @@ never by the model. `fetch` builds on the existing `NetworkReadTool`
 machinery (pinned DNS, peer-validated), not the spike's regex guard.
 Ticket: research report 22.
 
+## Hosted provider presets (decided 2026-09-29)
+
+The shipped model stack above is unchanged; this is about the *optional*
+hosted endpoints a user may pick in setup. Every hosted preset except
+OpenAI itself (Claude, Grok, Groq, OpenRouter, Gemini, custom) is a thin
+client of the OpenAI SDK against that provider's OpenAI-compatible
+endpoint, so its `chat_with_tools` dialect is Chat Completions function
+tools — only OpenAI serves the Responses API, and it keeps using it
+(reasoning-endpoint rejection documented in `ARCHITECTURE.md`). No native
+provider client classes: the dialect is a constructor argument on the one
+`OpenAILLMClient`, and both dialects are conformance-tested as equivalent
+implementations of the same `LLMClient` boundary. Keys are verified
+before storage and live in the private `api_keys.json` (see
+`SECRETS.md`), never in `config.json` or `StellaSettings`.
+
 ## Hard rules that survive any model change
 
 The rules in `AGENTS.md` are not affected by anything in this file:

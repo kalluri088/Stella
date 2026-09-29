@@ -9,7 +9,7 @@ The rule she never breaks: **nothing that changes your system happens without
 your explicit approval.** And she never claims something worked unless she
 checked that it did.
 
-## What she can do (as of 1.3.0)
+## What she can do (as of 1.4.0)
 
 - **Chat** — a desktop window or the terminal, with your choice of model.
 - **Remember** — say "remember that …" and she asks first; the Memories tab
@@ -103,7 +103,7 @@ can grant themselves permission.
 From a release: download the `.whl` file and run
 
 ```bash
-uv tool install ./stella-1.2.0-py3-none-any.whl
+uv tool install ./stella-1.4.0-py3-none-any.whl
 ```
 
 From source:
@@ -111,13 +111,16 @@ From source:
 ```bash
 git clone https://github.com/kalluri088/Stella && cd Stella
 uv build
-uv tool install ./dist/stella-1.2.0-py3-none-any.whl
+uv tool install ./dist/stella-1.4.0-py3-none-any.whl
 ```
 
 This gives you two commands: `stella-ui` (desktop window) and `stella`
-(terminal chat). Above that, one optional extra exists: `stella[embed]`
-(e.g. `pip install "stella[embed]"`) adds a CPU MiniLM embedding model you
-can select for semantic recall instead of the default word-shape index.
+(terminal chat). Above that, three optional extras exist:
+`stella[embed]` adds a CPU MiniLM embedding model you can select for
+semantic recall instead of the default word-shape index;
+`stella[barge-in]` adds the ONNX runtime that lets you interrupt spoken
+replies; `stella[web]` adds keyless DuckDuckGo search for the web
+capability (with a TinyFish key the web tools need no extra).
 To remove Stella: `uv tool uninstall stella`, and delete
 `~/.local/share/stella` if you also want your data gone.
 

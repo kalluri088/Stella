@@ -1266,7 +1266,10 @@ def test_revert_refuses_a_symlinked_snapshot(persona_dir) -> None:
     history.mkdir(exist_ok=True)
     outside = persona_dir.parent / "outside.md"
     outside.write_bytes(b"evil")
-    (history / "persona.20260101T120000123456Z.7.1.md").symlink_to(outside)
+    try:
+        (history / "persona.20260101T120000123456Z.7.1.md").symlink_to(outside)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable on this platform")
     out = CollectingOutput()
     assert cli.run_persona_revert(1, yes=True, output_fn=out) == 1
     assert "escaped the history directory" in out.text

@@ -1,0 +1,46 @@
+name: CI
+
+# GitHub's runners are the only Windows and macOS machines this project
+# has ever seen: the code core is portable but the process and path
+# plumbing used to be POSIX-only, and the checks that matter off Linux
+# (the modules import at all, and the fake-based platform decisions)
+# cannot be run from this repository's Linux host. Everything here is
+# deliberately the same two commands the local definition of done uses.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Sync the environment
+        run: uv sync
+
+      # The suite must at least import on every platform; that is the
+      # regression this matrix exists for. Tests whose subject is
+      # genuinely POSIX-only skip themselves off POSIX.
+      - name: Test
+        run: uv run pytest
+
+      - name: Lint
+        run: uv run ruff check .

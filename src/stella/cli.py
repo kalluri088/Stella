@@ -14,10 +14,12 @@ from stella.app import (
     StellaSession,
     StellaSettings,
     build_application,
+    default_data_dir,
     default_history_db,
     drain_persona_proposals,
 )
 from stella.audit import OUTCOMES, run_audit
+from stella.backup import run_backup, run_restore
 from stella.brain import Decision
 from stella.config import resolve_settings
 from stella.llm import Message
@@ -813,6 +815,30 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="emit the matching records as JSON instead of lines",
     )
+    backup_parser = commands.add_parser(
+        "backup",
+        help=(
+            "copy the state databases and config.json to a directory "
+            "(safe while Stella runs; workspace and persona are not included)"
+        ),
+    )
+    backup_parser.add_argument(
+        "destination", help="directory to write the backup into"
+    )
+    restore_parser = commands.add_parser(
+        "restore",
+        help=(
+            "replace the state databases and config.json from a backup "
+            "directory (close Stella first; the old state is kept in a "
+            "pre-restore-<timestamp> directory)"
+        ),
+    )
+    restore_parser.add_argument(
+        "source", help="a directory written by 'stella backup'"
+    )
+    restore_parser.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
     args = parser.parse_args(argv)
     if args.command == "audit":
         raise SystemExit(
@@ -824,6 +850,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                 as_json=args.json,
             )
         )
+    if args.command == "backup":
+        raise SystemExit(run_backup(default_data_dir(), args.destination))
+    if args.command == "restore":
+        raise SystemExit(run_restore(args.source, default_data_dir(), yes=args.yes))
     if args.command == "persona":
         if args.persona_command == "preset":
             raise SystemExit(apply_persona_preset(args.name, force=args.force))

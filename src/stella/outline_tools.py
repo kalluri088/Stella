@@ -5,7 +5,7 @@ binds 127.0.0.1 and guards every route with a token file. These tools are
 the Stella-side half of that integration:
 
 * stdlib only — ``urllib.request`` over loopback, no new dependencies;
-* environment-gated exactly like ``os_tools.build_desktop_tools``: when the
+* environment-gated exactly like ``stella.desktop`` registration: when the
   Outline server is not running or its token is unreadable, the tools are
   simply not registered and the model never sees them;
 * three coarse capabilities, one per verb (search/create/update). No

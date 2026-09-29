@@ -191,11 +191,11 @@ def _preview_file_text(resolved: Path) -> tuple[str | None, bool]:
 def action_summary(request: ApprovalRequest) -> str:
     """Describe one approval request in plain user-facing language."""
 
-    # Desktop capabilities live with their tools (stella.os_tools);
-    # tried first so their exact-address wording stays in one place.
-    from stella.os_tools import os_tool_summaries
+    # Desktop capabilities live with their tools (stella.desktop);
+    # tried first so their exact-window-id wording stays in one place.
+    from stella.desktop.summaries import desktop_tool_summaries
 
-    desktop = os_tool_summaries(request.capability, request.arguments)
+    desktop = desktop_tool_summaries(request.capability, request.arguments)
     if desktop is not None:
         return desktop
 

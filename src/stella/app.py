@@ -41,6 +41,7 @@ from stella.context import (
     InputPart,
     InputProvenance,
 )
+from stella.desktop import build_desktop_tools
 from stella.history import SQLiteActionHistory
 from stella.llama_server import (
     DEFAULT_LLAMA_SERVER_BINARY,
@@ -62,7 +63,6 @@ from stella.minilm_embedding import (
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
 from stella.ollama_embedding import OllamaEmbeddingProvider
 from stella.openai_client import OpenAILLMClient
-from stella.os_tools import build_desktop_tools
 from stella.outline_tools import build_outline_tools
 from stella.persona import (
     PersonaLoader,
@@ -381,8 +381,8 @@ def os_tools_env_override() -> bool | None:
     """The STELLA_OS_TOOLS override, or None when it says nothing.
 
     Desktop tools see and touch the whole screen, so they are strictly
-    opt-in; registration is additionally gated on a real Hyprland
-    session (stella.os_tools), never on this flag alone.
+    opt-in; registration is additionally gated on a usable desktop
+    session (stella.desktop), never on this flag alone.
     """
 
     return _env_toggle("STELLA_OS_TOOLS")
@@ -893,8 +893,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         history=history,
     )
     # Desktop capabilities are doubly gated: an explicit opt-in flag and
-    # a real Hyprland session with the measured binaries (reports
-    # 03/11/13). Off or unavailable means the model never sees them.
+    # one adapter recognizing a real session with the binaries it needs
+    # (stella.desktop.registry). Off or unavailable means the model never
+    # sees them.
     if settings.os_tools_enabled:
         for tool in build_desktop_tools(os.environ):
             tools.register(tool)

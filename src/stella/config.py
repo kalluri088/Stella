@@ -6,9 +6,10 @@ chosen provider/model/endpoints, and read-only probes that answer
 "is this reachable?" and "which models are installed?".
 
 Security rules this module upholds:
-- API keys are never written to the config file (there is no secure
-  credential store; the key stays a per-session value supplied through
-  the environment, exactly as before).
+- API keys are never written to the config file and never returned by
+  any probe. They live only in the private store owned by
+  ``stella.provider_keys`` (``api_keys.json``, mode 0600); this module
+  reads through that store's precedence rules and never persists.
 - Every probe returns a bounded, sanitized message; exception text is
   scrubbed of any secret the caller passed in before it is shown.
 - Model names and provider responses are data. Nothing here constructs
@@ -25,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from stella import provider_keys
 from stella.app import StellaSettings, default_data_dir
 from stella.llama_server import DEFAULT_LLAMA_SERVER_BINARY
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
@@ -34,6 +36,7 @@ _MESSAGE_LIMIT = 160
 
 _CONFIG_FIELDS = (
     "provider",
+    "preset",
     "model",
     "ollama_base_url",
     "openai_base_url",
@@ -51,9 +54,10 @@ def config_path() -> Path:
 
 
 def save_configuration(settings: StellaSettings) -> None:
-    """Persist only the non-secret provider/model/endpoint fields.
+    """Persist only the non-secret provider/preset/model/endpoint fields.
 
-    API keys and paths to state are deliberately never stored.
+    API keys and paths to state are deliberately never stored; keys have
+    their own private file, owned by ``stella.provider_keys``.
     """
 
     payload = {
@@ -84,6 +88,11 @@ def load_configuration() -> dict[str, object] | None:
         or not model.strip()
     ):
         return None
+    preset = raw.get("preset")
+    if preset is not None and not isinstance(preset, str):
+        # A corrupt preset is inert, not fatal: it only means "no stored
+        # key found for a slot", which the friendly key error handles.
+        raw["preset"] = None
     return raw
 
 
@@ -207,6 +216,7 @@ def test_connection(
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
     openai_base_url: str | None = None,
     api_key: str | None = None,
+    preset: str | None = None,
     llama_binary: str = DEFAULT_LLAMA_SERVER_BINARY,
     timeout: float = PROBE_TIMEOUT_SECONDS,
 ) -> ConnectionTest:
@@ -214,9 +224,11 @@ def test_connection(
 
     For Ollama this confirms the endpoint is alive and the model is in
     the installed list. For OpenAI-compatible endpoints it lists models,
-    which authenticates the key without running any completion. The
-    llama provider has no server to probe before it exists (Stella owns
-    and starts it), so the test checks the two things a launch needs.
+    which authenticates the key without running any completion; an empty
+    key field resolves through the store's precedence (environment, then
+    the stored key for this preset). The llama provider has no server to
+    probe before it exists (Stella owns and starts it), so the test
+    checks the two things a launch needs.
     """
 
     model = model.strip()
@@ -270,6 +282,7 @@ def test_connection(
         model=model,
         base_url=openai_base_url,
         api_key=api_key,
+        preset=preset,
         timeout=timeout,
     )
 
@@ -280,8 +293,8 @@ def _test_openai_connection(
     base_url: str | None,
     api_key: str | None,
     timeout: float,
+    preset: str | None = None,
 ) -> ConnectionTest:
-    secrets = tuple(value for value in (api_key,) if value)
     try:
         from openai import OpenAI
     except ImportError:  # pragma: no cover - installed via pyproject
@@ -289,17 +302,57 @@ def _test_openai_connection(
             ok=False,
             message="The OpenAI client library is not installed.",
         )
-    key = api_key or ""
+    key = api_key or provider_keys.effective_api_key(preset) or ""
+    secrets = (key,) if key else ()
     if not key:
         return ConnectionTest(
             ok=False,
-            message="No API key was entered. Type one, then test again.",
+            message=(
+                "No API key was entered or stored for this provider. "
+                "Type one, or export OPENAI_API_KEY."
+            ),
         )
+    mismatch = provider_keys.mismatch_hint(preset, key)
+    if mismatch:
+        # Offline gate: a Claude key pasted into the OpenAI slot should
+        # get a helpful correction, not a stranger's 401. No request is
+        # made and no client is constructed.
+        return ConnectionTest(ok=False, message=mismatch)
     client = OpenAI(api_key=key, base_url=base_url, timeout=timeout * 4)
     try:
         client.models.list()
     except Exception as error:  # noqa: BLE001 - bounded, sanitized below
-        summary = sanitize(_openai_error_kind(error) or str(error), secrets)
+        status = getattr(error, "status_code", None)
+        missing_models = status == 404 or "NotFound" in type(error).__name__
+        if missing_models and provider_keys.tool_dialect_for(preset) == "chat":
+            # Some OpenAI-compatible providers do not serve /models; a
+            # single-token chat probe authenticates them without a real
+            # completion. Only for chat-dialect presets — OpenAI itself
+            # serving no /models would be a real problem.
+            try:
+                client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )
+            except Exception as probe_error:  # noqa: BLE001
+                summary = sanitize(
+                    _openai_error_kind(probe_error)
+                    or str(probe_error),
+                    secrets,
+                )
+                return ConnectionTest(
+                    ok=False,
+                    message=f"Connection failed: {summary}",
+                )
+            return ConnectionTest(
+                ok=True,
+                message=(
+                    f"Connected: the API accepted the key for model {model}."
+                ),
+            )
+        kind = _openai_error_kind(error)
+        summary = sanitize(kind or str(error), secrets)
         return ConnectionTest(
             ok=False,
             message=f"Connection failed: {summary}",
@@ -344,8 +397,10 @@ def resolve_settings() -> StellaSettings | None:
     def endpoint(value: object) -> str | None:
         return value.strip() if isinstance(value, str) and value.strip() else None
 
+    preset = raw.get("preset")
     return StellaSettings.from_saved(
         provider=raw["provider"],
+        preset=preset if isinstance(preset, str) else None,
         model=raw["model"],
         ollama_base_url=(
             os.environ.get("OLLAMA_BASE_URL")

@@ -16,7 +16,7 @@ from typing import Self
 
 import pytest
 
-from stella import app
+from stella import app, provider_keys
 from stella.app import (
     ApprovalBroker,
     MemoryPanel,
@@ -1118,6 +1118,82 @@ def test_build_application_requires_a_model() -> None:
         build_application(StellaSettings(provider="openai", model=None))
 
     assert str(exit_info.value) == "STELLA_MODEL is required"
+
+
+def test_build_application_resolves_a_preset_key_from_the_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The durable-key promise: a key saved once in setup is what every
+    # later session builds with, without any environment variable.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    provider_keys.save_api_key("anthropic", "sk-ant-stored-value")
+    created: list[dict] = []
+
+    class RecorderClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(app, "OpenAILLMClient", RecorderClient)
+    application = build_application(
+        StellaSettings(
+            provider="openai",
+            model="claude-sonnet-4-20250514",
+            preset="anthropic",
+            voice_transcription="off",
+            voice_speech="off",
+        )
+    )
+    try:
+        assert len(created) == 1
+        assert created[0]["api_key"] == "sk-ant-stored-value"
+        assert created[0]["base_url"] == "https://api.anthropic.com/v1"
+        assert created[0]["tool_dialect"] == "chat"
+    finally:
+        application.close()
+
+
+def test_build_application_names_both_key_paths_when_none_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    with pytest.raises(SystemExit) as exit_info:
+        build_application(
+            StellaSettings(provider="openai", model="gpt-4o-mini")
+        )
+
+    message = str(exit_info.value)
+    assert "setup" in message
+    assert "OPENAI_API_KEY" in message
+
+
+def test_voice_never_offers_a_foreign_provider_key_to_openai_endpoints(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Whisper/TTS are OpenAI territory: a stored Claude key must not be
+    # shipped to them just because some provider is configured.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    provider_keys.save_api_key("anthropic", "sk-ant-for-the-brain-only")
+    settings = StellaSettings(
+        model="m", voice_transcription="openai", voice_speech="openai"
+    )
+
+    assert app._build_transcriber(settings) is None
+    assert app._build_speech_provider(settings) is None
+
+
+def test_the_stored_openai_slot_serves_voice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    provider_keys.save_api_key("openai", "sk-stored-voice-key")
+    settings = StellaSettings(model="m", voice_transcription="openai")
+
+    assert app._build_transcriber(settings) is not None
 
 
 def test_default_state_paths_follow_xdg_not_the_working_directory(

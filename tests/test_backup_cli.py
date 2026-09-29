@@ -72,6 +72,25 @@ def test_backup_copies_databases_and_manifest(tmp_path, capsys):
     assert "Workspace files" in capsys.readouterr().out
 
 
+def test_backup_never_carries_the_api_key_file(tmp_path):
+    # The scope is a whitelist of state databases + config.json; the key
+    # store must stay out of every export, backup after backup.
+    state = tmp_path / "state"
+    state.mkdir()
+    _seed_state(state)
+    (state / "api_keys.json").write_text('{"version": 1, "keys": {}}')
+    dest = tmp_path / "backup"
+    assert run_backup(state, dest) == 0
+    assert not (dest / "api_keys.json").exists()
+    written = sorted(p.name for p in dest.iterdir())
+    assert written == [
+        "config.json",
+        "manifest.json",
+        "stella_action_history.db",
+        "stella_memory.db",
+    ]
+
+
 def test_backup_refuses_empty_or_missing_state(tmp_path, capsys):
     assert run_backup(tmp_path / "nowhere", tmp_path / "dest") == 1
     empty = tmp_path / "empty"

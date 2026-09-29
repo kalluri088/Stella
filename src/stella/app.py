@@ -33,6 +33,7 @@ from stella.audio_output import (
 from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
 from stella.childproc import sweep_orphaned_children
+from stella.commands import action_history_lines
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
     Context,
@@ -1826,6 +1827,41 @@ class StellaBridge:
             # A handled row disappears from the Reminders panel without
             # waiting for the next user interaction.
             self._emit("reminders", self._reminders.pending_rows())
+
+    def status_snapshot(self) -> tuple[object | None, object | None, object | None]:
+        """(settings, session, stella) for ``/status`` rendering.
+
+        Pure attribute reads on already-built objects: nothing runs, no
+        database cursor opens — the same safety class as
+        ``voice_capabilities``.
+        """
+
+        if self._application is None:
+            return (None, None, None)
+        session = self._application.session
+        return (self._application.settings, session, session.stella)
+
+    def post_clear_history(self) -> None:
+        """Forget this session's conversation (worker thread owns it)."""
+
+        def handle() -> None:
+            self._require_session().history.clear()
+            self._emit(
+                "note",
+                "Conversation history cleared. Stored memories and the"
+                " action trail are untouched.",
+            )
+
+        self._post(handle)
+
+    def post_action_trail(self, limit: int = 10) -> None:
+        """Render ``/history`` on the worker and show it as a note."""
+
+        def handle() -> None:
+            stella = self._require_session().stella
+            self._emit("note", "\n".join(action_history_lines(stella, limit)))
+
+        self._post(handle)
 
     # -------------------------------------------------------------- voice
 

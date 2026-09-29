@@ -444,6 +444,25 @@ code no text file can influence (`src/stella/persona.py`,
   approval matching is untouched, and reflection still has no write
   path of its own. The editor copy predates the `$EDITOR` session;
   mid-edit states are not versioned.
+- **C7. Slash commands (CLI/TUI I/O layer) — done.** A typed line
+  starting with `/` is a runtime command, never an utterance: it is
+  intercepted in `run_cli` and the window's `_send` before the Brain,
+  so no model call, reminder check, or approval can be steered by it.
+  Two tiers: built-in control commands (`/exit`, `/status`, `/help`,
+  `/version`, `/clear` for the session's conversation, `/history` for
+  the newest action records, and terminal-only `/trace`/`/debug`
+  toggles that make
+  the startup flags session-mutable) and user-owned prompt templates
+  in `~/.config/stella/commands/<name>.md` whose `$ARGUMENTS`
+  expansion re-enters as *ordinary user input* — no authority beyond
+  typing the sentence out, approvals still gate every tool. Template
+  reads reuse the persona discipline (name regex, realpath
+  containment, no symlinks, 8 KiB cap); unknown names error locally
+  with suggestions and are never forwarded. Voice transcripts,
+  reminders and events take other paths into `run_turn` and are
+  structurally never command-parsed — a spoken "/exit" is a sentence.
+  Deliberately not built: inline shell execution, permission
+  frontmatter, `@file` embedding (rules 4, 13, 15).
 
 ## Stage D — conversational voice and decision speed (complete)
 

@@ -183,6 +183,22 @@ Normal users never need any of these.
   produced around a cancel is discarded, never played.
 - The tabs manage **Memories**, **Reminders**, **History** and **Settings**.
 
+### Slash commands
+
+A line that starts with `/` is a command Stella's interface handles
+itself — it never reaches the model, and saying "/exit" out loud is
+still just a sentence. Built in: `/exit`, `/status` (what Stella is
+connected to and where your data lives), `/help`, `/version`,
+`/clear` (forget this session's conversation — stored memories and the
+action trail are untouched), `/history` (the most recent action
+records), and in the terminal `/trace on|off` and `/debug on|off`. You can also write
+your own: a Markdown file named `~/.config/stella/commands/plan.md`
+becomes `/plan`, and whatever you type after the command replaces
+`$ARGUMENTS` in it (or is appended, if the file has no token). An
+expanded template is treated exactly like a message you typed out in
+full — nothing more, nothing less; dangerous actions still ask. An
+unknown `/name` says so and suggests near matches.
+
 ## Where your data lives
 
 All in `~/.local/share/stella` (or `$XDG_DATA_HOME/stella`): the config

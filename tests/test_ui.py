@@ -1130,3 +1130,166 @@ def test_nav_rail_switches_sections() -> None:
     finally:
         bridge.stop()
         root.destroy()
+
+
+# ------------------------------------------------------------- slash commands
+
+
+class RecordingBrain(Brain):
+    """Counts turns and remembers what the model was asked."""
+
+    def __init__(self) -> None:
+        self.inputs: list[str] = []
+
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        del should_cancel
+        self.inputs.append(str(context.user_input))
+        return Decision(kind=DecisionKind.ANSWER, content="recorded")
+
+
+def settle(root: tk.Tk, window: StellaWindow, seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + seconds
+    while window._busy and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.02)
+    pump(root, 0.1)
+
+
+def test_window_status_command_renders_without_a_turn() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/status")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "> /status" in transcript
+        assert "provider:" in transcript
+        assert brain.inputs == []
+        assert window._busy is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_template_expands_into_an_ordinary_turn(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STELLA_PERSONA_DIR", str(tmp_path))
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    (commands / "plan.md").write_text(
+        "Plan this: $ARGUMENTS", encoding="utf-8"
+    )
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/plan the launch")
+        window._send()
+        settle(root, window)
+        assert brain.inputs == ["Plan this: the launch"]
+        transcript = window._chat.get("1.0", "end")
+        assert "> /plan the launch" in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_unknown_command_is_a_local_note(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("STELLA_PERSONA_DIR", str(tmp_path))
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/bogusxyz")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "no /bogusxyz command" in transcript
+        assert brain.inputs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_exit_command_closes_without_a_turn() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    closed: list[bool] = []
+    window._on_close = lambda: closed.append(True)
+    try:
+        window._input.insert("1.0", "/exit")
+        window._send()
+        settle(root, window)
+        assert closed == [True]
+        assert brain.inputs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_trace_command_explains_it_is_terminal_only() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._input.insert("1.0", "/trace on")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "terminal" in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_turns_bypassing_the_send_guard_are_never_commands() -> None:
+    # The voice path posts turns without the typed-input guard in
+    # _send: a spoken "/exit" is a sentence, not a command.
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._start_turn("/exit")
+        settle(root, window)
+        assert brain.inputs == ["/exit"]
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_clear_command_clears_on_the_worker_thread() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "hello")
+        window._send()
+        settle(root, window)
+        assert bridge._application.session.history != []
+        window._input.insert("1.0", "/clear")
+        window._send()
+        deadline = time.monotonic() + 5
+        while "Conversation history cleared" not in window._chat.get(
+            "1.0", "end"
+        ) and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        transcript = window._chat.get("1.0", "end")
+        assert "Conversation history cleared" in transcript
+        assert bridge._application.session.history == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_history_command_shows_a_note() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._input.insert("1.0", "/history")
+        window._send()
+        deadline = time.monotonic() + 5
+        while "action records" not in window._chat.get("1.0", "end") and (
+            time.monotonic() < deadline
+        ):
+            root.update()
+            time.sleep(0.02)
+        assert "action records" in window._chat.get("1.0", "end")
+    finally:
+        bridge.stop()
+        root.destroy()

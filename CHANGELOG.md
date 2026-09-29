@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Typed slash commands join the CLI and the window
+
+- A line starting with `/` is now handled by the interface itself and
+  never reaches the model: `/exit`, `/status` (provider, model, web
+  backend and where your data lives), `/help`, `/version`, `/clear`
+  (forget this session's conversation; memories and the action trail
+  are untouched), `/history` (the newest action records, the same
+  bounded trail `stella audit` prints), and
+  `/trace on|off` / `/debug on|off` in the terminal — the startup
+  flags, now session-mutable. Users can also drop a Markdown file into
+  `~/.config/stella/commands/` and it becomes a command: `$ARGUMENTS`
+  in the file is replaced by what you type after the name, and the
+  expansion enters as ordinary input with no extra authority —
+  approvals still gate every tool. Unknown names error locally with
+  near-miss suggestions; template reads follow the persona discipline
+  (no symlinks, size cap, containment); voice transcripts are never
+  command-parsed, so a spoken "/exit" remains a thing you said.
+
 ### One LLM call for cheap read-only answers
 
 - Report 35's second target: tools whose successful output is already

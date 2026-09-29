@@ -13,6 +13,12 @@ application exists: it runs bounded provider probes and saves Stella's
 non-secret configuration file. It never touches tools, memory,
 reminders, or approvals, and a successful setup grants nothing beyond
 "Stella can talk to this model".
+
+Typed slash commands are intercepted in the view through
+``stella.commands`` (a pure classifier and renderer that reads only the
+user's own template files); a command never reaches the bridge, and a
+template's expansion re-enters as an ordinary turn. Voice transcripts
+take a different path and are never command-parsed.
 """
 
 from __future__ import annotations
@@ -35,6 +41,17 @@ from stella.app import (
     build_application,
     default_data_dir,
     outcome_status,
+)
+from stella.commands import (
+    CommandCall,
+    expand_template,
+    help_lines,
+    load_template_body,
+    parse_command_line,
+    parse_limit,
+    status_lines,
+    suggest_commands,
+    version_line,
 )
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 from stella.tools import ActionPreview, ApprovalRequest, action_summary
@@ -847,10 +864,67 @@ class StellaWindow:
         self._history_pos = None
         self._history_draft = ""
         self._line(f"You: {user_input}", role="user")
+        call = parse_command_line(user_input)
+        if call is not None:
+            # A typed command is handled here, on the view side of the
+            # bridge: it never reaches the model and never posts a turn
+            # unless a template expands into one below.
+            self._run_command(call)
+            return
+        self._start_turn(user_input)
+
+    def _start_turn(self, text: str) -> None:
         self._busy = True
         self._begin_turn_timer()
         self._status.configure(text="Stella is working · 0 s")
-        self._bridge.post_turn(user_input)
+        self._bridge.post_turn(text)
+
+    def _run_command(self, call: CommandCall) -> None:
+        if call.is_control:
+            if call.name == "exit":
+                self._on_close()
+                return
+            if call.name in {"trace", "debug"}:
+                self._line(
+                    f"/{call.name} belongs to the terminal: start Stella "
+                    f"with --{call.name} to see those renderings.",
+                    role="note",
+                )
+                return
+            if call.name == "clear":
+                self._bridge.post_clear_history()
+                return
+            if call.name == "history":
+                limit = parse_limit(call.argument)
+                if limit is None:
+                    self._line(
+                        "Usage: /history [number of records]", role="note"
+                    )
+                else:
+                    self._bridge.post_action_trail(limit)
+                return
+            if call.name == "help":
+                lines = help_lines()
+            elif call.name == "status":
+                settings, session, stella = self._bridge.status_snapshot()
+                lines = status_lines(
+                    settings=settings, session=session, stella=stella
+                )
+            else:
+                lines = [version_line()]
+            self._line("\n".join(lines), role="note")
+            return
+        body, error = load_template_body(call.name)
+        if error is not None:
+            self._line(error, role="note")
+            suggestions = suggest_commands(call.name)
+            if suggestions:
+                listed = ", ".join(f"/{name}" for name in suggestions)
+                self._line(f"Did you mean {listed}?", role="note")
+            return
+        # The expansion is ordinary input: it goes through the bridge
+        # exactly like a typed sentence, approvals included.
+        self._start_turn(expand_template(body, call.argument))
 
     def _recall(self, direction: int) -> str:
         # Up (-1) / Down (+1) through what this window sent. Returning
@@ -1127,6 +1201,8 @@ class StellaWindow:
             self._line(f"(settings) {payload}")
         elif kind == "notice":
             self._line(f"(persona) {payload}")
+        elif kind == "note":
+            self._line(str(payload), role="note")
         elif kind == "voice_state":
             self._handle_voice_state(str(payload))
         elif kind == "voice_transcript":

@@ -74,12 +74,14 @@ class Theme:
     error: str
     ok: str
     reminder: str
-    user_bubble: str
-    stella_bubble: str
-    # Speaker-label colors are explicit theme fields, not aliases of the
+    # The user's quote band. Stella's reply carries no band at all — the
+    # transcript separates roles as a terminal does: "> " blockquote for
+    # the user, plain text under a teal "Stella:" head for the model.
+    user_quote: str
+    # Role-label colors are explicit theme fields, not aliases of the
     # brand accent: accent == ok in every palette, so deriving both labels
-    # from brand colors renders "You:" and "Stella:" in one hue and erases
-    # the role separation. Keep these two distinct in every theme.
+    # from brand colors renders the ">" marker and "Stella:" in one hue and
+    # erases the role separation. Keep these two distinct in every theme.
     user_head: str
     stella_head: str
 
@@ -101,8 +103,7 @@ _DARK_THEME = Theme(
     error="#ef4444",
     ok="#2dd4bf",
     reminder="#d97706",
-    user_bubble="#292524",
-    stella_bubble="#134e4a",
+    user_quote="#292524",
     user_head="#e7e5e4",
     stella_head="#2dd4bf",
 )
@@ -124,13 +125,10 @@ _LIGHT_THEME = Theme(
     error="#dc2626",
     ok="#0d9488",
     reminder="#d97706",
-    # Both bands sit on a pure-white transcript, so they must be visibly
-    # apart from the background *and* from each other: a neutral warm gray
-    # for the user, a saturated mint for Stella (echoing the teal brand).
-    # The previous pair (#f5f5f4 / #f0fdfa) were near-identical off-whites
-    # that washed out against #ffffff, leaving no role separation.
-    user_bubble="#e7e5e4",
-    stella_bubble="#ccfbf1",
+    # The single quote band sits on a pure-white transcript, so it must be
+    # visibly apart from the background; the near-invisible off-white
+    # (#f5f5f4) of the old two-band design washed out against #ffffff.
+    user_quote="#e7e5e4",
     user_head="#1c1917",
     stella_head="#0d9488",
 )
@@ -702,27 +700,26 @@ class StellaWindow:
             slant="italic",
         )
         chat = self._chat
-        # "gap" is configured last so its background wins over a bubble's
-        # on the blank spacer line.
+        # "gap" is configured last so its background wins over the quote
+        # band's on the blank spacer line.
+        # Terminal-style roles: the user's message is a blockquote — a
+        # "> " marker, a hanging indent past it, and a calm full-width
+        # band (Tk paints a tagged line's background across the whole
+        # display line regardless of margins). Stella answers in plain
+        # text under a bold teal head; the roles differ by marker, band
+        # and head, never by side.
         chat.tag_configure(
-            "bubble-stella",
-            background=THEME.stella_bubble,
+            "quote",
+            background=THEME.user_quote,
             lmargin1=16,
-            lmargin2=16,
-            rmargin=160,
+            lmargin2=34,
             spacing1=10,
             spacing3=0,
         )
-        # Tk paints a tagged line's background across the whole display
-        # line regardless of margins, so bubbles read as calm full-width
-        # rows: tinted bands with the text pushed to their side.
         chat.tag_configure(
-            "bubble-user",
-            background=THEME.user_bubble,
-            lmargin1=160,
-            lmargin2=160,
-            rmargin=16,
-            justify="right",
+            "stella",
+            lmargin1=16,
+            lmargin2=16,
             spacing1=10,
             spacing3=0,
         )
@@ -730,11 +727,10 @@ class StellaWindow:
             "head-stella", foreground=THEME.stella_head, font=self._head_font
         )
         chat.tag_configure("body-stella", foreground=THEME.text)
-        # The user and Stella speaker labels use their own explicit theme
-        # colors. accent == ok in both palettes, so a teal "You:" beside a
-        # teal "Stella:" said nothing about who spoke; the user head is a
-        # neutral and the Stella head the brand teal, distinct on every
-        # theme, while the bands already separate by hue and side.
+        # The ">" marker and the "Stella:" head use their own explicit
+        # theme colors. accent == ok in both palettes, so deriving both
+        # from brand fields rendered them in one hue and erased the role
+        # line; the marker is a neutral and the head the brand teal.
         chat.tag_configure(
             "head-user", foreground=THEME.user_head, font=self._head_font
         )
@@ -773,31 +769,29 @@ class StellaWindow:
         chat = self._chat
         chat.configure(state="normal")
         if role in ("user", "stella"):
-            bubble = "bubble-user" if role == "user" else "bubble-stella"
             first, *rest = text.split("\n")
             split = first.find(": ")
-            if 0 < split <= 20:
-                chat.insert(
-                    "end",
-                    first[: split + 2],
-                    (bubble, f"head-{role}"),
-                )
-                chat.insert(
-                    "end",
-                    first[split + 2 :],
-                    (bubble, f"body-{role}"),
-                )
+            head = first[: split + 2] if 0 < split <= 20 else ""
+            body = first[split + 2 :] if head else first
+            if role == "user":
+                # The "> " marker replaces the "You:" label: a quote line
+                # announces itself. Every hard line of the message gets
+                # its own marker, like a blockquote.
+                for line in (body, *rest):
+                    chat.insert("end", "> ", ("quote", "head-user"))
+                    chat.insert("end", line, ("quote", "body-user"))
+                    chat.insert("end", "\n")
             else:
-                chat.insert("end", first, (bubble, f"body-{role}"))
+                chat.insert("end", head, ("stella", "head-stella"))
+                chat.insert("end", body, ("stella", "body-stella"))
+                chat.insert("end", "\n")
+                for line in rest:
+                    chat.insert("end", line, ("stella", "body-stella"))
+                    chat.insert("end", "\n")
             # Every hard newline is deliberately untagged, not just the
             # message's last one: a tagged newline paints its background
-            # across the whole line width, which turns a bubble into a
-            # full-width stripe. Multi-line replies (lists, paragraphs)
-            # hit this on every internal line break.
-            chat.insert("end", "\n")
-            for line in rest:
-                chat.insert("end", line, (bubble, f"body-{role}"))
-                chat.insert("end", "\n")
+            # across the whole line width, so the final one would drag
+            # the quote band through the blank gap line.
             chat.insert("end", "\n", ("gap",))
         elif role == "reminder" or role == "error":
             chat.insert("end", text + "\n", (role,))

@@ -20,20 +20,20 @@ def _distance(a: str, b: str) -> float:
 
 
 @pytest.mark.parametrize("theme_name", sorted(stella_ui.THEMES))
-def test_role_bands_are_visible_and_apart(theme_name: str) -> None:
-    # Bands must read against the transcript background AND against each
-    # other. The retired light palette sat ~11 apart from band to band
-    # and under ~20 against white: the two roles washed into one.
+def test_quote_band_is_visible(theme_name: str) -> None:
+    # The transcript separates roles as a terminal does: the user's
+    # blockquote band must read against the transcript background (the
+    # retired light band sat under ~20 from white and washed out).
+    # Stella's reply carries no band, so the marker/head colors below
+    # do the rest of the separation.
     theme = stella_ui.THEMES[theme_name]
-    assert _distance(theme.user_bubble, theme.stella_bubble) > 25
-    assert _distance(theme.user_bubble, theme.window) > 20
-    assert _distance(theme.stella_bubble, theme.window) > 20
+    assert _distance(theme.user_quote, theme.window) > 20
 
 
 @pytest.mark.parametrize("theme_name", sorted(stella_ui.THEMES))
 def test_speaker_labels_use_distinct_colors(theme_name: str) -> None:
     # accent == ok in every palette, so the labels must NOT derive from
-    # brand fields: identical teal "You:"/"Stella:" erased who spoke.
+    # brand fields: identical teal ">" and "Stella:" erased who spoke.
     # user_head and stella_head are dedicated fields for exactly this.
     theme = stella_ui.THEMES[theme_name]
     assert theme.user_head != theme.stella_head

@@ -183,7 +183,7 @@ def test_window_conversation_round_trip() -> None:
             root.update()
             time.sleep(0.02)
         transcript = window._chat.get("1.0", "end")
-        assert "You: hello window" in transcript
+        assert "> hello window" in transcript
         assert "Stella: window reply" in transcript
         assert window._busy is False
     finally:
@@ -193,23 +193,29 @@ def test_window_conversation_round_trip() -> None:
 
 def test_transcript_separates_roles_in_the_widget_tree() -> None:
     # The palette file guards the colors; this guards that the window
-    # actually paints them: the two speaker labels carry distinct
-    # foregrounds (the retired accent==ok alias made them identical),
-    # and every hard newline inside a multi-line bubble stays untagged
-    # so no internal line paints a full-width stripe through the chat.
+    # actually paints them: the user's message renders as a "> "
+    # blockquote on the quote band, Stella's reply as plain text under
+    # a distinct head (no band at all), and every hard newline stays
+    # untagged so a band never drags past its own message.
     root, window, bridge, _ = make_window()
     try:
         chat = window._chat
         before = int(chat.index("end-1c").split(".")[0])
-        window._line("Stella: first line\nsecond line", role="stella")
+        window._line("You: first line\nsecond line", role="user")
+        window._line("Stella: plain reply", role="stella")
         user_head = str(chat.tag_cget("head-user", "foreground")).lower()
         stella_head = str(chat.tag_cget("head-stella", "foreground")).lower()
         assert user_head != stella_head
-        for line in (before, before + 1):
-            # X.end is the line's newline character itself; a bubble's
-            # tags must stop before it, or Tk paints a full-width stripe.
+        for line in (before, before + 1, before + 3):
+            # X.end is the line's newline character itself; the gap
+            # lines (before + 2, before + 4) are tagged by design.
             assert chat.tag_names(f"{line}.end") == ()
-        assert "bubble-stella" in chat.tag_names(f"{before}.0")
+        assert chat.get(f"{before}.0", f"{before}.2") == "> "
+        assert "quote" in chat.tag_names(f"{before}.0")
+        assert "quote" in chat.tag_names(f"{before + 1}.2")
+        stella_line = before + 3
+        assert "stella" in chat.tag_names(f"{stella_line}.0")
+        assert "quote" not in chat.tag_names(f"{stella_line}.0")
     finally:
         bridge.stop()
         root.destroy()
@@ -551,7 +557,7 @@ def test_window_voice_round_trip_uses_the_shared_session() -> None:
 
         # The transcript appears as user input and the reply followed the
         # exact typed conversation path — one Stella, one session.
-        assert "You (voice): speak to the window" in transcript
+        assert "> speak to the window" in transcript
         assert "Stella: window reply" in transcript
         assert window._busy is False
         assert window._listening is False
@@ -623,7 +629,7 @@ def test_window_can_cancel_during_transcribing() -> None:
         # turn, and the affordance disarms after its one shot.
         assert "cancelled at your request" in transcript
         assert "Nothing was sent" in transcript
-        assert "You (voice)" not in transcript
+        assert "> too late" not in transcript
         assert "Stella:" not in transcript
         assert window._transcribing is False
         assert str(window._mic_cancel.cget("state")) == "disabled"

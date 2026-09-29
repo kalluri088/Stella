@@ -14,8 +14,10 @@ from stella.app import (
     StellaSession,
     StellaSettings,
     build_application,
+    default_history_db,
     drain_persona_proposals,
 )
+from stella.audit import OUTCOMES, run_audit
 from stella.brain import Decision
 from stella.config import resolve_settings
 from stella.llm import Message
@@ -783,7 +785,45 @@ def main(argv: Sequence[str] | None = None) -> None:
             "proposals for the next session (never writes anything)"
         ),
     )
+    audit_parser = commands.add_parser(
+        "audit",
+        help=(
+            "print the durable approval/action trail (newest last; "
+            "bounded to the retained window)"
+        ),
+    )
+    audit_parser.add_argument(
+        "--last",
+        type=int,
+        default=20,
+        help="show at most this many matching records (default 20)",
+    )
+    audit_parser.add_argument(
+        "--capability",
+        help="only records whose capability contains this text",
+    )
+    audit_parser.add_argument(
+        "--outcome",
+        choices=OUTCOMES,
+        default="any",
+        help="filter by result (denied = approval requested and refused)",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the matching records as JSON instead of lines",
+    )
     args = parser.parse_args(argv)
+    if args.command == "audit":
+        raise SystemExit(
+            run_audit(
+                default_history_db(),
+                last=args.last,
+                capability=args.capability,
+                outcome=args.outcome,
+                as_json=args.json,
+            )
+        )
     if args.command == "persona":
         if args.persona_command == "preset":
             raise SystemExit(apply_persona_preset(args.name, force=args.force))

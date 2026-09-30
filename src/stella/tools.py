@@ -154,6 +154,11 @@ class ActionPreview:
 
     detail_lines: tuple[str, ...] = ()
     truncated: bool = False
+    # One advisory line from trusted display code (see mismatch.py): the
+    # user's own turn mentioned neither this action nor its target.
+    # Display-only like everything else here — it can never authorize,
+    # deny, or alter the ApprovalRequest an answer binds to.
+    warning: str | None = None
 
 
 # Bounds for one approval preview. Previews must never become a way to

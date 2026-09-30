@@ -241,6 +241,9 @@ def _configure_styles(root: tk.Misc) -> None:
         "CardDim.TLabel", background=THEME.card, foreground=THEME.text_dim
     )
     style.configure("Dim.TLabel", foreground=THEME.text_dim)
+    # Approval-dialog advisory line (mismatch warning): same surface as
+    # TLabel, but impossible to mistake for the action heading.
+    style.configure("Warning.TLabel", foreground=THEME.reminder)
     # Rail labels sit on the sidebar color, not the content surface.
     style.configure(
         "RailDim.TLabel", background=THEME.rail, foreground=THEME.text_dim
@@ -1198,6 +1201,18 @@ class StellaWindow:
             justify="left",
             style="Heading.TLabel",
         ).pack(padx=16, pady=(4, 8), anchor="w")
+        if preview is not None and preview.warning:
+            # Trusted display code's advisory: the user's own turn
+            # mentioned neither this action nor its target. Review
+            # material only — the answer still binds to the exact
+            # ApprovalRequest, never to this line.
+            ttk.Label(
+                dialog,
+                text=preview.warning,
+                wraplength=420,
+                justify="left",
+                style="Warning.TLabel",
+            ).pack(padx=16, pady=(0, 6), anchor="w")
         if preview is not None and preview.detail_lines:
             # App-computed display of what the exact validated arguments
             # mean (current file content, diff, target). Review material

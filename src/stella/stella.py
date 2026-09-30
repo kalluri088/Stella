@@ -36,6 +36,7 @@ from stella.memory import (
     MemoryWriteResult,
     relevance_score,
 )
+from stella.mismatch import approval_mismatch_warning
 from stella.proactivity import (
     DelegatedAction,
     DueTaskEvent,
@@ -53,6 +54,7 @@ from stella.semantic_memory import (
     reconcile_semantic_index,
 )
 from stella.tools import (
+    ActionPreview,
     ApprovalRequest,
     Tool,
     ToolApproval,
@@ -490,7 +492,10 @@ class Stella:
                         # narration ignores kinds without phrases.
                         notify(f"calling:{decision.capability}")
                     tool_result, approval_denied = self._execute_tool(
-                        decision.capability, arguments, trace
+                        decision.capability,
+                        arguments,
+                        trace,
+                        user_text=context.user_input,
                     )
                     if tool_result.memory_action is not None:
                         action = tool_result.memory_action
@@ -562,6 +567,7 @@ class Stella:
                             decision.memory_write,
                             requires_approval=decision_from_observations,
                             trace=trace,
+                            user_text=context.user_input,
                         )
                         memory_write_denied = memory_write_denied or write_denied
                         if (
@@ -729,6 +735,7 @@ class Stella:
                     decision.memory_write,
                     requires_approval=decision_from_observations,
                     trace=trace,
+                    user_text=context.user_input,
                 )
                 memory_write_denied = memory_write_denied or write_denied
                 if (
@@ -1016,6 +1023,7 @@ class Stella:
         capability: str | None,
         arguments: dict[str, object],
         trace: InteractionTrace | None = None,
+        user_text: str | None = None,
     ) -> tuple[ToolResult, bool]:
         approval = None
         # Ask with the arguments in hand: a trusted argument elevation can
@@ -1048,6 +1056,17 @@ class Stella:
             # request keep working because a plain ``None`` preview is
             # never forwarded.
             preview = self.tools.preview(capability, arguments)
+            # Mismatch warning (mismatch.py): display code's honest
+            # second look at whether the user's turn could have wanted
+            # this. Travels beside the preview; the approval below is
+            # still produced solely from the exact request.
+            warning = approval_mismatch_warning(user_text, capability, arguments)
+            if warning is not None:
+                preview = (
+                    replace(preview, warning=warning)
+                    if preview is not None
+                    else ActionPreview(warning=warning)
+                )
             if preview is None:
                 approval = self.approval_provider(request)
             else:
@@ -1219,6 +1238,7 @@ class Stella:
         *,
         requires_approval: bool = False,
         trace: InteractionTrace | None = None,
+        user_text: str | None = None,
     ) -> tuple[MemoryWriteResult | None, bool]:
         """Store one explicit memory proposal; return (result, denied).
 
@@ -1237,7 +1257,22 @@ class Stella:
             )
             approved = False
             if self.approval_provider is not None:
-                approval = self.approval_provider(approval_request)
+                # Same advisory look as the tool path: a proposal
+                # shaped after tool observations is precisely where an
+                # unmentioned "remember this" deserves a second glance.
+                warning = approval_mismatch_warning(
+                    user_text, "memory_write",
+                    {"content": request.item.content},
+                )
+                preview = (
+                    ActionPreview(warning=warning) if warning else None
+                )
+                if preview is None:
+                    approval = self.approval_provider(approval_request)
+                else:
+                    approval = self.approval_provider(
+                        approval_request, preview
+                    )
                 approved = (
                     isinstance(approval, ToolApproval)
                     and approval.approved is True

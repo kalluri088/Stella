@@ -976,7 +976,9 @@ def test_successful_tool_outcome_can_produce_one_memory_write() -> None:
         ToolDispatcher([RecordingTool()]),
         memory,
         max_tool_steps=2,
-        approval_provider=lambda request: ToolApproval(request, True),
+        approval_provider=lambda request, _preview=None: ToolApproval(
+            request, True
+        ),
     )
 
     result = stella.process(Context(user_input="Record the result."))
@@ -1014,7 +1016,9 @@ def test_filesystem_read_outcome_can_produce_independent_memory(tmp_path) -> Non
         ToolDispatcher([FileSystemReadTool(workspace)]),
         memory,
         max_tool_steps=2,
-        approval_provider=lambda request: ToolApproval(request, True),
+        approval_provider=lambda request, _preview=None: ToolApproval(
+            request, True
+        ),
     )
 
     result = stella.process(Context(user_input="Read the profile file."))
@@ -1222,7 +1226,9 @@ def test_outcome_memory_persists_and_changes_fresh_stella_behavior(tmp_path) -> 
             ToolDispatcher([RecordingTool()]),
             first_memory,
             max_tool_steps=2,
-            approval_provider=lambda request: ToolApproval(request, True),
+            approval_provider=lambda request, _preview=None: ToolApproval(
+            request, True
+        ),
         )
         result = first_stella.process(Context(user_input="Record the result."))
 

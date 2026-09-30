@@ -341,6 +341,8 @@ def cli_approval_provider(
         # The preview is app-computed display, never authority: answering
         # still approves exactly the ApprovalRequest below.
         if preview is not None:
+            if preview.warning:
+                output_fn(f"    warning: {preview.warning}")
             for line in preview.detail_lines:
                 output_fn(f"    {line}")
             if preview.truncated:

@@ -479,6 +479,125 @@ def test_arm_windows_job_is_quiet_when_there_is_no_kernel32():
     assert childproc._arm_windows_job(Process()) is None
 
 
+# ---------------------------------------------------------------------------
+# The hazard review's claims, as tests. Each one states what a wrong
+# answer would do to a live machine, because these are the code paths
+# that signal processes the caller does not personally own.
+# ---------------------------------------------------------------------------
+
+
+@LINUX_ONLY
+def test_sweep_matching_is_confined_to_the_exact_marker(monkeypatch):
+    """Only the exact env marker makes a process killable by the sweep.
+
+    A near-miss env name must not match (``startswith`` is over the
+    whole ``NAME=`` chunk, not a substring search), and the process
+    running the sweep must never be in its own candidate list even when
+    it carries a marker with a stale value — that would make a boot
+    sweep a suicide (a shell started from a guarded child leaks the
+    mark to whatever Stella the user later launches from it).
+    """
+
+    lookalike = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        env={**os.environ, "STELLA_CHILD_PIDX": str(_dead_pid())},
+        **_DEVNULL,
+    )
+    marked = _spawn_marked(mark=str(os.getpid()))
+    monkeypatch.setenv(CHILD_MARK_ENV, str(_dead_pid()))
+    try:
+        marks: dict[int, int] = {}
+        deadline = time.time() + 5.0
+        while marked.pid not in marks and time.time() < deadline:
+            marks = dict(childproc._marked_children())
+            if marked.pid not in marks:
+                time.sleep(0.05)
+        assert marks.get(marked.pid) == os.getpid()
+        assert lookalike.pid not in marks, "a near-miss env name matched the marker"
+        assert os.getpid() not in marks, (
+            "the sweep counted the process running it as a killable orphan"
+        )
+    finally:
+        _reap(lookalike.pid)
+        _reap(marked.pid)
+        lookalike.wait()
+        marked.wait()
+
+
+@LINUX_ONLY
+def test_sweep_never_signals_a_process_that_bears_no_marker():
+    """Command-line matching alone never kills.
+
+    An unrelated live process whose argv *names* a Stella-shaped temp
+    path is visible to the referencing-process scan, but it is only
+    ever signalled when a stale orphaned directory it references is
+    actually being reclaimed. With no such directory on disk this sweep
+    must pass over it entirely — this is the proof that no loose
+    prefix/name match against ``/proc/<pid>/cmdline`` reaches a signal.
+    """
+
+    decoy = _spawn_marked(
+        mark=None,
+        extra_argv=["/tmp/stella-voice-999999-pytest-decoy/capture.wav"],
+    )
+    try:
+        sweep_orphaned_children(output_fn=lambda _: None)
+        time.sleep(0.3)
+        assert decoy.poll() is None, (
+            "the sweep signalled a process it does not track"
+        )
+    finally:
+        _reap(decoy.pid)
+        decoy.wait()
+
+
+@POSIX_ONLY
+def test_watchdog_in_a_shared_process_group_kills_only_itself():
+    """The watchdog's kill cannot take the group — and therefore not
+    the user's terminal — down with it.
+
+    Unlike the reparenting test above, this helper does *not* get its
+    own session: it shares the process group of the test process
+    itself. When its parent dies the watchdog fires inside that shared
+    group, and the only safe answer is to end itself. If
+    ``terminate_own_process_group`` ever regresses to an unconditional
+    ``killpg``, this test SIGKILLs the running test session — which is
+    precisely the failure the group-leader guard exists to prevent on
+    the user's machine.
+    """
+
+    helper = (
+        "import os, sys, time;"
+        "from stella.childproc import start_parent_watchdog;"
+        "start_parent_watchdog();"
+        "print(os.getpid(), flush=True); time.sleep(30)"
+    )
+    wrapper = (
+        "import subprocess, sys, time;"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        + repr(helper)
+        + "]); "
+        "print(child.pid, flush=True); time.sleep(30)"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", wrapper], stdout=subprocess.PIPE, text=True
+    )
+    assert parent.stdout is not None
+    child_pid = int(parent.stdout.readline().strip())
+    try:
+        time.sleep(0.4)  # the watchdog thread is running by now
+        parent.kill()
+        parent.wait()
+        assert _wait_for_death(child_pid, timeout=5.0), (
+            "the watchdog did not fire: the portable guarantee is broken"
+        )
+        # Reaching this line is the assertion: the test process — a
+        # member of this very group — is still alive to run it.
+        assert parent.poll() is not None
+    finally:
+        _reap(child_pid)
+
+
 def test_parent_alive_never_uses_the_posix_zero_probe_off_posix(monkeypatch):
     # os.kill(pid, 0) is a liveness probe on POSIX and a TerminateProcess
     # on Windows: the two must not share an implementation.

@@ -565,6 +565,13 @@ def _marked_children() -> list[tuple[int, int]]:
         if not entry.isdigit():
             continue
         pid = int(entry)
+        if pid == os.getpid():
+            # The sweeper is never a guarded child, but a marker can
+            # still reach it: an interactive shell started from a
+            # guarded child inherits the mark, and any Stella launched
+            # from that shell carries it. If the recorded pid is stale,
+            # matching ourselves would turn the sweep into a suicide.
+            continue
         try:
             with open(f"/proc/{pid}/environ", "rb") as handle:
                 environ = handle.read()

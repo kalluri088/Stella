@@ -289,7 +289,54 @@ def _close_job_handles() -> None:
 atexit.register(_close_job_handles)
 
 
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_STILL_ACTIVE = 259
+
+
+def _parent_alive_windows(pid: int, kernel32: object) -> bool:
+    """Is this pid still running? Windows has no ``os.kill(pid, 0)``.
+
+    ``os.kill(pid, 0)`` is not a liveness probe on this platform:
+    CPython's Windows implementation falls through to
+    ``TerminateProcess(handle, sig)`` for every signal value that is not
+    a console control event, so the POSIX idiom for "just check" would
+    *kill* the process it was asked to observe. An existence check that
+    cannot be a side effect is a prerequisite for the watchdog, not a
+    nicety.
+    """
+
+    try:
+        kernel32.OpenProcess.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int32,
+            ctypes.c_uint32,
+        ]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        if not handle:
+            return False
+        code = ctypes.c_uint32()
+        ok = kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        if not ok:
+            return False
+        return code.value == _PROCESS_STILL_ACTIVE
+    except (AttributeError, OSError, ValueError):  # pragma: no cover
+        return False
+
+
 def _parent_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if platform_name() == WINDOWS:
+        kernel32 = _kernel32()
+        if kernel32 is None:  # pragma: no cover - kernel32 is always there
+            # Death has to be provable before a watchdog acts on it. An
+            # unavailable probe is not evidence that Stella is gone, and
+            # killing a recorder mid-capture on a guess is the worse
+            # failure.
+            return True
+        return _parent_alive_windows(pid, kernel32)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -300,15 +347,19 @@ def _parent_alive(pid: int) -> bool:
 
 
 def terminate_own_process_group() -> None:
-    """Take this process and everything started alongside it down.
+    """Take this process down, and its group too if it leads that group.
 
-    POSIX: ``SIGKILL`` to our own process group, which is the widest
-    thing a process is entitled to signal about itself. ``os._exit``
-    follows so a thread blocked in the kill path cannot keep the process
-    up.
+    POSIX: a process that *is* the group leader owns the group and may
+    SIGKILL it, which also catches anything it started alongside. A
+    process that is not the leader deliberately kills only itself —
+    Stella's children share Stella's group by default, and a helper that
+    SIGKILLed the whole group would take the user's terminal with it on
+    a false positive. ``os._exit`` follows so a thread blocked on the
+    kill path cannot keep the process up.
 
-    Windows: no process-group concept; terminate this process directly.
-    Grandchildren are the Job Object's job, not this function's.
+    Windows: there is no process-group concept, so this terminates the
+    process itself. Grandchildren are the Job Object's business, not
+    this function's.
     """
 
     if platform_name() == WINDOWS:
@@ -320,7 +371,8 @@ def terminate_own_process_group() -> None:
                 pass
         os._exit(1)
     try:
-        os.killpg(os.getpgrp(), signal.SIGKILL)
+        if os.getpgrp() == os.getpid():
+            os.killpg(os.getpgrp(), signal.SIGKILL)
     except OSError:
         pass
     os._exit(1)

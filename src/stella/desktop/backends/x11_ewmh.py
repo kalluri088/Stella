@@ -11,10 +11,13 @@ MEASURED on this box's XWayland root (``DISPLAY=:0``, Hyprland 0.56.2,
 moved or typed):
 
 * ``xprop -root _NET_SUPPORTING_WM_CHECK`` →
-  ``_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x200005``, and that id
-  answers as a real window: ``xprop -id 0x200005 _NET_WM_NAME`` →
-  ``_NET_WM_NAME(UTF8_STRING) = "Hyprland :D"``. So "the check names a
-  window that talks back" is this probe's proof of an EWMH manager.
+  ``_NET_SUPPORTING_WM_CHECK(WINDOW): window id # 0x200005``; that id
+  answers as a real window, names *itself* in the same property
+  (``xprop -id 0x200005 _NET_SUPPORTING_WM_CHECK`` →
+  ``window id # 0x200005``) and identifies its manager
+  (``xprop -id 0x200005 _NET_WM_NAME`` →
+  ``_NET_WM_NAME(UTF8_STRING) = "Hyprland :D"``). That triple is this
+  probe's proof of an EWMH manager, measured through XWayland here.
 * Window ids are ``0x`` + lowercase hex, never decimal, and follow
   ``window id #`` — ``xprop -notype -root _NET_CLIENT_LIST`` →
   ``_NET_CLIENT_LIST: window id # 0xa00033``; the zero-window form is
@@ -51,6 +54,14 @@ moved or typed):
   never spawns for it; the contract cannot express that as anything but
   ``None``, which is also what a confused tool answers, so the two stay
   honestly indistinguishable *to the caller*.
+* This adapter's own read path was run here against that root (read-only,
+    the process environment's ``DISPLAY=:0``): ``wm_check()`` →
+    ``('0x200005', 'Hyprland :D')``, ``windows()`` → one window with
+    ``id='0xc00004'``, ``class_name='Spotify'`` and ``pid=31990`` (and later
+    ``[]``, with the client list empty, once the window was gone), and
+    ``active_window()`` → ``None`` from the ``0x0`` reply. So the parsers
+    here are exercised by the real tool's real bytes — which still says
+    nothing about focus, because the real focus is Hyprland's.
 * ``import`` here is ImageMagick 7.1.2-31 and produced **no image at all**
   from the XWayland root: ``-window root`` with ``png:-``, ``PNG:-``, ``-``
   or ``/dev/stdout`` each exited 1 with ``import: missing an image filename
@@ -214,8 +225,11 @@ def _canonical_window_id(value: object) -> str | None:
 def _quoted_fields(value: str) -> list[str]:
     """The quoted tokens of an xprop string list; ``[]`` when none match.
 
-    xprop escapes an embedded quote as ``\\"`` and a newline as ``\\n``, so
-    a title can never smuggle a second line into this parse.
+    xprop's documented grammar escapes an embedded quote as ``\\"`` and a
+    newline as ``\\n``, so a title cannot smuggle a second line into this
+    parse; that escaping is documented rather than re-measured here (no
+    window on this box had a quote or a newline in its name), and an
+    *unrecognised* shape reads as unusable rather than as a silent "".
     """
 
     return [
@@ -261,9 +275,11 @@ class X11Ewmh:
         return (self.xprop, self.xdotool, self.capture_tool)
 
     @classmethod
-    def from_environment(cls, env: Mapping[str, str]) -> X11Ewmh:
+    def from_environment(
+        cls, env: Mapping[str, str], runner: Runner = subprocess_runner
+    ) -> X11Ewmh:
         session = {key: env.get(key, "") for key in _X_CLIENT_ENV_KEYS}
-        return cls(env.get("DISPLAY") or None, session_env=session)
+        return cls(env.get("DISPLAY") or None, session_env=session, runner=runner)
 
     # -------------------------------------------------------------- reads
 
@@ -349,7 +365,9 @@ class X11Ewmh:
             ids.append(canonical)
         return ids
 
-    def _text(self, name: str, target: str | None, *, last_field: bool = False) -> ReadResult:
+    def _text(
+        self, name: str, target: str | None, *, last_field: bool = False
+    ) -> ReadResult:
         """One quoted string property: text, :data:`ABSENT`, or :data:`UNUSABLE`."""
 
         value = self._read(name, target)
@@ -540,20 +558,29 @@ class X11Ewmh:
     # --------------------------------------------------------------- probe
 
     def wm_check(self) -> tuple[str, str] | None:
-        """The EWMH proof: the check window exists and names its manager.
+        """The EWMH proof: the check window checks *itself* and names its manager.
 
-        Measured here: root ``_NET_SUPPORTING_WM_CHECK`` → ``0x200005``, and
-        that window answers ``_NET_WM_NAME`` = ``"Hyprland :D"``. An
-        environment variable is a hint; this answer is proof (registry rule 1).
+        Measured here: root ``_NET_SUPPORTING_WM_CHECK`` → ``0x200005``, that
+        window's own ``_NET_SUPPORTING_WM_CHECK`` → ``0x200005`` (the
+        self-reference EWMH requires), and its ``_NET_WM_NAME`` →
+        ``"Hyprland :D"``. An environment variable is a hint; this triple is
+        the answer that makes the session EWMH-compliant (registry rule 1),
+        so a check id that is dead, is not self-referential or carries no
+        manager name is no desktop.
         """
 
         ids = self._ids(self._read("_NET_SUPPORTING_WM_CHECK"))
-        if ids is None or len(ids) != 1:
+        if ids is None or len(ids) != 1 or ids[0] == NO_FOCUS_WINDOW_ID:
+            return None
+        claimed = self._ids(self._read("_NET_SUPPORTING_WM_CHECK", ids[0]))
+        if claimed != ids:
             return None
         name = self._text("_NET_WM_NAME", ids[0])
-        if name is UNUSABLE or name is None:
+        if name is ABSENT:
+            name = self._text("WM_NAME", ids[0])
+        if name is UNUSABLE or name is None or name is ABSENT or not name:
             return None
-        return ids[0], "" if name is ABSENT else name
+        return ids[0], name
 
 
 def probe(
@@ -583,7 +610,7 @@ def probe(
     if any((env.get(marker) or "").strip() for marker in WAYLAND_MARKERS):
         return None
 
-    x11 = X11Ewmh.from_environment(env)
+    x11 = X11Ewmh.from_environment(env, runner)
     recognizer = TesseractRecognizer(runner)
     needed = (*x11.required_binaries(), *recognizer.required_binaries())
     if any(which(binary) is None for binary in needed):

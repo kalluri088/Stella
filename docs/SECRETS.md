@@ -133,7 +133,16 @@ is gated:
   `tests/test_ui.py` (setup stores after a verified test, Apply refuses
   a foreign key, no environment writes), `tests/test_backup_cli.py`
   (key file excluded from backups).
+- Live (2026-09-29, real display + real local Ollama, all state in temp
+  directories): the first-run dialog listed installed models, the
+  connection test passed, Start gated on that success, the saved
+  `config.json` carried no secret and no key file was created for the
+  keyless flow, and a real `qwen3:4b` turn answered correctly through
+  the new build path. A Claude-shaped key pasted under the OpenAI
+  preset was refused with the switch-preset hint, stored nothing, and
+  left Start disabled — observed on the live window, not only in tests.
 - Live: at least one non-OpenAI preset must be validated against the
   real endpoint (a tool turn for Claude, `models.list` for Grok) before
   the preset is claimed to work — unit tests alone never prove
-  model-dependent behavior.
+  model-dependent behavior. This still awaits a real hosted key; the
+  presets are offline-proven only.

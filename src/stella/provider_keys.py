@@ -306,9 +306,9 @@ def mismatch_hint(preset_id: str | None, key: str) -> str | None:
         return None
     other = PRESETS[detected]
     return (
-        f"That looks like a {other.label} key, not a {preset.label} "
-        f"key. Pick {other.label} in the provider list — or paste the "
-        f"key from {preset.key_issuer}."
+        f"That key looks like it belongs to {other.label}, not "
+        f"{preset.label}. Pick {other.label} in the provider list — or "
+        f"paste the key from {preset.key_issuer}."
     )
 
 

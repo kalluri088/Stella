@@ -64,7 +64,10 @@ Decisions this module owes the invariants:
   every ``swaymsg`` call rather than relying on the inherited one.
 * Even the injected seam is untrusted input: a runner that raises or
   does not answer with a :class:`Completed` reads as an unusable
-  answer (or a clean refusal), never a crash into the registry.
+  answer (or a clean refusal), never a crash into the registry. That
+  is also what keeps sway's entry in the stub-registration test honest
+  now that this adapter is written: against a seam that cannot answer
+  in a trusted form, every environment still probes to ``None``.
 
 UNVERIFIED — every fact below is documentation-derived, not measured,
 and a real sway machine must confirm each one (the Hyprland adapter's

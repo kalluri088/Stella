@@ -9,6 +9,7 @@ the handoff between the two programs on every platform at once.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import platformdirs
@@ -27,12 +28,53 @@ from stella.app import (
     default_workspace,
 )
 
+LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the XDG answer these pin is Linux's; other platforms get their own",
+)
+POSIX_ONLY = pytest.mark.skipif(
+    os.name != "posix",
+    reason="HOME-driven: Windows resolves the home directory from USERPROFILE",
+)
+
 
 def _clear_xdg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
 
+@LINUX_ONLY
+def test_linux_data_dir_is_byte_for_byte_the_pre_platformdirs_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The migration promise, as the old formula itself.
+
+    Real state lives at these paths on existing Linux machines and a
+    sibling repo's token file is read from the sibling default, so
+    "unchanged" is checked against exactly what ``default_data_dir``
+    computed before ``platformdirs`` was introduced — for every shape
+    of ``XDG_DATA_HOME`` a legitimate configuration produces: unset,
+    absolute, with or without a trailing slash.
+    """
+
+    def legacy(env) -> str:
+        return str(
+            Path(
+                env.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+            )
+            / "stella"
+        )
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for case in (None, str(tmp_path / "xdg"), str(tmp_path / "xdg") + "/"):
+        if case is None:
+            monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        else:
+            monkeypatch.setenv("XDG_DATA_HOME", case)
+        assert str(default_data_dir()) == legacy(os.environ)
+
+
+@LINUX_ONLY
 def test_data_dir_still_resolves_to_the_linux_xdg_location(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -40,6 +82,7 @@ def test_data_dir_still_resolves_to_the_linux_xdg_location(
     assert default_data_dir() == tmp_path / "xdg" / "stella"
 
 
+@LINUX_ONLY
 def test_data_dir_without_xdg_is_the_local_share_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -48,6 +91,7 @@ def test_data_dir_without_xdg_is_the_local_share_default(
     assert default_data_dir() == tmp_path / ".local" / "share" / "stella"
 
 
+@LINUX_ONLY
 def test_every_state_path_hangs_off_the_one_data_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -75,6 +119,7 @@ def test_data_dir_uses_the_platformdirs_call_shape_the_server_shares(
     assert seen == [("stella", False)]
 
 
+@POSIX_ONLY
 def test_vad_model_stays_under_home_and_overridable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -95,6 +140,7 @@ def test_persona_directory_prefers_the_explicit_override(
     assert persona.persona_directory() == tmp_path / "mine"
 
 
+@LINUX_ONLY
 def test_persona_directory_uses_the_xdg_config_home_when_set(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -103,6 +149,7 @@ def test_persona_directory_uses_the_xdg_config_home_when_set(
     assert persona.persona_directory() == tmp_path / "xdg" / "stella"
 
 
+@LINUX_ONLY
 def test_persona_directory_defaults_to_dot_config_on_linux(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -138,6 +185,7 @@ def test_outline_token_dir_honours_the_explicit_data_dir(
     assert client is not None and client.token == "tok"
 
 
+@LINUX_ONLY
 def test_outline_token_dir_follows_xdg_data_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -151,6 +199,21 @@ def test_outline_token_dir_follows_xdg_data_home(
     monkeypatch.delenv("OUTLINE_DATA_DIR", raising=False)
     client = outline_tools._client_from_environment({})
     assert client is not None and client.token == "from-xdg"
+
+
+@LINUX_ONLY
+def test_outline_default_without_xdg_is_the_path_always_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The sibling repo's token handoff depends on this: with
+    # XDG_DATA_HOME unset, the outline default must be byte-identical to
+    # the ~/.local/share/outline that was hardcoded and read forever —
+    # and that call shape is what the parallel Outline-repo change uses.
+    _clear_xdg(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert str(
+        Path(platformdirs.user_data_dir("outline", appauthor=False))
+    ) == str(tmp_path / ".local" / "share" / "outline")
 
 
 def test_outline_token_uses_the_app_name_the_server_writes_under(
@@ -172,6 +235,7 @@ def test_outline_token_uses_the_app_name_the_server_writes_under(
     assert platformdirs.user_data_dir("outline", appauthor=False)
 
 
+@POSIX_ONLY
 def test_split_command_default_is_the_posix_mode_on_this_host():
     # app.py and cli.py call split_command() with no platform argument:
     # on Linux that must still be plain posix shlex behaviour.

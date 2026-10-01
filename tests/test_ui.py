@@ -312,6 +312,7 @@ def test_settings_apply_preserves_voice_configuration(
     # Release dogfood fix: Apply used to rebuild StellaSettings from only the
     # fields the panel shows, silently resetting voice configuration that the
     # user supplied through the environment.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-voice-test")
     settings = StellaSettings(
         model="test",
         voice_transcription="off",
@@ -1203,6 +1204,54 @@ def test_settings_preset_picker_derives_provider_and_preset(
         window._panel_preset_changed()
         assert window._draft_settings().provider == "ollama"
         assert window._draft_settings().preset is None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_picker_offers_the_local_free_router(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["freellmapi"].label)
+        window._panel_preset_changed()
+        draft = window._draft_settings()
+        assert draft.provider == "openai"
+        assert draft.preset == "freellmapi"
+        url = window._settings_fields["OpenAI base URL"]
+        assert url.get() == "http://localhost:3001/v1"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_refuses_a_keyless_switch_before_rebuild(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mid-session switching is live, but a preset without a key must be
+    # refused in the panel, not posted to a rebuild the worker can only
+    # fail. Once a key exists (stored or entered), the same switch goes.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        window._panel_preset_changed()
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._apply_settings()
+        assert captured == []
+        status = window._settings_status.cget("text")
+        assert "no stored key" in status
+        assert provider_keys.stored_api_key("anthropic") is None
+
+        provider_keys.save_api_key("anthropic", "sk-ant-stored")
+        window._apply_settings()
+        assert len(captured) == 1
+        assert captured[0].preset == "anthropic"
     finally:
         bridge.stop()
         root.destroy()

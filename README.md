@@ -130,7 +130,8 @@ To remove Stella: `uv tool uninstall stella`, and delete
 
 1. Pick a provider: **Local model (Ollama)**, **Local llama.cpp**,
    **OpenAI**, **Claude (Anthropic)**, **Grok (xAI)**, **Groq**,
-   **OpenRouter**, **Google Gemini**, or **Other OpenAI-compatible**.
+   **OpenRouter**, **Google Gemini**, **FreeLLMAPI (local router)**,
+   or **Other OpenAI-compatible**.
 2. Stella lists the Ollama models you actually have installed; hosted
    providers arrive with their endpoint and suggested models prefilled
    (still editable). Paste your API key into the masked field — if it is
@@ -144,7 +145,12 @@ To remove Stella: `uv tool uninstall stella`, and delete
 
 Your provider/model choice is saved under `~/.local/share/stella/` and can
 be changed later in the window's Settings tab, which shows a live
-"Connected / Not connected" status.
+"Connected / Not connected" status. Switching there takes effect on the
+very next message — no restart, and the conversation and memory carry
+over. **FreeLLMAPI** is the preset for a self-hosted
+[FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) router pooling
+free-tier keys on your machine; it expects the router at
+`localhost:3001` and its locally generated `freellmapi-…` unified token.
 
 ### Advanced: environment variables (optional)
 

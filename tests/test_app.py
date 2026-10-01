@@ -1153,6 +1153,39 @@ def test_build_application_resolves_a_preset_key_from_the_store(
         application.close()
 
 
+def test_build_application_drives_the_local_router_preset_end_to_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A FreeLLMAPI unified token is just another named slot: stored on
+    # its own, aimed at the router's localhost endpoint, chat dialect.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    provider_keys.save_api_key("freellmapi", "freellmapi-unified-token")
+    created: list[dict] = []
+
+    class RecorderClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(app, "OpenAILLMClient", RecorderClient)
+    application = build_application(
+        StellaSettings(
+            provider="openai",
+            model="deepseek-v3",
+            preset="freellmapi",
+            voice_transcription="off",
+            voice_speech="off",
+        )
+    )
+    try:
+        assert len(created) == 1
+        assert created[0]["api_key"] == "freellmapi-unified-token"
+        assert created[0]["base_url"] == "http://localhost:3001/v1"
+        assert created[0]["tool_dialect"] == "chat"
+    finally:
+        application.close()
+
+
 def test_build_application_names_both_key_paths_when_none_exists(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

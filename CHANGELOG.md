@@ -89,6 +89,16 @@
   overrides the OpenAI slot for a launch; named presets resolve only
   against their own stored key. `stella backup` deliberately excludes
   the key file. See `docs/SECRETS.md`.
+- **FreeLLMAPI (local router)** joins the picker: a self-hosted router
+  that pools your own free-tier provider keys behind one local
+  OpenAI-compatible endpoint (`localhost:3001`) with a `freellmapi-…`
+  unified token — Stella's first preset where genuinely bill-free
+  inference is the point. Groq's suggested models now name its current
+  free lineup; the previous ones were retired upstream.
+- Mid-session switching is a first-class path: Settings rebuilds the
+  model live on Apply (conversation and memory carry over, no restart),
+  and switching to a preset with no stored key is refused in the panel
+  instead of failing as a mysterious background error.
 - Under the hood the one OpenAI client learned a second tool dialect:
   hosted presets that only speak Chat Completions get function tools
   over that wire, proven on the full conformance matrix; OpenAI itself

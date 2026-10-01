@@ -66,7 +66,8 @@ Ticket: research report 22.
 
 The shipped model stack above is unchanged; this is about the *optional*
 hosted endpoints a user may pick in setup. Every hosted preset except
-OpenAI itself (Claude, Grok, Groq, OpenRouter, Gemini, custom) is a thin
+OpenAI itself (Claude, Grok, Groq, OpenRouter, Gemini, FreeLLMAPI,
+custom) is a thin
 client of the OpenAI SDK against that provider's OpenAI-compatible
 endpoint, so its `chat_with_tools` dialect is Chat Completions function
 tools — only OpenAI serves the Responses API, and it keeps using it
@@ -76,6 +77,18 @@ provider client classes: the dialect is a constructor argument on the one
 implementations of the same `LLMClient` boundary. Keys are verified
 before storage and live in the private `api_keys.json` (see
 `SECRETS.md`), never in `config.json` or `StellaSettings`.
+
+FreeLLMAPI is the odd one out: it is a *self-hosted* OpenAI-compatible
+router (github.com/tashfeenahmed/freellmapi) that pools the user's own
+free-tier provider keys behind one local endpoint,
+`http://localhost:3001/v1`, authenticated by a locally generated
+`freellmapi-…` unified token. Stella ships it as a preset because the
+free-tier landscape is a real answer to "which model, cheaply" — but it
+inherits the free tiers' caveats: prompts leave the machine through
+whoever upstream provider the router picks, some of which log them, and
+rate limits are per-provider and shifting. Users running the router on a
+different port use "Other OpenAI-compatible" with the URL instead; the
+preset's endpoint is fixed, like every preset except custom.
 
 ## Hard rules that survive any model change
 

@@ -98,7 +98,7 @@ PRESETS: dict[str, ProviderPreset] = {
             label="Groq",
             base_url="https://api.groq.com/openai/v1",
             detection_prefixes=("gsk_",),
-            models=("llama-3.3-70b-versatile",),
+            models=("openai/gpt-oss-120b", "openai/gpt-oss-20b"),
             key_issuer="console.groq.com",
         ),
         ProviderPreset(
@@ -122,6 +122,15 @@ PRESETS: dict[str, ProviderPreset] = {
             detection_prefixes=("AIza",),
             models=("gemini-2.5-flash", "gemini-2.5-pro"),
             key_issuer="aistudio.google.com",
+        ),
+        ProviderPreset(
+            id="freellmapi",
+            label="FreeLLMAPI (local router)",
+            base_url="http://localhost:3001/v1",
+            detection_prefixes=("freellmapi-",),
+            models=(),
+            key_issuer="your FreeLLMAPI dashboard",
+            tool_dialect="chat",
         ),
         ProviderPreset(
             id="custom",

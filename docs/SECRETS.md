@@ -38,7 +38,8 @@ For each provider preset, the effective key is resolved in this order:
 
 1. an `OPENAI_API_KEY` exported in the environment — but **only for the
    `openai` and `custom` slots**; a named preset (Claude, Grok, Groq,
-   OpenRouter, Gemini) resolves against its own stored key only, so an
+   OpenRouter, Gemini, FreeLLMAPI) resolves against its own stored key
+   only, so an
    OpenAI environment key can never be shipped to Anthropic;
 2. the stored key for that preset in `api_keys.json`;
 3. no key — startup fails with a message naming both paths (enter one in

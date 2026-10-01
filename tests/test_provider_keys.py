@@ -125,6 +125,9 @@ class TestPrecedence:
     ):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-env")
         assert provider_keys.effective_api_key("anthropic") is None
+        # The local router's unified token is a named slot too: an
+        # OpenAI environment key must not be sent to it either.
+        assert provider_keys.effective_api_key("freellmapi") is None
         provider_keys.save_api_key("anthropic", "sk-ant-stored")
         assert provider_keys.effective_api_key("anthropic") == "sk-ant-stored"
 
@@ -143,6 +146,7 @@ class TestDetection:
             ("gsk_abcdef", "groq"),
             ("xai-abcdef", "xai"),
             ("AIzaSyabcdef", "google"),
+            ("freellmapi-localtoken", "freellmapi"),
             ("sk-abc123", "openai"),
             ("  sk-ant-api03-padded  ", "anthropic"),
             ("totally-unknown-shape", None),
@@ -164,6 +168,7 @@ class TestDetection:
         "preset_id, key",
         [
             ("anthropic", "sk-ant-api03-match"),
+            ("freellmapi", "freellmapi-match"),
             ("custom", "sk-ant-api03-whatever"),
             (None, "sk-ant-api03-whatever"),
             ("openai", "totally-unknown-shape"),
@@ -178,6 +183,19 @@ class TestDetection:
     def test_mismatch_hint_is_silent_for_an_empty_key(self):
         assert provider_keys.mismatch_hint("openai", "") is None
 
+    def test_a_router_token_under_openai_points_at_the_router_preset(self):
+        hint = provider_keys.mismatch_hint("openai", "freellmapi-localtoken")
+        assert hint is not None
+        assert "FreeLLMAPI (local router)" in hint
+        assert "localtoken" not in hint
+
+    def test_a_cloud_key_under_the_router_preset_is_flagged_too(self):
+        hint = provider_keys.mismatch_hint("freellmapi", "sk-ant-api03-secret")
+        assert hint is not None
+        assert "Claude (Anthropic)" in hint
+        assert "your FreeLLMAPI dashboard" in hint
+        assert "secret" not in hint
+
 
 class TestDisplayHelpers:
     def test_redacted_hint_shows_only_the_suffix(self):
@@ -187,7 +205,14 @@ class TestDisplayHelpers:
     def test_dialect_table(self):
         assert provider_keys.tool_dialect_for(None) == "responses"
         assert provider_keys.tool_dialect_for("openai") == "responses"
-        for preset_id in ("anthropic", "xai", "groq", "openrouter", "google"):
+        for preset_id in (
+            "anthropic",
+            "xai",
+            "groq",
+            "openrouter",
+            "google",
+            "freellmapi",
+        ):
             assert provider_keys.tool_dialect_for(preset_id) == "chat"
         # An unknown gateway is assumed to speak chat.completions: it is
         # the overwhelmingly common dialect.
@@ -199,6 +224,9 @@ class TestDisplayHelpers:
         assert (
             provider_keys.base_url_for("anthropic")
             == "https://api.anthropic.com/v1"
+        )
+        assert provider_keys.base_url_for("freellmapi") == (
+            "http://localhost:3001/v1"
         )
         assert provider_keys.base_url_for("nonsense") is None
 

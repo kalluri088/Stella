@@ -1729,6 +1729,21 @@ class StellaWindow:
         if refusal:
             self._settings_status.configure(text=refusal)
             return
+        preset = provider_keys.PRESETS[self._preset_id()]
+        if (
+            preset.key_required
+            and provider_keys.effective_api_key(preset.id) is None
+        ):
+            # Catch the keyless switch here instead of posting a rebuild
+            # the worker can only fail mid-flight: nothing is changed,
+            # and the field to fix is named.
+            self._settings_status.configure(
+                text=(
+                    f"{preset.label} has no stored key yet — type one "
+                    "into the API key field, then Apply again."
+                )
+            )
+            return
         applied = self._draft_settings()
         self._settings_status.configure(text="Restarting Stella with these settings...")
         self._bridge.post_apply_settings(applied)
@@ -1790,6 +1805,7 @@ _PRESET_ORDER = (
     "groq",
     "openrouter",
     "google",
+    "freellmapi",
     "custom",
 )
 _PRESET_LABELS = [provider_keys.PRESETS[pid].label for pid in _PRESET_ORDER]

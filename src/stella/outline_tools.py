@@ -303,6 +303,22 @@ def _line(text: str) -> str:
     return text[:MAX_LINE_CHARS]
 
 
+def _section(
+    rows: object,
+    cap: int,
+    build: Callable[[Mapping[str, object]], str],
+) -> list[str]:
+    """At most ``cap`` rendered lines from one payload list, plus an
+    overflow marker naming what the cut hid. Only the marker line appears
+    on truncation, never for a section that fits."""
+
+    items = [row for row in (rows if isinstance(rows, list) else []) if isinstance(row, Mapping)]
+    lines = [build(row) for row in items[:cap]]
+    if len(items) > cap:
+        lines.append(f"(+{len(items) - cap} more)")
+    return lines
+
+
 def _render(lines: list[str]) -> ToolResult:
     body = lines[:MAX_OUTPUT_LINES]
     overflow = len(lines) - len(body)
@@ -360,7 +376,9 @@ def _search_line(row: Mapping[str, object]) -> str:
     snippet = row.get("snippet")
     if isinstance(snippet, str) and snippet.strip():
         line += " · " + " ".join(snippet.split())[:120]
-    return line
+    # Titles are untrusted stored text: flatten any embedded newline and
+    # collapse the double space an empty title would otherwise leave.
+    return " ".join(line.split())
 
 
 # ---------------------------------------------------------------------------
@@ -458,40 +476,51 @@ class OutlineSearchTool(Tool):
                 "GET", "/api/v1/today", query={"tz_offset": _local_tz_offset_minutes()}
             )
             assert isinstance(payload, Mapping)
-            for task in payload.get("overdue_tasks", []):
-                if isinstance(task, Mapping):
-                    lines.append(
-                        f"[task#{task.get('id')}] OVERDUE {task.get('title')}"
-                        f" — due {_format_when(task.get('due_at'))}"
-                    )
-            for task in payload.get("today_tasks", []):
-                if isinstance(task, Mapping):
-                    lines.append(
-                        f"[task#{task.get('id')}] {task.get('title')}"
-                        f" — due {_format_when(task.get('due_at'))}"
-                    )
-            for event in payload.get("events", []):
-                if isinstance(event, Mapping):
-                    lines.append(
-                        f"[event#{event.get('id')}] {event.get('title')}"
-                        f" — {_format_when(event.get('starts_at'))}"
-                    )
-            lines.append(f"water today: {payload.get('water_total_ml', 0)} ml")
-            for timer in payload.get("active_timers", []):
-                if isinstance(timer, Mapping):
-                    lines.append(
-                        f"[timer#{timer.get('id')}] {timer.get('label')}"
-                        f" — {timer.get('state')}"
-                    )
-            for event in payload.get("upcoming_events", []):
-                if isinstance(event, Mapping):
-                    lines.append(
-                        f"[event#{event.get('id')}] next up: {event.get('title')}"
-                        f" — {_format_when(event.get('starts_at'))}"
-                    )
+            # Each section gets its own slice of the line budget and the
+            # summary leads: a few hundred overdue rows must still leave
+            # water, today's schedule and what is next visible.
+            summary = f"water today: {payload.get('water_total_ml', 0)} ml"
             open_count = payload.get("open_task_count")
             if isinstance(open_count, int) and not isinstance(open_count, bool):
-                lines.append(f"open tasks: {open_count}")
+                summary += f" · open tasks: {open_count}"
+            lines.append(summary)
+            lines += _section(
+                payload.get("today_tasks"),
+                3,
+                lambda t: (
+                    f"[task#{t.get('id')}] {t.get('title')}"
+                    f" — due {_format_when(t.get('due_at'))}"
+                ),
+            )
+            lines += _section(
+                payload.get("events"),
+                3,
+                lambda e: (
+                    f"[event#{e.get('id')}] {e.get('title')}"
+                    f" — {_format_when(e.get('starts_at'))}"
+                ),
+            )
+            lines += _section(
+                payload.get("upcoming_events"),
+                2,
+                lambda e: (
+                    f"[event#{e.get('id')}] next up: {e.get('title')}"
+                    f" — {_format_when(e.get('starts_at'))}"
+                ),
+            )
+            lines += _section(
+                payload.get("active_timers"),
+                2,
+                lambda t: f"[timer#{t.get('id')}] {t.get('label')} — {t.get('state')}",
+            )
+            lines += _section(
+                payload.get("overdue_tasks"),
+                3,
+                lambda t: (
+                    f"[task#{t.get('id')}] OVERDUE {t.get('title')}"
+                    f" — due {_format_when(t.get('due_at'))}"
+                ),
+            )
         elif when == "overdue":
             payload = client.request(
                 "GET",

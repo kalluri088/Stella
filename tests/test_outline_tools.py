@@ -2,6 +2,7 @@
 
 from stella.app import StellaSettings
 from stella.outline_tools import (
+    MAX_OUTPUT_LINES,
     OutlineClient,
     OutlineCreateTool,
     OutlineError,
@@ -862,7 +863,7 @@ def test_search_lines_keep_date_host_and_flattened_snippet():
     result = tool.execute({"query": "x"})
     assert result.success
     lines = result.output.splitlines()[1:]  # skip the untrusted-data header
-    assert lines[1].startswith("[note#44]  → in [project#5] Garden · soil was dry second line")
+    assert lines[1].startswith("[note#44] → in [project#5] Garden · soil was dry second line")
     assert "\n" not in lines[1]
     assert len(lines[1].split(" · ")[1]) <= 120
     assert lines[2] == "[task#12] drink water"
@@ -892,3 +893,39 @@ def test_today_view_survives_missing_optional_fields():
     result = tool.execute({"when": "today"})
     assert "water today: 0 ml" in result.output
     assert "open tasks" not in result.output
+
+
+def test_today_view_keeps_time_sensitive_sections_under_overdue_flood():
+    today = {
+        "overdue_tasks": [
+            {"id": 100 + i, "title": f"stale {i}", "due_at": 1_759_000_000_000}
+            for i in range(30)
+        ],
+        "today_tasks": [{"id": 7, "title": "standup", "due_at": 2}],
+        "events": [{"id": 21, "title": "dentist", "starts_at": 1_760_000_000_000}],
+        "water_total_ml": 500,
+        "upcoming_events": [
+            {"id": 31, "title": "lunch", "starts_at": 1_760_100_000_000},
+            {"id": 32, "title": "review", "starts_at": 1_760_200_000_000},
+            {"id": 33, "title": "trip", "starts_at": 1_760_300_000_000},
+        ],
+        "active_timers": [],
+        "open_task_count": 40,
+    }
+    tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
+    result = tool.execute({"when": "today"})
+    lines = result.output.splitlines()[1:]
+    assert lines[0] == "water today: 500 ml · open tasks: 40"
+    assert any("[task#7] standup" in line for line in lines)
+    assert any("next up: lunch" in line for line in lines)
+    assert any("next up: review" in line for line in lines)
+    assert not any("next up: trip" in line for line in lines)
+    assert sum(1 for line in lines if "OVERDUE" in line) == 3
+    assert "(+1 more)" in result.output  # upcoming section overflow
+    assert "(+27 more)" in result.output  # overdue section overflow
+    assert len(lines) <= MAX_OUTPUT_LINES
+
+
+def test_today_sections_are_unmarked_when_they_fit():
+    result = OutlineSearchTool(client()).execute({"when": "today"})
+    assert "(+" not in result.output

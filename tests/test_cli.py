@@ -1310,3 +1310,174 @@ def test_main_persona_revert_subcommand_exit_codes(persona_dir) -> None:
     with pytest.raises(SystemExit) as raised:
         cli.main(["persona", "revert", "42"])
     assert raised.value.code == 2
+
+
+# --- slash commands -------------------------------------------------------
+
+
+def test_cli_exit_command_terminates_without_a_turn() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/exit", "never read"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert stella.contexts == []
+    assert outputs == ["Goodbye!"]
+
+
+def test_cli_debug_toggle_changes_the_next_turns_rendering() -> None:
+    stella = RecordingStella()
+    debug_lines: list[str] = []
+    outputs: list[str] = []
+    inputs = iter(["/debug", "/debug on", "hi", "/debug off", "hi again", "/exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        debug_fn=debug_lines.append,
+    )
+
+    assert len(stella.contexts) == 2
+    assert len(debug_lines) == 1  # only the turn after `/debug on`
+    assert outputs[0].startswith("Usage: /debug")
+    assert "debug on." in outputs
+    assert "debug off." in outputs
+
+
+def test_cli_trace_toggle_reports_and_renders() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/trace on", "/trace off", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert outputs == ["trace on.", "trace off.", "Goodbye!"]
+
+
+def test_cli_template_expands_into_an_ordinary_turn(persona_dir) -> None:
+    commands = persona_dir / "commands"
+    commands.mkdir(parents=True)
+    (commands / "plan.md").write_text(
+        "Make a plan: $ARGUMENTS", encoding="utf-8"
+    )
+    stella = RecordingStella()
+    inputs = iter(["/plan the launch", "/exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=lambda _: None,
+    )
+
+    assert [c.user_input for c in stella.contexts] == ["Make a plan: the launch"]
+
+
+def test_cli_unknown_command_errors_locally_without_a_model_call() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/bogusxyz", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert stella.contexts == []
+    assert any("no /bogusxyz command" in line for line in outputs)
+
+
+def test_cli_unknown_command_near_miss_gets_a_suggestion() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/stauts", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert any("Did you mean /status?" in line for line in outputs)
+
+
+def test_cli_status_and_help_render_without_a_turn() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/status", "/help", "/version", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert stella.contexts == []
+    assert any(line.startswith("provider:") for line in outputs)
+    assert any("/exit" in line for line in outputs)
+    assert any(line.startswith("stella ") for line in outputs)
+
+
+def test_cli_command_never_schedules_reminders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stella = RecordingStella()
+    checked: list[bool] = []
+    monkeypatch.setattr(
+        cli,
+        "_deliver_due_reminders",
+        lambda *args, **kwargs: checked.append(True),
+    )
+    inputs = iter(["/status", "hello", "/exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=lambda _: None,
+    )
+
+    assert checked == [True]  # only the real turn triggered the check
+
+
+def test_cli_clear_forgets_the_conversation_but_nothing_else() -> None:
+    stella = RecordingStella()
+    session = StellaSession(stella)
+    outputs: list[str] = []
+    inputs = iter(["hello", "/clear", "/exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        session=session,
+    )
+
+    assert session.history == []
+    assert any("Conversation history cleared" in line for line in outputs)
+
+
+def _dispatcher_with_one_record():
+    from datetime import UTC, datetime
+
+    from stella.tools import EchoTool, ToolDispatcher
+
+    dispatcher = ToolDispatcher([EchoTool()])
+    dispatcher.history.append(
+        {
+            "timestamp": datetime(2026, 9, 29, 12, 0, tzinfo=UTC).isoformat(),
+            "capability": "echo",
+            "arguments": {},
+        }
+    )
+    return dispatcher
+
+
+def test_cli_history_lists_action_records() -> None:
+    stella = RecordingStella()
+    stella.tools = _dispatcher_with_one_record()
+    outputs: list[str] = []
+    inputs = iter(["/history", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert any("echo" in line for line in outputs)
+
+
+def test_cli_history_rejects_a_bad_count() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/history lots", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert any(line.startswith("Usage: /history") for line in outputs)

@@ -492,16 +492,27 @@ class OutlineSearchTool(Tool):
                     f" — due {_format_when(t.get('due_at'))}"
                 ),
             )
+            events_rows = [
+                e for e in (payload.get("events") or []) if isinstance(e, Mapping)
+            ]
             lines += _section(
-                payload.get("events"),
+                events_rows,
                 3,
                 lambda e: (
                     f"[event#{e.get('id')}] {e.get('title')}"
                     f" — {_format_when(e.get('starts_at'))}"
                 ),
             )
+            # /today's upcoming list is "starts after now", so a later-today
+            # event is deliberately in both (the web "Up next" strip shows
+            # it that way too); a text render must not print it twice.
+            scheduled_ids = {e.get("id") for e in events_rows}
             lines += _section(
-                payload.get("upcoming_events"),
+                [
+                    e
+                    for e in (payload.get("upcoming_events") or [])
+                    if isinstance(e, Mapping) and e.get("id") not in scheduled_ids
+                ],
                 2,
                 lambda e: (
                     f"[event#{e.get('id')}] next up: {e.get('title')}"

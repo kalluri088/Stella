@@ -929,3 +929,21 @@ def test_today_view_keeps_time_sensitive_sections_under_overdue_flood():
 def test_today_sections_are_unmarked_when_they_fit():
     result = OutlineSearchTool(client()).execute({"when": "today"})
     assert "(+" not in result.output
+
+
+def test_today_next_up_does_not_repeat_a_scheduled_event():
+    later_today = {"id": 6, "title": "midnight snack",
+                   "starts_at": 1_760_000_000_000}
+    tomorrow = {"id": 9, "title": "futuresite",
+                "starts_at": 1_760_300_000_000}
+    today = {
+        "overdue_tasks": [], "today_tasks": [], "events": [later_today],
+        "water_total_ml": 0, "active_timers": [],
+        # /today deliberately lists a later-today event in both sets
+        "upcoming_events": [later_today, tomorrow],
+    }
+    tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
+    result = tool.execute({"when": "today"})
+    lines = result.output.splitlines()[1:]
+    assert sum("midnight snack" in line for line in lines) == 1
+    assert any("next up: futuresite" in line for line in lines)

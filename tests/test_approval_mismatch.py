@@ -139,6 +139,47 @@ def test_generic_filler_never_counts_as_a_target() -> None:
                 path="/home/user/file.txt") is not None
 
 
+# --- history-aware matching --------------------------------------------------
+
+
+def warn_h(text: str | None, capability: str | None,
+           history: tuple[str, ...] = (), **arguments: object):
+    return approval_mismatch_warning(text, capability, dict(arguments),
+                                     history)
+
+
+def test_history_with_both_action_and_target_silences() -> None:
+    # The request spans turns: asked to write the file earlier, the
+    # newest message only adds "go on".
+    assert warn_h("go on then", "filesystem_write",
+                  history=("write the meeting notes to notes.txt",),
+                  path="notes.txt") is None
+
+
+def test_history_needs_both_sides_not_one() -> None:
+    # Verb alone in the past is topic noise; a target token alone could
+    # be anything. Neither counts as the user having asked.
+    assert warn_h("and now the weather", "filesystem_write",
+                  history=("I wrote that last week",),
+                  path="quarterly-report.txt") is not None
+    assert warn_h("and now the weather", "filesystem_write",
+                  history=("what is in quarterly-report.txt anyway",),
+                  path="quarterly-report.txt") is not None
+
+
+def test_history_delegation_counts_as_the_action_side() -> None:
+    assert warn_h("ok", "web_fetch",
+                  history=("take care of the inbox page for me",),
+                  url="https://mail.example.com/inbox") is None
+
+
+def test_no_history_is_exactly_the_old_behaviour() -> None:
+    assert warn_h("what is the weather", "filesystem_write",
+                  path="secrets.txt") is not None
+    assert warn("what is the weather", "filesystem_write",
+                 path="secrets.txt") is not None
+
+
 # --- integration: tool approvals ------------------------------------------
 
 
@@ -190,6 +231,30 @@ def test_tool_approval_preview_is_silent_when_the_turn_backs_it(tmp_path: Path) 
     )
     assert seen[0] is not None and seen[0].warning is None
     assert (tmp_path / "notes.txt").read_text() == "hello world"
+
+
+def test_tool_approval_silenced_by_an_earlier_turn(tmp_path: Path) -> None:
+    seen: list[ActionPreview | None] = []
+
+    def approve(request: ApprovalRequest,
+                preview: ActionPreview | None = None) -> ToolApproval:
+        seen.append(preview)
+        return ToolApproval(request=request, approved=True)
+
+    _stella_with_writer(tmp_path, approve).process(
+        Context(
+            user_input="go on",
+            conversation_history=[
+                Message(role="user",
+                        content="write the meeting notes to notes.txt"),
+                Message(role="assistant", content="What should they say?"),
+            ],
+        )
+    )
+    # The dispatcher preview still arrives (the tool has one), but the
+    # advisory line is gone: an earlier user turn asked for exactly this.
+    assert seen[0] is not None and seen[0].warning is None
+    assert (tmp_path / "notes.txt").exists()
 
 
 # --- integration: post-observation memory writes ---------------------------

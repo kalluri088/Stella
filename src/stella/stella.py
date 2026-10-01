@@ -225,6 +225,14 @@ class Stella:
         conversation_history = select_conversation_history(
             context.conversation_history
         )
+        # Earlier user messages, for the mismatch advisory: a request
+        # can span turns, so the newest text alone is not the whole
+        # evidence of what the user asked for.
+        prior_user_texts = tuple(
+            message.content
+            for message in conversation_history
+            if message.role == "user"
+        )
         observations = select_tool_observations(list(context.tool_observations))
         trace.record(
             InputReceivedEvent(
@@ -496,6 +504,7 @@ class Stella:
                         arguments,
                         trace,
                         user_text=context.user_input,
+                        history=prior_user_texts,
                     )
                     if tool_result.memory_action is not None:
                         action = tool_result.memory_action
@@ -568,6 +577,7 @@ class Stella:
                             requires_approval=decision_from_observations,
                             trace=trace,
                             user_text=context.user_input,
+                            history=prior_user_texts,
                         )
                         memory_write_denied = memory_write_denied or write_denied
                         if (
@@ -736,6 +746,7 @@ class Stella:
                     requires_approval=decision_from_observations,
                     trace=trace,
                     user_text=context.user_input,
+                    history=prior_user_texts,
                 )
                 memory_write_denied = memory_write_denied or write_denied
                 if (
@@ -1024,6 +1035,7 @@ class Stella:
         arguments: dict[str, object],
         trace: InteractionTrace | None = None,
         user_text: str | None = None,
+        history: tuple[str, ...] = (),
     ) -> tuple[ToolResult, bool]:
         approval = None
         # Ask with the arguments in hand: a trusted argument elevation can
@@ -1060,7 +1072,9 @@ class Stella:
             # second look at whether the user's turn could have wanted
             # this. Travels beside the preview; the approval below is
             # still produced solely from the exact request.
-            warning = approval_mismatch_warning(user_text, capability, arguments)
+            warning = approval_mismatch_warning(
+                user_text, capability, arguments, history
+            )
             if warning is not None:
                 preview = (
                     replace(preview, warning=warning)
@@ -1239,6 +1253,7 @@ class Stella:
         requires_approval: bool = False,
         trace: InteractionTrace | None = None,
         user_text: str | None = None,
+        history: tuple[str, ...] = (),
     ) -> tuple[MemoryWriteResult | None, bool]:
         """Store one explicit memory proposal; return (result, denied).
 
@@ -1261,8 +1276,10 @@ class Stella:
                 # shaped after tool observations is precisely where an
                 # unmentioned "remember this" deserves a second glance.
                 warning = approval_mismatch_warning(
-                    user_text, "memory_write",
+                    user_text,
+                    "memory_write",
                     {"content": request.item.content},
+                    history,
                 )
                 preview = (
                     ActionPreview(warning=warning) if warning else None

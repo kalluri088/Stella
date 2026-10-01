@@ -14,6 +14,7 @@ nudge, and its absence grants nothing.
 """
 
 import re
+from collections.abc import Sequence
 from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlparse
 
@@ -167,12 +168,19 @@ def approval_mismatch_warning(
     user_text: str | None,
     capability: str | None,
     arguments: dict[str, object],
+    history: Sequence[str] | None = None,
 ) -> str | None:
     """Return one advisory line, or None when nothing looks off.
 
     Warns only when the user's turn mentions neither the action (verb
     stems for the capability, or any delegation phrase) nor the target
     (any distinctive token from the request's nameable arguments).
+    ``history`` is the earlier user messages of the conversation: a
+    request that spans turns ("save this to a file" … "the meeting
+    notes") is still the user's request, so a prior message that
+    mentions both the action and the target also silences the warning.
+    One-sided support does not — a stray earlier verb or path token is
+    topic noise, not evidence this exact action was asked for.
     """
 
     if capability not in _ACTION_PHRASES:
@@ -187,8 +195,17 @@ def approval_mismatch_warning(
         return None
     if _hits(words, text, _GENERIC_STEMS + _GENERIC_PHRASES):
         return None
-    if _target_tokens(arguments) & words:
+    target_words = _target_tokens(arguments)
+    if target_words & words:
         return None
+    verb_stems = _VERB_STEMS[capability] + _GENERIC_STEMS + _GENERIC_PHRASES
+    for prior in history or ():
+        if not prior or not prior.strip():
+            continue
+        prior_text = _normalize(prior)
+        prior_words = _tokens(prior_text)
+        if target_words & prior_words and _hits(prior_words, prior_text, verb_stems):
+            return None
     return (
         f"Heads up: your request didn't mention {_ACTION_PHRASES[capability]} "
         "or what it targets — approve only if you expected this."

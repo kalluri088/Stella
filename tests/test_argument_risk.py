@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from stella.desktop.tools import KeySendTool, ScreenReadTool, WindowFocusTool
 from stella.memory import SQLiteMemory
-from stella.os_tools import KeySendTool, ScreenReadTool, WindowFocusTool
 from stella.reminders import SQLiteReminderStore
 from stella.tools import (
     _RISK_ORDER,
@@ -213,13 +213,33 @@ class TestSensitivePathRule:
         ) is False
 
 
+class _NeverConsulted:
+    """Any desktop read during risk classification is a bug."""
+
+    def __getattr__(self, name: str):
+        raise AssertionError(f"risk classification consulted {name}")
+
+    def __call__(self, *args, **kwargs):  # pragma: no cover - never reached
+        raise AssertionError("risk classification ran a desktop action")
+
+
+class DeafDesktop:
+    """A desktop that answers nothing: risk is decided on arguments only."""
+
+    name = "deaf"
+    session_note = "deaf session"
+
+    def __init__(self) -> None:
+        self.reader = _NeverConsulted()
+        self.activator = _NeverConsulted()
+        self.capture = _NeverConsulted()
+        self.keys = _NeverConsulted()
+        self.recognizer = _NeverConsulted()
+
+
 class TestScreenReadRule:
     def _tool(self) -> ScreenReadTool:
-        class DeafHyprland:
-            def active_window(self):  # pragma: no cover - never reached
-                raise AssertionError("must not be consulted for risk")
-
-        return ScreenReadTool(DeafHyprland())  # type: ignore[arg-type]
+        return ScreenReadTool(DeafDesktop())  # type: ignore[arg-type]
 
     def test_full_screen_escalates_active_window_does_not(self) -> None:
         tool = self._tool()
@@ -230,12 +250,11 @@ class TestScreenReadRule:
         assert not dispatcher.requires_approval("screen_read")
 
     def test_window_and_key_tools_keep_their_floors(self) -> None:
-        class DeafHyprland:
-            def active_window(self):  # pragma: no cover
-                raise AssertionError
-
         dispatcher = ToolDispatcher(
-            [WindowFocusTool(DeafHyprland()), KeySendTool(DeafHyprland())]  # type: ignore[arg-type]
+            [
+                WindowFocusTool(DeafDesktop()),  # type: ignore[arg-type]
+                KeySendTool(DeafDesktop()),  # type: ignore[arg-type]
+            ]
         )
         for arguments in ARGUMENT_SAMPLES:
             assert not dispatcher.requires_approval("window_focus", arguments)

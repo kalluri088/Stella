@@ -1718,7 +1718,7 @@ class StellaWindow:
             return hint
         try:
             provider_keys.save_api_key(preset.id, key)
-        except ValueError as error:
+        except (ValueError, OSError) as error:
             return f"That key cannot be stored: {error}"
         self._settings_fields["API key"].delete("0", "end")
         self._update_panel_key_hint()
@@ -2067,7 +2067,7 @@ class SetupDialog:
         if result.ok and api_key:
             try:
                 provider_keys.save_api_key(preset_id, api_key)
-            except ValueError as error:
+            except (ValueError, OSError) as error:
                 result = config.ConnectionTest(
                     ok=False,
                     message=f"Connected, but the key was not stored: {error}",

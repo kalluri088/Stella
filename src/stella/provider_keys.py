@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -177,21 +178,38 @@ def api_keys_path() -> Path:
     return default_data_dir() / "api_keys.json"
 
 
-def _read_store() -> dict[str, str]:
+def _load_store() -> tuple[dict[str, str], bool]:
+    """The stored keys, and whether the file is present but untrusted.
+
+    A missing store is empty and sound. A store that exists but cannot
+    be parsed is empty *and* suspect: reads stay inert (grant nothing),
+    but a write must refuse rather than merge onto nothing and silently
+    drop every key the unreadable file was holding.
+    """
+
+    path = api_keys_path()
     try:
-        raw = json.loads(api_keys_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}, False
+    except OSError:
+        return {}, True
+    except ValueError:
+        return {}, True
     if not isinstance(raw, dict):
-        return {}
+        return {}, True
     keys = raw.get("keys")
     if not isinstance(keys, dict):
-        return {}
+        return {}, True
     return {
         preset_id: key
         for preset_id, key in keys.items()
         if isinstance(preset_id, str) and isinstance(key, str)
-    }
+    }, False
+
+
+def _read_store() -> dict[str, str]:
+    return _load_store()[0]
 
 
 def stored_api_key(preset_id: str | None) -> str | None:
@@ -222,8 +240,10 @@ def effective_api_key(preset_id: str | None) -> str | None:
 
 def _write_store(keys: dict[str, str]) -> None:
     """Merge-then-atomic-replace: the file is never left half-written,
-    and saving one provider's key cannot clobber another's. Two
-    instances saving the *same* preset concurrently are last-writer-wins,
+    and saving one provider's key cannot clobber another's. The temp
+    name is unique per write, so two instances saving concurrently
+    race on distinct files and the last replace wins whole. Two
+    instances saving the *same* preset are still last-writer-wins,
     which is honest for a single-user desktop.
     """
 
@@ -234,8 +254,10 @@ def _write_store(keys: dict[str, str]) -> None:
         indent=2,
         sort_keys=True,
     )
-    tmp = path.with_suffix(".json.tmp")
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    descriptor, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(body)
@@ -255,7 +277,12 @@ def save_api_key(preset_id: str, key: str) -> None:
     key = key.strip()
     if not key or len(key) > MAX_KEY_CHARS or not _KEY_SHAPE.match(key):
         raise ValueError("an API key is a single printable token")
-    keys = _read_store()
+    keys, suspect = _load_store()
+    if suspect:
+        raise ValueError(
+            "the stored key file could not be read, so nothing was "
+            f"overwritten — repair or remove {api_keys_path()} and retry"
+        )
     keys[preset_id] = key
     _write_store(keys)
 

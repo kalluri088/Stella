@@ -15,9 +15,14 @@ directory (`~/.local/share/stella`, or `$XDG_DATA_HOME/stella`):
 ```
 
 - The file is created with mode `0600` (owner read/write only) and every
-  rewrite goes through a `0600` temporary file plus an atomic
-  `os.replace`, so a crash cannot leave a half-written or world-readable
-  key file.
+  rewrite goes through a freshly created, uniquely named `0600` temporary
+  file plus an atomic `os.replace`, so a crash cannot leave a
+  half-written or world-readable key file and two saves cannot stamp on
+  each other's scratch file.
+- A corrupt store is inert to reads and fatal to writes: reads of an
+  unparseable file grant nothing, but saving into one is refused rather
+  than silently rebuilding the file from empty — which would drop every
+  other provider's key. The user is told to repair or remove the file.
 - There is **no keyring and no encryption at rest**, on purpose. A
   keyring would add a system dependency and a silent failure mode;
   encryption with a local key is theater — the key must be usable by a
@@ -125,13 +130,15 @@ is gated:
 ## Validation
 
 - Offline: `tests/test_provider_keys.py` (store roundtrip, permissions,
-  merge, malformed, precedence, detection traps, key-free hints),
+  merge, malformed reads inert and writes refused, precedence, detection
+  traps, key-free hints),
   `tests/test_config.py` (mismatch gate constructs no client, 404 chat
   probe, preset roundtrip), `tests/test_openai_client.py` and
   `tests/test_conformance.py` (chat dialect against the full conformance
   matrix), `tests/test_app.py` (store-backed build, voice scoping),
   `tests/test_ui.py` (setup stores after a verified test, Apply refuses
-  a foreign key, no environment writes), `tests/test_backup_cli.py`
+  a foreign key, a disk error during storage surfaces as a status line
+  and not a crash, no environment writes), `tests/test_backup_cli.py`
   (key file excluded from backups).
 - Live (2026-09-29, real display + real local Ollama, all state in temp
   directories): the first-run dialog listed installed models, the

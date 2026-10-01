@@ -1137,6 +1137,37 @@ def test_settings_apply_refuses_a_foreign_key_and_stores_nothing(
         root.destroy()
 
 
+def test_settings_apply_survives_a_disk_error_during_key_storage(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window(
+        settings=StellaSettings(
+            provider="openai", model="gpt-4o-mini", preset="openai"
+        )
+    )
+
+    def _disk_boom(_preset_id: str, _key: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(provider_keys, "save_api_key", _disk_boom)
+    try:
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._settings_fields["API key"].insert("0", "sk-proj-doomed")
+
+        window._apply_settings()
+
+        # A disk-level failure lands in the status line, not as an
+        # unhandled exception inside the Tk callback.
+        assert captured == []
+        assert "disk full" in window._settings_status.cget("text")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_settings_apply_without_a_key_leaves_the_environment_alone(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

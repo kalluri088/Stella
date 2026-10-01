@@ -76,6 +76,37 @@ class TestStore:
         provider_keys.save_api_key("openai", "  sk-proj-pasted\n")
         assert provider_keys.stored_api_key("openai") == "sk-proj-pasted"
 
+    def test_saving_over_an_unreadable_store_is_refused_not_wiped(self):
+        # A corrupt or transiently unreadable store must never be merged
+        # onto an empty view of itself — that would silently drop every
+        # other provider's key.
+        provider_keys.api_keys_path().parent.mkdir(parents=True, exist_ok=True)
+        for body in ("not json at all", '{"version": 1, "keys": 7}'):
+            provider_keys.api_keys_path().write_text(body)
+            with pytest.raises(ValueError):
+                provider_keys.save_api_key("openai", "sk-proj-new")
+            assert provider_keys.api_keys_path().read_text() == body
+
+    def test_a_refused_save_leaves_no_temp_files_behind(self):
+        provider_keys.api_keys_path().parent.mkdir(parents=True, exist_ok=True)
+        provider_keys.api_keys_path().write_text("corrupt")
+        with pytest.raises(ValueError):
+            provider_keys.save_api_key("openai", "sk-proj-new")
+        provider_keys.api_keys_path().unlink()
+        provider_keys.save_api_key("openai", "sk-proj-new")
+        leftovers = [
+            entry.name
+            for entry in provider_keys.api_keys_path().parent.iterdir()
+            if entry.name != "api_keys.json"
+        ]
+        assert leftovers == []
+
+    def test_deleting_from_an_unreadable_store_does_not_clobber_it(self):
+        provider_keys.api_keys_path().parent.mkdir(parents=True, exist_ok=True)
+        provider_keys.api_keys_path().write_text("corrupt")
+        provider_keys.delete_api_key("openai")
+        assert provider_keys.api_keys_path().read_text() == "corrupt"
+
 
 class TestPrecedence:
     def test_environment_wins_for_the_openai_slot(self, monkeypatch):

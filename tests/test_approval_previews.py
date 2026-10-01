@@ -148,16 +148,23 @@ def test_memory_forget_card_names_the_victims(stores) -> None:
 def test_reminder_create_card_shows_content_and_time(stores) -> None:
     _, reminders, _ = stores
     tool = ReminderCreateTool(reminders)
+    # The due time must be computed ahead of now, never hard-coded: a
+    # pinned "future" date silently turns this card into the past-due
+    # refusal card once the clock passes it (it did, on its own due day).
+    due_at = (
+        dt.datetime.now(dt.UTC) + dt.timedelta(days=1)
+    ).replace(microsecond=0)
+    raw_due = due_at.isoformat()
     lines = _assert_bounded_card(
         tool.preview(
             ApprovalRequest(
                 "reminder_create",
-                {"content": "call the dentist", "due_at": "2026-10-01T09:00:00+05:30"},
+                {"content": "call the dentist", "due_at": raw_due},
             )
         )
     )
     assert any("call the dentist" in line for line in lines)
-    assert any("2026-10-01T09:00:00+05:30" in line for line in lines)
+    assert any(raw_due in line for line in lines)
     assert reminders.pending() == ()
 
 

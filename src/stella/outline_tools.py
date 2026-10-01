@@ -341,6 +341,28 @@ def _task_line(row: Mapping[str, object]) -> str:
     return f"[task#{row.get('id')}] {row.get('title')}{tail}"
 
 
+def _search_line(row: Mapping[str, object]) -> str:
+    """One /api/v1/search hit, with everything the API resolved for it.
+
+    The web palette uses the same fields to deep-link: an event date, and
+    for notes the host they are attached to (a bare note title is
+    meaningless without it). The snippet is flattened and shortened —
+    untrusted stored text, one line, bounded.
+    """
+
+    line = f"[{row.get('kind')}#{row.get('id')}] {row.get('title')}"
+    if isinstance(row.get("starts_at"), int):
+        line += f" — {_format_when(row['starts_at'])}"
+    host_kind, host_id = row.get("host_kind"), row.get("host_id")
+    if isinstance(host_kind, str) and isinstance(host_id, int):
+        host_title = row.get("host_title")
+        line += f" → in [{host_kind}#{host_id}] {host_title or ''}".rstrip()
+    snippet = row.get("snippet")
+    if isinstance(snippet, str) and snippet.strip():
+        line += " · " + " ".join(snippet.split())[:120]
+    return line
+
+
 # ---------------------------------------------------------------------------
 # outline_search
 # ---------------------------------------------------------------------------
@@ -461,6 +483,15 @@ class OutlineSearchTool(Tool):
                         f"[timer#{timer.get('id')}] {timer.get('label')}"
                         f" — {timer.get('state')}"
                     )
+            for event in payload.get("upcoming_events", []):
+                if isinstance(event, Mapping):
+                    lines.append(
+                        f"[event#{event.get('id')}] next up: {event.get('title')}"
+                        f" — {_format_when(event.get('starts_at'))}"
+                    )
+            open_count = payload.get("open_task_count")
+            if isinstance(open_count, int) and not isinstance(open_count, bool):
+                lines.append(f"open tasks: {open_count}")
         elif when == "overdue":
             payload = client.request(
                 "GET",
@@ -506,10 +537,7 @@ class OutlineSearchTool(Tool):
             payload = client.request(
                 "GET", "/api/v1/search", query={"q": query, "kind": kind, "limit": 15}
             )
-            lines = [
-                f"[{row.get('kind')}#{row.get('id')}] {row.get('title')}"
-                for row in _rows(payload)
-            ]
+            lines = [_search_line(row) for row in _rows(payload)]
         if query is not None and when is not None:
             needle = query.casefold()
             lines = [line for line in lines if needle in line.casefold()]

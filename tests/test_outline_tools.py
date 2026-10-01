@@ -840,3 +840,55 @@ def test_pump_is_armed_only_by_a_real_transport_build(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_healthz", lambda c: True)
     assert len(build_outline_tools({**env, "OUTLINE_URL": "http://127.0.0.1:9"})) == 3
     assert module.active_reminder_pump() is not None
+
+
+# --------------------------------------------------------------------------
+# search rendering parity: everything /api/v1/search resolves must survive
+# --------------------------------------------------------------------------
+
+
+def test_search_lines_keep_date_host_and_flattened_snippet():
+    search_payload = {"items": [
+        {"kind": "event", "id": 21, "title": "dentist",
+         "snippet": "", "starts_at": 1_760_000_000_000},
+        {"kind": "note", "id": 44, "title": "",
+         "snippet": "soil was dry\n  second line padded out with quite a lot of text so that the bound has to bite here here here here here here here here here here here here here here here here here",
+         "starts_at": None, "host_kind": "project", "host_id": 5,
+         "host_title": "Garden"},
+        {"kind": "task", "id": 12, "title": "drink water", "snippet": "",
+         "starts_at": None},
+    ]}
+    tool = OutlineSearchTool(client(("GET", "/api/v1/search", search_payload)))
+    result = tool.execute({"query": "x"})
+    assert result.success
+    lines = result.output.splitlines()[1:]  # skip the untrusted-data header
+    assert lines[1].startswith("[note#44]  → in [project#5] Garden · soil was dry second line")
+    assert "\n" not in lines[1]
+    assert len(lines[1].split(" · ")[1]) <= 120
+    assert lines[2] == "[task#12] drink water"
+    assert lines[0].startswith("[event#21] dentist — ")
+
+
+def test_today_view_includes_upcoming_events_and_open_count():
+    today = {
+        "overdue_tasks": [], "today_tasks": [], "events": [],
+        "water_total_ml": 0,
+        "upcoming_events": [{"id": 31, "title": "lunch with Sam",
+                             "starts_at": 1_760_100_000_000}],
+        "open_task_count": 2,
+    }
+    tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
+    result = tool.execute({"when": "today"})
+    assert "open tasks: 2" in result.output
+    assert "next up: lunch with Sam" in result.output
+
+
+def test_today_view_survives_missing_optional_fields():
+    routes = [
+        ("GET", "/api/v1/today", {"overdue_tasks": [], "today_tasks": [],
+                                  "events": [], "water_total_ml": 0}),
+    ]
+    tool = OutlineSearchTool(client(*routes))
+    result = tool.execute({"when": "today"})
+    assert "water today: 0 ml" in result.output
+    assert "open tasks" not in result.output

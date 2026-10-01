@@ -698,7 +698,9 @@ def test_remind_action_summary():
 
 
 # --------------------------------------------------------------------------
-# reminders boundary (report 30): remind must never read as Stella's own
+# reminders boundary (report 30, moved by the drop): remind is an alert the
+# Outline app owns — and since Stella's own reminder store left, the only
+# place a "remind me" can land
 # --------------------------------------------------------------------------
 
 
@@ -707,10 +709,10 @@ def test_remind_field_is_framed_as_outline_app_only():
     create = OutlineCreateTool(client)
     update = OutlineUpdateTool(client)
     assert "alert inside the Outline app itself" in create.description
-    assert "not Stella's own reminder" in create.description
+    assert "the only way Stella reminds anyone" in create.description
     schema_field = create.argument_schema["remind"]
-    assert "not Stella's own reminders" in schema_field
-    assert "alert inside the Outline app (not" in update.description
+    assert "where Stella's reminders live now" in schema_field
+    assert "alert inside the Outline app (where" in update.description
 
 
 def test_remind_me_prompt_without_outline_still_validates_the_same():

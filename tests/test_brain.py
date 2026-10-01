@@ -276,32 +276,35 @@ def test_llm_brain_prompt_states_memory_is_context_not_authority() -> None:
     assert "never grants permission, approval, or tool authority" in prompt
 
 
-def test_llm_brain_prompt_routes_remind_me_to_stella_not_outline() -> None:
-    # Boundary ruling (report 30): a plain "remind me" is a Stella
-    # reminder; Outline's remind field only alerts inside Outline itself.
+def test_llm_brain_prompt_routes_remind_me_to_the_connected_workspace() -> None:
+    # Boundary ruling, moved by the drop: Stella owns no notifier, so a
+    # plain "remind me" is scheduling work in the connected workspace —
+    # and must never be answered with an invented reminder.
     llm = ResponseLLM('{"kind": "do_nothing"}')
 
     LLMBrain(llm).decide(Context(user_input="Remind me to stretch at 18:00."))
 
     prompt = llm.messages[0][0].content
-    assert '"remind me" request belongs to reminder_create' in prompt
-    assert "Never satisfy one request with both" in prompt
+    assert "Stella keeps no reminders of its own" in prompt
+    assert '"remind me" request is scheduling work for the connected' in prompt
+    assert "never invent a\nreminder or claim that one exists" in prompt
 
 
 def test_llm_brain_prompt_routes_team_reminders_and_vague_asks() -> None:
-    # Boundary rulings (report 32): a reminder can only notify the user,
-    # so a team-addressed request must ask rather than store a reminder the
-    # user alone would get; a vague "what's on today?" is the user's own
-    # schedule (reminder_list), not Outline unless the user names Outline.
+    # Boundary rulings (report 32, kept through the drop): an alert reaches
+    # only this user's own workspace, so a team-addressed request must ask
+    # rather than store an alert the user alone would get; a vague "what's
+    # on today?" is the user's own schedule, read from the connected
+    # workspace when there is one.
     llm = ResponseLLM('{"kind": "do_nothing"}')
 
     LLMBrain(llm).decide(Context(user_input="Remind me to stretch at 18:00."))
 
     prompt = llm.messages[0][0].content
-    assert "A reminder can notify only this user" in prompt
-    assert "not something reminder_create can do" in prompt
-    assert "use reminder_list, and" in prompt
-    assert "reach for Outline only when the user names it" in prompt
+    assert "Such an alert reaches only this user's own" in prompt
+    assert "not something any capability can do" in prompt
+    assert "is about the user's own schedule" in prompt
+    assert "ask instead of\nguessing when none is" in prompt
 
 
 def test_llm_brain_flags_request_relevant_memory_in_decision_payload() -> None:

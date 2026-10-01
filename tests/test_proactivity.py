@@ -84,7 +84,7 @@ def test_irrelevant_due_task_event_does_nothing(
 def test_due_event_without_permission_asks_and_takes_no_action() -> None:
     llm = SpyLLM()
     memory = InMemoryMemory()
-    memory.store(MemoryItem("The user likes reminders."))
+    memory.store(MemoryItem("The user likes being told when things are overdue."))
     stella = Stella(SimpleBrain(), llm, EchoTool(), memory)
     event = DueTaskEvent(
         event_id="event-no-permission",
@@ -210,7 +210,7 @@ def test_handoff_scopes_delegation_and_asks_without_permission() -> None:
 def test_ordinary_memory_cannot_create_handoff_delegation() -> None:
     llm = SpyLLM()
     memory = InMemoryMemory()
-    memory.store(MemoryItem("The user likes reminders."))
+    memory.store(MemoryItem("The user likes being told when things are overdue."))
     stella = Stella(SimpleBrain(), llm, EchoTool(), memory)
     event = DueTaskEvent("memory-not-permission", "Tax filing", DueTaskStatus.OPEN, True)
 

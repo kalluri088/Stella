@@ -63,7 +63,7 @@ failure record without executing the tool.
 ## Sensitive arguments handling
 
 For valid actions the record keeps short argument values verbatim so the
-action stays auditable (file paths, search patterns, reminder text), but any
+action stays auditable (file paths, search patterns), but any
 string longer than 120 characters — such as `filesystem_write` file content —
 is stored only as a `"<N characters>"` length summary. This prevents a
 long-lived desktop process from retaining sensitive payloads in its audit

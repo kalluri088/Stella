@@ -23,10 +23,6 @@ approval before execution. The current tools remain unchanged:
   is style data, and the tool reaches nothing else;
 - `network_read` is `DANGEROUS` and requires exact trusted approval before an
   external connection;
-- `reminder_create` and `reminder_cancel` are `DANGEROUS` and require exact
-  trusted approval; `reminder_list` is `SENSITIVE`. Reminder approval covers
-  only the store change itself — a created reminder never grants any other
-  tool or action permission (see `REMINDERS.md`);
 - tests also use a private approval-required tool classified as `DANGEROUS`.
 
 The model cannot provide a risk level, `approved` flag, or
@@ -219,16 +215,15 @@ preview read (or report on) anything. Previews are bounded (60 lines /
   when several memories match), or the memories that would be deleted —
   read-only store lookups, and a "would do nothing" card when nothing
   matches;
-- `reminder_create` / `reminder_cancel`: the content and exact due time
-  being scheduled, or the one pending reminder being cancelled — with an
-  honest card when the time cannot be parsed or when several reminders
-  match and cancelling would do nothing.
 
 The invariant is registry-wide and tested (`tests/test_approval_previews.py`):
 every DANGEROUS capability implements `preview`; the gated desktop tool
 `key_send` (DANGEROUS) names its exact keystroke target, and the Outline
-capabilities are SENSITIVE (exact-argument approval) rather than
-DANGEROUS. A DANGEROUS card without detail lines is treated as drift and
+capabilities are SENSITIVE — validated on exact arguments and reachable only
+through the opt-in Outline gate, but without an interactive prompt — rather
+than DANGEROUS. (This is why "remind me" lost its dialog when the reminder
+store was removed; see `docs/REMINDERS.md`.) A DANGEROUS card without detail
+lines is treated as drift and
 fails the suite.
 
 A preview is display-only and never part of the authorization token:

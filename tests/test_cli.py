@@ -68,7 +68,7 @@ class NarratingStella(RecordingStella):
             for kind in (
                 "thinking",
                 "working",
-                "calling:reminder_list",
+                "calling:memory_list",
                 "thinking",
                 "answering",
             ):
@@ -92,7 +92,7 @@ def test_cli_tool_turn_narrates_the_call_and_the_answer() -> None:
 
     assert statuses == [
         "Stella is thinking...",
-        "Stella is calling reminder_list...",
+        "Stella is calling memory_list...",
         "Stella is composing the answer...",
     ]
 
@@ -728,7 +728,6 @@ def test_format_startup_describes_configuration_without_secrets() -> None:
     stella = SimpleNamespace(
         brain=SimpleNamespace(llm=llm),
         memory=SimpleNamespace(database_path="/tmp/stella.db"),
-        reminders=SimpleNamespace(database_path="/tmp/reminders.db"),
         tools=SimpleNamespace(
             _tools={"filesystem_read": SimpleNamespace(workspace="/tmp/ws")}
         ),
@@ -741,7 +740,6 @@ def test_format_startup_describes_configuration_without_secrets() -> None:
         "model:     qwen3:4b",
         "endpoint:  http://127.0.0.1:11434/v1",
         "memory db: /tmp/stella.db",
-        "reminders db: /tmp/reminders.db",
         "workspace: /tmp/ws",
     ]
     assert "SECRET-SENTINEL" not in "\n".join(lines)
@@ -761,7 +759,6 @@ def test_format_startup_degrades_for_minimal_stella() -> None:
         "model:     unknown",
         "endpoint:  default",
         "memory db: in-memory",
-        "reminders: disabled",
         "workspace: not configured",
     ]
 
@@ -1406,27 +1403,6 @@ def test_cli_status_and_help_render_without_a_turn() -> None:
     assert any(line.startswith("provider:") for line in outputs)
     assert any("/exit" in line for line in outputs)
     assert any(line.startswith("stella ") for line in outputs)
-
-
-def test_cli_command_never_schedules_reminders(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stella = RecordingStella()
-    checked: list[bool] = []
-    monkeypatch.setattr(
-        cli,
-        "_deliver_due_reminders",
-        lambda *args, **kwargs: checked.append(True),
-    )
-    inputs = iter(["/status", "hello", "/exit"])
-
-    run_cli(
-        stella,
-        input_fn=lambda _: next(inputs),
-        output_fn=lambda _: None,
-    )
-
-    assert checked == [True]  # only the real turn triggered the check
 
 
 def test_cli_clear_forgets_the_conversation_but_nothing_else() -> None:

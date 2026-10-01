@@ -102,8 +102,10 @@ def test_delegation_phrases_silence() -> None:
 
 
 def test_multi_word_verb_entries_match_the_normalized_text() -> None:
-    assert warn("please tell me when it is due", "reminder_create",
-                content="standup", due_at=None) is None
+    # "tell him" is a phrase, not a word prefix: only the normalized-text
+    # substring check can silence it ("tell" alone matches no stem).
+    assert warn("please tell him the result", "key_send",
+                id="window-42") is None
 
 
 def test_unknown_and_empty_capabilities_never_warn() -> None:

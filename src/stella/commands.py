@@ -20,7 +20,7 @@ Deliberately absent: inline shell execution, permission frontmatter,
 whole feature (rules 4, 13, 15).
 
 Provenance: only direct keyboard input is ever parsed here. Voice
-transcripts, reminders, and events call ``run_turn`` on other paths, so
+transcripts and events call ``run_turn`` on other paths, so
 a spoken "/exit" is simply a thing the user said (rule 7).
 
 This module classifies and renders strings; it executes nothing. The

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stella"
 version = "1.4.0"
-description = "Local-first desktop assistant for Linux: chat, user-controlled memory, approved file actions, and one-shot reminders"
+description = "Local-first desktop assistant for Linux: chat, user-controlled memory, and approved file actions"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

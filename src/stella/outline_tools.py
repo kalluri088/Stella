@@ -657,8 +657,9 @@ class OutlineCreateTool(Tool):
             "Times are ISO-8601 (due_at for tasks; due_at is the start "
             "for events, which run one hour unless duration_ms says "
             "otherwise). remind sets an alert inside the Outline app "
-            "itself (tasks and events) — it is not Stella's own reminder, "
-            "which is what a plain \"remind me\" should use. "
+            "itself (tasks and events) and is now the only way Stella "
+            "reminds anyone: a plain \"remind me\" becomes an Outline "
+            "task or event carrying that remind time. "
             "If the user did not state an exact time, ask "
             "them instead of inventing one. Tasks may repeat "
             "(recurrence: daily|weekly|weekdays|monthly|every:<minutes>) "
@@ -674,8 +675,8 @@ class OutlineCreateTool(Tool):
             "title": "the item's title (a person's name; for water the label)",
             "due_at": "optional ISO-8601 datetime",
             "remind": "optional ISO-8601 datetime for an alert inside "
-                      "the Outline app (kind=task|event; not Stella's "
-                      "own reminders)",
+                      "the Outline app (kind=task|event; where Stella's "
+                      "reminders live now)",
             "project": "optional existing project title",
             "body": "optional note text / task notes / event description",
             "amount_ml": "optional integer 1-5000 (kind=water)",
@@ -992,8 +993,8 @@ class OutlineUpdateTool(Tool):
             "pause|resume|stop|cancel. edit takes an 'edits' object "
             "(task: title|body|priority|recurrence|tags|remind; event: "
             "title|location|body|remind; note: body; project: title|body); "
-            "remind is an ISO-8601 alert inside the Outline app (not "
-            "Stella's own reminders), null clears it; "
+            "remind is an ISO-8601 alert inside the Outline app (where "
+            "Stella's reminders live now), null clears it; "
             "recurrence null and tags [] clear. kind=link id=<entity id> "
             "to=<task|event|project> person=<name> attach|detach connects "
             "a person to an item (this is what the UI's graph shows). "

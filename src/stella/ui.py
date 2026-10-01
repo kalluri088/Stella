@@ -1,7 +1,7 @@
 """Local Tk graphical interface for Stella.
 
 The window is a thin view over the shared application layer: every
-conversation turn, memory edit, reminder change, and approval answer is
+conversation turn, memory edit, and approval answer is
 posted through ``StellaBridge``, whose single worker thread owns the
 trusted Stella core. This module never touches files, databases, tools,
 or the LLM directly, and it never manufactures authorization: approvals
@@ -12,8 +12,8 @@ The one deliberate exception is ``SetupDialog``, shown before any Stella
 application exists: it runs bounded provider probes, saves Stella's
 non-secret configuration file, and stores a verified API key in the
 private key file owned by ``stella.provider_keys`` (never in
-config.json, never in the environment). It never touches tools, memory,
-reminders, or approvals, and a successful setup grants nothing beyond
+config.json, never in the environment). It never touches tools, memory
+or approvals, and a successful setup grants nothing beyond
 "Stella can talk to this model".
 
 Typed slash commands are intercepted in the view through
@@ -34,7 +34,6 @@ from tkinter import ttk
 
 from stella import config, provider_keys
 from stella.app import (
-    OutcomeStatus,
     StellaBridge,
     StellaSettings,
     TurnOutcome,
@@ -91,7 +90,7 @@ class Theme:
     on_accent: str
     error: str
     ok: str
-    reminder: str
+    warning: str
     # The user's quote band. Stella's reply carries no band and no
     # label at all: the transcript separates roles as a terminal does —
     # a full-width "> " blockquote for the user, plain left-aligned
@@ -119,7 +118,7 @@ _DARK_THEME = Theme(
     on_accent="#141210",
     error="#ef4444",
     ok="#2dd4bf",
-    reminder="#d97706",
+    warning="#d97706",
     user_quote="#292524",
     user_head="#e7e5e4",
 )
@@ -140,7 +139,7 @@ _LIGHT_THEME = Theme(
     on_accent="#ffffff",
     error="#dc2626",
     ok="#0d9488",
-    reminder="#d97706",
+    warning="#d97706",
     # The single quote band sits on a pure-white transcript, so it must be
     # visibly apart from the background; the near-invisible off-white
     # (#f5f5f4) of the old two-band design washed out against #ffffff.
@@ -261,7 +260,7 @@ def _configure_styles(root: tk.Misc) -> None:
     style.configure("Dim.TLabel", foreground=THEME.text_dim)
     # Approval-dialog advisory line (mismatch warning): same surface as
     # TLabel, but impossible to mistake for the action heading.
-    style.configure("Warning.TLabel", foreground=THEME.reminder)
+    style.configure("Warning.TLabel", foreground=THEME.warning)
     # Rail labels sit on the sidebar color, not the content surface.
     style.configure(
         "RailDim.TLabel", background=THEME.rail, foreground=THEME.text_dim
@@ -465,7 +464,6 @@ class StellaWindow:
         self._pulse = 0
         self._turn_activity = ""
         self._dialogs: list[tk.Toplevel] = []
-        self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
         root.geometry("1180x680")
         root.minsize(920, 560)
@@ -495,7 +493,6 @@ class StellaWindow:
         for key, label in (
             ("chat", "✎  Chat"),
             ("memories", "▤  Memories"),
-            ("reminders", "◷  Reminders"),
             ("history", "≡  History"),
             ("settings", "⚙  Settings"),
         ):
@@ -619,16 +616,14 @@ class StellaWindow:
         self._show_section("chat")
 
         self._build_memory_section(content)
-        self._build_reminder_section(content)
         self._build_history_section(content)
         self._build_settings_section(content, settings)
 
         self._line(
             "Ask Stella anything. The menu on the left manages memories, "
-            "reminders, recent actions, and the minimal local settings."
+            "recent actions, and the minimal local settings."
         )
         bridge.post_memories()
-        bridge.post_reminders()
         # Action history is durable, so the History section shows what
         # Stella did in earlier sessions, not only in this window.
         bridge.post_history()
@@ -712,7 +707,6 @@ class StellaWindow:
         )
         for box in (
             self._memory_list,
-            self._reminder_list,
             self._history_list,
         ):
             _style_listbox(box)
@@ -801,15 +795,6 @@ class StellaWindow:
             spacing1=8,
             spacing3=0,
         )
-        chat.tag_configure(
-            "reminder",
-            foreground=THEME.reminder,
-            lmargin1=14,
-            lmargin2=14,
-            rmargin=18,
-            spacing1=8,
-            spacing3=0,
-        )
         chat.tag_configure("gap", background=THEME.window)
 
     def _line(self, text: str, role: str = "note") -> None:
@@ -845,7 +830,7 @@ class StellaWindow:
             # so the window background repaints just that line; the
             # quote band stops at the message's last line.
             chat.insert("end", "\n", ("gap",))
-        elif role == "reminder" or role == "error":
+        elif role == "error":
             chat.insert("end", text + "\n", (role,))
             chat.insert("end", "\n", ("gap",))
         else:
@@ -1177,7 +1162,7 @@ class StellaWindow:
         # A quiet braille spinner says "alive" between the whole-second
         # updates; with no activity named yet the asserted prefix stays
         # exactly "Stella is working · ". A calling:<capability> event
-        # upgrades "working" to "calling reminder list" mid-turn, so the
+        # upgrades "working" to "calling memory list" mid-turn, so the
         # long tool+synthesis stretch never reads as a dead pane.
         self._pulse = (self._pulse + 1) % len(_SPINNER)
         self._status.configure(
@@ -1196,21 +1181,12 @@ class StellaWindow:
             # Core-known capability name, never model text.
             phase = str(payload).removeprefix("calling:").replace("_", " ")
             self._turn_activity = f"calling {phase}" if phase else ""
-        elif kind == "reminder_delivered":
-            self._line(f"Reminder: {payload}", role="reminder")
         elif kind == "memories":
             self._show_memories(payload)
         elif kind == "memory_result":
             self._memory_status.configure(text=str(payload))
-        elif kind == "reminders":
-            self._show_reminders(payload)
         elif kind == "history":
             self._show_history(payload)
-        elif kind == "reminder_result":
-            status: OutcomeStatus = payload
-            self._reminder_status.configure(
-                text=f"{status.symbol} {status.detail}"
-            )
         elif kind == "settings":
             self._line(f"(settings) {payload}")
         elif kind == "notice":
@@ -1412,88 +1388,6 @@ class StellaWindow:
             return
         self._bridge.post_forget(selected[0])
 
-    # -------------------------------------------------------- reminders
-
-    def _build_reminder_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.Frame(parent)
-        self._sections["reminders"] = frame
-        self._section_header(
-            frame, "Reminders", "one-shot promises Stella keeps locally"
-        )
-        card = ttk.Frame(frame, style="Card.TFrame")
-        card.pack(fill="both", expand=True)
-        self._reminder_list = tk.Listbox(
-            card, exportselection=False, height=10
-        )
-        _style_listbox(self._reminder_list)
-        self._reminder_list.pack(fill="both", expand=True, padx=12, pady=12)
-        form = ttk.Frame(frame)
-        form.pack(fill="x", pady=(10, 0))
-        add_row = ttk.Frame(form)
-        add_row.pack(fill="x", pady=2)
-        ttk.Label(add_row, text="What:", width=11).pack(side="left")
-        self._reminder_content = ttk.Entry(add_row)
-        self._reminder_content.pack(side="left", fill="x", expand=True)
-        due_row = ttk.Frame(form)
-        due_row.pack(fill="x", pady=2)
-        ttk.Label(due_row, text="Due (ISO):", width=11).pack(side="left")
-        self._reminder_due = ttk.Entry(due_row)
-        self._reminder_due.pack(side="left", fill="x", expand=True)
-        ttk.Label(
-            form,
-            style="Dim.TLabel",
-            text="Example due time: 2026-01-01T09:00:00+00:00",
-        ).pack(anchor="w", padx=(86, 0))
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(8, 0))
-        ttk.Button(
-            actions, text="Add reminder", command=self._add_reminder
-        ).pack(side="left")
-        ttk.Button(
-            actions,
-            text="Cancel selected",
-            command=self._cancel_reminder,
-        ).pack(side="left", padx=6)
-        ttk.Button(
-            actions, text="Refresh", command=self._refresh_reminders
-        ).pack(side="left")
-        self._reminder_status = ttk.Label(frame, text="", wraplength=460)
-        self._reminder_status.pack(pady=(6, 0), anchor="w")
-
-    def _refresh_reminders(self) -> None:
-        self._bridge.post_reminders()
-
-    def _show_reminders(self, rows: tuple[tuple[str, str], ...]) -> None:
-        self._reminder_rows = rows
-        self._reminder_list.delete(0, "end")
-        if not rows:
-            self._reminder_list.insert("end", "(no pending reminders)")
-            return
-        for content, due in rows:
-            self._reminder_list.insert("end", f"{content} — due {due}")
-
-    def _add_reminder(self) -> None:
-        content = self._reminder_content.get().strip()
-        due = self._reminder_due.get().strip()
-        if not content or not due:
-            self._reminder_status.configure(
-                text="A reminder needs both a message and a due time."
-            )
-            return
-        self._bridge.post_reminder_add(content, due)
-        self._reminder_content.delete(0, "end")
-        self._reminder_due.delete(0, "end")
-
-    def _cancel_reminder(self) -> None:
-        selected = self._reminder_list.curselection()
-        if not selected or selected[0] >= len(self._reminder_rows):
-            self._reminder_status.configure(
-                text="No reminder is selected. Pick one from the list first."
-            )
-            return
-        content, _due = self._reminder_rows[selected[0]]
-        self._bridge.post_reminder_cancel(content)
-
     # ---------------------------------------------------------- history
 
     def _build_history_section(self, parent: ttk.Frame) -> None:
@@ -1568,7 +1462,6 @@ class StellaWindow:
             ("OpenAI base URL", settings.openai_base_url or "", False),
             ("Ollama base URL", settings.ollama_base_url, False),
             ("Memory DB", settings.memory_db, False),
-            ("Reminders DB", settings.reminders_db, False),
             ("Workspace", settings.workspace, False),
         ):
             row = ttk.Frame(frame)
@@ -1774,7 +1667,6 @@ class StellaWindow:
             ollama_base_url=fields["Ollama base URL"].get().strip()
             or DEFAULT_OLLAMA_BASE_URL,
             memory_db=fields["Memory DB"].get().strip(),
-            reminders_db=fields["Reminders DB"].get().strip(),
             workspace=fields["Workspace"].get().strip(),
             transcripts_enabled=self._transcripts_var.get(),
             semantic_memory_enabled=self._semantic_var.get(),

@@ -16,7 +16,6 @@ import pytest
 
 from stella.desktop.tools import KeySendTool, ScreenReadTool, WindowFocusTool
 from stella.memory import SQLiteMemory
-from stella.reminders import SQLiteReminderStore
 from stella.tools import (
     _RISK_ORDER,
     ApprovalRequest,
@@ -26,8 +25,6 @@ from stella.tools import (
     MemoryListTool,
     MemoryWriteTool,
     NetworkReadTool,
-    ReminderCreateTool,
-    ReminderListTool,
     RiskLevel,
     SystemInfoTool,
     ToolApproval,
@@ -41,12 +38,7 @@ from stella.tools import (
 
 def default_dispatcher(tmp_path: Path) -> ToolDispatcher:
     memory = SQLiteMemory(":memory:")
-    reminders = SQLiteReminderStore(":memory:")
-    from stella.tools import (
-        MemoryForgetTool,
-        MemoryUpdateTool,
-        ReminderCancelTool,
-    )
+    from stella.tools import MemoryForgetTool, MemoryUpdateTool
 
     return ToolDispatcher(
         [
@@ -61,9 +53,6 @@ def default_dispatcher(tmp_path: Path) -> ToolDispatcher:
             MemoryWriteTool(memory),
             MemoryUpdateTool(memory),
             MemoryForgetTool(memory),
-            ReminderCreateTool(reminders),
-            ReminderListTool(reminders),
-            ReminderCancelTool(reminders),
             NetworkReadTool(),
         ]
     )

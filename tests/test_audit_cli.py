@@ -39,7 +39,7 @@ def test_denied_beats_failure_in_classification():
     denied = _entry("network_read", required=True, approved=False, success=False)
     assert classify(denied) == "denied"
     assert classify(_entry("filesystem_write", required=True, approved=True)) == "approved"
-    assert classify(_entry("reminder_list", success=False)) == "failure"
+    assert classify(_entry("memory_list", success=False)) == "failure"
 
 
 def test_filters_compose_and_trim(tmp_path, capsys):
@@ -86,10 +86,10 @@ def test_json_mode_and_validation(tmp_path, capsys):
 def test_cli_dispatch_audits(tmp_path, monkeypatch, capsys):
     from stella import cli
 
-    _seed(tmp_path, [_entry("reminder_create", required=True, approved=False, success=False)])
+    _seed(tmp_path, [_entry("memory_write", required=True, approved=False, success=False)])
     monkeypatch.setattr(cli, "default_history_db", lambda: str(tmp_path / "h.db"))
     try:
         cli.main(["audit", "--outcome", "denied"])
     except SystemExit as exit_code:
         assert exit_code.code == 0
-    assert "reminder_create" in capsys.readouterr().out
+    assert "memory_write" in capsys.readouterr().out

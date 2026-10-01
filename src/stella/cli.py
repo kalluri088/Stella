@@ -1,7 +1,6 @@
 """Minimal synchronous command-line interface for Stella."""
 
 import argparse
-import datetime as dt
 import difflib
 import json
 import subprocess
@@ -70,12 +69,10 @@ from stella.trace import (
     DecisionEvent,
     FinalResponseEvent,
     InputReceivedEvent,
-    InteractionTrace,
     MemoryActionEvent,
     MemoryIndexSyncEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
-    ReminderLifecycleEvent,
     SemanticSearchUnavailableEvent,
     ToolResultEvent,
 )
@@ -203,8 +200,8 @@ def run_cli(
 
         call = parse_command_line(user_input)
         if call is not None:
-            # Commands never schedule reminders and never reach the
-            # Brain; a template's expansion becomes ordinary input.
+            # Commands never reach the Brain; a template's expansion
+            # becomes ordinary input.
             if call.is_control:
                 if _run_control_command(
                     call,
@@ -226,9 +223,6 @@ def run_cli(
                 continue
             user_input = expand_template(body, call.argument)
 
-        # Real interactions are the only scheduling trigger: due reminders
-        # are delivered through the existing bounded proactivity decision.
-        _deliver_due_reminders(stella, output_fn, trace=flags.trace)
         status("Stella is thinking...")
 
         narrating = {"tool_seen": False}
@@ -269,41 +263,6 @@ def run_cli(
         else:
             # A deliberate no-op should not look like a silent failure.
             status("Stella has nothing to add.")
-
-
-def _deliver_due_reminders(
-    stella: Stella,
-    output_fn: Callable[[str], None],
-    trace: bool = False,
-) -> None:
-    """Run the trusted per-interaction due-reminder check and show results."""
-
-    if not isinstance(stella, Stella):
-        # Minimal test or embedding stubs may not carry the reminder flow.
-        return
-    reminder_trace = InteractionTrace(interaction_id="reminder-check")
-    deliveries = stella.check_due_reminders(
-        dt.datetime.now(dt.UTC), trace=reminder_trace
-    )
-    for delivery in deliveries:
-        if delivery.delivered and delivery.message is not None:
-            output_fn(f"Stella: {delivery.message}")
-    if trace:
-        for event in reminder_trace.events:
-            line = _reminder_lifecycle_line(event)
-            if line is not None:
-                output_fn(line)
-
-
-def _reminder_lifecycle_line(event: object) -> str | None:
-    if not isinstance(event, ReminderLifecycleEvent):
-        return None
-    detail = event.action
-    if event.reminder_id is not None:
-        detail += f" #{event.reminder_id}"
-    if event.outcome:
-        detail += f" ({event.outcome})"
-    return _trace_line("reminder", detail)
 
 
 def format_trace(result: StellaResult) -> list[str]:
@@ -371,10 +330,6 @@ def format_trace(result: StellaResult) -> list[str]:
             if event.size_bytes is not None:
                 detail += f" ({event.size_bytes} bytes)"
             lines.append(_trace_line("action", detail))
-        elif isinstance(event, ReminderLifecycleEvent):
-            line = _reminder_lifecycle_line(event)
-            if line is not None:
-                lines.append(line)
         elif isinstance(event, MemoryIndexSyncEvent):
             status = "refreshed" if event.ok else "REFRESH FAILED"
             lines.append(_trace_line("memory", f"semantic index {status}"))
@@ -405,9 +360,6 @@ def format_startup(stella: Stella) -> list[str]:
     llm = getattr(getattr(stella, "brain", None), "llm", None)
     base_url = str(getattr(getattr(llm, "client", None), "base_url", "") or "")
     database = getattr(stella.memory, "database_path", None)
-    reminders_database = getattr(
-        getattr(stella, "reminders", None), "database_path", None
-    )
     workspace = None
     for tool in getattr(stella.tools, "_tools", {}).values():
         if hasattr(tool, "workspace"):
@@ -418,11 +370,6 @@ def format_startup(stella: Stella) -> list[str]:
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {database if database is not None else 'in-memory'}",
-        (
-            f"reminders db: {reminders_database}"
-            if reminders_database is not None
-            else "reminders: disabled"
-        ),
         f"workspace: {workspace or 'not configured'}",
     ]
 

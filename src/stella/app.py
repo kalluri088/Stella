@@ -1,8 +1,8 @@
 """Shared application layer used by both the CLI and the graphical UI.
 
-The UI is an interface to Stella, never a second Stella: every turn,
-memory edit, and reminder change here flows through the same trusted core
-(``Stella``, ``ToolDispatcher``, ``Memory``, ``ReminderStore``) that the CLI
+The UI is an interface to Stella, never a second Stella: every turn and
+memory edit here flows through the same trusted core
+(``Stella``, ``ToolDispatcher``, ``Memory``) that the CLI
 already uses. This module adds no new authorization path; it only reuses
 existing trusted operations, serialises access onto one worker thread, and
 maps existing ``ToolResult``/``ActionReceipt`` semantics onto honest
@@ -11,7 +11,6 @@ user-facing statuses.
 
 from __future__ import annotations
 
-import datetime as dt
 import itertools
 import os
 import queue
@@ -73,7 +72,6 @@ from stella.persona import (
     TranscriptRecorder,
 )
 from stella.portable import split_command
-from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.semantic_memory import (
     EmbeddingProvider,
     LocalHashEmbeddingProvider,
@@ -81,7 +79,7 @@ from stella.semantic_memory import (
     SQLiteSemanticIndex,
     reconcile_semantic_index,
 )
-from stella.stella import ReminderDelivery, Stella, StellaResult
+from stella.stella import Stella, StellaResult
 from stella.tools import (
     MAX_AUDIT_RECORDS,
     ActionPreview,
@@ -98,9 +96,6 @@ from stella.tools import (
     MemoryWriteTool,
     NetworkReadTool,
     PersonaEditTool,
-    ReminderCancelTool,
-    ReminderCreateTool,
-    ReminderListTool,
     SystemInfoTool,
     ToolApproval,
     ToolDispatcher,
@@ -127,7 +122,6 @@ __all__ = [
     "ApprovalBroker",
     "MemoryPanel",
     "OutcomeStatus",
-    "ReminderPanel",
     "StellaApplication",
     "StellaBridge",
     "StellaSession",
@@ -232,9 +226,8 @@ class TurnOutcome:
 class StellaSession:
     """One continuous conversation shared by the CLI and the UI.
 
-    It only orchestrates calls that the CLI already made inline: the
-    trusted due-reminder check (per interaction, plus the UI bridge's
-    idle tick) and ``Stella.process``.
+    It only orchestrates calls that the CLI already made inline:
+    ``Stella.process`` and the conversation history that surrounds it.
     """
 
     def __init__(
@@ -249,16 +242,6 @@ class StellaSession:
         # Opt-in observer for `stella reflect`: it records, it never
         # influences a turn. None (the default) means no recording.
         self.transcripts = transcripts
-
-    def check_due_reminders(
-        self, now: dt.datetime | None = None
-    ) -> tuple[ReminderDelivery, ...]:
-        if not isinstance(self.stella, Stella):
-            # Minimal test or embedding stubs may not carry the reminder flow.
-            return ()
-        if now is None:
-            now = dt.datetime.now(dt.UTC)
-        return self.stella.check_due_reminders(now)
 
     def run_turn(
         self,
@@ -466,7 +449,7 @@ def default_data_dir() -> Path:
 
     Desktop launchers start applications from an arbitrary working
     directory, so state must not be relative to the current directory or
-    restarting would appear to lose memory and reminders.
+    restarting would appear to lose memory.
 
     ``platformdirs`` implements the XDG base spec on Linux — ``$XDG_DATA_HOME``
     or ``~/.local/share``, with ``stella`` appended and no author
@@ -481,10 +464,6 @@ def default_data_dir() -> Path:
 
 def default_memory_db() -> str:
     return str(default_data_dir() / "stella_memory.db")
-
-
-def default_reminders_db() -> str:
-    return str(default_data_dir() / "stella_reminders.db")
 
 
 def default_history_db() -> str:
@@ -538,7 +517,6 @@ class StellaSettings:
     llama_binary: str = DEFAULT_LLAMA_SERVER_BINARY
     llama_port: int = DEFAULT_LLAMA_SERVER_PORT
     memory_db: str = field(default_factory=default_memory_db)
-    reminders_db: str = field(default_factory=default_reminders_db)
     history_db: str = field(default_factory=default_history_db)
     transcripts_db: str = field(default_factory=default_transcripts_db)
     transcripts_enabled: bool = False
@@ -624,9 +602,6 @@ class StellaSettings:
         return {
             "memory_db": os.environ.get(
                 "STELLA_MEMORY_DB", default_memory_db()
-            ),
-            "reminders_db": os.environ.get(
-                "STELLA_REMINDERS_DB", default_reminders_db()
             ),
             "history_db": os.environ.get(
                 "STELLA_HISTORY_DB", default_history_db()
@@ -799,9 +774,6 @@ class StellaApplication:
         memory = self.session.stella.memory
         if isinstance(memory, SQLiteMemory):
             memory.close()
-        reminders = self.session.stella.reminders
-        if isinstance(reminders, SQLiteReminderStore):
-            reminders.close()
         history = self.session.stella.tools.history
         if isinstance(history, SQLiteActionHistory):
             history.close()
@@ -911,12 +883,10 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # default state lives under XDG paths that do not exist on first run,
     # so ensure every configured location exists before opening it.
     Path(settings.memory_db).parent.mkdir(parents=True, exist_ok=True)
-    Path(settings.reminders_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.history_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.transcripts_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.workspace).mkdir(parents=True, exist_ok=True)
     memory = SQLiteMemory(settings.memory_db)
-    reminders = SQLiteReminderStore(settings.reminders_db)
     history = SQLiteActionHistory(settings.history_db, MAX_AUDIT_RECORDS)
     # Recording conversation text is strictly opt-in; the proposal queue
     # beside it is always available so a queued edit survives turning
@@ -957,9 +927,6 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             MemoryWriteTool(memory),
             MemoryUpdateTool(memory),
             MemoryForgetTool(memory),
-            ReminderCreateTool(reminders),
-            ReminderListTool(reminders),
-            ReminderCancelTool(reminders),
             # Style data with its own write path: exactly the two persona
             # files, DANGEROUS, verified like every other mutation.
             PersonaEditTool(),
@@ -992,7 +959,6 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         tool=tools,
         memory=memory,
         max_tool_steps=2,
-        reminders=reminders,
         semantic_retriever=semantic_retriever,
     )
     # The shared application backs the desktop UI too, so its session must
@@ -1290,7 +1256,7 @@ def build_voice(settings: StellaSettings) -> VoicePanel:
 
     A broken optional voice setting disables only that voice capability
     (the reason surfaces when voice is used) instead of preventing Stella
-    from starting: text chat, memory, actions and reminders must survive
+    from starting: text chat, memory and actions must survive
     a misconfigured transcription or speech command.
     """
 
@@ -1449,57 +1415,6 @@ class MemoryPanel:
         )
 
 
-class ReminderPanel:
-    """Trusted application-layer view over the existing reminder store.
-
-    Every mutation runs through the same ``Reminder*Tool`` implementations
-    (and therefore the same validation and honest output wording) that the
-    approved tool path uses. A reminder here remains a notification event:
-    nothing on this panel can execute other tools.
-    """
-
-    def __init__(self, store: ReminderStore | None) -> None:
-        self._store = store
-
-    @property
-    def available(self) -> bool:
-        return self._store is not None
-
-    def pending_rows(self) -> tuple[tuple[str, str], ...]:
-        """Pending reminders as (content, due-time) display pairs."""
-
-        if self._store is None:
-            return ()
-        return tuple(
-            (reminder.content, reminder.due_at.isoformat())
-            for reminder in self._store.pending()
-        )
-
-    def create(self, content: str, due_at_iso: str) -> ToolResult:
-        if self._store is None:
-            return self._unavailable()
-        return ReminderCreateTool(self._store).execute(
-            {"content": content, "due_at": due_at_iso}
-        )
-
-    def cancel(self, query: str) -> ToolResult:
-        if self._store is None:
-            return self._unavailable()
-        return ReminderCancelTool(self._store).execute({"query": query})
-
-    def list(self) -> ToolResult:
-        if self._store is None:
-            return self._unavailable()
-        return ReminderListTool(self._store).execute({})
-
-    @staticmethod
-    def _unavailable() -> ToolResult:
-        return ToolResult(
-            success=False,
-            output="Reminders are not available in this configuration.",
-        )
-
-
 class ApprovalBroker:
     """Bridge between the dispatcher's approval calls and a UI approver.
 
@@ -1591,38 +1506,6 @@ class UiEvent:
     payload: object = None
 
 
-class ReminderScheduler:
-    """Wakes on an interval and asks the bridge for one due-reminder sweep.
-
-    It owns no Stella state: the ticker thread only calls ``on_tick``,
-    which posts onto the bridge's single command queue, so all reminder
-    evaluation still happens on the one worker thread that owns Stella.
-    """
-
-    def __init__(
-        self,
-        on_tick: Callable[[], None],
-        interval_seconds: float = 5.0,
-    ) -> None:
-        self._on_tick = on_tick
-        self._interval = interval_seconds
-        self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run, name="stella-reminder-tick", daemon=True
-        )
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._interval):
-            self._on_tick()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=2)
-
-
 # Closes a chunked reply's play queue; no generated artifact path can
 # contain a NUL, so this sentinel string can never collide with one.
 _END_OF_SPEECH = "\x00stella-end-of-speech"
@@ -1634,25 +1517,18 @@ class StellaBridge:
     SQLite connections are thread-bound, and Stella's own state is not
     thread-safe, so exactly one worker thread touches the application
     layer. The UI thread only posts commands and drains events; it never
-    calls into ``Stella``, the dispatcher, memory, or the reminder store
-    itself. Every command is wrapped so an unexpected failure becomes one
+    calls into ``Stella``, the dispatcher and memory. Every command is
+    wrapped so an unexpected failure becomes one
     friendly ``("error", ...)`` event instead of a stack trace.
     """
 
     def __init__(
         self,
         factory: Callable[[], StellaApplication],
-        *,
-        reminder_tick_seconds: float | None = 5.0,
-        now: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self.approvals = ApprovalBroker()
-        self._reminder_tick_seconds = reminder_tick_seconds
-        self._now = now if now is not None else (lambda: dt.datetime.now(dt.UTC))
-        self._scheduler: ReminderScheduler | None = None
         self._application: StellaApplication | None = None
         self._memory: MemoryPanel | None = None
-        self._reminders: ReminderPanel | None = None
         self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
         self._barge: BargeInListener | None = None
@@ -1690,14 +1566,6 @@ class StellaBridge:
             return
         self._application = application
         self._rebind(application)
-        if self._reminder_tick_seconds is not None:
-            # Only a successfully started Stella gets a ticker, and it must
-            # be running before _ready releases the caller: stop() from the
-            # UI could otherwise catch a half-built scheduler.
-            self._scheduler = ReminderScheduler(
-                self.post_reminder_check, self._reminder_tick_seconds
-            )
-            self._scheduler.start()
         self._ready.set()
 
     def _rebind(self, application: StellaApplication) -> None:
@@ -1705,9 +1573,6 @@ class StellaBridge:
         if isinstance(stella, Stella):
             stella.approval_provider = self.approvals.request
         self._memory = MemoryPanel(stella.memory)
-        self._reminders = ReminderPanel(
-            getattr(stella, "reminders", None)
-        )
         self._voice = application.voice
         if (
             self._barge is not None
@@ -1774,11 +1639,6 @@ class StellaBridge:
         if self._memory is None:
             raise RuntimeError("Stella is not running in this session.")
         return self._memory
-
-    def _require_reminders(self) -> ReminderPanel:
-        if self._reminders is None:
-            raise RuntimeError("Stella is not running in this session.")
-        return self._reminders
 
     def post_turn(self, user_input: str) -> None:
         def handle() -> None:
@@ -1858,7 +1718,6 @@ class StellaBridge:
         self, user_input: str, spoken: bool = False
     ) -> TurnOutcome:
         session = self._require_session()
-        self._check_due_reminders()
         dead = threading.Event()
         self._narration_dead = dead
 
@@ -1888,27 +1747,6 @@ class StellaBridge:
         # capability change nothing and emit nothing.
         self._emit_history_if_new()
         return outcome
-
-    def post_reminder_check(self) -> None:
-        """One due-reminder sweep, run on the worker thread.
-
-        This is the ticker's entire entry point: it posts, it never
-        evaluates reminders on the ticker thread itself.
-        """
-
-        self._post(self._check_due_reminders)
-
-    def _check_due_reminders(self) -> None:
-        session = self._require_session()
-        delivered = False
-        for delivery in session.check_due_reminders(self._now()):
-            if delivery.delivered and delivery.message is not None:
-                self._emit("reminder_delivered", delivery.message)
-                delivered = True
-        if delivered and self._reminders is not None:
-            # A handled row disappears from the Reminders panel without
-            # waiting for the next user interaction.
-            self._emit("reminders", self._reminders.pending_rows())
 
     def status_snapshot(self) -> tuple[object | None, object | None, object | None]:
         """(settings, session, stella) for ``/status`` rendering.
@@ -2347,30 +2185,6 @@ class StellaBridge:
 
         self._post(handle)
 
-    def post_reminders(self) -> None:
-        def handle() -> None:
-            self._emit("reminders", self._require_reminders().pending_rows())
-
-        self._post(handle)
-
-    def post_reminder_add(self, content: str, due_at_iso: str) -> None:
-        def handle() -> None:
-            panel = self._require_reminders()
-            result = panel.create(content, due_at_iso)
-            self._emit("reminder_result", outcome_status(result))
-            self._emit("reminders", panel.pending_rows())
-
-        self._post(handle)
-
-    def post_reminder_cancel(self, query: str) -> None:
-        def handle() -> None:
-            panel = self._require_reminders()
-            result = panel.cancel(query)
-            self._emit("reminder_result", outcome_status(result))
-            self._emit("reminders", panel.pending_rows())
-
-        self._post(handle)
-
     def post_history(self) -> None:
         """Send the newest action-history rows to the UI."""
 
@@ -2464,9 +2278,6 @@ class StellaBridge:
         self._post(handle)
 
     def stop(self) -> None:
-        if self._scheduler is not None:
-            self._scheduler.stop()
-            self._scheduler = None
         self.approvals.deny_outstanding()
         self._interrupt_speech()
         if self._voice is not None:

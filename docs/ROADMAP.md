@@ -20,11 +20,11 @@ mechanism — not an aspiration.
    an approval whose `ApprovalRequest` matches the exact content, and
    tool outputs report honestly (`src/stella/memory.py`;
    `docs/OUTCOME_MEMORY.md`).
-3. **Awareness is not authority.** Proactivity and reminders run on a
-   notify-only runtime path that never consults the Brain, the LLM or
-   the dispatcher, and reminder text is treated as untrusted data
-   (`src/stella/proactivity.py`, `src/stella/reminders.py`;
-   `docs/REMINDERS.md`).
+3. **Awareness is not authority.** Proactivity runs on a notify-only
+   runtime path that never consults the Brain, the LLM or the
+   dispatcher, and anything an event or a scheduled item carries is
+   treated as untrusted data
+   (`src/stella/proactivity.py`; `docs/REMINDERS.md`).
 4. **Trusted execution with verification.** The full chain is
    LLM → Decision → ToolDispatcher → risk classification → exact
    single-use approval → execute → independent verification →
@@ -45,12 +45,16 @@ mechanism — not an aspiration.
 The bar for Stage A: "I should be talking, asking, and it should be
 working and helping me, even if not the fastest."
 
-- **A1. Idle reminder firing — done.** The UI bridge runs a daemon
-  ticker whose only action is posting a reminder check onto the
-  single-worker-thread command queue; delivery stays once-only via the
-  atomic `pending → handled` update. The CLI keeps fires-on-next-
-  interaction by design. (`ReminderScheduler` in `src/stella/app.py`,
-  `docs/REMINDERS.md`.)
+- **A1. Idle reminder firing — done, then deliberately withdrawn.** The
+  ticker existed only to sweep Stella's own reminder table. That table is
+  gone (reminders are now an alert written into the connected Outline
+  workspace, which fires in that application), so `ReminderScheduler` was
+  removed with it and an open window is quiet until the user speaks. The
+  queue discipline it proved — a wake posts onto the one command queue and
+  never evaluates on the wake's own thread — is still pinned by
+  `test_bridge_panel_command_queues_behind_a_busy_turn` in
+  `tests/test_app.py`. Reintroducing an idle informer is a design task, not
+  a checkbox; see `docs/REMINDERS.md`.
 - **A2. Content-aware approval previews — done.** Approvals now show a
   bounded unified diff (edit), new content (write), loss excerpt
   (delete) or validated URL (network read), computed by app code only
@@ -451,7 +455,7 @@ code no text file can influence (`src/stella/persona.py`,
 - **C7. Slash commands (CLI/TUI I/O layer) — done.** A typed line
   starting with `/` is a runtime command, never an utterance: it is
   intercepted in `run_cli` and the window's `_send` before the Brain,
-  so no model call, reminder check, or approval can be steered by it.
+  so no model call or approval can be steered by it.
   Two tiers: built-in control commands (`/exit`, `/status`, `/help`,
   `/version`, `/clear` for the session's conversation, `/history` for
   the newest action records, and terminal-only `/trace`/`/debug`
@@ -462,8 +466,8 @@ code no text file can influence (`src/stella/persona.py`,
   typing the sentence out, approvals still gate every tool. Template
   reads reuse the persona discipline (name regex, realpath
   containment, no symlinks, 8 KiB cap); unknown names error locally
-  with suggestions and are never forwarded. Voice transcripts,
-  reminders and events take other paths into `run_turn` and are
+  with suggestions and are never forwarded. Voice transcripts
+  and events take other paths into `run_turn` and are
   structurally never command-parsed — a spoken "/exit" is a sentence.
   Deliberately not built: inline shell execution, permission
   frontmatter, `@file` embedding (rules 4, 13, 15).

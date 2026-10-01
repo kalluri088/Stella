@@ -25,6 +25,7 @@ from pathlib import Path
 
 from platformdirs import user_data_dir
 
+from stella import provider_keys
 from stella.audio import TranscriptionProvider
 from stella.audio_output import (
     SpeechOutput,
@@ -526,6 +527,11 @@ class StellaSettings:
     """The minimal local configuration a Stella application needs."""
 
     provider: str = "openai"
+    # Which provider preset the key store and endpoint come from
+    # (stella.provider_keys). Non-secret by construction: the API key
+    # itself never enters this dataclass — its repr flows into notices
+    # and logs, and a key must not.
+    preset: str | None = None
     model: str | None = None
     openai_base_url: str | None = None
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
@@ -678,6 +684,7 @@ class StellaSettings:
         *,
         provider: str,
         model: str,
+        preset: str | None = None,
         ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
         openai_base_url: str | None = None,
         transcripts_enabled: bool = False,
@@ -697,6 +704,7 @@ class StellaSettings:
         web_override = web_tools_env_override()
         return cls(
             provider=provider,
+            preset=preset,
             model=model,
             ollama_base_url=ollama_base_url,
             openai_base_url=openai_base_url,
@@ -747,6 +755,7 @@ class StellaSettings:
             )
         return cls(
             provider=provider,
+            preset=os.environ.get("STELLA_PRESET") or None,
             model=model,
             openai_base_url=os.environ.get("OPENAI_BASE_URL"),
             ollama_base_url=os.environ.get(
@@ -861,14 +870,21 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             think=settings.ollama_think,
         )
     elif settings.provider == "openai":
-        if not os.environ.get("OPENAI_API_KEY"):
+        key = provider_keys.effective_api_key(settings.preset)
+        if not key:
             raise SystemExit(
-                "No OpenAI API key is configured. Enter it in Settings, "
-                "or export OPENAI_API_KEY before launching."
+                "No API key is configured. Enter it in setup (it is "
+                "verified once, then stored in your private Stella data "
+                "directory), or export OPENAI_API_KEY before launching."
             )
         llm = OpenAILLMClient(
             model=settings.model,
-            base_url=settings.openai_base_url,
+            base_url=(
+                settings.openai_base_url
+                or provider_keys.base_url_for(settings.preset)
+            ),
+            api_key=key,
+            tool_dialect=provider_keys.tool_dialect_for(settings.preset),
             decision_max_output_tokens=settings.decision_max_tokens,
             answer_max_output_tokens=settings.answer_max_tokens,
         )
@@ -1346,12 +1362,13 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     )
 
 
-def _openai_speech_client() -> object:
+def _openai_speech_client(api_key: str) -> object:
     from openai import OpenAI
 
-    # The SDK resolves OPENAI_API_KEY/OPENAI_BASE_URL from the environment,
-    # the same credentials the ordinary LLM client already uses.
-    return OpenAI()
+    # The caller resolved the key through provider_keys: the environment
+    # first, then the stored OpenAI-slot key. Voice is OpenAI territory
+    # (Whisper/TTS), so a Claude or Grok key is never offered here.
+    return OpenAI(api_key=api_key)
 
 
 def _build_transcriber(
@@ -1363,11 +1380,11 @@ def _build_transcriber(
         return CommandTranscriptionProvider(
             split_command(settings.transcription_command)
         )
-    if settings.voice_transcription in {"auto", "openai"} and os.environ.get(
-        "OPENAI_API_KEY"
-    ):
+    voice_key = provider_keys.effective_api_key("openai")
+    if settings.voice_transcription in {"auto", "openai"} and voice_key:
         return OpenAITranscriptionProvider(
-            _openai_speech_client(), model=settings.transcription_model
+            _openai_speech_client(voice_key),
+            model=settings.transcription_model,
         )
     return None
 
@@ -1393,11 +1410,10 @@ def _build_speech_provider(
                 return CommandSpeechProvider(
                     [binary, "-w", "{output}", "{text}"]
                 )
-    if settings.voice_speech in {"auto", "openai"} and os.environ.get(
-        "OPENAI_API_KEY"
-    ):
+    voice_key = provider_keys.effective_api_key("openai")
+    if settings.voice_speech in {"auto", "openai"} and voice_key:
         return OpenAISpeechProvider(
-            _openai_speech_client(),
+            _openai_speech_client(voice_key),
             model=settings.speech_model,
             voice=settings.speech_voice,
         )

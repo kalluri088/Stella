@@ -20,7 +20,13 @@ The abstraction does not decide how context is assembled, store conversations, o
 
 ### OpenAI client
 
-`stella.openai_client.OpenAILLMClient` is the current concrete `LLMClient` implementation. It uses the official OpenAI Python SDK, reads `OPENAI_API_KEY` from the environment, and accepts the model and optional base URL through its constructor. `Message` objects are converted to the dictionary shape expected by the SDK; existing dictionaries are passed through.
+`stella.openai_client.OpenAILLMClient` is the current concrete `LLMClient`
+implementation. It uses the official OpenAI Python SDK and takes the API key,
+model, optional base URL and a `tool_dialect` through its constructor — the
+client itself reads no environment variable; resolving the key to pass in is
+the application's job (see `stella.provider_keys` below). `Message` objects are
+converted to the dictionary shape expected by the SDK; existing dictionaries
+are passed through.
 
 When the Brain is choosing an action, the optional provider-neutral
 `LLMClient.chat_with_tools()` boundary is used. The OpenAI adapter uses the
@@ -35,6 +41,15 @@ This path deliberately uses Responses rather than Chat Completions because the
 configured GPT-5.6 endpoint rejects function tools through Chat Completions
 when reasoning is enabled. Stella's ordinary text `chat()` path remains on
 Chat Completions and is unchanged.
+
+Only OpenAI serves the Responses API, so the constructor's `tool_dialect`
+takes on the other choice: presets whose endpoints are OpenAI-compatible but
+not OpenAI (Claude, Grok, Groq, OpenRouter, Gemini, custom) speak the
+`chat` dialect, and their `chat_with_tools()` goes through Chat Completions
+function tools instead, normalizing `choices[0].message.tool_calls` into the
+same provider-neutral `LLMToolCall` values. The Brain cannot tell the two
+dialects apart; the conformance suite tests both as equivalent
+implementations of the same boundary.
 
 Clients without native tool calling inherit a compatibility implementation that
 uses the existing text/JSON protocol through `chat()`. This preserves the
@@ -510,6 +525,13 @@ exact-argument approval dialog, whose preview names the concrete window
 `OllamaLLMClient`, `LLMBrain`, a `ToolDispatcher` holding the registered
 capabilities, `SQLiteMemory`, and the `SQLiteReminderStore`, then wraps them in
 a `Stella` instance and a `StellaApplication` that owns their lifecycle.
+For the OpenAI-family provider the settings carry only the non-secret
+`preset` id; the key itself is resolved at build time through
+`provider_keys.effective_api_key(settings.preset)` (environment first for the
+openai/custom slots, then the private stored key) and the client is
+constructed with that key, the preset's base URL and the preset's tool
+dialect. Voice gates resolve the **openai slot only** — a Claude or Grok key
+is never offered to OpenAI-compatible transcription or speech endpoints.
 Both interfaces resolve their startup settings through
 `stella.config.resolve_settings()`: an explicit `STELLA_MODEL` (and the other
 provider environment variables) wins, otherwise the non-secret saved
@@ -721,6 +743,7 @@ described in the architecture above, not here):
 │       ├── outline_tools.py   # opt-in Outline app search/create/update tools
 │       ├── persona.py         # style files, edit snapshot history, reflection
 │       ├── proactivity.py     # due-reminder surface during interaction
+│       ├── provider_keys.py   # provider presets, verified keys, 0600 store
 │       ├── reminders.py       # one-shot reminder store
 │       ├── semantic_memory.py # provider-neutral semantic retrieval + local fallback
 │       ├── stella.py          # turn orchestration
@@ -758,13 +781,17 @@ From a source checkout, replace the commands with `uv run stella-ui` /
 the compact action timeline.
 
 Environment variables remain the advanced-user path and always win over the
-saved file: `STELLA_MODEL` selects the model, `OPENAI_API_KEY` provides a
-persistent OpenAI key (a key entered in the UI is session-only because there
-is no secure credential store), `STELLA_LLM_PROVIDER=ollama|openai` overrides
+saved file: `STELLA_MODEL` selects the model, `OPENAI_API_KEY` overrides the
+stored key for the OpenAI slot (and a custom endpoint) for that launch —
+`STELLA_PRESET` chooses which preset's key and endpoint that launch uses,
+while every named preset (Claude, Grok, …) resolves only against its own
+stored key — `STELLA_LLM_PROVIDER=ollama|openai` overrides
 provider selection, `OPENAI_BASE_URL` and `OLLAMA_BASE_URL` point either
 client at a non-default address, and `STELLA_MEMORY_DB`, `STELLA_REMINDERS_DB`
 and `STELLA_WORKSPACE` override the state locations, which default under the
-XDG data directory (`~/.local/share/stella`). Voice mode is configured through
+XDG data directory (`~/.local/share/stella`). Verified API keys live in
+`api_keys.json` next to those files, in the same directory, at 0600 — see
+`SECRETS.md`. Voice mode is configured through
 `STELLA_VOICE_TRANSCRIPTION`, `STELLA_VOICE_SPEECH`,
 `STELLA_TRANSCRIPTION_COMMAND`, `STELLA_SPEECH_COMMAND`,
 `STELLA_TRANSCRIPTION_MODEL`, `STELLA_SPEECH_MODEL`, and

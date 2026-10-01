@@ -318,6 +318,18 @@ def _openai_compat_client(provider: SimulatedProvider) -> LLMClient:
     )
 
 
+def _openai_chat_compat_client(provider: SimulatedProvider) -> LLMClient:
+    # The dialect every non-OpenAI preset (Claude, Grok, Groq,
+    # OpenRouter, Gemini, custom gateways) speaks: same SDK client,
+    # chat/completions for tool calls instead of the Responses API.
+    return OpenAILLMClient(
+        model=MODEL,
+        base_url=provider.base_url,
+        api_key="conformance",
+        tool_dialect="chat",
+    )
+
+
 def _ollama_compat_client(provider: SimulatedProvider) -> LLMClient:
     return OllamaLLMClient(model=MODEL, base_url=provider.base_url)
 
@@ -338,6 +350,7 @@ def _llama_server_compat_client(provider: SimulatedProvider) -> LLMClient:
 ALL_DIALECTS: frozenset[str] = frozenset(
     {
         "openai-compat",
+        "openai-chat-compat",
         "ollama-compat",
         "ollama-native",
         "llama-server-compat",
@@ -346,6 +359,7 @@ ALL_DIALECTS: frozenset[str] = frozenset(
 
 DIALECT_CLIENTS: dict[str, Callable[[SimulatedProvider], LLMClient]] = {
     "openai-compat": _openai_compat_client,
+    "openai-chat-compat": _openai_chat_compat_client,
     "ollama-compat": _ollama_compat_client,
     "ollama-native": _ollama_native_client,
     "llama-server-compat": _llama_server_compat_client,

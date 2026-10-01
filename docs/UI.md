@@ -18,18 +18,23 @@ uv run stella-ui
 A display is required. No environment variables are needed: on first launch
 `stella.config.resolve_settings()` finds no saved configuration and the
 window opens a **setup dialog** instead of a broken application. The dialog
-offers Local model (Ollama), OpenAI API, and any OpenAI-compatible API; for
+is a provider-preset picker (Ollama and llama.cpp local modes, then OpenAI,
+Claude, Grok, Groq, OpenRouter, Gemini and "Other OpenAI-compatible"); for
 Ollama it scans the models actually installed (Ollama's `/api/tags`, never a
-hardcoded list), and every choice must pass **Test connection** before
+hardcoded list), hosted presets arrive with their endpoint and suggested
+models prefilled, and every choice must pass **Test connection** before
 *Start Stella* unlocks. Completing setup saves the non-secret
-provider/model/endpoint fields to `config.json` (private file mode under the
-Stella data directory), so the next launch goes straight to the chat window.
+provider/preset/model/endpoint fields to `config.json` (private file mode
+under the Stella data directory), so the next launch goes straight to the
+chat window.
 
-`STELLA_MODEL`, `STELLA_LLM_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`
-and `OLLAMA_BASE_URL` keep working for advanced users and win over the saved
-file. An API key entered in the UI is never persisted — Stella has no
-secure credential store, so the key lives only in that process's environment
-(set `OPENAI_API_KEY` to keep it across launches).
+`STELLA_MODEL`, `STELLA_LLM_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+`STELLA_PRESET` and `OLLAMA_BASE_URL` keep working for advanced users and
+win over the saved file. An API key that passes its connection test is
+stored in `api_keys.json` (owner-only, mode 0600) in the same directory and
+reused in every later session; it is never written into `config.json`, never
+shown again in full (only a last-four hint), and the UI performs no
+environment writes at all. See `docs/SECRETS.md`.
 
 ## Architecture
 
@@ -107,8 +112,11 @@ display, and can never approve a tool or change permissions.
 - Action outcomes: each tool result is rendered with the honest status from
   `outcome_status` (verified ✓, unverified ✗, inconclusive ?, failed ✗,
   denied ✗). An unverified action is never shown as verified.
-- Settings: change provider/model, the Ollama endpoint, an OpenAI-compatible
-  base URL, and (masked, session-only) an API key, with *Test connection*,
+- Settings: change the provider preset (which fixes provider, endpoint and
+  key slot), the model, the Ollama endpoint, and — for "Other
+  OpenAI-compatible" only — a base URL; the API key field is masked and
+  stores a matching, verified key on Apply (a key shaped like a different
+  provider's is refused with a hint), with *Test connection*,
   *List models* for Ollama, and a live
   "Provider: … Model: … Status: Connected / Not connected" line. Apply
   rebuilds the application through `build_application` before anything is

@@ -9,8 +9,10 @@ are produced by the existing dispatcher, and the UI only ever answers the
 exact request the dispatcher raised (closing a dialog denies it).
 
 The one deliberate exception is ``SetupDialog``, shown before any Stella
-application exists: it runs bounded provider probes and saves Stella's
-non-secret configuration file. It never touches tools, memory,
+application exists: it runs bounded provider probes, saves Stella's
+non-secret configuration file, and stores a verified API key in the
+private key file owned by ``stella.provider_keys`` (never in
+config.json, never in the environment). It never touches tools, memory,
 reminders, or approvals, and a successful setup grants nothing beyond
 "Stella can talk to this model".
 
@@ -23,7 +25,6 @@ take a different path and are never command-parsed.
 
 from __future__ import annotations
 
-import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -31,7 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from tkinter import ttk
 
-from stella import config
+from stella import config, provider_keys
 from stella.app import (
     OutcomeStatus,
     StellaBridge,
@@ -1548,12 +1549,15 @@ class StellaWindow:
         ttk.Label(provider_row, text="Provider:").pack(side="left")
         self._provider = ttk.Combobox(
             provider_row,
-            values=["openai", "ollama", "llama"],
+            values=_PRESET_LABELS,
             state="readonly",
-            width=12,
+            width=24,
         )
-        self._provider.set(settings.provider)
+        self._provider.set(_preset_label_for_settings(settings))
         self._provider.pack(side="left", padx=6)
+        self._provider.bind(
+            "<<ComboboxSelected>>", lambda _event: self._panel_preset_changed()
+        )
         self._connection_status = ttk.Label(
             provider_row, text=self._current_state_text(), wraplength=280
         )
@@ -1574,6 +1578,10 @@ class StellaWindow:
             entry.insert("0", value)
             entry.pack(side="left", fill="x", expand=True)
             self._settings_fields[label] = entry
+        self._panel_key_hint = ttk.Label(
+            frame, style="Dim.TLabel", wraplength=340
+        )
+        self._panel_key_hint.pack(padx=6, anchor="w")
         self._transcripts_var = tk.BooleanVar(
             value=settings.transcripts_enabled
         )
@@ -1686,9 +1694,10 @@ class StellaWindow:
             frame,
             style="Dim.TLabel",
             text=(
-                "The API key applies to this session only and is never "
-                "saved or shown again; to keep it permanently, export "
-                "OPENAI_API_KEY."
+                "The API key is verified once, then kept in a private "
+                "file inside Stella's data directory and used in every "
+                "later session; an exported OPENAI_API_KEY overrides the "
+                "stored key for the OpenAI slot on that launch."
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
@@ -1705,20 +1714,63 @@ class StellaWindow:
         ).pack(side="left")
         self._settings_status = ttk.Label(frame, text="", wraplength=340)
         self._settings_status.pack(padx=6, pady=4, anchor="w")
+        self._panel_preset_changed()
 
     def _current_state_text(self) -> str:
         model = self._panel_settings.model or "(not set)"
         return f"Provider: {self._panel_settings.provider}  Model: {model}"
 
+    def _preset_id(self) -> str:
+        return _PRESET_BY_LABEL[self._provider.get()]
+
+    def _panel_preset_changed(self) -> None:
+        preset = provider_keys.PRESETS[self._preset_id()]
+        url_field = self._settings_fields["OpenAI base URL"]
+        # A disabled Tk Entry silently rejects delete/insert, so the
+        # field must be re-enabled before any value rewrite.
+        url_field.configure(state="normal")
+        if preset.id != "custom":
+            # The endpoint belongs to the preset, not to the user: show
+            # it, but only "Other OpenAI-compatible" accepts an edit.
+            url_field.delete("0", "end")
+            url_field.insert(
+                "0", preset.base_url or "(OpenAI default endpoint)"
+            )
+            url_field.configure(state="disabled")
+        self._update_panel_key_hint()
+
+    def _update_panel_key_hint(self) -> None:
+        preset = provider_keys.PRESETS[self._preset_id()]
+        stored = (
+            provider_keys.stored_api_key(preset.id) if preset.key_required else None
+        )
+        if stored:
+            self._panel_key_hint.configure(
+                text=(
+                    f"Stored key for {preset.label} "
+                    f"{provider_keys.redacted_hint(stored)} — entering a "
+                    "new key on Apply replaces it."
+                )
+            )
+        else:
+            self._panel_key_hint.configure(text="")
+
     def _draft_settings(self) -> StellaSettings:
         fields = self._settings_fields
+        preset_id = self._preset_id()
+        provider = _provider_for_preset(preset_id)
         # Replace over the panel's settings so voice fields that the panel
         # does not show (modes, models, commands) survive an Apply click.
         return replace(
             self._panel_settings,
-            provider=self._provider.get(),
+            provider=provider,
+            preset=preset_id if provider == "openai" else None,
             model=fields["Model"].get().strip() or None,
-            openai_base_url=fields["OpenAI base URL"].get().strip() or None,
+            openai_base_url=(
+                fields["OpenAI base URL"].get().strip() or None
+                if preset_id == "custom"
+                else None
+            ),
             ollama_base_url=fields["Ollama base URL"].get().strip()
             or DEFAULT_OLLAMA_BASE_URL,
             memory_db=fields["Memory DB"].get().strip(),
@@ -1737,18 +1789,53 @@ class StellaWindow:
     def _entered_key(self) -> str:
         return self._settings_fields["API key"].get()
 
-    def _apply_key_to_environment(self) -> None:
-        # Session-scoped on purpose: Stella has no secure credential
-        # store, so the key is never persisted. The build path reads it
-        # from the environment exactly like the CLI always has.
+    def _store_entered_key(self) -> str | None:
+        """Persist a typed key through the mismatch gate; None on success.
+
+        A returned string is the refusal the user must see: Apply is not
+        allowed to store a key that does not belong to the chosen
+        provider. Local presets need no key, so a leftover field value is
+        kept on screen and stored nowhere.
+        """
+
         key = self._entered_key()
-        if key:
-            os.environ["OPENAI_API_KEY"] = key
-            self._settings_fields["API key"].delete("0", "end")
+        if not key:
+            return None
+        preset = provider_keys.PRESETS[self._preset_id()]
+        if not preset.key_required:
+            return None
+        hint = provider_keys.mismatch_hint(preset.id, key)
+        if hint:
+            return hint
+        try:
+            provider_keys.save_api_key(preset.id, key)
+        except (ValueError, OSError) as error:
+            return f"That key cannot be stored: {error}"
+        self._settings_fields["API key"].delete("0", "end")
+        self._update_panel_key_hint()
+        return None
 
     def _apply_settings(self) -> None:
+        refusal = self._store_entered_key()
+        if refusal:
+            self._settings_status.configure(text=refusal)
+            return
+        preset = provider_keys.PRESETS[self._preset_id()]
+        if (
+            preset.key_required
+            and provider_keys.effective_api_key(preset.id) is None
+        ):
+            # Catch the keyless switch here instead of posting a rebuild
+            # the worker can only fail mid-flight: nothing is changed,
+            # and the field to fix is named.
+            self._settings_status.configure(
+                text=(
+                    f"{preset.label} has no stored key yet — type one "
+                    "into the API key field, then Apply again."
+                )
+            )
+            return
         applied = self._draft_settings()
-        self._apply_key_to_environment()
         self._settings_status.configure(text="Restarting Stella with these settings...")
         self._bridge.post_apply_settings(applied)
 
@@ -1763,6 +1850,7 @@ class StellaWindow:
             ollama_base_url=draft.ollama_base_url,
             openai_base_url=draft.openai_base_url,
             api_key=self._entered_key() or None,
+            preset=draft.preset,
             llama_binary=draft.llama_binary,
         )
         self._settings_status.configure(
@@ -1797,18 +1885,64 @@ class StellaWindow:
         self._root.destroy()
 
 
-class SetupDialog:
-    """First-run model configuration, before any Stella application exists.
+# The provider picker is the preset table, local modes first. Labels are
+# what the combobox shows; ids are what the store and the build path use.
+_PRESET_ORDER = (
+    "ollama",
+    "llama",
+    "openai",
+    "anthropic",
+    "xai",
+    "groq",
+    "openrouter",
+    "google",
+    "freellmapi",
+    "custom",
+)
+_PRESET_LABELS = [provider_keys.PRESETS[pid].label for pid in _PRESET_ORDER]
+_PRESET_BY_LABEL = {provider_keys.PRESETS[pid].label: pid for pid in _PRESET_ORDER}
 
-    Offers the three shapes the existing provider layer already supports:
-    a local Ollama server, the OpenAI API, or any OpenAI-compatible
-    endpoint (the same ``openai`` provider with a base URL). The chosen
-    configuration is only saved after a successful connection test, and
-    an entered API key stays in this process's environment: Stella has no
-    secure credential store, so keys are never persisted.
+
+def _provider_for_preset(preset_id: str) -> str:
+    """The runtime provider behind one picker entry.
+
+    Local presets name their own provider; every hosted preset rides the
+    existing ``openai`` provider with its endpoint and key slot.
     """
 
-    MODES = ("ollama", "openai", "compatible")
+    if preset_id == "ollama":
+        return "ollama"
+    if preset_id == "llama":
+        return "llama"
+    return "openai"
+
+
+def _preset_label_for_settings(settings: StellaSettings) -> str:
+    """The picker entry a live configuration came from (or belongs to)."""
+
+    if settings.provider == "ollama":
+        return provider_keys.PRESETS["ollama"].label
+    if settings.provider == "llama":
+        return provider_keys.PRESETS["llama"].label
+    preset = provider_keys.PRESETS.get(settings.preset or "")
+    if preset is not None and preset.key_required:
+        return preset.label
+    return provider_keys.PRESETS["openai"].label
+
+
+class SetupDialog:
+    """First-run provider, model and key configuration, before any Stella
+    application exists.
+
+    The picker is the preset table from ``stella.provider_keys``: local
+    Ollama and llama.cpp need no key, every hosted preset carries its
+    endpoint, suggested models and key shape, and "Other
+    OpenAI-compatible" takes a base URL. A typed key is verified against
+    the chosen provider — a Claude-shaped key in the OpenAI slot is
+    refused with a hint before any request — and only a passing test
+    stores it, in Stella's private key file, for every later session.
+    Nothing secret is ever written to config.json.
+    """
 
     def __init__(self, parent: tk.Misc) -> None:
         self.result: StellaSettings | None = None
@@ -1831,40 +1965,58 @@ class SetupDialog:
             style="Dim.TLabel",
             justify="left",
         ).pack(padx=16, pady=(0, 6), anchor="w")
-        self._mode = tk.StringVar(value="ollama")
-        choices = ttk.Frame(dialog)
-        choices.pack(fill="x", padx=16)
-        for mode, label in (
-            ("ollama", "Local model (Ollama)"),
-            ("openai", "OpenAI API"),
-            ("compatible", "Other OpenAI-compatible API"),
-        ):
-            ttk.Radiobutton(
-                choices,
-                text=label,
-                value=mode,
-                variable=self._mode,
-                command=self._mode_changed,
-            ).pack(anchor="w")
+        picker_row = ttk.Frame(dialog)
+        picker_row.pack(fill="x", padx=16)
+        ttk.Label(picker_row, text="Provider:").pack(side="left")
+        self._preset = tk.StringVar(value=_PRESET_LABELS[0])
+        self._preset_box = ttk.Combobox(
+            picker_row,
+            values=_PRESET_LABELS,
+            state="readonly",
+            width=26,
+            textvariable=self._preset,
+        )
+        self._preset_box.pack(side="left", padx=6)
+        self._preset_box.bind(
+            "<<ComboboxSelected>>", lambda _event: self._preset_changed()
+        )
         fields = ttk.Frame(dialog)
         fields.pack(fill="x", padx=16, pady=6)
-        self._fields: dict[str, ttk.Entry] = {}
-        for label in ("Model", "Ollama base URL", "API base URL", "API key"):
+        self._fields: dict[str, tk.Widget] = {}
+        self._rows: dict[str, ttk.Frame] = {}
+        for label, masked in (
+            ("Model", False),
+            ("Ollama base URL", False),
+            ("API base URL", False),
+            ("API key", True),
+        ):
             row = ttk.Frame(fields)
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=f"{label}:", width=15).pack(side="left")
-            entry = ttk.Entry(
-                row, width=38, show="*" if label == "API key" else ""
+            widget: tk.Widget = (
+                ttk.Combobox(row, width=38)
+                if label == "Model"
+                else ttk.Entry(row, width=38, show="*" if masked else "")
             )
-            entry.pack(side="left", fill="x", expand=True)
-            self._fields[label] = entry
-        self._fields["Ollama base URL"].insert("0", DEFAULT_OLLAMA_BASE_URL)
-        for label in ("Model", "Ollama base URL", "API base URL"):
+            widget.pack(side="left", fill="x", expand=True)
+            self._fields[label] = widget
+            self._rows[label] = row
+        self._fields["Ollama base URL"].insert("0", DEFAULT_OLLAMA_BASE_URL)  # type: ignore[union-attr]
+        self._key_hint = ttk.Label(
+            fields, style="Dim.TLabel", wraplength=420
+        )
+        self._key_hint.pack(anchor="w")
+        for label in ("Model", "Ollama base URL", "API base URL", "API key"):
             # Editing the configuration invalidates a previous test, so
-            # the user can never start from a stale success.
-            self._fields[label].bind(
-                "<KeyRelease>", lambda _event: self._mark_untested()
-            )
+            # the user can never start from a stale success. The key
+            # entry belongs to this list now that a passing test saves
+            # the key: retyping must re-disable Start.
+            widget = self._fields[label]
+            widget.bind("<KeyRelease>", lambda _event: self._mark_untested())
+            if isinstance(widget, ttk.Combobox):
+                widget.bind(
+                    "<<ComboboxSelected>>", lambda _event: self._mark_untested()
+                )
         self._model_list = tk.Listbox(fields, height=5, width=55,
                                       exportselection=False)
         _style_listbox(self._model_list)
@@ -1885,14 +2037,14 @@ class SetupDialog:
         self._finish_button.pack(side="left")
         self.status = ttk.Label(
             dialog,
-            text="Pick a model, then test the connection.",
+            text="Pick a provider, then test the connection.",
             wraplength=420,
             justify="left",
             style="Dim.TLabel",
         )
         self.status.pack(padx=16, pady=(4, 16), anchor="w")
         self._model_list.bind("<<ListboxSelect>>", self._model_selected)
-        self._mode_changed()
+        self._preset_changed()
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
         # No transient(): the parent root is withdrawn, and a transient
         # window of an unmapped parent is never mapped under XWayland
@@ -1902,20 +2054,51 @@ class SetupDialog:
 
     # ----------------------------------------------------------- widgets
 
-    def _mode_changed(self) -> None:
-        mode = self._mode.get()
-        self._show(self._fields["Ollama base URL"], mode == "ollama")
-        self._show(self._fields["API base URL"], mode == "compatible")
-        self._show(self._fields["API key"], mode in {"openai", "compatible"})
-        self._show(self._model_list, mode == "ollama")
-        self._refresh_button.configure(state="normal" if mode == "ollama" else "disabled")
+    def _preset_id(self) -> str:
+        return _PRESET_BY_LABEL[self._preset.get()]
+
+    def _preset_changed(self) -> None:
+        preset = provider_keys.PRESETS[self._preset_id()]
+        provider = _provider_for_preset(preset.id)
+        self._fields["API key"].delete("0", "end")  # type: ignore[union-attr]
+        self._show(self._rows["Ollama base URL"], provider == "ollama")
+        self._show(self._rows["API base URL"], preset.id == "custom")
+        self._show(self._rows["API key"], preset.key_required)
+        self._show(self._model_list, provider == "ollama")
+        self._refresh_button.configure(
+            state="normal" if provider == "ollama" else "disabled"
+        )
+        model = self._fields["Model"]
+        assert isinstance(model, ttk.Combobox)
+        model.configure(values=list(preset.models))
+        if preset.models and model.get() not in preset.models:
+            # Suggest the preset's first model, but never overwrite a
+            # custom name the user already typed for a keyless preset.
+            model.set(preset.models[0])
+        self._update_key_hint()
         self._mark_untested()
 
-    @staticmethod
-    def _show(widget: tk.Misc, visible: bool) -> None:
+    def _update_key_hint(self) -> None:
+        preset = provider_keys.PRESETS[self._preset_id()]
+        stored = (
+            provider_keys.stored_api_key(preset.id) if preset.key_required else None
+        )
+        if stored:
+            self._key_hint.configure(
+                text=(
+                    f"Stored key for {preset.label} "
+                    f"{provider_keys.redacted_hint(stored)} — leave the "
+                    "field empty to keep it."
+                )
+            )
+        else:
+            self._key_hint.configure(text="")
+
+    def _show(self, widget: tk.Misc, visible: bool) -> None:
+        # Re-packing always anchors before the key-hint label, so toggling
+        # between presets cannot shuffle rows below the model list.
         if visible:
-            widget.pack(fill="x" if isinstance(widget, tk.Listbox) else None,
-                        pady=2)
+            widget.pack(fill="x", pady=2, before=self._key_hint)
         else:
             widget.pack_forget()
 
@@ -1929,31 +2112,33 @@ class SetupDialog:
         selected = self._model_list.curselection()
         if selected:
             name = self._model_list.get(selected[0])
-            self._fields["Model"].delete("0", "end")
-            self._fields["Model"].insert("0", name)
+            model = self._fields["Model"]
+            assert isinstance(model, ttk.Combobox)
+            model.set(name)
 
     def _draft(self) -> tuple[str, StellaSettings]:
-        mode = self._mode.get()
-        provider = "ollama" if mode == "ollama" else "openai"
+        preset_id = self._preset_id()
+        provider = _provider_for_preset(preset_id)
         openai_base_url = (
-            self._fields["API base URL"].get().strip() or None
-            if mode == "compatible"
+            self._fields["API base URL"].get().strip() or None  # type: ignore[union-attr]
+            if preset_id == "custom"
             else None
         )
         settings = StellaSettings.from_saved(
             provider=provider,
-            model=self._fields["Model"].get().strip(),
-            ollama_base_url=self._fields["Ollama base URL"].get().strip()
+            model=self._fields["Model"].get().strip(),  # type: ignore[union-attr]
+            ollama_base_url=self._fields["Ollama base URL"].get().strip()  # type: ignore[union-attr]
             or DEFAULT_OLLAMA_BASE_URL,
             openai_base_url=openai_base_url,
+            preset=preset_id if provider == "openai" else None,
         )
-        return mode, settings
+        return preset_id, settings
 
     # ------------------------------------------------------------ probes
 
     def refresh_models(self) -> None:
         scan = config.scan_ollama_models(
-            self._fields["Ollama base URL"].get().strip()
+            self._fields["Ollama base URL"].get().strip()  # type: ignore[union-attr]
             or DEFAULT_OLLAMA_BASE_URL
         )
         self._model_list.delete(0, "end")
@@ -1963,41 +2148,55 @@ class SetupDialog:
         self._mark_untested()
 
     def _draft_signature(self) -> tuple[object, ...]:
-        _mode, draft = self._draft()
+        _preset_id, draft = self._draft()
         return (
             draft.provider,
+            draft.preset,
             draft.model,
             draft.ollama_base_url,
             draft.openai_base_url,
         )
 
     def test_connection(self) -> None:
-        mode, draft = self._draft()
-        api_key = self._fields["API key"].get() if mode != "ollama" else ""
-        if mode != "ollama" and not api_key:
-            existing = os.environ.get("OPENAI_API_KEY")
-            if existing:
-                api_key = existing
-                self.status.configure(
-                    text="Using the OPENAI_API_KEY already set in the environment."
-                )
+        preset_id, draft = self._draft()
+        preset = provider_keys.PRESETS[preset_id]
+        api_key = self._fields["API key"].get() if preset.key_required else ""  # type: ignore[union-attr]
         result = config.test_connection(
             provider=draft.provider,
             model=draft.model or "",
             ollama_base_url=draft.ollama_base_url,
             openai_base_url=draft.openai_base_url,
             api_key=api_key or None,
+            preset=preset_id if preset.key_required else None,
+            llama_binary=draft.llama_binary,
         )
+        saved_note = ""
         if result.ok and api_key:
-            # Session-scoped on purpose; never written to the config file.
-            os.environ["OPENAI_API_KEY"] = api_key
-            self._fields["API key"].delete("0", "end")
+            try:
+                provider_keys.save_api_key(preset_id, api_key)
+            except (ValueError, OSError) as error:
+                result = config.ConnectionTest(
+                    ok=False,
+                    message=f"Connected, but the key was not stored: {error}",
+                )
+            else:
+                # The verified key now lives in the private store; the
+                # widget forgets it immediately, so nothing secret lingers
+                # on screen or in this process's environment.
+                self._fields["API key"].delete("0", "end")  # type: ignore[union-attr]
+                self._update_key_hint()
+                saved_note = (
+                    " Key saved for future sessions (never shown again)."
+                )
         self._tested_draft = self._draft_signature() if result.ok else None
         self._finish_button.configure(
             state="normal" if result.ok else "disabled"
         )
         self.status.configure(
-            text=result.message if result.ok else f"Not connected: {result.message}"
+            text=(
+                result.message if result.ok else f"Not connected: {result.message}"
+            )
+            + saved_note
         )
 
     def finish(self) -> None:
@@ -2007,7 +2206,7 @@ class SetupDialog:
         ):
             self._mark_untested()
             return
-        _mode, draft = self._draft()
+        _preset_id, draft = self._draft()
         config.save_configuration(draft)
         self.result = draft
         self._dialog.destroy()

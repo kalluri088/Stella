@@ -128,16 +128,29 @@ To remove Stella: `uv tool uninstall stella`, and delete
 
 `stella-ui` opens a short setup dialog — no environment variables needed:
 
-1. Pick **Local model (Ollama)**, **OpenAI**, or **Other OpenAI-compatible
-   API**.
-2. Stella lists the Ollama models you actually have installed, or takes your
-   API key (typed into a masked field, never saved to disk).
+1. Pick a provider: **Local model (Ollama)**, **Local llama.cpp**,
+   **OpenAI**, **Claude (Anthropic)**, **Grok (xAI)**, **Groq**,
+   **OpenRouter**, **Google Gemini**, **FreeLLMAPI (local router)**,
+   or **Other OpenAI-compatible**.
+2. Stella lists the Ollama models you actually have installed; hosted
+   providers arrive with their endpoint and suggested models prefilled
+   (still editable). Paste your API key into the masked field — if it is
+   visibly a different provider's key shape, Stella says so instead of
+   sending it anywhere.
 3. Press **Test connection**; the window only continues after a real
-   connection worked.
+   connection worked. A key that passed the test is then stored in your
+   private Stella data directory (`api_keys.json`, readable only by your
+   user) and used in every later session — you never paste it again, and
+   it is never shown again either, only its last four characters.
 
 Your provider/model choice is saved under `~/.local/share/stella/` and can
 be changed later in the window's Settings tab, which shows a live
-"Connected / Not connected" status.
+"Connected / Not connected" status. Switching there takes effect on the
+very next message — no restart, and the conversation and memory carry
+over. **FreeLLMAPI** is the preset for a self-hosted
+[FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) router pooling
+free-tier keys on your machine; it expects the router at
+`localhost:3001` and its locally generated `freellmapi-…` unified token.
 
 ### Advanced: environment variables (optional)
 
@@ -148,7 +161,8 @@ development, or running several configurations side by side:
 | --- | --- | --- |
 | `STELLA_MODEL` | Model name (for `llama`: full path to a `.gguf` file); also skips first-run setup | unset |
 | `STELLA_LLM_PROVIDER` | `ollama`, `openai` or `llama` (Stella-owned llama-server) | saved config, else auto |
-| `OPENAI_API_KEY` | API key that persists across sessions | unset |
+| `OPENAI_API_KEY` | Overrides the stored key for the OpenAI slot (and a custom endpoint) for this launch | unset |
+| `STELLA_PRESET` | Which provider preset the OpenAI key and endpoint come from (e.g. `anthropic`) | saved config |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://127.0.0.1:11434` |
 | `OPENAI_BASE_URL` | OpenAI-compatible endpoint | provider default |
 | `STELLA_LLAMA_SERVER_BINARY` | `llama-server` command for the `llama` provider | `llama-server` |
@@ -207,7 +221,9 @@ unknown `/name` says so and suggests near matches.
 ## Where your data lives
 
 All in `~/.local/share/stella` (or `$XDG_DATA_HOME/stella`): the config
-file, your memories, your reminders, the action history, and her workspace
+file, your verified API keys (`api_keys.json`, stored so only your user
+can read it, never printed and never part of a backup), your memories,
+your reminders, the action history, and her workspace
 folder — plain files you own. Her persona files are yours too, under
 `~/.config/stella`. The conversation transcript (used only for style
 reflection) is off by default and, when you turn it on, is one bounded
@@ -218,7 +234,8 @@ No
 telemetry, no accounts, no cloud sync.
 With the local Ollama setup, nothing ever leaves your machine.
 `stella backup <dir>` snapshots exactly these files — every state database
-stays consistent even while Stella runs — plus the config; `stella restore
+stays consistent even while Stella runs — plus the config (never the key
+file); `stella restore
 <dir>` confirms before replacing anything and keeps what it displaced in a
 `pre-restore-*` directory. `stella verify-backup <dir>` answers "will this
 backup restore cleanly" by integrity-checking the archive read-only,
@@ -235,19 +252,24 @@ without touching the live state.
   access and no "control my computer" mode.
 - Voice quality depends on the transcription/speech tools you install.
 - The UI is a single functional window — dependable, not fancy.
-- API keys entered in the UI live only for that session (there is no
-  built-in credential store yet; use `OPENAI_API_KEY` if you want
-  persistence).
+- API keys are stored as private plaintext on your machine
+  (`api_keys.json`, mode 0600) — protected by file permissions, not by a
+  keyring or encryption. Backups never carry them, and they never appear
+  in logs or config; `OPENAI_API_KEY` still overrides the OpenAI slot for
+  one-off launches.
 
 ## Under the hood (optional reading)
 
 - `docs/ARCHITECTURE.md` — how the pieces fit together
 - `docs/APPROVAL_BOUNDARY.md` — why approvals cannot be tricked
+- `docs/SECRETS.md` — where API keys live, how they are verified, and
+  what is deliberately not done
 - `docs/PERSONA.md` — personality as data: trust tiers, filters, and the
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, wake words, autonomous agents, cloud accounts…)
-- `tests/` — 1111 tests; every "done" claim in this README is checked by one
+- `tests/` — 1400+ tests; every "done" claim in this README is checked by
+  one
 
 ## Found a problem?
 

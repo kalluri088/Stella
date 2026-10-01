@@ -37,6 +37,7 @@ from stella.memory import (
     relevance_score,
 )
 from stella.mismatch import approval_mismatch_warning
+from stella.outline_tools import active_reminder_pump
 from stella.proactivity import (
     DelegatedAction,
     DueTaskEvent,
@@ -947,6 +948,41 @@ class Stella:
             self.handoff_due_task_event(event, delegation)
         )
 
+    def _outline_deliveries(
+        self, trace: InteractionTrace
+    ) -> tuple[ReminderDelivery, ...]:
+        """Deliver Outline reminders this process just claimed.
+
+        The Outline server fires each reminder exactly once, to the first
+        pump that acknowledges it — so when the web UI is open it usually
+        wins and Stella stays silent, and when it is closed Stella still
+        notifies. No store confirmation applies here: the claim is the
+        server-side terminal state. Titles are untrusted stored data and
+        are framed as such.
+        """
+
+        pump = active_reminder_pump()
+        if pump is None:
+            return ()
+        deliveries: list[ReminderDelivery] = []
+        for item in pump.claim():
+            trace.record(
+                ReminderLifecycleEvent(
+                    action="outline_due",
+                    reminder_id=item.id,
+                    content_chars=len(item.title),
+                )
+            )
+            deliveries.append(
+                ReminderDelivery(
+                    reminder_id=item.id,
+                    kind=ProactivityDecisionKind.INFORM,
+                    message=f"Outline reminder ({item.kind}): {item.title}",
+                    delivered=True,
+                )
+            )
+        return tuple(deliveries)
+
     def check_due_reminders(
         self,
         now: datetime,
@@ -958,14 +994,16 @@ class Stella:
         event and its narrow notify-only delegation. A delivery message is
         exposed only after the store confirms the terminal HANDLED state, so
         one reminder is delivered at most once. This never consults the
-        Brain, LLM, memory, or any tool.
+        Brain, LLM, memory, or any tool; the only external read is the
+        Outline reminder pump, which is armed solely by the trusted
+        startup path that registered the Outline tools.
         """
 
-        if self.reminders is None:
-            return ()
         if trace is None:
             trace = InteractionTrace(interaction_id="reminder-check")
-        deliveries: list[ReminderDelivery] = []
+        deliveries: list[ReminderDelivery] = list(self._outline_deliveries(trace))
+        if self.reminders is None:
+            return tuple(deliveries)
         for reminder in self.reminders.due(now):
             trace.record(
                 ReminderLifecycleEvent(

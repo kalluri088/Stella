@@ -8,6 +8,7 @@ from stella.outline_tools import (
     OutlineSearchTool,
     OutlineUpdateTool,
     build_outline_tools,
+    claim_due_reminders,
     outline_tool_summaries,
 )
 from stella.tools import ApprovalRequest, RiskLevel, action_summary
@@ -724,3 +725,118 @@ def test_remind_me_prompt_without_outline_still_validates_the_same():
     assert not tool.validate_arguments(
         {"kind": "task", "title": "t", "remind": "not-a-time"}
     )
+
+
+# --------------------------------------------------------------------------
+# reminder pump (report 54): Stella delivers due reminders with no browser
+# --------------------------------------------------------------------------
+
+
+def claim_client(routes):
+    server = FakeServer(routes)
+    return (
+        OutlineClient("http://127.0.0.1:8741", "t", server),
+        server,
+    )
+
+
+DUE_ITEMS = {
+    "items": [
+        {"kind": "task", "id": 7, "title": "file taxes", "remind_at": 100},
+        {"kind": "event", "id": 11, "title": " design review ", "remind_at": 200},
+        {"kind": "note", "id": 9, "title": "wrong kind", "remind_at": 1},
+        {"kind": "task", "id": True, "title": "bool id", "remind_at": 1},
+        {"kind": "task", "id": 8, "title": "  ", "remind_at": 1},
+        {"kind": "task", "id": 9, "title": "bad time", "remind_at": "100"},
+        "not-a-mapping",
+    ]
+}
+
+
+def test_claim_validates_rows_and_acknowledges_only_the_good_ones():
+    client, server = claim_client([
+        ("GET", "/api/v1/reminders/due", DUE_ITEMS),
+        ("POST", "/api/v1/reminders/fire", {"fired": 2}),
+    ])
+    due = claim_due_reminders(client)
+    assert [(d.kind, d.id, d.title) for d in due] == [
+        ("task", 7, "file taxes"),
+        ("event", 11, "design review"),
+    ]
+    fires = [c for c in server.calls if c[0] == "POST"]
+    assert len(fires) == 1
+    assert fires[0][2] == {"items": [{"kind": "task", "id": 7}, {"kind": "event", "id": 11}]}
+
+
+def test_claim_skips_the_ack_when_nothing_is_due():
+    client, server = claim_client([
+        ("GET", "/api/v1/reminders/due", {"items": []}),
+    ])
+    assert claim_due_reminders(client) == ()
+    assert not [c for c in server.calls if c[0] == "POST"]
+
+
+def test_claim_propagates_a_failed_ack_so_items_stay_due():
+    client, _ = claim_client([
+        ("GET", "/api/v1/reminders/due", DUE_ITEMS),
+        ("POST", "/api/v1/reminders/fire", OutlineError("rejected")),
+    ])
+    try:
+        claim_due_reminders(client)
+    except OutlineError:
+        pass
+    else:
+        raise AssertionError("a failed fire must raise, not silently drop")
+
+
+def test_pump_polls_at_most_once_a_minute_and_backs_off(monkeypatch):
+    import stella.outline_tools as module
+
+    probes = []
+    claims = []
+    monkeypatch.setattr(module, "_healthz", lambda c: probes.append(1) or True)
+    monkeypatch.setattr(
+        module, "claim_due_reminders", lambda c: claims.append(1) or ()
+    )
+    pump = module.OutlineReminderPump(OutlineClient("http://x", "t", FakeServer([])))
+    assert pump.claim() == ()
+    assert pump.claim() == ()  # same minute: no second HTTP cycle
+    assert len(probes) == 1 and len(claims) == 1
+    # a failing cycle doubles the quiet period
+    monkeypatch.setattr(module, "_healthz", lambda c: False)
+    assert pump.claim() == ()
+    assert len(claims) == 1
+
+
+def test_pump_backs_off_when_the_claim_fails(monkeypatch):
+    import stella.outline_tools as module
+
+    monkeypatch.setattr(module, "_healthz", lambda c: True)
+    calls = []
+
+    def boom(client):
+        calls.append(1)
+        raise OutlineError("server went away mid-poll")
+
+    monkeypatch.setattr(module, "claim_due_reminders", boom)
+    pump = module.OutlineReminderPump(OutlineClient("http://x", "t", FakeServer([])))
+    assert pump.claim() == ()
+    assert pump.claim() == ()
+    assert len(calls) == 1
+
+
+def test_pump_is_armed_only_by_a_real_transport_build(tmp_path, monkeypatch):
+    import stella.outline_tools as module
+
+    monkeypatch.setattr(module, "_ACTIVE_REMINDER_PUMP", None)
+    data_dir = tmp_path / "outline"
+    data_dir.mkdir()
+    (data_dir / "outline.token").write_text("secret-token\n")
+    env = {"OUTLINE_DATA_DIR": str(data_dir)}
+    # fake transport (tests): tools exist, pump stays unarmed
+    assert len(build_outline_tools(env, transport=FakeServer(server_routes()))) == 3
+    assert module.active_reminder_pump() is None
+    # real transport and a reachable server: the sweep is armed
+    monkeypatch.setattr(module, "_healthz", lambda c: True)
+    assert len(build_outline_tools({**env, "OUTLINE_URL": "http://127.0.0.1:9"})) == 3
+    assert module.active_reminder_pump() is not None

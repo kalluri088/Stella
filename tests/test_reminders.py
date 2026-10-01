@@ -872,3 +872,67 @@ def test_brain_prompt_carries_pinned_runtime_time_and_memory_routing() -> None:
     system_prompt = llm.messages[0][0].content
     assert "2026-09-23T14:30" in system_prompt
     assert "memory_write proposal, never in memory_update" in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Outline reminder pump (report 54): claimed items arrive as deliveries
+# ---------------------------------------------------------------------------
+
+
+def test_outline_pump_delivers_without_a_stella_store(monkeypatch) -> None:
+    import stella.stella as stella_module
+    from stella.outline_tools import OutlineDueReminder
+
+    claimed = (
+        OutlineDueReminder(kind="task", id=7, title="file taxes", remind_at_ms=1),
+        OutlineDueReminder(kind="event", id=11, title="design review", remind_at_ms=2),
+    )
+
+    class FakePump:
+        def claim(self):
+            return claimed
+
+    monkeypatch.setattr(stella_module, "active_reminder_pump", lambda: FakePump())
+    stella = make_stella_for_checks(None)
+
+    trace = InteractionTrace()
+    deliveries = stella.check_due_reminders(NOW, trace=trace)
+
+    assert [delivery.message for delivery in deliveries] == [
+        "Outline reminder (task): file taxes",
+        "Outline reminder (event): design review",
+    ]
+    assert all(
+        delivery.delivered and delivery.kind is ProactivityDecisionKind.INFORM
+        for delivery in deliveries
+    )
+    actions = [
+        event.action
+        for event in trace.events
+        if isinstance(event, ReminderLifecycleEvent)
+    ]
+    assert actions == ["outline_due", "outline_due"]
+    assert "file taxes" not in repr(trace.events)
+
+
+def test_outline_and_store_deliveries_share_one_sweep(monkeypatch) -> None:
+    import stella.stella as stella_module
+    from stella.outline_tools import OutlineDueReminder
+
+    class FakePump:
+        def claim(self):
+            return (
+                OutlineDueReminder(kind="task", id=7, title="file taxes", remind_at_ms=1),
+            )
+
+    monkeypatch.setattr(stella_module, "active_reminder_pump", lambda: FakePump())
+    store = InMemoryReminderStore()
+    assert store.create("Buy oat milk", future(), NOW) is not None
+    stella = make_stella_for_checks(store)
+
+    deliveries = stella.check_due_reminders(future(2))
+
+    assert [delivery.message for delivery in deliveries] == [
+        "Outline reminder (task): file taxes",
+        "Buy oat milk is due today.",
+    ]

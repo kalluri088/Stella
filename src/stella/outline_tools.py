@@ -17,6 +17,12 @@ the Stella-side half of that integration:
   from the UI) and the graph *layout* (rendering is UI-only — the
   connections themselves are full parity: link attach/detach here, plus
   a text-mode neighborhood via outline_search kind=graph).
+* Reminder delivery is a third client of the same claim funnel the web
+  UI pumps (``/reminders/due`` + ``/reminders/fire``): a real transport
+  build of ``build_outline_tools`` also arms ``OutlineReminderPump``, so
+  due reminders reach the user with no browser open — and exactly once
+  across both surfaces, because the server acknowledges to the first
+  claimer.
 
 Everything these tools return from Outline is *data*, never instruction;
 results are framed with a header so a stored task titled like a command
@@ -28,6 +34,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -1371,6 +1378,10 @@ def build_outline_tools(
     token, or no answering server within a quarter-second, and these
     capabilities do not exist for the model — exactly the desktop-tools
     rule that a tool which could only fail is worse than no tool.
+
+    With a real transport this call also arms the reminder pump (see
+    ``OutlineReminderPump``): the same double gate that gives the model
+    Outline capabilities gives Stella's reminder sweep them.
     """
 
     client = _client_from_environment(env)
@@ -1382,6 +1393,9 @@ def build_outline_tools(
         )
     if not _healthz(client):
         return []
+    if transport is None:
+        global _ACTIVE_REMINDER_PUMP
+        _ACTIVE_REMINDER_PUMP = OutlineReminderPump(client)
     return [
         OutlineSearchTool(client),
         OutlineCreateTool(client),
@@ -1389,11 +1403,122 @@ def build_outline_tools(
     ]
 
 
+# ---------------------------------------------------------------------------
+# reminder pump: Stella delivers Outline reminders when no browser is open
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OutlineDueReminder:
+    """One due Outline reminder this process just claimed server-side."""
+
+    kind: str
+    id: int
+    title: str
+    remind_at_ms: int
+
+
+def claim_due_reminders(client: OutlineClient) -> tuple[OutlineDueReminder, ...]:
+    """Fetch due reminders and acknowledge them in one pass.
+
+    ``/reminders/fire`` is the server's single acknowledgement funnel, so
+    whichever pump claims first delivers exactly once; a failed claim
+    raises and the items stay due for the next poller. Response rows are
+    untrusted data: anything malformed is dropped, never delivered.
+    """
+
+    payload = client.request("GET", "/api/v1/reminders/due")
+    raw = payload.get("items") if isinstance(payload, Mapping) else None
+    if not isinstance(raw, list):
+        return ()
+    due: list[OutlineDueReminder] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        kind, item_id, title, remind_at = (
+            item.get("kind"),
+            item.get("id"),
+            item.get("title"),
+            item.get("remind_at"),
+        )
+        if kind not in ("task", "event"):
+            continue
+        if isinstance(item_id, bool) or not isinstance(item_id, int):
+            continue
+        if isinstance(remind_at, bool) or not isinstance(remind_at, int):
+            continue
+        if not isinstance(title, str) or not title.strip():
+            continue
+        due.append(
+            OutlineDueReminder(
+                kind=kind, id=item_id, title=title.strip()[:MAX_TITLE_CHARS],
+                remind_at_ms=remind_at,
+            )
+        )
+    if not due:
+        return ()
+    client.request(
+        "POST",
+        "/api/v1/reminders/fire",
+        body={"items": [{"kind": d.kind, "id": d.id} for d in due]},
+    )
+    return tuple(due)
+
+
+class OutlineReminderPump:
+    """Rate-limited claimer shared by every due-reminder check.
+
+    The GUI ticker fires far more often than a reminder poll needs, and
+    an unreachable server must cost one quarter-second probe, not a
+    request per tick: claims are at most once per minute, and any failed
+    cycle backs off for two.
+    """
+
+    def __init__(
+        self,
+        client: OutlineClient,
+        *,
+        min_interval_s: float = 60.0,
+        backoff_s: float = 120.0,
+    ) -> None:
+        self._client = client
+        self._min_interval = min_interval_s
+        self._backoff = backoff_s
+        self._next_allowed = 0.0
+
+    def claim(self) -> tuple[OutlineDueReminder, ...]:
+        now = time.monotonic()
+        if now < self._next_allowed:
+            return ()
+        self._next_allowed = now + self._min_interval
+        if not _healthz(self._client):
+            self._next_allowed = now + self._backoff
+            return ()
+        try:
+            return claim_due_reminders(self._client)
+        except OutlineError:
+            self._next_allowed = now + self._backoff
+            return ()
+
+
+_ACTIVE_REMINDER_PUMP: OutlineReminderPump | None = None
+
+
+def active_reminder_pump() -> OutlineReminderPump | None:
+    """The armed pump, or None when Outline was not usable at startup."""
+
+    return _ACTIVE_REMINDER_PUMP
+
+
 __all__ = [
     "OutlineClient",
     "OutlineCreateTool",
+    "OutlineDueReminder",
+    "OutlineReminderPump",
     "OutlineSearchTool",
     "OutlineUpdateTool",
+    "active_reminder_pump",
     "build_outline_tools",
+    "claim_due_reminders",
     "outline_tool_summaries",
 ]

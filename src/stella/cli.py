@@ -4,8 +4,6 @@ import argparse
 import datetime as dt
 import difflib
 import json
-import os
-import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -45,6 +43,7 @@ from stella.persona import (
     snapshot_persona_state,
     write_persona_text,
 )
+from stella.portable import default_editor, split_command
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
@@ -408,11 +407,7 @@ def open_persona_editor(output_fn: Callable[[str], None] = print) -> int:
     ensure_persona_directory(paths)
     if not paths.persona.exists():
         write_persona_text(paths, PERSONA_SKELETON, source="editor")
-    editor = (
-        os.environ.get("VISUAL", "").strip()
-        or os.environ.get("EDITOR", "").strip()
-        or "vi"
-    )
+    editor = default_editor()
     # The hand-edit itself happens inside $EDITOR, invisible to Stella, so
     # the recoverable copy is taken now: `stella persona revert` rolls back
     # to the persona as it was before this editing session (identical
@@ -427,7 +422,7 @@ def open_persona_editor(output_fn: Callable[[str], None] = print) -> int:
             )
     try:
         subprocess.run(
-            [*shlex.split(editor), str(paths.persona)], check=False
+            [*split_command(editor), str(paths.persona)], check=False
         )
     except OSError:
         output_fn(

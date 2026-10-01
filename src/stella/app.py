@@ -16,13 +16,14 @@ import itertools
 import os
 import queue
 import random
-import shlex
 import shutil
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from platformdirs import user_data_dir
 
 from stella.audio import TranscriptionProvider
 from stella.audio_output import (
@@ -69,6 +70,7 @@ from stella.persona import (
     ReflectionStore,
     TranscriptRecorder,
 )
+from stella.portable import split_command
 from stella.reminders import ReminderStore, SQLiteReminderStore
 from stella.semantic_memory import (
     EmbeddingProvider,
@@ -458,20 +460,21 @@ def semantic_provider_env_override() -> str | None:
 
 
 def default_data_dir() -> Path:
-    """Stella's persistent-state directory following the XDG base spec.
+    """Stella's persistent-state directory, per this platform's convention.
 
     Desktop launchers start applications from an arbitrary working
     directory, so state must not be relative to the current directory or
     restarting would appear to lose memory and reminders.
+
+    ``platformdirs`` implements the XDG base spec on Linux — ``$XDG_DATA_HOME``
+    or ``~/.local/share``, with ``stella`` appended and no author
+    subdirectory — so an existing Linux user's databases are still found
+    at exactly the path they were written to. On macOS and Windows the
+    same call resolves to those platforms' own per-user data locations
+    instead of inventing a POSIX one.
     """
 
-    return (
-        Path(
-            os.environ.get("XDG_DATA_HOME")
-            or os.path.expanduser("~/.local/share")
-        )
-        / "stella"
-    )
+    return Path(user_data_dir("stella", appauthor=False))
 
 
 def default_memory_db() -> str:
@@ -504,6 +507,14 @@ def default_vad_model() -> str:
     A ~2 MB model file, not a pip package: installing ``silero-vad``
     would drag CUDA torch in with it (research report 08 measured that
     5.4 GB trap). Stella runs the file itself through onnxruntime.
+
+    Deliberately under the user's home rather than the platform data
+    directory: the file is downloaded by hand, and ``Path.home()`` is the
+    one location that means the right thing on all three platforms
+    (``/home/user``, ``/Users/user``, ``C:\\Users\\user``), so an existing
+    Linux layout does not move and a Windows user's profile folder needs
+    no POSIX translation. ``STELLA_VAD_MODEL`` overrides it for anyone
+    who keeps the model elsewhere.
     """
 
     return str(Path.home() / "models" / "silero" / "silero_vad.onnx")
@@ -1349,7 +1360,7 @@ def _build_transcriber(
         return None
     if settings.transcription_command:
         return CommandTranscriptionProvider(
-            shlex.split(settings.transcription_command)
+            split_command(settings.transcription_command)
         )
     if settings.voice_transcription in {"auto", "openai"} and os.environ.get(
         "OPENAI_API_KEY"
@@ -1366,7 +1377,7 @@ def _build_speech_provider(
     if settings.voice_speech == "off":
         return None
     if settings.speech_command:
-        command = shlex.split(settings.speech_command)
+        command = split_command(settings.speech_command)
         if settings.speech_resident:
             # D2: one resident worker keeps the model loaded across
             # sentences; the per-sentence start-up floor of a plain

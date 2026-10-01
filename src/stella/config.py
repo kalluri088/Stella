@@ -28,6 +28,7 @@ from pathlib import Path
 from stella.app import StellaSettings, default_data_dir
 from stella.llama_server import DEFAULT_LLAMA_SERVER_BINARY
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
+from stella.portable import harden_private_file
 
 PROBE_TIMEOUT_SECONDS = 5.0
 _MESSAGE_LIMIT = 160
@@ -62,7 +63,11 @@ def save_configuration(settings: StellaSettings) -> None:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    # Owner-only, and reported rather than assumed: on POSIX this is the
+    # real 0o600 mode bit (a failure raises, as it always did); on
+    # Windows an icacls grant is attempted and its outcome is returned
+    # instead of implied. Nothing here claims privacy it did not get.
+    harden_private_file(path)
 
 
 def load_configuration() -> dict[str, object] | None:

@@ -27,6 +27,7 @@ from stella.persona import (
     sanitize_addons,
     snapshot_persona_state,
 )
+from stella.portable import harden_private_file
 from stella.reminders import ReminderStore, reminder_validation_error
 
 
@@ -657,6 +658,21 @@ def _write_outcome(
     )
 
 
+def _private_note(path: str | Path) -> str:
+    """Empty when the file is owner-only; otherwise how it is not.
+
+    The create path already asks the kernel for mode ``0o600``, so a
+    failure here never leaves the file more exposed than it would have
+    been before this check existed — it only makes the exposure visible.
+    """
+
+    try:
+        hardening = harden_private_file(path)
+    except OSError:
+        return "chmod failed"
+    return hardening.note()
+
+
 def _walk_workspace_files(
     workspace: Path, rel_prefix: str = ""
 ) -> Iterable[tuple[str, Path]]:
@@ -980,7 +996,21 @@ class FileSystemWriteTool(FileSystemReadTool):
             with os.fdopen(descriptor, "wb") as file:
                 file.write(expected)
             verified, size = _verify_written_file(resolved, expected)
-            return _write_outcome("create", verified, size, "created")
+            result = _write_outcome("create", verified, size, "created")
+            # FILESYSTEM.md promises "owner-only initial permissions
+            # where the platform supports it". Ask rather than assume: if
+            # this platform gave Stella no way to restrict the file, the
+            # result says so instead of quietly implying privacy.
+            note = _private_note(resolved)
+            if result.success and note:
+                result = replace(
+                    result,
+                    output=(
+                        f"{result.output} (The file could not be restricted "
+                        f"to its owner: {note}.)"
+                    ),
+                )
+            return result
         except FileExistsError:
             return ToolResult(
                 success=False,

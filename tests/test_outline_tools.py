@@ -1020,3 +1020,16 @@ def test_create_task_priority_reaches_the_api_and_bounds_are_rejected():
     assert not tool.validate_arguments({**base, "priority": 4})
     assert not tool.validate_arguments({**base, "priority": "high"})
     assert not tool.validate_arguments({**base, "priority": True})
+
+
+def test_update_task_restore_round_trip():
+    tool = OutlineUpdateTool(client(
+        ("POST", "/api/v1/tasks/7/restore", {"restored": True, "id": 7}),
+        ("GET", "/api/v1/tasks/7", {"id": 7, "title": "standup", "status": "open"}),
+    ))
+    result = tool.execute({"kind": "task", "id": 7, "action": "restore"})
+    assert result.success and ": restore" in result.output
+    # restore takes no extras
+    assert not tool.validate_arguments(
+        {"kind": "task", "id": 7, "action": "restore", "edits": {"title": "x"}}
+    )

@@ -982,7 +982,7 @@ def _created(kind: str, row: object, due_at: int | None) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 UPDATE_ACTIONS: dict[str, set[str]] = {
-    "task": {"complete", "open", "reschedule", "edit"},
+    "task": {"complete", "open", "reschedule", "edit", "restore"},
     "event": {"reschedule", "edit"},
     "project": {"activate", "archive", "edit"},
     "note": {"edit"},
@@ -1071,7 +1071,8 @@ class OutlineUpdateTool(Tool):
     def description(self) -> str:
         return (
             "Updates one existing Outline item by id (from outline_search): "
-            "tasks complete|open|reschedule|edit, events reschedule|edit "
+            "tasks complete|open|reschedule|edit|restore (restore "
+            "un-deletes a task by id), events reschedule|edit "
             "(reschedule needs due_at, ISO-8601, and keeps the event's "
             "duration; never invent a time — ask the user), projects "
             "activate|archive|edit, notes edit, timers "
@@ -1092,7 +1093,7 @@ class OutlineUpdateTool(Tool):
         return {
             "kind": "task|event|note|project|timer|link",
             "id": "positive integer (for kind=link: the entity's id)",
-            "action": "complete|open|reschedule|edit|activate|archive|"
+            "action": "complete|open|reschedule|edit|restore|activate|archive|"
                       "pause|resume|stop|cancel|attach|detach",
             "due_at": "ISO-8601 datetime (required for reschedule)",
             "edits": "object of fields to change (required for edit)",
@@ -1153,7 +1154,12 @@ class OutlineUpdateTool(Tool):
             if kind == "link":
                 return self._link(arguments)
             if kind == "task":
-                if action == "complete":
+                if action == "restore":
+                    client.request("POST", f"/api/v1/tasks/{item_id}/restore")
+                    envelope = {
+                        "item": client.request("GET", f"/api/v1/tasks/{item_id}")
+                    }
+                elif action == "complete":
                     envelope = client.request(
                         "POST",
                         f"/api/v1/tasks/{item_id}/complete",

@@ -1592,6 +1592,10 @@ class StellaBridge:
         # D3 narration: one non-blocking slot plus a per-turn retire event.
         self._narration_lock = threading.Lock()
         self._narration_dead: threading.Event | None = None
+        # A spoken alert shares neither slot: an announcement is not part of
+        # any turn, so it has its own single slot and its own retire event.
+        self._announcement_lock = threading.Lock()
+        self._announcement_dead: threading.Event | None = None
         self._events: queue.Queue[UiEvent] = queue.Queue()
         self._ready = threading.Event()
         self._thread = threading.Thread(
@@ -1858,6 +1862,7 @@ class StellaBridge:
         for delivery in session.check_due_reminders():
             if delivery.delivered and delivery.message is not None:
                 self._emit("reminder_delivered", delivery.message)
+                self._announce(delivery.message)
 
     # -------------------------------------------------------------- voice
 
@@ -1951,13 +1956,69 @@ class StellaBridge:
         finally:
             self._narration_lock.release()
 
+    def _announce(self, message: str) -> None:
+        """Offer one delivered alert aloud, without ever blocking.
+
+        An alert already on screen is the whole feature; speech is the same
+        event handed to the ear, so it obeys the reply's rules and none of
+        the turn's: only when the user switched speech on, only into a free
+        speaker (one announcement at a time, never queued behind itself),
+        never after a cancel, and never model-authored — the line is the
+        runtime's own. A failed announcement stays silent because the
+        visible line already said everything.
+        """
+
+        panel = self._voice
+        if (
+            panel is None
+            or not panel.speech_enabled
+            or not panel.output_available
+            or self._should_cancel()
+        ):
+            return
+        if not self._announcement_lock.acquire(blocking=False):
+            return
+        dead = threading.Event()
+        self._announcement_dead = dead
+        threading.Thread(
+            target=self._speak_alert,
+            args=(panel, message, dead),
+            name="stella-announce",
+            daemon=True,
+        ).start()
+
+    def _speak_alert(
+        self, panel: VoicePanel, message: str, dead: threading.Event
+    ) -> None:
+        """Synthesize and play one alert off the worker thread, silently."""
+
+        try:
+            try:
+                path = panel.synthesize_phrase(message, self._should_cancel)
+            except Exception:  # noqa: BLE001 - the text line already told it
+                return
+            if dead.is_set() or self._should_cancel():
+                panel.dispose_artifact(path)
+                return
+            try:
+                panel.play(path)
+            except Exception:  # noqa: BLE001, S110 - an alert stays silent
+                pass
+            finally:
+                panel.dispose_artifact(path)
+        finally:
+            self._announcement_lock.release()
+
     def _flush_narration(self) -> None:
-        """Retire this turn's narration: nothing of it may follow onto
-        the speakers once the reply speaks, the user cancels, or playback
-        is stopped."""
+        """Retire every background interlude: nothing Stella spoke on its
+        own — a work phrase or an alert — may follow the reply onto the
+        speakers once the reply speaks, the user cancels, or playback is
+        stopped. Audio already audible finishes; unheard audio is dropped."""
 
         if self._narration_dead is not None:
             self._narration_dead.set()
+        if self._announcement_dead is not None:
+            self._announcement_dead.set()
 
     def post_listen_start(self) -> None:
         def handle() -> None:
@@ -2360,6 +2421,7 @@ class StellaBridge:
             self._ticker.stop()
             self._ticker = None
         self.approvals.deny_outstanding()
+        self._flush_narration()
         self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()

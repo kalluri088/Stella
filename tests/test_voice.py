@@ -883,7 +883,119 @@ def test_flushed_narration_never_reaches_a_speaker() -> None:
     bridge.stop()
 
 
-def test_failed_transcription_reaches_nothing_and_state_survives() -> None:
+def test_a_delivered_alert_is_spoken_when_speech_is_on() -> None:
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("Outline reminder (task): Take the bins out")
+
+    assert settle(lambda: player.played != [])
+    assert speech.spoken == ["Outline reminder (task): Take the bins out"]
+    bridge.stop()
+
+
+def test_an_alert_stays_silent_when_speech_is_off() -> None:
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("Outline reminder (task): Take the bins out")
+    time.sleep(0.2)
+
+    assert speech.spoken == []
+    bridge.stop()
+
+
+def test_alerts_never_stack_behind_each_other() -> None:
+    synth_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    panel = make_panel(speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("first alert")
+    assert settle(lambda: speech.spoken != [])
+    # One announcement owns the single slot; the next is dropped, not
+    # queued — its visible line already reached the user.
+    bridge._announce("second alert")
+    time.sleep(0.2)
+    assert speech.spoken == ["first alert"]
+
+    synth_gate.set()
+    assert settle(lambda: bridge._announcement_lock.acquire(blocking=False))
+    bridge._announcement_lock.release()
+    bridge.stop()
+
+
+def test_a_reply_retires_an_unheard_alert() -> None:
+    synth_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("an alert still waiting on its audio")
+    assert settle(lambda: speech.spoken != [])
+    bridge._flush_narration()
+    synth_gate.set()
+
+    assert settle(lambda: os.listdir(speech.directory) == [])
+    assert player.played == []
+    bridge.stop()
+
+
+def test_alert_screen_marks_never_reach_a_speaker() -> None:
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("**Reminder**: see [notes](https://example.com/n)")
+
+    assert settle(lambda: speech.spoken != [])
+    assert speech.spoken == ["Reminder: see notes"]
+    bridge.stop()
+
+
+def test_a_claimed_alert_reaches_the_ear_as_well_as_the_screen(monkeypatch) -> None:
+    # The whole delivery path, end to end: the ticker posts one sweep, the
+    # sweep claims from Outline, and the one line it produces is both shown
+    # and — only because speech is on — spoken.
+    import stella.stella as stella_module
+    from stella.outline_tools import OutlineDueReminder
+
+    claimed = (
+        OutlineDueReminder(
+            kind="task", id=9, title="Private errand", remind_at_ms=1
+        ),
+    )
+
+    class FakePump:
+        def claim(self):
+            return claimed
+
+    monkeypatch.setattr(
+        stella_module, "active_reminder_pump", lambda: FakePump()
+    )
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    application = StellaApplication(
+        StellaSession(make_answer_stella()),
+        StellaSettings(model="test"),
+        panel,
+    )
+    bridge = StellaBridge(lambda: application, reminder_tick_seconds=0.05)
+
+    alert = "Outline reminder (task): Private errand"
+    assert settle(lambda: speech.spoken == [alert])
+    assert settle(lambda: player.played != [])
+    bridge.stop()
     bridge = make_voice_bridge(
         make_answer_stella(),
         make_panel(

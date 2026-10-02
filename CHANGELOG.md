@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Stella's voice stops reading the markup aloud
+
+- **Spoken replies are now the words, not the formatting.** Everything a
+  speaker renders goes through one new boundary —
+  `stella/spoken_form.speakable()`, applied when `SpeechOutput` is built — so
+  no engine is ever asked to say "asterisk asterisk". Heading hashes,
+  bold/italic/strikethrough markers, backticks, bullets and list numbers,
+  table pipes, rules, blockquote chevrons, emoji and zero-width marks are
+  removed; list items are joined with commas, which is also what gives the
+  voice its pauses. Applies to every provider (local command, resident
+  worker, OpenAI) and to the whole reply or each chunk of it, because the
+  conversion is idempotent and belongs to the boundary, not to a provider.
+- **Two honest substitutions, and no others.** A written link keeps its label
+  and loses its address; a bare URL becomes "a link" — a listener cannot open
+  either. Nothing is paraphrased, reordered, summarised, or expanded: times
+  stay "18:00", numbers stay numbers, because a wrong expansion is worse than
+  an awkward one and Stella owns no locale for hours. A reply made entirely
+  of decoration would become silence, so `SpeechOutput` keeps the original
+  text in that one case rather than looking broken.
+- **A delivered Outline alert is also spoken.** When speech output is on, the
+  amber alert line a claim produces is read aloud too, through its own
+  single slot: never while another announcement owns the speaker, dropped
+  unheard the moment a reply speaks or the user cancels or stops playback,
+  silent on failure, and never spoken at all when speech is off. The text is
+  the runtime's own line; the reminder title inside it stays untrusted
+  information that is rendered and nothing more.
+- **Shutdown now retires background speech.** `StellaBridge.stop()` performs
+  the same flush a reply performs, so an unheard narration phrase or alert
+  cannot start playing after the application has been closed.
+- `uv run pytest` → 1750 passed, 5 skipped; `uv run ruff check .` clean.
+  `docs/VOICE.md` carries the rules ("Spoken alerts", and the rewritten
+  speech-output paragraph).
+
 ### Stella stops keeping its own reminders
 
 - The reminder **store** is gone: `stella/reminders.py` (its SQLite table and

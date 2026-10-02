@@ -52,6 +52,7 @@ __all__ = [
     "SubprocessRecorder",
     "TapRecorder",
     "VoiceError",
+    "is_transcription_junk",
 ]
 
 RECORD_BINARIES = ("pw-record", "arecord")
@@ -459,21 +460,56 @@ class SubprocessPlayer(Player):
                 del error
 
 
+# The lines a local Whisper model invents over silence or over the tail of
+# a recording. Matching is on the whole transcript, never a substring, so a
+# real request that happens to contain one of these words survives: no
+# confidence score, no model, no new dependency. Trailing punctuation is
+# stripped on both sides, so these are written in their bare form.
+_TRANSCRIPTION_NOISE_LINES = frozenset(
+    {
+        "",
+        "you",
+        "thanks",
+        "thank you",
+        "thanks for watching",
+        "thank you for watching",
+        "[music]",
+        "(upbeat music)",
+        "[applause]",
+        "[inaudible]",
+    }
+)
+
+
+def is_transcription_junk(text: str) -> bool:
+    """True for the filler a transcriber produces when nobody spoke."""
+
+    heard = text.strip().casefold().rstrip(".!?")
+    return heard in _TRANSCRIPTION_NOISE_LINES
+
+
 class CommandTranscriptionProvider(TranscriptionProvider):
     """Runs a local command over the recorded file and reads its stdout.
 
     ``template`` is an argv list where ``"{input}"`` is replaced by the
     audio path, e.g. ``["whisper-cli", "-m", "model.bin", "{input}"]``.
     Arguments are passed without a shell, so no quoting can be injected.
+    ``name`` is what the user is told is transcribing them.
     """
 
-    def __init__(self, template: list[str], timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        template: list[str],
+        timeout: float = 120.0,
+        name: str = "a local command",
+    ) -> None:
         if not template or not any("{input}" in part for part in template):
             raise ValueError(
                 "a transcription command must reference {input}"
             )
         self._template = list(template)
         self._timeout = timeout
+        self.name = name
         self._process: subprocess.Popen[str] | None = None
         self._cancel_requested = False
         self._lock = threading.Lock()
@@ -550,11 +586,22 @@ class OpenAITranscriptionProvider(TranscriptionProvider):
 
     Only used when the user selects it (default ``auto`` falls back to it
     when an API key is configured); ``off`` disables it entirely.
+
+    ``timeout`` bounds the request (``STELLA_TRANSCRIPTION_TIMEOUT``):
+    without it a stalled cloud call held the microphone's turn open
+    indefinitely, which is exactly the wait a user cannot cancel.
     """
 
-    def __init__(self, client: object, model: str = "whisper-1") -> None:
+    def __init__(
+        self,
+        client: object,
+        model: str = "whisper-1",
+        timeout: float = 30.0,
+    ) -> None:
         self._client = client
         self._model = model
+        self._timeout = timeout
+        self.name = f"cloud transcription ({model})"
 
     def transcribe(self, audio: InputPart) -> str:
         if audio.modality is not InputModality.AUDIO:
@@ -564,7 +611,9 @@ class OpenAITranscriptionProvider(TranscriptionProvider):
         try:
             with open(audio.reference, "rb") as handle:
                 result = self._client.audio.transcriptions.create(  # type: ignore[attr-defined]
-                    model=self._model, file=handle
+                    model=self._model,
+                    file=handle,
+                    timeout=self._timeout,
                 )
         except VoiceError:
             raise

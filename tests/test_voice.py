@@ -52,6 +52,7 @@ from stella.tools import (
 from stella.voice import (
     CommandSpeechProvider,
     CommandTranscriptionProvider,
+    OpenAITranscriptionProvider,
     Player,
     Recorder,
     ResidentSpeechProvider,
@@ -59,6 +60,7 @@ from stella.voice import (
     SubprocessRecorder,
     TapRecorder,
     VoiceError,
+    is_transcription_junk,
 )
 
 
@@ -756,6 +758,210 @@ def test_build_voice_records_from_the_shared_tap_when_one_exists() -> None:
     finally:
         tapped.dispose()
         own.dispose()
+
+
+# ------------------------------------------------- which transcriber is used
+
+VOXTYPE = "/usr/bin/voxtype"
+
+
+def only_voxtype(name: str) -> str | None:
+    """A PATH with voxtype in it and nothing else Stella looks for."""
+
+    return VOXTYPE if name == "voxtype" else None
+
+
+class FakeCloudClient:
+    """The one call :class:`OpenAITranscriptionProvider` makes, recorded."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        outer = self
+
+        class _Transcriptions:
+            def create(self, **kwargs):
+                outer.calls.append(kwargs)
+
+                class _Result:
+                    text = "remember the milk"
+
+                return _Result()
+
+        class _Audio:
+            transcriptions = _Transcriptions()
+
+        self.audio = _Audio()
+
+
+def audio_part(reference: str) -> InputPart:
+    return InputPart(
+        modality=InputModality.AUDIO,
+        provenance=InputProvenance.USER,
+        reference=reference,
+    )
+
+
+def test_the_installed_local_tool_is_detected_before_the_cloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    monkeypatch.setattr("stella.app.shutil.which", only_voxtype)
+    # A configured key is deliberately present: local-first means the key
+    # never decides anything while a working local engine is installed.
+    monkeypatch.setattr(
+        "stella.app.provider_keys.effective_api_key", lambda slot: "sk-cloud"
+    )
+    provider = _build_transcriber(StellaSettings(model="test"))
+    assert isinstance(provider, CommandTranscriptionProvider)
+    assert provider._template == [
+        "voxtype",
+        "transcribe",
+        "--engine",
+        "whisper",
+        "{input}",
+    ]
+    # The name is what the owner is told once per session, so it has to
+    # say which engine the recording went through.
+    assert provider.name == "voxtype (whisper)"
+
+
+def test_naming_the_cloud_engine_skips_the_local_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    looked_for: list[str] = []
+
+    def spy(name: str) -> str | None:
+        looked_for.append(name)
+        return only_voxtype(name)
+
+    monkeypatch.setattr("stella.app.shutil.which", spy)
+    monkeypatch.setattr(
+        "stella.app.provider_keys.effective_api_key", lambda slot: "sk-cloud"
+    )
+    monkeypatch.setattr(
+        "stella.app._openai_speech_client", lambda key: FakeCloudClient()
+    )
+    provider = _build_transcriber(
+        StellaSettings(model="test", voice_transcription="openai")
+    )
+    # ``openai`` is an instruction, not a fallback: an installed local
+    # tool must not quietly intercept the recording the user chose to
+    # upload (or the other way round, which is what this pins).
+    assert isinstance(provider, OpenAITranscriptionProvider)
+    assert "voxtype" not in looked_for
+
+
+def test_an_explicit_command_outranks_the_detected_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    monkeypatch.setattr("stella.app.shutil.which", only_voxtype)
+    provider = _build_transcriber(
+        StellaSettings(
+            model="test", transcription_command="whisper-cli {input}"
+        )
+    )
+    assert isinstance(provider, CommandTranscriptionProvider)
+    assert provider._template == ["whisper-cli", "{input}"]
+
+
+def test_without_a_local_tool_the_cloud_choice_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    monkeypatch.setattr("stella.app.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "stella.app.provider_keys.effective_api_key", lambda slot: "sk-cloud"
+    )
+    monkeypatch.setattr(
+        "stella.app._openai_speech_client", lambda key: FakeCloudClient()
+    )
+    provider = _build_transcriber(
+        StellaSettings(model="test", transcription_model="whisper-1")
+    )
+    assert isinstance(provider, OpenAITranscriptionProvider)
+    assert provider.name == "cloud transcription (whisper-1)"
+
+
+def test_the_cloud_transcription_request_is_bounded(tmp_path) -> None:
+    # A cloud call with no deadline holds the microphone's whole turn
+    # open, and a stalled request is exactly the wait a user cannot
+    # cancel from the keyboard they did not use.
+    client = FakeCloudClient()
+    path = tmp_path / "capture.wav"
+    path.write_bytes(b"RIFF fake")
+    provider = OpenAITranscriptionProvider(
+        client, model="whisper-1", timeout=7.5
+    )
+    assert provider.transcribe(audio_part(str(path))) == "remember the milk"
+    assert client.calls[-1]["timeout"] == 7.5
+
+
+def test_the_transcription_timeout_is_read_and_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fields = StellaSettings._environment_fields
+    for name in (
+        "STELLA_TRANSCRIPTION_TIMEOUT",
+        "STELLA_TRANSCRIPTION_ENGINE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert fields()["transcription_timeout"] == 30.0
+    monkeypatch.setenv("STELLA_TRANSCRIPTION_TIMEOUT", "90")
+    assert fields()["transcription_timeout"] == 90.0
+    for unusable in ("0", "-5", "soon"):
+        monkeypatch.setenv("STELLA_TRANSCRIPTION_TIMEOUT", unusable)
+        with pytest.raises(SystemExit, match="STELLA_TRANSCRIPTION_TIMEOUT"):
+            fields()
+    # ``--engine`` names an engine (whisper, parakeet, ...), so that is
+    # what this variable sets; the model size stays the tool's own choice.
+    monkeypatch.delenv("STELLA_TRANSCRIPTION_TIMEOUT")
+    monkeypatch.setenv("STELLA_TRANSCRIPTION_ENGINE", "parakeet")
+    assert fields()["transcription_engine"] == "parakeet"
+    # The name is spliced into a Stella-built argv, so nothing that could
+    # read as another option, a path, or two arguments is accepted.
+    for unusable in ("", "  ", "--engine", "whisper small", "bin/whisper"):
+        monkeypatch.setenv("STELLA_TRANSCRIPTION_ENGINE", unusable)
+        with pytest.raises(SystemExit, match="STELLA_TRANSCRIPTION_ENGINE"):
+            fields()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "   \n",
+        "Thank you.",
+        "thanks for watching!",
+        "[Music]",
+        "(upbeat music)",
+        "YOU",
+        "[inaudible].",
+    ],
+)
+def test_the_fillers_a_transcriber_invents_over_silence(text: str) -> None:
+    assert is_transcription_junk(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "remind me to say thank you",
+        "you there?",
+        "thanks for the reminder, add another",
+        "what is on today",
+    ],
+)
+def test_a_real_request_is_never_junk(text: str) -> None:
+    # Whole-line matching only: a sentence that happens to contain one of
+    # the filler phrases is the user's own request, and dropping it would
+    # be a worse bug than the silence hallucination this filter exists for.
+    assert not is_transcription_junk(text)
 
 
 def test_subprocess_player_stop_without_playback_is_harmless() -> None:

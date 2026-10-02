@@ -184,6 +184,8 @@ development, or running several configurations side by side:
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
 | `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
+| `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
+| `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |
 | `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`); arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |

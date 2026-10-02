@@ -481,8 +481,13 @@ class FakeRecorder:
 
 
 class FakeTranscriber:
+    """A transcriber with a script the test can change mid-session."""
+
+    def __init__(self, text: str = "hello voice") -> None:
+        self.text = text
+
     def transcribe(self, audio) -> str:
-        return "hello voice"
+        return self.text
 
 
 class FakeSpeech:
@@ -888,6 +893,52 @@ def test_an_unanswered_approval_never_strands_a_wake_takeover() -> None:
             e.kind == "voice_state" and e.payload == "listening"
             for e in bridge.poll()
         )
+    finally:
+        bridge.stop()
+
+
+def test_a_wake_that_hears_only_the_fillers_own_words_sends_nothing() -> None:
+    # Whisper answers a silent capture with "Thank you." — a real string
+    # that is not a request. A wake-initiated transcript is the only
+    # thing between a mis-detected phrase and a turn nobody asked for, so
+    # that filler is read as what it is and never reaches the model.
+    wake = FakeWake()
+    ear = FakeWakeEar()
+    bridge, panel, _player = make_wake_bridge(wake, ear)
+    try:
+        panel._transcriber.text = "Thank you."
+        wake.on_wake()
+        drain_until(bridge, lambda e: voice_state(e, "listening"))
+        ear.on_finish("complete")
+        events = drain_until(
+            bridge, lambda e: any(x.kind == "voice_error" for x in e)
+        )
+        assert not any(e.kind == "voice_transcript" for e in events)
+        assert not any(e.kind == "turn" for e in events)
+        honest = [e for e in events if e.kind == "voice_error"]
+        assert "heard no words" in str(honest[-1].payload)
+        assert "Nothing was sent" in str(honest[-1].payload)
+        drain_until(bridge, lambda e: wake.starts >= 2)
+    finally:
+        bridge.stop()
+
+
+def test_a_pressed_listen_button_is_never_second_guessed() -> None:
+    # The filter is for captures nobody asked for. After a deliberate
+    # press the user sees the transcript on screen, so what they said —
+    # even "thank you" — is sent exactly as heard.
+    wake = FakeWake()
+    bridge, panel, _player = make_wake_bridge(wake, FakeWakeEar())
+    try:
+        panel._transcriber.text = "Thank you."
+        bridge.post_listen_start()
+        drain_until(bridge, lambda e: voice_state(e, "listening"))
+        bridge.post_listen_stop()
+        events = drain_until(
+            bridge, lambda e: any(x.kind == "voice_transcript" for x in e)
+        )
+        transcript = [e for e in events if e.kind == "voice_transcript"]
+        assert transcript[0].payload == "Thank you."
     finally:
         bridge.stop()
 

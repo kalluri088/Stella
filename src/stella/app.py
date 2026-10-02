@@ -117,6 +117,7 @@ from stella.voice import (
     SubprocessRecorder,
     TapRecorder,
     VoiceError,
+    is_transcription_junk,
 )
 from stella.wake import (
     DEFAULT_WAKE_MODEL,
@@ -560,6 +561,8 @@ class StellaSettings:
     voice_speech: str = "auto"
     transcription_model: str = "whisper-1"
     transcription_command: str | None = None
+    transcription_engine: str = "whisper"
+    transcription_timeout: float = 30.0
     speech_model: str = "tts-1"
     speech_voice: str = "alloy"
     speech_command: str | None = None
@@ -633,6 +636,16 @@ class StellaSettings:
                 "STELLA_WAKE_THRESHOLD must be a wake probability "
                 "strictly between 0 and 1"
             )
+        raw_timeout = os.environ.get("STELLA_TRANSCRIPTION_TIMEOUT", "30")
+        try:
+            transcription_timeout = float(raw_timeout)
+        except ValueError:
+            transcription_timeout = -1.0
+        if not 0.0 < transcription_timeout <= 600.0:
+            raise SystemExit(
+                "STELLA_TRANSCRIPTION_TIMEOUT must be a timeout in seconds "
+                "between 0 and 600"
+            )
         raw_port = os.environ.get(
             "STELLA_LLAMA_SERVER_PORT", str(DEFAULT_LLAMA_SERVER_PORT)
         )
@@ -644,6 +657,21 @@ class StellaSettings:
             raise SystemExit(
                 "STELLA_LLAMA_SERVER_PORT must be a TCP port between "
                 "1 and 65535"
+            )
+        transcription_engine = os.environ.get(
+            "STELLA_TRANSCRIPTION_ENGINE", "whisper"
+        )
+        # The name becomes one argv element after ``--engine`` in a command
+        # Stella builds itself, so an option-shaped or path-bearing value is
+        # a mistake worth refusing at launch rather than a flag to smuggle.
+        if (
+            not transcription_engine.strip()
+            or transcription_engine.startswith("-")
+            or any(bad in transcription_engine for bad in (" ", "\t", "/"))
+        ):
+            raise SystemExit(
+                "STELLA_TRANSCRIPTION_ENGINE must be a bare engine name "
+                "such as 'whisper'"
             )
         return {
             "memory_db": os.environ.get(
@@ -676,6 +704,11 @@ class StellaSettings:
             "transcription_command": os.environ.get(
                 "STELLA_TRANSCRIPTION_COMMAND"
             ),
+            # The engine a detected local transcriber is told to use —
+            # voxtype's own engine names, not a model size (that stays in
+            # the tool's config).
+            "transcription_engine": transcription_engine,
+            "transcription_timeout": transcription_timeout,
             "speech_model": os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
             "speech_voice": os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
             "speech_command": os.environ.get("STELLA_SPEECH_COMMAND"),
@@ -818,6 +851,7 @@ class StellaApplication:
     wake: WakeListener | None = None
     wake_ear: WakeUtteranceEar | None = None
     wake_notice: str | None = None
+    voice_notice: str | None = None
     mic_tap: MicTap | None = None
 
     def close(self) -> None:
@@ -1067,6 +1101,11 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # error messages; the interactive CLI loop builds its own StellaSession
     # with the hint.
     voice = build_voice(settings, tap=mic_tap)
+    # Which transcriber is in use is a fact the owner is entitled to: a
+    # local engine and a cloud call look identical from the keyboard and
+    # are nothing like the same decision about the recording. Named once,
+    # at startup, by the provider's own name.
+    transcription_label = voice.transcription_label if voice else None
     # Last possible moment to spawn the brain: nothing after this can
     # fail and strand the process (stop() also runs inside a failed
     # start(), and close() owns it afterwards).
@@ -1087,6 +1126,11 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         wake=wake,
         wake_ear=wake_ear,
         wake_notice=wake_notice,
+        voice_notice=(
+            f"Voice input uses {transcription_label}."
+            if transcription_label
+            else None
+        ),
         mic_tap=mic_tap,
     )
 
@@ -1192,6 +1236,19 @@ class VoicePanel:
             and self._speech is not None
             and self._player.available()
         )
+
+    @property
+    def transcription_label(self) -> str | None:
+        """What the user should be told is turning their voice into text.
+
+        A local transcriber and a cloud call are not the same decision —
+        one uploads — so which of them is in use is stated once per
+        session rather than left to be inferred from a misheard word.
+        """
+
+        if self._transcriber is None:
+            return None
+        return getattr(self._transcriber, "name", None)
 
     def start_listening(self) -> None:
         if self._recorder is None or self._transcriber is None:
@@ -1523,17 +1580,41 @@ def _openai_speech_client(api_key: str) -> object:
 def _build_transcriber(
     settings: StellaSettings,
 ) -> TranscriptionProvider | None:
+    """Pick the one transcriber this configuration uses, local first.
+
+    The precedence is explicit command → a local transcriber already
+    installed → the cloud. A recording leaving the laptop is the last
+    resort, not the default, and ``STELLA_VOICE_TRANSCRIPTION=openai`` is
+    the one way to ask for it: naming the cloud skips the local branch
+    rather than falling through to it.
+    """
+
     if settings.voice_transcription == "off":
         return None
     if settings.transcription_command:
         return CommandTranscriptionProvider(
             split_command(settings.transcription_command)
         )
+    if settings.voice_transcription == "auto" and shutil.which("voxtype"):
+        # voxtype's ``--engine`` names an engine (whisper, parakeet, ...),
+        # not a model size: which Whisper model runs stays the tool's own
+        # configuration, and Stella does not reach into it.
+        return CommandTranscriptionProvider(
+            [
+                "voxtype",
+                "transcribe",
+                "--engine",
+                settings.transcription_engine,
+                "{input}",
+            ],
+            name=f"voxtype ({settings.transcription_engine})",
+        )
     voice_key = provider_keys.effective_api_key("openai")
     if settings.voice_transcription in {"auto", "openai"} and voice_key:
         return OpenAITranscriptionProvider(
             _openai_speech_client(voice_key),
             model=settings.transcription_model,
+            timeout=settings.transcription_timeout,
         )
     return None
 
@@ -1882,6 +1963,10 @@ class StellaBridge:
             # A configured, usable wake ear is armed right away: wake is
             # the one microphone that listens while Stella does nothing.
             self._resume_wake()
+        if application.voice_notice is not None:
+            # Not an error and not a per-turn remark: one line naming the
+            # transcriber this session actually got, then silence.
+            self._emit("notice", application.voice_notice)
 
     def _serve(self) -> None:
         while True:
@@ -2164,7 +2249,7 @@ class StellaBridge:
             self._wake_ear.stop()
         if kind == "complete":
             # Exactly the Stop-button path: transcribe and run the turn.
-            self.post_listen_stop()
+            self.post_listen_stop(wake_session=True)
         else:
             # "timeout"/"cap": the ear woke but heard nothing usable —
             # the Cancel path, plus one honest line about nothing sent.
@@ -2448,7 +2533,18 @@ class StellaBridge:
 
         self._post(handle)
 
-    def post_listen_stop(self) -> None:
+    def post_listen_stop(self, wake_session: bool = False) -> None:
+        """Finish one capture — the Stop button, or its wake-word twin.
+
+        ``wake_session`` marks a capture nobody pressed a button for, so
+        its transcript is the only thing standing between a mis-detected
+        wake phrase and a turn the user never asked for. The fixed filler
+        lines a transcriber invents over silence are therefore read as
+        what they are — no words — instead of going to the model. A
+        deliberate Listen press is never second-guessed: the user sees
+        that transcript on screen.
+        """
+
         def handle() -> None:
             panel = self._voice
             if panel is None:
@@ -2474,6 +2570,15 @@ class StellaBridge:
             except VoiceError as error:
                 # A failed transcript is never replaced with invented text.
                 self._emit("voice_error", str(error))
+                self._resume_wake()
+                return
+            if wake_session and is_transcription_junk(transcript):
+                # Same honest line as a wake that heard only silence: the
+                # words were not words, and nothing reached the model.
+                self._emit(
+                    "voice_error",
+                    "Stella woke up but heard no words. Nothing was sent.",
+                )
                 self._resume_wake()
                 return
             self._emit("voice_transcript", transcript)

@@ -301,7 +301,12 @@ actually running, and speech is only claimed after a transcript was produced.
   suspended whenever Stella is speaking, narrating, already capturing or
   waiting on an on-screen approval — a dangerous action is answered by a
   press on that dialog and nothing else, so the ears stay off the
-  microphone until it is.
+  microphone until it closes. A wake that fires over silence is discarded:
+  the filler a transcriber invents for a quiet room ("Thank you.",
+  `[Music]`) is recognised and reported
+  (*Stella woke up but heard no words. Nothing was sent.*) instead of sent
+  to the model. A **Listen** press is never second-guessed this way,
+  because the transcript stays visible.
 - **Cancel** — while listening, abort the current recording without
   transcribing it; while transcribing, abandon the transcription in flight.
 - **Stop speaking** — end the current spoken reply (playing sentence and
@@ -324,15 +329,24 @@ other presets (Claude, Grok, …) are never offered to OpenAI-compatible
 transcription or speech endpoints.
 
 - `STELLA_VOICE_TRANSCRIPTION` — `auto` (default), `openai`, or `off`.
-  `auto` prefers a local command when `STELLA_TRANSCRIPTION_COMMAND` is set and
-  otherwise uses OpenAI Whisper when an OpenAI key is available; otherwise
-  voice input stays unavailable.
+  `auto` prefers a local command when `STELLA_TRANSCRIPTION_COMMAND` is set,
+  then the `voxtype` CLI when it is installed, and otherwise uses OpenAI
+  Whisper when an OpenAI key is available; otherwise voice input stays
+  unavailable. Whichever transcriber is chosen is named on screen (`Voice
+  input uses voxtype (whisper).`) once per session, never on every turn.
 - `STELLA_VOICE_SPEECH` — `auto` (default), `openai`, or `off`. `auto` prefers
   `STELLA_SPEECH_COMMAND`, then local `espeak-ng`/`espeak`, then OpenAI TTS
   with an API key; otherwise speech output stays unavailable.
 - `STELLA_TRANSCRIPTION_COMMAND` — a local command template that must contain
   `{input}` and prints the transcript on stdout (for example a `whisper.cpp`
   wrapper). Executed without a shell.
+- `STELLA_TRANSCRIPTION_ENGINE` (default `whisper`) — the engine handed to the
+  detected `voxtype` (`voxtype transcribe --engine <name> {input}`). It names
+  an engine, not a model size; the model a engine uses stays in voxtype's own
+  configuration.
+- `STELLA_TRANSCRIPTION_TIMEOUT` (default `30` seconds, max `600`) — how long a
+  cloud transcription request may take before Stella abandons it. A local
+  command keeps its own 120-second ceiling.
 - `STELLA_SPEECH_COMMAND` — a local command template containing `{text}` and
   `{output}` that writes one audio file (for example a `piper` wrapper).
 - `STELLA_SPEECH_RESIDENT` — `off` (default) or `on`; only meaningful with

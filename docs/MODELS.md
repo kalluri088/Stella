@@ -45,7 +45,7 @@ into `src/` before the decision card exists.**
 | Job | Agreed choice | Notes |
 | --- | --- | --- |
 | Memory embeddings | all-MiniLM-L6-v2 on CPU | 24 ms default, zero VRAM. `nomic-embed-text` via Ollama is the zero-torch optional provider; the client MUST apply `search_query:`/`search_document:` prefixes (Ollama does not). Store dimension + model id per index; reject mixed dims. |
-| Speech-to-text | faster-whisper `small` int8 on CPU | Flat cost. Cloud STT only as an explicitly configured fallback. |
+| Speech-to-text | `voxtype` with whisper `base.en`, on CPU | The engine actually installed and wired. Stella auto-detects `voxtype` and names it on screen when a voice turn starts; an explicit `STELLA_TRANSCRIPTION_COMMAND` wins, cloud STT only as a configured fallback. Bigger engines (`small.en`, `parakeet`) are a measured question for the round-trip harness, not a row to edit. |
 | Text-to-speech | Kokoro fp32 (CPU) | Kept after a head-to-head; no replacement agreed. |
 | Voice activity | silero-vad v6 via onnxruntime only | The pip `silero-vad` packaging drags a 5.4 GB torch stack — use the bundled ONNX file. |
 | Echo | webrtc AEC3 | Via the PipeWire echo-cancel module pair. |

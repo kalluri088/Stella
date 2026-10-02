@@ -590,8 +590,29 @@ def test_search_graph_renders_connections_as_text():
     ).execute({"kind": "graph", "query": "Ada"})
     assert result.success
     assert 'person "Ada" —with→ task "write paper"' in result.output
+    assert "busiest" not in result.output  # no marker when the cap never bit
     tool = OutlineSearchTool(client())
     assert not tool.validate_arguments({"kind": "graph"})  # query required
+
+
+def test_search_graph_admits_a_capped_network():
+    routes = server_routes([
+        ("GET", "/api/v1/people", {"items": [{"id": 46, "name": "Ada"}]}),
+        ("GET", "/api/v1/graph", {
+            "nodes": [
+                {"id": "person:46", "kind": "person", "label": "Ada", "weight": 1},
+                {"id": "task:5", "kind": "task", "label": "write paper",
+                 "weight": 1},
+            ],
+            "edges": [{"source": "person:46", "target": "task:5",
+                       "role": "with"}],
+            "truncated": True,
+        }),
+    ])
+    result = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", FakeServer(routes))
+    ).execute({"kind": "graph", "query": "Ada"})
+    assert "busiest connections only" in result.output
 
 
 def test_new_action_summaries():

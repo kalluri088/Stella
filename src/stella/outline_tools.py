@@ -688,6 +688,8 @@ class OutlineSearchTool(Tool):
             source = labels.get(edge.get("source"), str(edge.get("source")))
             target = labels.get(edge.get("target"), str(edge.get("target")))
             lines.append(f"{source} —{edge.get('role')}→ {target}")
+        if lines and payload.get("truncated") is True:
+            lines.append("(busiest connections only — the node cap dropped the rest)")
         return lines or [f"no connections recorded for {labels.get(root, root)} yet"]
 
 

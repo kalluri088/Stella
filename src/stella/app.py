@@ -117,6 +117,7 @@ from stella.voice import (
     SubprocessRecorder,
     TapRecorder,
     VoiceError,
+    default_speech_worker,
     is_transcription_junk,
 )
 from stella.wake import (
@@ -566,6 +567,8 @@ class StellaSettings:
     speech_model: str = "tts-1"
     speech_voice: str = "alloy"
     speech_command: str | None = None
+    speech_local_voice: str | None = None
+    speech_local_speed: float | None = None
     speech_resident: bool = False
     voice_barge_in: str = "auto"
     vad_model: str = field(default_factory=default_vad_model)
@@ -658,6 +661,19 @@ class StellaSettings:
                 "STELLA_LLAMA_SERVER_PORT must be a TCP port between "
                 "1 and 65535"
             )
+        raw_speed = os.environ.get("STELLA_SPEECH_LOCAL_SPEED")
+        if raw_speed is None:
+            speech_local_speed = None
+        else:
+            try:
+                speech_local_speed = float(raw_speed)
+            except ValueError:
+                speech_local_speed = -1.0
+            if not 0.0 < speech_local_speed <= 4.0:
+                raise SystemExit(
+                    "STELLA_SPEECH_LOCAL_SPEED must be a speech rate "
+                    "between 0 and 4"
+                )
         transcription_engine = os.environ.get(
             "STELLA_TRANSCRIPTION_ENGINE", "whisper"
         )
@@ -712,6 +728,12 @@ class StellaSettings:
             "speech_model": os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
             "speech_voice": os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
             "speech_command": os.environ.get("STELLA_SPEECH_COMMAND"),
+            # Only a worker that reads these keys can honour them; the
+            # detected Kokoro worker today speaks its own built-in voice,
+            # so both stay None unless the owner says otherwise.
+            "speech_local_voice": os.environ.get("STELLA_SPEECH_LOCAL_VOICE")
+            or None,
+            "speech_local_speed": speech_local_speed,
             "speech_resident": _env_toggle("STELLA_SPEECH_RESIDENT") is True,
             "voice_barge_in": barge_mode,
             "vad_model": os.environ.get(
@@ -1220,6 +1242,8 @@ class VoicePanel:
         self._input_notice = input_notice
         self._output_notice = output_notice
         self.speech_enabled = False
+        # Warmed once, and only after speech was asked for.
+        self._speech_warmed = False
 
     @property
     def input_available(self) -> bool:
@@ -1236,6 +1260,28 @@ class VoicePanel:
             and self._speech is not None
             and self._player.available()
         )
+
+    def prewarm_speech(self) -> None:
+        """Load a resident worker now, so the first spoken reply is not it.
+
+        The model load is several seconds and nothing about it is a
+        decision, so it happens on a background thread while the user does
+        something else. It is triggered by opting into spoken replies, not
+        at startup: a laptop whose voice output is off never pays to warm a
+        model it will not use. Failure stays silent — the first real
+        synthesis reports it to the turn that asked for speech.
+        """
+
+        if self._speech_warmed or not isinstance(
+            self._speech, ResidentSpeechProvider
+        ):
+            return
+        self._speech_warmed = True
+        threading.Thread(
+            target=self._speech.prewarm,
+            name="stella-speech-warmup",
+            daemon=True,
+        ).start()
 
     @property
     def transcription_label(self) -> str | None:
@@ -1632,9 +1678,25 @@ def _build_speech_provider(
             # command provider is what users hear as inter-sentence
             # silence. Without a command there is nothing to keep
             # resident, so this path never applies to auto/espeak.
-            return ResidentSpeechProvider(command)
+            return ResidentSpeechProvider(
+                command,
+                voice=settings.speech_local_voice,
+                speed=settings.speech_local_speed,
+            )
         return CommandSpeechProvider(command)
     if settings.voice_speech == "auto":
+        worker = default_speech_worker()
+        if os.access(worker, os.X_OK):
+            # A worker the owner placed under ~/tools is the local answer
+            # before the robotic fallback: espeak is only reached when
+            # nothing better exists on the machine. The probe asks one
+            # question — may this file run — and starts nothing, so
+            # startup never waits for a model to load.
+            return ResidentSpeechProvider(
+                [worker],
+                voice=settings.speech_local_voice,
+                speed=settings.speech_local_speed,
+            )
         for binary in ("espeak-ng", "espeak"):
             if shutil.which(binary):
                 return CommandSpeechProvider(
@@ -2366,6 +2428,11 @@ class StellaBridge:
 
         if self._voice is not None:
             self._voice.speech_enabled = bool(enabled)
+            if enabled:
+                # The tick is the first moment speaking is something the
+                # user wants; the worker's model load starts now instead
+                # of inside the first reply.
+                self._voice.prewarm_speech()
 
     def _voice_conversation(self) -> bool:
         """True when a voice turn is a spoken conversation.

@@ -101,9 +101,33 @@ the plain `STELLA_SPEECH_COMMAND` path is one env var away. (On this
 machine `~/tools/stella-speak-server` is such a worker for the local Kokoro
 install; it lives outside the repository like all bench/tooling scripts.)
 
-The flag only matters when `STELLA_SPEECH_COMMAND` is set — there is nothing
-to make resident otherwise — and it is environment-only like all voice
-configuration.
+**You do not have to name that worker.** With the default
+`STELLA_VOICE_SPEECH=auto` and no `STELLA_SPEECH_COMMAND`, Stella checks
+whether `~/tools/stella-speak-server` exists and may run, and prefers it over
+the `espeak-ng` fallback. The check is one `os.access`, so it starts nothing
+and startup never waits for a model to load. The first time spoken replies are
+switched on, the worker is warmed on a background thread, so the several-second
+model load is paid while the user is doing something else rather than inside
+the first answer — and a machine with speech left off never loads a speech
+model at all. A warm-up that fails says nothing; the first real sentence
+reports it.
+
+`STELLA_SPEECH_LOCAL_VOICE` and `STELLA_SPEECH_LOCAL_SPEED` add `"voice"` and
+`"speed"` keys to the request line. They are deliberately **additive**: a
+worker that knows nothing about them — including the installed Kokoro one,
+which speaks its own built-in `af_heart` at 1.0× — ignores the extra keys and
+answers exactly as before. Making the choice effective is an edit to that
+script, which lives outside this repository.
+
+`STELLA_SPEECH_RESIDENT` still only matters when `STELLA_SPEECH_COMMAND` is set
+— there is nothing to make resident otherwise — and like all voice
+configuration it is environment-only.
+
+Honest latency: with the resident Kokoro worker the first audio of a reply
+lands roughly half a second to a second after the reply text is finished,
+because the first sentence is synthesized before it is played. Overlapping that
+synthesis with the tokens still arriving would need a streaming turn, which is
+a core change rather than a voice one (see `ROADMAP.md`).
 
 ```bash
 STELLA_SPEECH_COMMAND="$HOME/tools/stella-speak-server" \
@@ -335,8 +359,10 @@ transcription or speech endpoints.
   unavailable. Whichever transcriber is chosen is named on screen (`Voice
   input uses voxtype (whisper).`) once per session, never on every turn.
 - `STELLA_VOICE_SPEECH` — `auto` (default), `openai`, or `off`. `auto` prefers
-  `STELLA_SPEECH_COMMAND`, then local `espeak-ng`/`espeak`, then OpenAI TTS
-  with an API key; otherwise speech output stays unavailable.
+  `STELLA_SPEECH_COMMAND`, then a resident worker at
+  `~/tools/stella-speak-server` when it may run, then local
+  `espeak-ng`/`espeak`, then OpenAI TTS with an API key; otherwise speech
+  output stays unavailable.
 - `STELLA_TRANSCRIPTION_COMMAND` — a local command template that must contain
   `{input}` and prints the transcript on stdout (for example a `whisper.cpp`
   wrapper). Executed without a shell.
@@ -351,12 +377,18 @@ transcription or speech endpoints.
   `{output}` that writes one audio file (for example a `piper` wrapper).
 - `STELLA_SPEECH_RESIDENT` — `off` (default) or `on`; only meaningful with
   `STELLA_SPEECH_COMMAND` (see "Resident synthesis worker").
+- `STELLA_SPEECH_LOCAL_VOICE`, `STELLA_SPEECH_LOCAL_SPEED` — the voice name and
+  rate asked of a resident worker. Sent as extra request keys a worker may
+  ignore, and never chosen for you: unset means the worker speaks its own
+  default. The speed is a rate between 0 and 4.
 - `STELLA_TRANSCRIPTION_MODEL` (default `whisper-1`), `STELLA_SPEECH_MODEL`
   (default `tts-1`), `STELLA_SPEECH_VOICE` (default `alloy`) — OpenAI
   identifiers when the cloud path is selected.
 
-Recording uses `pw-record` or `arecord` when installed; playback uses
-`pw-play`, `paplay`, or `aplay`. Synthesis fallback is `espeak-ng`/`espeak`.
+Recording uses `pw-record` or `arecord` when installed, pinned to the 16 kHz
+mono the local transcribers expect; playback uses `pw-play`, `paplay`, or
+`aplay`. Synthesis prefers a resident worker, and falls back to
+`espeak-ng`/`espeak`.
 
 ## Privacy
 

@@ -1497,6 +1497,39 @@ def test_misconfigured_voice_commands_never_prevent_startup(
     )
 
 
+def test_an_installed_speech_worker_is_detected_before_the_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The owner places a resident worker under ~/tools and Stella speaks
+    # through it: no setting, no PATH search, no package. The probe only
+    # asks whether the file may run, so this holds for any worker that
+    # answers the line protocol.
+    worker = tmp_path / "stella-speak-server"
+    worker.write_text("#!/bin/sh\nexit 0\n")
+    worker.chmod(0o755)
+    monkeypatch.setattr(app, "default_speech_worker", lambda: str(worker))
+
+    provider = app._build_speech_provider(StellaSettings(model="test"))
+
+    assert isinstance(provider, app.ResidentSpeechProvider)
+    assert provider._command == [str(worker)]
+    provider.dispose()
+
+
+def test_a_worker_that_may_not_run_leaves_the_plain_path_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    absent = tmp_path / "stella-speak-server"
+    monkeypatch.setattr(app, "default_speech_worker", lambda: str(absent))
+    monkeypatch.setattr(
+        app.shutil, "which", lambda name: "/usr/bin/espeak-ng"
+    )
+
+    provider = app._build_speech_provider(StellaSettings(model="test"))
+
+    assert isinstance(provider, app.CommandSpeechProvider)
+
+
 def test_bridge_wires_the_broker_into_the_stella_core() -> None:
     stella = make_recording_stella()
     bridge = make_bridge(stella)

@@ -41,7 +41,9 @@ checked that it did.
 - **Look things up** — answer questions from file content, check the time,
   fetch a web page for you to read (after asking, with the URL shown).
 - **Talk and listen** — press the mic button, speak; replies can be spoken
-  back. Continuous hands-free listening is off by default: the wake word
+  back on a local voice. Neither side needs a cloud service: the transcriber
+  and the synthesizer already on the laptop are found automatically and named
+  on screen. Continuous hands-free listening is off by default: the wake word
   (`STELLA_WAKE_WORD=on`) is the only way Stella ever holds the microphone
   open while you are not speaking to her.
 - **Use your desktop (opt-in)** — with one setting on, Stella can read the
@@ -186,6 +188,7 @@ development, or running several configurations side by side:
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 | `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
 | `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |
+| `STELLA_SPEECH_LOCAL_VOICE` / `STELLA_SPEECH_LOCAL_SPEED` | Voice name and rate asked of a resident speech worker (extra request keys; a worker may ignore them) | unset |
 | `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`); arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |

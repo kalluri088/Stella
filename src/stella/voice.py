@@ -52,6 +52,7 @@ __all__ = [
     "SubprocessRecorder",
     "TapRecorder",
     "VoiceError",
+    "default_speech_worker",
     "is_transcription_junk",
 ]
 
@@ -73,6 +74,20 @@ PLAY_BINARIES = ("pw-play", "paplay", "aplay")
 
 class VoiceError(RuntimeError):
     """One friendly, user-facing voice failure. Never carries a trace."""
+
+
+def default_speech_worker() -> str:
+    """The resident synthesis worker Stella looks for on this machine.
+
+    The same home-relative convention as the wake models: a user places
+    the worker under ``~/tools`` and Stella finds it without a setting, a
+    search path or a package dependency. Nothing is installed here — the
+    probe only asks whether the file is executable.
+    """
+
+    return os.path.join(
+        os.path.expanduser("~"), "tools", "stella-speak-server"
+    )
 
 
 def _cancel_process_tree(process: subprocess.Popen) -> None:
@@ -744,12 +759,21 @@ class ResidentSpeechProvider(SpeechProvider):
         *,
         timeout: float = 60.0,
         ready_timeout: float = 180.0,
+        voice: str | None = None,
+        speed: float | None = None,
     ) -> None:
         if not command:
             raise ValueError("a resident speech worker needs a command")
         self._command = list(command)
         self._timeout = timeout
         self._ready_timeout = ready_timeout
+        # Additive request fields, sent only when set. A worker that
+        # already chooses its own voice ignores the extra keys, so naming
+        # one here can never break an existing installation; it only makes
+        # a worker that reads them able to.
+        self._voice = voice
+        self._speed = speed
+        self._disposed = False
         self._directory = tempfile.mkdtemp(prefix=f"stella-speech-{os.getpid()}-")
         self._counter = 0
         self._request_id = 0
@@ -787,13 +811,20 @@ class ResidentSpeechProvider(SpeechProvider):
                 assert process.stdin is not None
                 self._request_id += 1
                 request_id = self._request_id
+                request = {
+                    "id": request_id,
+                    "text": bounded,
+                    "output": path,
+                }
+                # Additive: a worker that knows nothing about these keys
+                # ignores them and speaks as it always has, so naming a
+                # voice here is a request, never a requirement.
+                if self._voice is not None:
+                    request["voice"] = self._voice
+                if self._speed is not None:
+                    request["speed"] = self._speed
                 try:
-                    process.stdin.write(
-                        json.dumps(
-                            {"id": request_id, "text": bounded, "output": path}
-                        )
-                        + "\n"
-                    )
+                    process.stdin.write(json.dumps(request) + "\n")
                     process.stdin.flush()
                 except OSError as error:
                     self._retire_locked()
@@ -821,8 +852,31 @@ class ResidentSpeechProvider(SpeechProvider):
 
     def dispose(self) -> None:
         with self._lock:
+            self._disposed = True
             self._retire_locked()
         shutil.rmtree(self._directory, ignore_errors=True)
+
+    def prewarm(self) -> None:
+        """Pay the model load now, so the first reply does not wait for it.
+
+        Deliberately silent about failure: a worker that will not start is
+        reported by the first real synthesis, which has a user to tell. A
+        background thread that raised here would only print a traceback
+        nobody asked for. The disposed check is under the same lock
+        ``dispose()`` takes to retire the worker, so a warm-up that loses
+        the race cannot leave a process behind.
+        """
+
+        try:
+            with self._lock:
+                if self._disposed:
+                    return
+                self._ensure_worker_locked()
+        except Exception:  # noqa: BLE001 - best effort, never user-visible
+            # Includes VoiceError: a worker that will not start is the
+            # first real synthesis's message to deliver, not this
+            # thread's — and a warm-up thread has no one to tell.
+            return
 
     def _ensure_worker_locked(self) -> None:
         if self._process is not None and self._process.poll() is None:

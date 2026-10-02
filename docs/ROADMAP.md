@@ -673,7 +673,11 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
   free of OpenAI-specific events, and must prove streaming does not alter
   decisions, authorization, audit records, memory writes, or step limits.
   Measured TTFT (~1.6 s) says the win is modest until the final-response path
-  is separated from the structured decision JSON.
+  is separated from the structured decision JSON. Spoken replies are the one
+  place it is not modest: the first sentence is synthesized only after the
+  reply text is finished, so overlapping chunk-0 synthesis with the tokens
+  still arriving (~0.42–0.87 s of measured render) is the difference between
+  a pause and a conversation. No voice-only workaround exists for that.
 - **Fast-path local router** — limited to existing `SAFE` fixed-argument
   capabilities (`datetime` first, `system_info` later, only after observing
   real false-positive behavior), a short documented exact-phrase allowlist

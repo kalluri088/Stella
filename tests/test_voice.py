@@ -9,6 +9,7 @@ voice failures never fabricate text or corrupt conversation state, and no
 raw audio is persisted by default.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -928,6 +929,27 @@ def test_the_transcription_timeout_is_read_and_validated(
     for unusable in ("", "  ", "--engine", "whisper small", "bin/whisper"):
         monkeypatch.setenv("STELLA_TRANSCRIPTION_ENGINE", unusable)
         with pytest.raises(SystemExit, match="STELLA_TRANSCRIPTION_ENGINE"):
+            fields()
+
+
+def test_the_local_speech_choice_is_read_and_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fields = StellaSettings._environment_fields
+    for name in (
+        "STELLA_SPEECH_LOCAL_VOICE",
+        "STELLA_SPEECH_LOCAL_SPEED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert fields()["speech_local_voice"] is None
+    assert fields()["speech_local_speed"] is None
+    monkeypatch.setenv("STELLA_SPEECH_LOCAL_VOICE", "bf_isabella")
+    monkeypatch.setenv("STELLA_SPEECH_LOCAL_SPEED", "0.9")
+    assert fields()["speech_local_voice"] == "bf_isabella"
+    assert fields()["speech_local_speed"] == 0.9
+    for unusable in ("0", "-1", "fast"):
+        monkeypatch.setenv("STELLA_SPEECH_LOCAL_SPEED", unusable)
+        with pytest.raises(SystemExit, match="STELLA_SPEECH_LOCAL_SPEED"):
             fields()
 
 
@@ -2478,6 +2500,148 @@ def test_resident_missing_command_fails_honestly() -> None:
             provider.speak(SpeechOutput(text="hello"))
     finally:
         provider.dispose()
+
+
+# The worker as it is installed reads id/text/output and knows nothing
+# about being told which voice to use. Asking for one therefore has to be
+# a change it can ignore, not a new protocol.
+_RESIDENT_ECHO = """
+import json, sys
+print(json.dumps({"ready": True}), flush=True)
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    with open(sys.argv[1], "w") as sink:
+        json.dump(req, sink)
+    open(req["output"], "wb").write(b"RIFF")
+    print(json.dumps({"id": req["id"], "ok": True}), flush=True)
+"""
+
+
+def _resident_echo(tmp_path):
+    record = tmp_path / "request.json"
+    provider = ResidentSpeechProvider(
+        [sys.executable, "-c", _RESIDENT_ECHO, str(record)],
+        timeout=10.0,
+        ready_timeout=10.0,
+    )
+    return provider, record
+
+
+def test_a_requested_voice_and_speed_are_sent_additively(
+    tmp_path,
+) -> None:
+    record = tmp_path / "request.json"
+    provider = ResidentSpeechProvider(
+        [sys.executable, "-c", _RESIDENT_ECHO, str(record)],
+        timeout=10.0,
+        ready_timeout=10.0,
+        voice="bf_isabella",
+        speed=1.2,
+    )
+    try:
+        artifact = provider.speak(SpeechOutput(text="a named voice"))
+        assert os.path.exists(artifact.reference)
+        request = json.loads(record.read_text())
+        # The three keys a worker already understands are untouched…
+        assert request["text"] == "a named voice"
+        assert set(request) == {"id", "text", "output", "voice", "speed"}
+        # …and the two new ones are exactly what the user asked for.
+        assert request["voice"] == "bf_isabella"
+        assert request["speed"] == 1.2
+    finally:
+        provider.dispose()
+
+
+def test_an_unnamed_worker_sees_the_request_it_has_always_seen(
+    tmp_path,
+) -> None:
+    provider, record = _resident_echo(tmp_path)
+    try:
+        provider.speak(SpeechOutput(text="plain"))
+        assert set(json.loads(record.read_text())) == {
+            "id",
+            "text",
+            "output",
+        }
+    finally:
+        provider.dispose()
+
+
+def test_prewarm_loads_the_worker_before_the_first_sentence() -> None:
+    provider = _resident()
+    try:
+        provider.prewarm()
+        assert provider._process is not None
+        warmed = provider._process.pid
+        # The warm-up is not a throwaway: the reply uses that process,
+        # which is the whole point of paying the model load early.
+        artifact = provider.speak(SpeechOutput(text="hello"))
+        assert os.path.exists(artifact.reference)
+        assert provider._process.pid == warmed
+    finally:
+        provider.dispose()
+
+
+def test_a_broken_worker_prewarms_silently_and_reports_when_asked() -> None:
+    # Nothing is on screen to explain a thread that failed at startup, so
+    # the warm-up stays quiet and the first real sentence carries the
+    # message to a user who wanted speech.
+    provider = ResidentSpeechProvider(
+        ["/definitely/not/here", "x"], ready_timeout=1.0
+    )
+    try:
+        provider.prewarm()
+        assert provider._process is None
+        with pytest.raises(VoiceError, match="not found"):
+            provider.speak(SpeechOutput(text="hello"))
+    finally:
+        provider.dispose()
+
+
+def test_prewarm_after_dispose_starts_nothing() -> None:
+    provider = _resident()
+    provider.dispose()
+    provider.prewarm()
+    assert provider._process is None
+
+
+def test_opting_into_speech_warms_a_resident_worker_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _resident()
+    warmed: list[str] = []
+    monkeypatch.setattr(provider, "prewarm", lambda: warmed.append("warm"))
+    panel = VoicePanel(None, None, None, provider)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    try:
+        bridge.set_speech_enabled(True)
+        deadline = time.monotonic() + 2
+        while not warmed and time.monotonic() < deadline:
+            time.sleep(0.02)
+        # The tick is the first moment speaking is wanted, so the model
+        # load starts here rather than inside the first reply.
+        assert warmed == ["warm"]
+        bridge.set_speech_enabled(False)
+        bridge.set_speech_enabled(True)
+        # Once per session: re-ticking does not queue a second worker.
+        assert warmed == ["warm"]
+    finally:
+        bridge.stop()
+        provider.dispose()
+
+
+def test_a_provider_that_is_not_resident_is_never_warmed() -> None:
+    panel = VoicePanel(
+        None,
+        None,
+        None,
+        CommandSpeechProvider(["true", "{text}", "{output}"]),
+    )
+    panel.prewarm_speech()
+    assert panel._speech_warmed is False
 
 
 def test_build_voice_selects_the_resident_provider_only_with_a_command() -> None:

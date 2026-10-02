@@ -32,7 +32,8 @@ from stella.app import (
 from stella.audio_output import SpeechArtifact
 from stella.brain import Brain, Decision, DecisionKind
 from stella.llm import LLMClient
-from stella.voice import VoiceError
+from stella.mic_tap import MicTap
+from stella.voice import TapRecorder, VoiceError
 from stella.wake import (
     FRAME_BYTES,
     WakeEndpoint,
@@ -224,6 +225,111 @@ def test_the_utterance_ear_dies_when_its_watcher_breaks() -> None:
     ear.start()
     wait_until(lambda: ear.failed)
     assert finishes == []
+
+
+def test_the_wake_ear_takes_frames_from_the_shared_tap() -> None:
+    # With a tap the ear reads the one capture Stella owns; the argv it
+    # was also given stays unused, which is what keeps the microphone at
+    # one open handle instead of two.
+    tap = MicTap(command=python_writer(40, endless=True))
+    seen: list[bytes] = []
+
+    def feed(frame: bytes) -> bool:
+        seen.append(frame)
+        return len(seen) == 3
+
+    wakes: list[int] = []
+    listener = WakeListener(
+        feed=feed,
+        command=python_writer(0),
+        tap=tap,
+        on_wake=lambda: wakes.append(1),
+    )
+    listener.start()
+    wait_until(lambda: wakes == [1])
+    assert tap.running()
+    listener.stop()
+    # Leaving the tap is what turns the microphone off, and only after
+    # the last subscriber is gone.
+    assert not tap.running()
+
+
+def test_the_utterance_watcher_endpoints_from_the_shared_tap() -> None:
+    tap = MicTap(command=python_writer(40, endless=True))
+    replies = iter([(0.9, 0.5)] * 3 + [(0.0, 0.5)] * 40)
+    finishes: list[str] = []
+    ear = WakeUtteranceEar(
+        features=lambda frame: next(replies),
+        endpoint=WakeEndpoint(silence_frames=2),
+        command=python_writer(0),
+        tap=tap,
+        on_finish=finishes.append,
+    )
+    ear.start()
+    wait_until(lambda: finishes != [])
+    assert finishes == ["complete"]
+    # The watcher outlives nothing: leaving the tap closed the capture.
+    wait_until(lambda: not tap.running())
+
+
+def test_a_wake_capture_and_its_watcher_share_one_capture() -> None:
+    # The whole point of the tap: a woken utterance is recorded *and*
+    # endpointed at the same time, from one microphone handle. Neither
+    # consumer may turn the other's capture off.
+    tap = MicTap(command=python_writer(200, endless=True))
+    recorder = TapRecorder(tap)
+    heard: list[bytes] = []
+
+    def features(frame: bytes) -> tuple[float, float]:
+        heard.append(frame)
+        return 0.0, 0.5
+
+    watcher = WakeUtteranceEar(
+        features=features,
+        endpoint=WakeEndpoint(silence_frames=2),
+        tap=tap,
+    )
+    recorder.start()
+    watcher.start()
+    assert tap.running()
+    wait_until(lambda: len(heard) >= 4)  # frames are flowing to both
+    watcher.stop()
+    assert tap.running()  # the recorder never lost its microphone
+    path = recorder.stop()
+    try:
+        assert os.path.getsize(path) > 44
+    finally:
+        recorder.dispose()
+    assert not tap.running()  # and it left when the last one did
+
+
+def test_a_wake_session_leaves_the_tap_to_the_recorder() -> None:
+    # Suspending the ear is a subscription change, not a device change:
+    # the wake capture and the push-to-talk recorder use the same tap, so
+    # the handover never opens a second handle on the microphone.
+    tap = MicTap(command=python_writer(200, endless=True))
+    wakes: list[int] = []
+    seen: list[bytes] = []
+
+    def feed(frame: bytes) -> bool:
+        seen.append(frame)
+        return len(seen) == 1
+
+    listener = WakeListener(
+        feed=feed,
+        command=python_writer(0),
+        tap=tap,
+        on_wake=lambda: wakes.append(1),
+    )
+    listener.start()
+    wait_until(lambda: wakes == [1])
+    listener.stop()
+    recorder = TapRecorder(tap)
+    recorder.start()
+    assert tap.running()
+    recorder.cancel()
+    assert not tap.running()
+
 
 
 # ---------------------------------------------------------------- spotter

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 
 import pytest
 
@@ -32,9 +33,11 @@ from stella.app import (
 from stella.audio import TranscriptionProvider
 from stella.audio_output import SpeechArtifact, SpeechOutput, SpeechProvider
 from stella.brain import Brain, Decision, DecisionKind
+from stella.childproc import recording_finalized_ok
 from stella.context import Context, InputModality, InputPart, InputProvenance
 from stella.llm import LLMClient, Message, ProviderRequestCancelled
 from stella.memory import InMemoryMemory
+from stella.mic_tap import FRAME_BYTES, MicTap
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionReceipt,
@@ -54,6 +57,7 @@ from stella.voice import (
     ResidentSpeechProvider,
     SubprocessPlayer,
     SubprocessRecorder,
+    TapRecorder,
     VoiceError,
 )
 
@@ -502,17 +506,141 @@ def test_speech_command_without_output_file_fails_honestly() -> None:
         provider.dispose()
 
 
+def python_writer(frames: int, *, keep_open: float = 0.0) -> list[str]:
+    """A fake capture: ``frames`` anonymous frames, then exit or wait.
+
+    No test that reads a microphone opens a real one; the same bounded
+    ``python -c`` writer the tap and wake tests use.
+    """
+
+    body = (
+        "import sys, time\n"
+        f"payload = b'\\x01\\x00' * ({FRAME_BYTES} // 2 * {frames})\n"
+        "sys.stdout.buffer.write(payload)\n"
+        "sys.stdout.buffer.flush()\n"
+        + (f"time.sleep({keep_open})\n" if keep_open else "")
+    )
+    return [sys.executable, "-c", body]
+
+
+def wait_until(condition, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never held")
+
+
 def test_subprocess_recorder_stop_without_start_is_an_error() -> None:
     recorder = SubprocessRecorder()
     with pytest.raises(VoiceError, match="not listening"):
         recorder.stop()
 
 
+def test_tap_recorder_stop_without_start_is_an_error() -> None:
+    # Constructing a recorder over a tap opens nothing: the microphone
+    # stays closed until a recording actually starts.
+    tap = MicTap(command=python_writer(0))
+    recorder = TapRecorder(tap)
+    assert not tap.running()
+    with pytest.raises(VoiceError, match="not listening"):
+        recorder.stop()
+    assert not tap.running()
+
+
+class FakeTap:
+    """A tap whose frames are the test's own: no subprocess, no timing.
+
+    ``subscribe`` hands back a client that replays ``frames`` once and
+    then reports the end, exactly like a capture that ran out.
+    """
+
+    def __init__(self, frames: list[bytes]) -> None:
+        self.frames = frames
+        self.failed = False
+        self.closed = False
+        self.names: list[str] = []
+
+    def subscribe(self, name: str, *, backlog: int = 8) -> "FakeClient":
+        del backlog
+        self.names.append(name)
+        return FakeClient(self)
+
+
+class FakeClient:
+    def __init__(self, tap: FakeTap) -> None:
+        self._tap = tap
+        self._index = 0
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        del size
+        if self._index >= len(self._tap.frames):
+            return b""
+        frame = self._tap.frames[self._index]
+        self._index += 1
+        return frame
+
+    def close(self) -> None:
+        self.closed = True
+        self._tap.closed = True
+
+
+def test_the_tap_recorder_writes_a_readable_wav_from_shared_frames() -> None:
+    frames = [bytes([n]) * FRAME_BYTES for n in range(1, 6)]
+    tap = FakeTap(frames)
+    recorder = TapRecorder(tap)  # type: ignore[arg-type]
+    recorder.start()
+    assert tap.names == ["recorder"]
+    path = recorder.stop()
+    try:
+        with wave.open(path) as captured:
+            # The shape the local transcribers expect, whatever the
+            # capture subprocess happened to be.
+            assert captured.getnchannels() == 1
+            assert captured.getframerate() == 16000
+            assert captured.getsampwidth() == 2
+            assert captured.readframes(captured.getnframes()) == b"".join(
+                frames
+            )
+        assert recording_finalized_ok(0, path)
+    finally:
+        recorder.dispose()
+    assert tap.closed
+    assert not os.path.exists(path)
+
+
+def test_the_tap_recorder_records_the_shared_capture_end_to_end() -> None:
+    tap = MicTap(command=python_writer(200, keep_open=30.0))
+    recorder = TapRecorder(tap)
+    recorder.start()
+    assert tap.running()  # one capture subprocess serves the microphone
+    # The stand-in writer is a process that has to start before it can
+    # emit; this is its launch time, not a device's.
+    time.sleep(0.5)
+    path = recorder.stop()
+    try:
+        with wave.open(path) as captured:
+            assert captured.getnchannels() == 1
+            assert captured.getframerate() == 16000
+            assert captured.getnframes() > 0
+    finally:
+        recorder.dispose()
+    # The last subscriber left, so the capture goes with it.
+    assert not tap.running()
+    assert not os.path.exists(os.path.dirname(path))
+
+
+@pytest.mark.parametrize("kind", ["subprocess", "tap"])
 def test_recorder_stop_failure_removes_its_temp_directory(
+    kind: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Security audit F3: when stop() failed, the temporary directory holding
     # the captured audio was left behind in /tmp and unreachable later.
+    # Both recorders clear it the same way: the one that spawns its own
+    # capture and the one that reads the shared microphone tap.
     class SilentProcess:
         def send_signal(self, signal: int) -> None:
             return None
@@ -529,22 +657,105 @@ def test_recorder_stop_failure_removes_its_temp_directory(
         return path
 
     monkeypatch.setattr("stella.voice.tempfile.mkdtemp", spy)
-    monkeypatch.setattr(
-        "stella.voice.shutil.which",
-        lambda name: f"/usr/bin/{name}",
-    )
-    monkeypatch.setattr(
-        "stella.voice.subprocess.Popen",
-        lambda *args, **kwargs: SilentProcess(),
-    )
-    recorder = SubprocessRecorder()
+    recorder: Recorder
+    tap: MicTap | None = None
+    if kind == "subprocess":
+        monkeypatch.setattr(
+            "stella.voice.shutil.which",
+            lambda name: f"/usr/bin/{name}",
+        )
+        monkeypatch.setattr(
+            "stella.voice.subprocess.Popen",
+            lambda *args, **kwargs: SilentProcess(),
+        )
+        recorder = SubprocessRecorder()
+    else:
+        # A capture that hands over nothing and leaves: the empty file
+        # is what has to fail closed here.
+        tap = MicTap(command=python_writer(0))
+        recorder = TapRecorder(tap)
     recorder.start()
     assert len(created) == 1
+    if tap is not None:
+        # The dead source has to reach the recorder before its stop is a
+        # failure rather than a race.
+        wait_until(lambda: tap.failed)
 
     with pytest.raises(VoiceError, match="no recording"):
         recorder.stop()
 
     assert not os.path.exists(created[0])
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        ("pw-record", ["pw-record", "--rate", "16000", "--channels", "1"]),
+        (
+            "arecord",
+            [
+                "arecord",
+                "-q",
+                "-f",
+                "S16_LE",
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-t",
+                "wav",
+            ],
+        ),
+    ],
+)
+def test_the_fallback_recorder_pins_16k_mono_wav(
+    present: str,
+    expected: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The recorder is the voice path that leaves a file behind, so the
+    # shape of that file is a contract: 16 kHz mono 16-bit, exactly what
+    # the shared tap delivers and what the local transcribers expect.
+    # Left to a device default, one machine's 44.1 kHz stereo is another
+    # machine's unusable transcript.
+    seen: list[list[str]] = []
+
+    class SilentProcess:
+        def __init__(self, argv: list[str]) -> None:
+            seen.append(list(argv))
+
+        def send_signal(self, signal: int) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        "stella.voice.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name == present else None,
+    )
+    monkeypatch.setattr(
+        "stella.voice.subprocess.Popen",
+        lambda argv, **kwargs: SilentProcess(argv),
+    )
+    recorder = SubprocessRecorder()
+    recorder.start()
+    with pytest.raises(VoiceError, match="no recording"):
+        recorder.stop()
+    assert seen[0][: len(expected)] == expected
+    assert seen[0][-1].endswith("capture.wav")
+
+
+def test_build_voice_records_from_the_shared_tap_when_one_exists() -> None:
+    settings = StellaSettings(model="test", voice_speech="off")
+    tapped = build_voice(settings, tap=MicTap(command=python_writer(0)))
+    own = build_voice(settings)
+    try:
+        assert isinstance(tapped._recorder, TapRecorder)
+        assert isinstance(own._recorder, SubprocessRecorder)
+    finally:
+        tapped.dispose()
+        own.dispose()
 
 
 def test_subprocess_player_stop_without_playback_is_harmless() -> None:

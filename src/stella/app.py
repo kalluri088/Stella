@@ -58,6 +58,7 @@ from stella.llm import (
     run_cancellable,
 )
 from stella.memory import Memory, MemoryItem, SQLiteMemory
+from stella.mic_tap import MicTap
 from stella.minilm_embedding import (
     MiniLMEmbeddingProvider,
     minilm_extra_available,
@@ -114,6 +115,7 @@ from stella.voice import (
     ResidentSpeechProvider,
     SubprocessPlayer,
     SubprocessRecorder,
+    TapRecorder,
     VoiceError,
 )
 from stella.wake import (
@@ -816,6 +818,7 @@ class StellaApplication:
     wake: WakeListener | None = None
     wake_ear: WakeUtteranceEar | None = None
     wake_notice: str | None = None
+    mic_tap: MicTap | None = None
 
     def close(self) -> None:
         # The brain process is Stella's child: closing the application
@@ -834,6 +837,11 @@ class StellaApplication:
             self.wake_ear.stop()
         if self.voice is not None:
             self.voice.dispose()
+        if self.mic_tap is not None:
+            # The shared capture is Stella's child as well, and it goes
+            # last: every consumer above has already handed back its
+            # subscription, so nothing is reading a pipe being closed.
+            self.mic_tap.stop()
         memory = self.session.stella.memory
         if isinstance(memory, SQLiteMemory):
             memory.close()
@@ -1024,10 +1032,6 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         max_tool_steps=2,
         semantic_retriever=semantic_retriever,
     )
-    # The shared application backs the desktop UI too, so its session must
-    # not quote CLI-only instructions ("type 'exit'") in UI error messages.
-    # The interactive CLI loop builds its own StellaSession with the hint.
-    voice = build_voice(settings)
     # Barge-in is explicitly opt-in and its absence must never affect
     # anything else: an enabled-but-broken ear becomes one honest
     # message at startup (via the bridge), not a failed launch.
@@ -1043,14 +1047,26 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     wake: WakeListener | None = None
     wake_ear: WakeUtteranceEar | None = None
     wake_notice: str | None = None
+    mic_tap: MicTap | None = None
     try:
-        wake = build_wake(settings)
+        mic_tap = build_mic_tap(settings)
+        wake = build_wake(settings, tap=mic_tap)
         if wake is not None:
-            wake_ear = build_wake_ear(settings)
+            wake_ear = build_wake_ear(settings, tap=mic_tap)
     except VoiceError as error:
         wake = None
         wake_ear = None
+        # A tap nothing subscribed to never opened a capture, so dropping
+        # it here costs nothing and leaves no child process behind.
+        mic_tap = None
         wake_notice = str(error)
+    # The voice panel is built after the ears so push-to-talk can read
+    # their shared tap instead of opening a second handle on the same
+    # microphone. The shared application backs the desktop UI too, so its
+    # session must not quote CLI-only instructions ("type 'exit'") in UI
+    # error messages; the interactive CLI loop builds its own StellaSession
+    # with the hint.
+    voice = build_voice(settings, tap=mic_tap)
     # Last possible moment to spawn the brain: nothing after this can
     # fail and strand the process (stop() also runs inside a failed
     # start(), and close() owns it afterwards).
@@ -1071,6 +1087,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         wake=wake,
         wake_ear=wake_ear,
         wake_notice=wake_notice,
+        mic_tap=mic_tap,
     )
 
 
@@ -1331,13 +1348,19 @@ class VoicePanel:
             provider_dispose()
 
 
-def build_voice(settings: StellaSettings) -> VoicePanel:
+def build_voice(
+    settings: StellaSettings, tap: MicTap | None = None
+) -> VoicePanel:
     """Assemble the local-first voice periphery; never raises at startup.
 
     A broken optional voice setting disables only that voice capability
     (the reason surfaces when voice is used) instead of preventing Stella
     from starting: text chat, memory and actions must survive
     a misconfigured transcription or speech command.
+
+    With a shared microphone tap the recorder reads frames from it;
+    without one it keeps its own capture subprocess. Either way the
+    panel sees the same ``Recorder`` contract.
     """
 
     try:
@@ -1347,7 +1370,9 @@ def build_voice(settings: StellaSettings) -> VoicePanel:
         sweep_orphaned_children()
     except Exception:  # noqa: BLE001, S110 - cleanup must not break voice
         pass
-    recorder = SubprocessRecorder()
+    recorder: Recorder = (
+        TapRecorder(tap) if tap is not None else SubprocessRecorder()
+    )
     player = SubprocessPlayer()
     input_notice: str | None = None
     output_notice: str | None = None
@@ -1408,7 +1433,33 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     )
 
 
-def build_wake(settings: StellaSettings) -> WakeListener | None:
+def build_mic_tap(settings: StellaSettings) -> MicTap | None:
+    """The one capture subprocess this site's microphone gets, if any.
+
+    Push-to-talk, the wake ear and its utterance watcher can all want
+    frames at the same moment, and three ``pw-record`` children on one
+    device is how a working microphone starts reporting itself busy. The
+    tap is shared by all three — but only when something listens while
+    Stella is idle, which today means wake. Barge-in arms while she
+    speaks, when no capture-based input is running, so it keeps its own
+    process and its own echo-cancelled source.
+
+    Constructing the tap opens nothing: the capture starts when the first
+    consumer subscribes and ends when the last one leaves.
+    """
+
+    if settings.wake_word == "off":
+        return None
+    try:
+        command = capture_command(settings.wake_source)
+    except ValueError as error:
+        raise VoiceError(str(error)) from error
+    return MicTap(command=command)
+
+
+def build_wake(
+    settings: StellaSettings, tap: MicTap | None = None
+) -> WakeListener | None:
     """Assemble the wake-word ear, or None when the feature is off.
 
     Unlike barge-in there is no ``auto``: an always-open microphone is
@@ -1434,10 +1485,13 @@ def build_wake(settings: StellaSettings) -> WakeListener | None:
         feed=spotter.feed,
         command=capture_command(settings.wake_source),
         reset=spotter.reset,
+        tap=tap,
     )
 
 
-def build_wake_ear(settings: StellaSettings) -> WakeUtteranceEar:
+def build_wake_ear(
+    settings: StellaSettings, tap: MicTap | None = None
+) -> WakeUtteranceEar:
     """The hands-free endpointer for one wake-initiated capture.
 
     It shares the push-to-talk microphone and the same local VAD the
@@ -1453,6 +1507,7 @@ def build_wake_ear(settings: StellaSettings) -> WakeUtteranceEar:
         features=vad.features,
         endpoint=WakeEndpoint(),
         command=capture_command(settings.wake_source),
+        tap=tap,
     )
 
 

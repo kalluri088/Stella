@@ -35,6 +35,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from stella.childproc import guarded_popen
+from stella.mic_tap import read_frame
 from stella.voice import VoiceError, _cancel_process_tree
 
 __all__ = [
@@ -299,13 +300,6 @@ class BargeInListener:
 
     @staticmethod
     def _read_frame(stream) -> bytes | None:
-        data = b""
-        while len(data) < FRAME_BYTES:
-            try:
-                part = stream.read(FRAME_BYTES - len(data))
-            except OSError:
-                return None
-            if not part:
-                return None  # EOF
-            data += part
-        return data
+        # One copy of the short-read loop lives in the tap module now: a
+        # pipe from a capture and a tap subscriber read identically.
+        return read_frame(stream, FRAME_BYTES)

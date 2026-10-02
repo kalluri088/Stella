@@ -44,6 +44,7 @@ from stella.barge_in import (
     capture_command,
 )
 from stella.childproc import guarded_popen
+from stella.mic_tap import MicTap, TapClient, read_frame
 from stella.voice import VoiceError, _cancel_process_tree
 
 if TYPE_CHECKING:
@@ -348,14 +349,17 @@ class WakeListener:
         command: Sequence[str] | None = None,
         on_wake: Callable[[], None] | None = None,
         reset: Callable[[], None] | None = None,
+        tap: MicTap | None = None,
     ) -> None:
         self._feed = feed
         self._command = (
             list(command) if command is not None else capture_command(None)
         )
+        self._tap = tap
         self.on_wake = on_wake
         self._reset = reset
         self._process: subprocess.Popen[bytes] | None = None
+        self._client: TapClient | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self.failed = False
@@ -375,34 +379,46 @@ class WakeListener:
                 return
             if self._reset is not None:
                 self._reset()
-            try:
-                process = guarded_popen(
-                    self._command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
-            except OSError as error:
-                raise VoiceError(
-                    f"Wake word could not start listening ({error}). "
-                    "Push-to-talk voice and everything else are unaffected."
-                ) from error
+            stream, process, client = self._open_locked()
             self._process = process
+            self._client = client
             self._thread = threading.Thread(
                 target=self._run,
-                args=(process.stdout,),
+                args=(stream,),
                 name="stella-wake",
                 daemon=True,
             )
             self._thread.start()
 
+    def _open_locked(self):
+        """Frames from the shared tap if there is one, else a capture."""
+
+        if self._tap is not None:
+            client = self._tap.subscribe("wake")
+            return client, None, client
+        try:
+            process = guarded_popen(
+                self._command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise VoiceError(
+                f"Wake word could not start listening ({error}). "
+                "Push-to-talk voice and everything else are unaffected."
+            ) from error
+        return process.stdout, process, None
+
     def stop(self) -> None:
-        """Suspend the ear: kill only this capture, join the thread."""
+        """Suspend the ear: leave the tap or kill this capture, join."""
 
         with self._lock:
-            process, thread = self._process, self._thread
-            self._process = self._thread = None
-        if process is not None and process.poll() is None:
+            process, client, thread = self._process, self._client, self._thread
+            self._process = self._client = self._thread = None
+        if client is not None:
+            client.close()
+        elif process is not None and process.poll() is None:
             _cancel_process_tree(process)
         if thread is not None and thread.is_alive() and thread is not (
             threading.current_thread()
@@ -432,16 +448,10 @@ class WakeListener:
 
     @staticmethod
     def _read_frame(stream) -> bytes | None:
-        data = b""
-        while len(data) < FRAME_BYTES:
-            try:
-                part = stream.read(FRAME_BYTES - len(data))
-            except OSError:
-                return None
-            if not part:
-                return None  # EOF
-            data += part
-        return data
+        # The tap module owns the one copy of this loop now: a capture
+        # pipe and a tap subscriber read identically, and the utterance
+        # watcher shares it.
+        return read_frame(stream, FRAME_BYTES)
 
 
 class WakeUtteranceEar:
@@ -464,17 +474,20 @@ class WakeUtteranceEar:
         energy_floor: float = 0.01,
         clock: Callable[[], float] | None = None,
         on_finish: Callable[[str], None] | None = None,
+        tap: MicTap | None = None,
     ) -> None:
         self._features = features
         self._endpoint = endpoint
         self._command = (
             list(command) if command is not None else capture_command(None)
         )
+        self._tap = tap
         self._threshold = threshold
         self._energy_floor = energy_floor
         self._clock = clock if clock is not None else _monotonic
         self.on_finish = on_finish
         self._process: subprocess.Popen[bytes] | None = None
+        self._client: TapClient | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._start_time = 0.0
@@ -488,26 +501,36 @@ class WakeUtteranceEar:
                 return
             self._endpoint.reset()
             self._start_time = self._clock()
-            try:
-                process = guarded_popen(
-                    self._command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
-            except OSError as error:
-                raise VoiceError(
-                    f"Wake word could not watch the utterance ({error}). "
-                    "Push-to-talk voice and everything else are unaffected."
-                ) from error
+            stream, process, client = self._open_locked()
             self._process = process
+            self._client = client
             self._thread = threading.Thread(
                 target=self._run,
-                args=(process.stdout,),
+                args=(stream,),
                 name="stella-wake-utterance",
                 daemon=True,
             )
             self._thread.start()
+
+    def _open_locked(self):
+        """Frames from the shared tap if there is one, else a capture."""
+
+        if self._tap is not None:
+            client = self._tap.subscribe("wake-utterance")
+            return client, None, client
+        try:
+            process = guarded_popen(
+                self._command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise VoiceError(
+                f"Wake word could not watch the utterance ({error}). "
+                "Push-to-talk voice and everything else are unaffected."
+            ) from error
+        return process.stdout, process, None
 
     @property
     def running(self) -> bool:
@@ -518,9 +541,11 @@ class WakeUtteranceEar:
         """Silence the watcher without reporting a finish."""
 
         with self._lock:
-            process, thread = self._process, self._thread
-            self._process = self._thread = None
-        if process is not None and process.poll() is None:
+            process, client, thread = self._process, self._client, self._thread
+            self._process = self._client = self._thread = None
+        if client is not None:
+            client.close()
+        elif process is not None and process.poll() is None:
             _cancel_process_tree(process)
         if thread is not None and thread.is_alive() and thread is not (
             threading.current_thread()

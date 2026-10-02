@@ -266,6 +266,19 @@ else changes: a missing extra or model reports one friendly error at startup,
 an internal fault retires the ear silently for the rest of the session, and
 text, Listen and speech all keep working.
 
+## One microphone
+
+Push-to-talk, the wake ear and the utterance watcher that endpoints a
+wake-initiated recording share a single capture process. One `pw-record`
+child reads the device and hands whole frames to whoever is subscribed, so
+the microphone is never opened three times at once — the state that makes
+every "device busy" voice failure hard to explain. A subscriber that falls
+behind loses its oldest frame rather than stalling the reader; if the capture
+dies, each consumer is told once and retires quietly, and Stella's text path
+carries on. Barge-in deliberately keeps its own process: it is only ever armed
+while Stella speaks, when the wake ear is suspended, and it may point at a
+different echo-cancelled source.
+
 ## UI states
 
 The status line distinguishes "Listening...", "Transcribing...",

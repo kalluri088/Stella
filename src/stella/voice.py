@@ -20,7 +20,9 @@ import signal
 import subprocess
 import tempfile
 import threading
+import wave
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from stella.audio import TranscriptionProvider
 from stella.audio_output import (
@@ -32,6 +34,12 @@ from stella.audio_output import (
 from stella.childproc import guarded_popen, recording_finalized_ok
 from stella.context import InputModality, InputPart
 
+if TYPE_CHECKING:
+    # The tap imports VoiceError from here, so this direction stays a
+    # typing-only edge: the recorder takes frames from a subscriber, it
+    # never reaches back into capture management.
+    from stella.mic_tap import MicTap, TapClient
+
 __all__ = [
     "CommandSpeechProvider",
     "CommandTranscriptionProvider",
@@ -42,10 +50,18 @@ __all__ = [
     "ResidentSpeechProvider",
     "SubprocessPlayer",
     "SubprocessRecorder",
+    "TapRecorder",
     "VoiceError",
 ]
 
 RECORD_BINARIES = ("pw-record", "arecord")
+# Every capture on this machine is the same shape: the 16 kHz mono 16-bit
+# stream the local transcribers expect and the shared microphone tap
+# delivers. Pinning it explicitly is the difference between "a WAV file"
+# and a file the rest of Stella can actually read.
+CAPTURE_RATE = 16000
+CAPTURE_CHANNELS = 1
+CAPTURE_WIDTH = 2
 PLAY_COMMANDS = (
     lambda path: ["pw-play", path],
     lambda path: ["paplay", path],
@@ -151,9 +167,28 @@ class SubprocessRecorder(Recorder):
             self._directory = tempfile.mkdtemp(prefix=f"stella-voice-{os.getpid()}-")
             self._path = os.path.join(self._directory, "capture.wav")
             argv = (
-                ["pw-record", self._path]
+                [
+                    "pw-record",
+                    "--rate",
+                    str(CAPTURE_RATE),
+                    "--channels",
+                    str(CAPTURE_CHANNELS),
+                    self._path,
+                ]
                 if shutil.which("pw-record")
-                else ["arecord", "-q", "-f", "cd", "-t", "wav", self._path]
+                else [
+                    "arecord",
+                    "-q",
+                    "-f",
+                    "S16_LE",
+                    "-r",
+                    str(CAPTURE_RATE),
+                    "-c",
+                    str(CAPTURE_CHANNELS),
+                    "-t",
+                    "wav",
+                    self._path,
+                ]
             )
             try:
                 self._process = guarded_popen(
@@ -219,6 +254,143 @@ class SubprocessRecorder(Recorder):
             self._path = None
         if directory is not None:
             shutil.rmtree(directory, ignore_errors=True)
+
+
+class TapRecorder(Recorder):
+    """Records one clip from the shared microphone tap.
+
+    When Stella already keeps one capture open for the ears, a second
+    ``pw-record`` for push-to-talk is one more handle on the same device
+    and the classic "microphone is busy". This recorder takes frames from
+    the tap instead and writes the WAV itself, so the contract every
+    caller already relies on is unchanged: a private temporary path on
+    ``stop()``, removed by ``dispose()``, and the same honest failure
+    when nothing was captured.
+    """
+
+    def __init__(self, tap: MicTap) -> None:
+        self._tap = tap
+        self._client: TapClient | None = None
+        self._writer: wave.Wave_write | None = None
+        self._thread: threading.Thread | None = None
+        self._directory: str | None = None
+        self._path: str | None = None
+        self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        # The tap reports its own faults; a dead capture cannot record.
+        return not self._tap.failed
+
+    def start(self) -> None:
+        if not self.available():
+            raise VoiceError(
+                "The microphone is not available to Stella, so it cannot "
+                "be used for voice input."
+            )
+        with self._lock:
+            if self._thread is not None:
+                raise VoiceError("Stella is already listening.")
+            directory = tempfile.mkdtemp(prefix=f"stella-voice-{os.getpid()}-")
+            path = os.path.join(directory, "capture.wav")
+            client: TapClient | None = None
+            try:
+                client = self._tap.subscribe("recorder")
+                # The handle is not a local: the capture thread owns it
+                # until stop() or cancel() finalizes the file.
+                writer = wave.open(path, "wb")  # noqa: SIM115
+                writer.setnchannels(CAPTURE_CHANNELS)
+                writer.setsampwidth(CAPTURE_WIDTH)
+                writer.setframerate(CAPTURE_RATE)
+            except (OSError, ValueError, wave.Error, VoiceError) as error:
+                if client is not None:
+                    client.close()  # a failed open must not hold the tap
+                shutil.rmtree(directory, ignore_errors=True)
+                raise VoiceError(
+                    f"Stella could not start recording ({error})."
+                ) from error
+            self._directory = directory
+            self._path = path
+            self._client = client
+            self._writer = writer
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(client, writer),
+                name="stella-tap-recorder",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> str:
+        with self._lock:
+            thread, client, writer, path = (
+                self._thread,
+                self._client,
+                self._writer,
+                self._path,
+            )
+            self._thread = self._client = self._writer = None
+        if thread is None or writer is None or path is None:
+            raise VoiceError("Stella is not listening.")
+        # Leaving the tap ends the frame stream, so the writer thread
+        # finishes on its own and cannot be writing while the header is
+        # finalized.
+        if client is not None:
+            client.close()
+        thread.join(timeout=2)
+        if thread.is_alive():  # pragma: no cover - a wedged frame source
+            self.dispose()
+            raise VoiceError("Stella could not finish the recording.")
+        try:
+            writer.close()
+        except OSError as error:
+            self.dispose()
+            raise VoiceError(
+                f"Stella could not finish the recording ({error})."
+            ) from error
+        # Same conclusion the subprocess recorder reaches, same fail
+        # closed rule: no usable file means nothing goes to the model.
+        if not recording_finalized_ok(0, path):
+            self.dispose()
+            raise VoiceError(
+                "The microphone produced no recording. Check that an input "
+                "device is connected and not busy."
+            )
+        return path
+
+    def cancel(self) -> None:
+        with self._lock:
+            thread, client, writer = self._thread, self._client, self._writer
+            self._thread = self._client = self._writer = None
+        if client is not None:
+            client.close()
+        if thread is not None:
+            thread.join(timeout=2)
+        if writer is not None:
+            try:
+                writer.close()
+            except OSError as error:
+                del error  # the file is being thrown away anyway
+        self.dispose()
+
+    def dispose(self) -> None:
+        with self._lock:
+            directory, self._directory = self._directory, None
+            self._path = None
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    @staticmethod
+    def _run(client: TapClient, writer: wave.Wave_write) -> None:
+        # One subscriber reads one frame at a time, so a whole frame is
+        # what ``read()`` returns; ``b""`` is the tap saying it is done.
+        while True:
+            frame = client.read()
+            if not frame:
+                return
+            try:
+                writer.writeframes(frame)
+            except (OSError, wave.Error):  # pragma: no cover - disk gone
+                return
 
 
 class SubprocessPlayer(Player):

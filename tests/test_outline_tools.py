@@ -972,3 +972,17 @@ def test_full_pages_carry_no_truncation_marker():
     tool = OutlineSearchTool(client(*routes))
     for arguments in ({"when": "overdue"}, {"tag": "home"}, {"query": "a", "kind": "task"}):
         assert "(+" not in tool.execute(arguments).output
+
+
+def test_task_lines_show_priority():
+    routes = [
+        ("GET", "/api/v1/tasks", {"items": [
+            {"id": 1, "title": "urgent", "priority": 3},
+            {"id": 2, "title": "plain", "priority": 0},
+            {"id": 3, "title": "weird", "priority": True},
+        ], "next_before_id": None}),
+    ]
+    output = OutlineSearchTool(client(*routes)).execute({"when": "overdue"}).output
+    assert "[task#1] urgent !!!" in output
+    assert "[task#2] plain" in output and "plain !" not in output
+    assert "[task#3] weird" in output and "weird !" not in output

@@ -355,11 +355,14 @@ def _cut(payload: object) -> list[str]:
 
 
 def _task_line(row: Mapping[str, object]) -> str:
+    priority = row.get("priority")
     tail = (
         f" — due {_format_when(row['due_at'])}"
         if isinstance(row.get("due_at"), int)
         else ""
     )
+    if isinstance(priority, int) and not isinstance(priority, bool) and priority > 0:
+        tail = f" {'!' * priority}" + tail
     if isinstance(row.get("remind_at"), int):
         tail += f" (remind {_format_when(row['remind_at'])})"
     tags = row.get("tags")

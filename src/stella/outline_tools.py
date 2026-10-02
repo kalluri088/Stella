@@ -343,6 +343,17 @@ def _rows(payload: object, key: str = "items") -> list[dict[str, object]]:
     return []
 
 
+def _cut(payload: object) -> list[str]:
+    """A marker for list payloads that admit their page was truncated:
+    keyset pages carry next_before_id, /search carries has_more."""
+
+    if isinstance(payload, Mapping) and (
+        payload.get("next_before_id") is not None or payload.get("has_more") is True
+    ):
+        return ["(+ more — narrow with tag= or query)"]
+    return []
+
+
 def _task_line(row: Mapping[str, object]) -> str:
     tail = (
         f" — due {_format_when(row['due_at'])}"
@@ -542,7 +553,7 @@ class OutlineSearchTool(Tool):
                     "limit": MAX_OUTPUT_LINES,
                 },
             )
-            lines = [_task_line(row) for row in _rows(payload)]
+            lines = [_task_line(row) for row in _rows(payload)] + _cut(payload)
         elif when == "upcoming":
             payload = client.request(
                 "GET",
@@ -556,14 +567,14 @@ class OutlineSearchTool(Tool):
                 f"[event#{row.get('id')}] {row.get('title')}"
                 f" — {_format_when(row.get('starts_at'))}"
                 for row in _rows(payload)
-            ]
+            ] + _cut(payload)
         elif tag is not None:
             payload = client.request(
                 "GET",
                 "/api/v1/tasks",
                 query={"status": "open", "tag": tag, "limit": MAX_OUTPUT_LINES},
             )
-            lines = [_task_line(row) for row in _rows(payload)]
+            lines = [_task_line(row) for row in _rows(payload)] + _cut(payload)
         elif kind == "person":
             lines = self._person_lines(query)
         elif kind == "graph" and query is not None:
@@ -573,11 +584,11 @@ class OutlineSearchTool(Tool):
                 payload = client.request(
                     "GET", "/api/v1/tasks", query={"status": "open", "limit": 15}
                 )
-                return [_task_line(row) for row in _rows(payload)]
+                return [_task_line(row) for row in _rows(payload)] + _cut(payload)
             payload = client.request(
                 "GET", "/api/v1/search", query={"q": query, "kind": kind, "limit": 15}
             )
-            lines = [_search_line(row) for row in _rows(payload)]
+            lines = [_search_line(row) for row in _rows(payload)] + _cut(payload)
         if query is not None and when is not None:
             needle = query.casefold()
             lines = [line for line in lines if needle in line.casefold()]

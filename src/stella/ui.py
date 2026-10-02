@@ -1596,6 +1596,28 @@ class StellaWindow:
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)
+        ttk.Checkbutton(
+            frame,
+            text="Wake word (always-open microphone)",
+            variable=self._wake_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text=(
+                "Say \"hey Jarvis\" and Stella starts listening, so no "
+                "button press is needed. The microphone stays open for a "
+                "local detector only: it classifies frames and records "
+                "nothing until the phrase fires, and nothing at all is "
+                "kept when it does not. One confirmed phrase is exactly a "
+                "Listen press — it grants no authority, and it never "
+                "answers an approval dialog for you. Needs the "
+                "stella[wake] extra and the models under ~/models/"
+                "openwakeword; without them the box simply does nothing."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -1686,6 +1708,11 @@ class StellaWindow:
             os_tools_enabled=self._os_tools_var.get(),
             outline_tools_enabled=self._outline_tools_var.get(),
             web_tools_enabled=self._web_tools_var.get(),
+            # The saved choice and the mode this session runs are one
+            # decision, so Apply moves both: the checkbox is what the
+            # owner wants, and a rebuild arms or stops the ear from it.
+            wake_word_enabled=self._wake_var.get(),
+            wake_word="on" if self._wake_var.get() else "off",
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],

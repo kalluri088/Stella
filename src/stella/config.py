@@ -47,6 +47,7 @@ _CONFIG_FIELDS = (
     "os_tools_enabled",
     "outline_tools_enabled",
     "web_tools_enabled",
+    "wake_word_enabled",
 )
 
 
@@ -422,4 +423,5 @@ def resolve_settings() -> StellaSettings | None:
         os_tools_enabled=raw.get("os_tools_enabled") is True,
         outline_tools_enabled=raw.get("outline_tools_enabled") is True,
         web_tools_enabled=raw.get("web_tools_enabled") is True,
+        wake_word_enabled=raw.get("wake_word_enabled") is True,
     )

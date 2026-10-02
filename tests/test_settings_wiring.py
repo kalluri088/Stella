@@ -36,6 +36,7 @@ OVERRIDE_FIELDS = {
     "os_tools_env_override": "os_tools_enabled",
     "outline_tools_env_override": "outline_tools_enabled",
     "web_tools_env_override": "web_tools_enabled",
+    "wake_env_override": "wake_word_enabled",
 }
 
 # Settings checkbox that writes each opt-in field into the save dict.
@@ -45,6 +46,7 @@ UI_VARS = {
     "os_tools_enabled": "self._os_tools_var",
     "outline_tools_enabled": "self._outline_tools_var",
     "web_tools_enabled": "self._web_tools_var",
+    "wake_word_enabled": "self._wake_var",
 }
 
 

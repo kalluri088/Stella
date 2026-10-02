@@ -1163,6 +1163,27 @@ def test_settings_apply_without_a_key_leaves_the_environment_alone(
         root.destroy()
 
 
+def test_the_wake_checkbox_writes_both_spellings_of_one_choice(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Wake is the one capability the owner decides by hand while Stella is
+    # running, and the window shows the saved bool while every consumer
+    # reads the mode: a tick has to move both spellings together.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
+    root, window, bridge, _ = make_window()
+    try:
+        assert window._draft_settings().wake_word_enabled is False
+        assert window._draft_settings().wake_word == "off"
+        window._wake_var.set(True)
+        draft = window._draft_settings()
+        assert draft.wake_word_enabled is True
+        assert draft.wake_word == "on"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_settings_preset_picker_derives_provider_and_preset(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

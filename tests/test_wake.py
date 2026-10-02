@@ -970,3 +970,157 @@ def test_a_pending_approval_does_not_arm_barge_in() -> None:
         drain_until(bridge, lambda e: barge.stops >= 1)
     finally:
         bridge.stop()
+
+
+# ------------------------------------------------------------- the opt-in box
+#
+# Stage 6 gives the wake word a checkbox in Settings. Two things that an
+# environment-only feature never had to prove now need proving: one
+# decision cannot be spelled two contradictory ways, and Apply must arm or
+# retire the ear in the session that pressed it.
+
+
+def test_the_saved_checkbox_and_the_running_mode_never_disagree(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clear_wake_env(monkeypatch)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    for enabled in (False, True):
+        settings = StellaSettings.from_saved(
+            provider="ollama", model="m", wake_word_enabled=enabled
+        )
+        assert settings.wake_word_enabled is enabled
+        # build_wake reads the mode and the checkbox reads the bool, so the
+        # two spellings of one decision must land on the same microphone.
+        assert settings.wake_word == ("on" if enabled else "off")
+    # STELLA_WAKE_WORD decides a single launch in either direction, and it
+    # decides the bool with it: an override can never leave a saved "off"
+    # running an "on" ear, or a saved "on" silently disarmed.
+    monkeypatch.setenv("STELLA_WAKE_WORD", "on")
+    settings = StellaSettings.from_saved(
+        provider="ollama", model="m", wake_word_enabled=False
+    )
+    assert (settings.wake_word, settings.wake_word_enabled) == ("on", True)
+    monkeypatch.setenv("STELLA_WAKE_WORD", "off")
+    settings = StellaSettings.from_saved(
+        provider="ollama", model="m", wake_word_enabled=True
+    )
+    assert (settings.wake_word, settings.wake_word_enabled) == ("off", False)
+    # The variable-only path agrees with itself for the same reason.
+    monkeypatch.setenv("STELLA_MODEL", "m")
+    monkeypatch.setenv("STELLA_LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("STELLA_WAKE_WORD")
+    env = StellaSettings.from_environment()
+    assert (env.wake_word, env.wake_word_enabled) == ("off", False)
+    monkeypatch.setenv("STELLA_WAKE_WORD", "on")
+    env = StellaSettings.from_environment()
+    assert (env.wake_word, env.wake_word_enabled) == ("on", True)
+    # And the choice survives a launch: written to config.json, read back
+    # as the same pair through the path a real start takes.
+    from stella import config as stella_config
+
+    monkeypatch.delenv("STELLA_MODEL")
+    monkeypatch.delenv("STELLA_LLM_PROVIDER")
+    monkeypatch.delenv("STELLA_WAKE_WORD")
+    stella_config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="m", wake_word_enabled=True
+        )
+    )
+    read_back = stella_config.resolve_settings()
+    assert read_back is not None
+    assert (read_back.wake_word, read_back.wake_word_enabled) == ("on", True)
+
+
+def apply_wake_settings(
+    bridge: StellaBridge,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    *,
+    enabled: bool,
+) -> tuple[FakeWake, FakeWakeEar, VoicePanel]:
+    """Press Settings → Apply with the box moved to ``enabled``.
+
+    ``stella.app.build_application`` is replaced, so the ear the box would
+    create is a counting fake: no microphone opens and no model file is
+    read. The saved configuration lands in a temporary data directory, the
+    same courtesy every settings test pays.
+    """
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    wake = FakeWake()
+    ear = FakeWakeEar()
+    panel = VoicePanel(
+        FakeRecorder(), FakePlayer(), FakeTranscriber(), FakeSpeech()
+    )
+
+    def replacement(settings: StellaSettings) -> StellaApplication:
+        return StellaApplication(
+            StellaSession(make_stella()),
+            settings,
+            panel,
+            wake=wake if enabled else None,
+            wake_ear=ear if enabled else None,
+        )
+
+    monkeypatch.setattr("stella.app.build_application", replacement)
+    bridge.post_apply_settings(
+        StellaSettings(
+            model="test",
+            wake_word="on" if enabled else "off",
+            wake_word_enabled=enabled,
+        )
+    )
+    drain_until(bridge, lambda e: any(x.kind == "settings" for x in e))
+    return wake, ear, panel
+
+
+def test_settings_rebind_arms_a_newly_enabled_wake_ear(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ticking the box and pressing Apply arms the ear in this session: no
+    # restart, and no second capture for the same microphone.
+    bridge, _panel, _player = make_wake_bridge(None, None)
+    try:
+        wake, ear, panel = apply_wake_settings(
+            bridge, monkeypatch, tmp_path, enabled=True
+        )
+        assert (wake.starts, ear.starts) == (1, 0)
+        assert wake.on_wake is not None and ear.on_finish is not None
+        # The bridge listens to this ear now, so one phrase is one press.
+        wake.on_wake()
+        drain_until(bridge, lambda e: voice_state(e, "listening"))
+        assert panel._recorder.started == 1
+    finally:
+        bridge.stop()
+
+
+def test_disabling_wake_via_apply_stops_the_ear(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wake = FakeWake()
+    ear = FakeWakeEar()
+    bridge, _panel, _player = make_wake_bridge(wake, ear)
+    # The retired application is closed just after the rebind, and its own
+    # close() stops the same ears. Reading the counters at that moment is
+    # what tells "the rebind took the microphone down" apart from "the
+    # cleanup of the object that owned it happened to do so".
+    stops_at_close: list[tuple[int, int]] = []
+    application = bridge._application
+    original_close = application.close
+
+    def close_and_note() -> None:
+        stops_at_close.append((wake.stops, ear.stops))
+        original_close()
+
+    monkeypatch.setattr(application, "close", close_and_note)
+    try:
+        apply_wake_settings(bridge, monkeypatch, tmp_path, enabled=False)
+        assert stops_at_close, "the retired application never closed"
+        wake_stops, ear_stops = stops_at_close[0]
+        assert wake_stops >= 1, "unchecking wake left the spotter armed"
+        assert ear_stops >= 1, "unchecking wake left the utterance ear open"
+        # Unticking is final for this session: nothing re-arms afterwards.
+        assert wake.starts == 1 and ear.starts == 0
+    finally:
+        bridge.stop()

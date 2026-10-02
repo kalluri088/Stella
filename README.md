@@ -43,9 +43,10 @@ checked that it did.
 - **Talk and listen** — press the mic button, speak; replies can be spoken
   back on a local voice. Neither side needs a cloud service: the transcriber
   and the synthesizer already on the laptop are found automatically and named
-  on screen. Continuous hands-free listening is off by default: the wake word
-  (`STELLA_WAKE_WORD=on`) is the only way Stella ever holds the microphone
-  open while you are not speaking to her.
+  on screen. Continuous hands-free listening is off by default: the wake
+  word — the *Wake word* box in Settings, whose answer is saved, or
+  `STELLA_WAKE_WORD=on` for a single launch — is the only way Stella ever
+  holds the microphone open while you are not speaking to her.
 - **Use your desktop (opt-in)** — with one setting on, Stella can read the
   focused Hyprland window, focus or move windows, and type into the window
   you nominate. Everything else about her is unchanged: the screen-wide
@@ -189,7 +190,7 @@ development, or running several configurations side by side:
 | `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
 | `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |
 | `STELLA_SPEECH_LOCAL_VOICE` / `STELLA_SPEECH_LOCAL_SPEED` | Voice name and rate asked of a resident speech worker (extra request keys; a worker may ignore them) | unset |
-| `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`); arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
+| `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`) for this launch only; the *Wake word* box in Settings is what is saved (`wake_word_enabled`), and this variable wins over it either way. Arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |
 

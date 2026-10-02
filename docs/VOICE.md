@@ -317,12 +317,18 @@ actually running, and speech is only claimed after a transcript was produced.
 
 - **Listen / Stop** — start or stop one explicit recording. Recording only
   happens inside an explicit press, or inside one wake-initiated capture
-  when `STELLA_WAKE_WORD=on`; there is no background recording either way.
-- **Wake word (opt-in)** — with `STELLA_WAKE_WORD=on` a local detector holds
-  the microphone open while Stella is idle, and one confirmed phrase is
-  exactly a **Listen** press: it starts the same capture, records nothing
+  when wake is on; there is no background recording either way.
+- **Wake word (opt-in)** — with the *Wake word* box ticked in Settings (or
+  `STELLA_WAKE_WORD=on`) a local detector holds the microphone open while
+  Stella is idle, and one confirmed phrase is exactly a **Listen** press:
+  it starts the same capture, records nothing
   until it fires, and gains no authority of its own. Off by default, and
-  suspended whenever Stella is speaking, narrating, already capturing or
+  the tick is saved for later launches; the environment variable decides
+  one launch in either direction without rewriting the saved answer.
+  Apply arms or stops the ear in the running session, so there is no
+  restart to wait for and never a second capture for the same microphone.
+  The ear is suspended whenever Stella is speaking, narrating, already
+  capturing or
   waiting on an on-screen approval — a dangerous action is answered by a
   press on that dialog and nothing else, so the ears stay off the
   microphone until it closes. A wake that fires over silence is discarded:

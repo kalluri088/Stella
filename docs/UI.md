@@ -134,7 +134,11 @@ display, and can never approve a tool or change permissions.
   fails the rebuild honestly and keeps the working session. The semantic
   index duplicates
   every stored memory's text into its own file; while unchecked, that
-  file is never created.
+  file is never created. A separate
+  *Wake word (always-open microphone)* box, also off by default, arms the
+  local detection ear the moment Apply rebuilds and stops that capture
+  when unticked — the privacy contract, the models it needs and the
+  `STELLA_WAKE_WORD` override are in `VOICE.md`.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt
@@ -220,7 +224,10 @@ core path and reports that nothing was changed.
   Honest residue: an abandoned cloud transcription or speech request is
   given up without closing its socket (the result is never used), and a
   partial cloud speech file is cleaned up when Stella exits.
-- Voice is one explicit utterance per Listen press with local-first providers;
-  there is no wake word, continuous listening, or streaming recognition.
+- Voice is one explicit utterance per Listen press — or per wake phrase,
+  with local-first providers; the wake word is a way to press the button
+  with your voice, not an open conversation. There is no streaming
+  recognition, and no speaker identification: the ear answers whoever
+  says the phrase.
 - No browser automation, email/calendar, cloud accounts, plugins, or remote
   integrations.

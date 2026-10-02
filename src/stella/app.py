@@ -453,6 +453,24 @@ def web_tools_env_override() -> bool | None:
     return _env_toggle("STELLA_WEB")
 
 
+def wake_env_override() -> bool | None:
+    """The STELLA_WAKE_WORD override, or None when it says nothing.
+
+    Detection holds the microphone open while nobody is speaking to Stella,
+    so it is never on by default and never on by accident: this variable
+    overrides the saved checkbox for one launch, it does not replace it.
+    Unlike the other toggles this one is a named mode, so only ``on`` and
+    ``off`` mean anything — an unset variable says nothing, and anything
+    else is rejected at launch by ``_environment_fields``, which reads the
+    identical variable.
+    """
+
+    raw = os.environ.get("STELLA_WAKE_WORD", "").strip().casefold()
+    if not raw:
+        return None
+    return raw == "on"
+
+
 SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
 
 
@@ -555,6 +573,9 @@ class StellaSettings:
     os_tools_enabled: bool = False
     outline_tools_enabled: bool = False
     web_tools_enabled: bool = False
+    # The saved half of the wake-word opt-in. ``wake_word`` below stays the
+    # mode this launch actually runs, so the two never disagree.
+    wake_word_enabled: bool = False
     semantic_provider: str = "local-hash"
     semantic_embed_model: str = "nomic-embed-text"
     workspace: str = field(default_factory=default_workspace)
@@ -779,6 +800,7 @@ class StellaSettings:
         os_tools_enabled: bool = False,
         outline_tools_enabled: bool = False,
         web_tools_enabled: bool = False,
+        wake_word_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -788,6 +810,17 @@ class StellaSettings:
         os_override = os_tools_env_override()
         outline_override = outline_tools_env_override()
         web_override = web_tools_env_override()
+        wake_override = wake_env_override()
+        # One decision with two spellings: the checkbox is what the owner
+        # saved, the mode is what this launch runs, and every consumer
+        # reads the mode. So the mode follows the bool — which is also how
+        # STELLA_WAKE_WORD wins for a single launch without rewriting the
+        # saved answer, in either direction.
+        wake_enabled = (
+            wake_word_enabled if wake_override is None else wake_override
+        )
+        environment = cls._environment_fields()
+        environment["wake_word"] = "on" if wake_enabled else "off"
         return cls(
             provider=provider,
             preset=preset,
@@ -819,7 +852,8 @@ class StellaSettings:
                 semantic_provider if provider_override is None
                 else provider_override
             ),
-            **cls._environment_fields(),
+            wake_word_enabled=wake_enabled,
+            **environment,
         )
 
     @classmethod
@@ -852,6 +886,7 @@ class StellaSettings:
             os_tools_enabled=os_tools_env_override() is True,
             outline_tools_enabled=outline_tools_env_override() is True,
             web_tools_enabled=web_tools_env_override() is True,
+            wake_word_enabled=wake_env_override() is True,
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
             ),

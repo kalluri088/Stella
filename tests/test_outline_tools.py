@@ -949,3 +949,28 @@ def test_today_next_up_does_not_repeat_a_scheduled_event():
     lines = result.output.splitlines()[1:]
     assert sum("midnight snack" in line for line in lines) == 1
     assert any("next up: futuresite" in line for line in lines)
+
+
+def test_list_views_admit_when_their_page_was_cut():
+    routes = [
+        ("GET", "/api/v1/tasks", {"items": [{"id": 1, "title": "a", "due_at": 1}],
+                                  "next_before_id": 1}),
+        ("GET", "/api/v1/search", {"items": [{"kind": "task", "id": 1, "title": "a",
+                                              "snippet": ""}], "has_more": True}),
+    ]
+    tool = OutlineSearchTool(client(*routes))
+    assert "(+ more" in tool.execute({"when": "overdue"}).output
+    assert "(+ more" in tool.execute({"tag": "home"}).output
+    assert "(+ more" in tool.execute({"query": "a", "kind": "task"}).output
+
+
+def test_full_pages_carry_no_truncation_marker():
+    routes = [
+        ("GET", "/api/v1/tasks", {"items": [{"id": 1, "title": "a", "due_at": 1}],
+                                  "next_before_id": None}),
+        ("GET", "/api/v1/search", {"items": [{"kind": "task", "id": 1, "title": "a",
+                                              "snippet": ""}], "has_more": False}),
+    ]
+    tool = OutlineSearchTool(client(*routes))
+    for arguments in ({"when": "overdue"}, {"tag": "home"}, {"query": "a", "kind": "task"}):
+        assert "(+" not in tool.execute(arguments).output

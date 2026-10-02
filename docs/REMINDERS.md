@@ -1,12 +1,14 @@
 # Reminders: where they live now
 
 Stella does not keep reminders. It once did — a `stella.reminders` store,
-three capabilities (`reminder_create`, `reminder_list`, `reminder_cancel`), a
-due-check on every CLI interaction and a 5-second ticker in the desktop
-window. All of that has been removed. A scheduled alert is now a property of
-the notes workspace the user already keeps, reached through the single
-`outline` capability pair; Stella's job is to write the alert into that
-application, not to run a competing one.
+three capabilities (`reminder_create`, `reminder_list`, `reminder_cancel`), and
+a desktop panel listing them. All of that has been removed. A scheduled alert
+is now a property of the notes workspace the user already keeps, reached
+through the single `outline` capability pair; Stella's job is to write the
+alert into that application, not to run a competing one. What survives is only
+the part that carries an alert back to the user: the due-check and the desktop
+ticker now read Outline's own reminder list instead of a local table (see
+"What was actually deleted").
 
 ## What "remind me" means now
 
@@ -44,16 +46,22 @@ The old feature was built on rules that still hold, and the removal did not
 touch them:
 
 - **A scheduled alert is not authority.** Nothing whose job is to notify
-  later may modify files, execute tools, or reach external services. That
-  is now enforced more simply than before: there is no notification path
-  inside Stella at all, so there is nothing to guard.
+  later may modify files, execute tools, or reach external services. Stella's
+  remaining notification path is a read that becomes one line of chat: the
+  due sweep claims items from Outline and turns each claim into a delivered
+  message, and it cannot reach the Brain, the LLM, or the dispatcher. That is
+  tested directly — `test_the_sweep_never_consults_the_brain_or_the_llm` and
+  `test_claimed_content_cannot_grant_tool_authority` in
+  `tests/test_outline_reminder_delivery.py`, which delivers a hostile title
+  and then proves a dangerous tool still refuses.
 - **Proactivity remains one-directional.** `DueTaskEvent`,
   `ProactivityDelegation` and `Stella.handoff_due_task_event()` stay, and
   they stay generic: their remaining producer is Outline's own overdue data,
-  surfaced while a tool result is read. What was deleted is only the
-  adapter that turned a due row of Stella's reminder table into such an
-  event. Rule 8 — proactivity may increase awareness, never authority — is
-  unchanged and still tested (`tests/test_proactivity.py`).
+  surfaced while a tool result is read or claimed by the due-reminder pump.
+  What was deleted is only the adapter that turned a due row of Stella's
+  reminder table into such an event. Rule 8 — proactivity may raise
+  awareness, never authority — is unchanged and still tested
+  (`tests/test_proactivity.py`).
 - **Tool output and event content remain untrusted.** A task title coming
   back from Outline is information, not an instruction (rules 6 and 7).
 - **`DO_NOTHING` remains legitimate** for a due item the policy declines to
@@ -90,19 +98,31 @@ Stella actually controls.
 ## What was actually deleted
 
 `src/stella/reminders.py`; the three reminder tools, `ReminderAction` and
-`ToolResult.reminder_action`; `Stella.check_due_reminders()` and
-`ReminderDelivery`; `ReminderLifecycleEvent` from the trace vocabulary;
-`ReminderPanel` and `ReminderScheduler` from the application layer; the
-bridge's reminder commands, its `reminder_tick_seconds`/`now` options, and
-the idle ticker entirely; the Reminders section of the window and its
-navigation entry; `STELLA_REMINDERS_DB`, `default_reminders_db()` and
-`StellaSettings.reminders_db`; and `stella_reminders.db` from the backup
-manifest set.
+`ToolResult.reminder_action`; the reminder store behind
+`Stella.check_due_reminders()`; `ReminderPanel` and `ReminderScheduler` from
+the application layer; the panel's reminder commands; the Reminders section of
+the window and its navigation entry; `STELLA_REMINDERS_DB`,
+`default_reminders_db()` and `StellaSettings.reminders_db`; and
+`stella_reminders.db` from the backup manifest set.
 
-Because the desktop ticker existed only to sweep reminders, **Stella no longer
-wakes itself**. Unprompted awareness now depends on being asked, or on a turn
-that reads overdue items — a real reduction in proactivity, accepted because
-the application the user schedules in is the one that should ring.
+What did **not** go is the delivery side, because deleting it would have made
+"remind me" a silent no-op whenever the browser happens to be closed.
+`Stella.check_due_reminders()`, `ReminderDelivery` and `ReminderLifecycleEvent`
+survive in Outline-only form: they ask the Outline reminder pump for the items
+*this process just claimed* and surface each as one chat line. The pump
+(`stella.outline_tools.OutlineReminderPump`) owns the schedule and the network
+call; `GET /api/v1/reminders/due` followed by `POST /api/v1/reminders/fire` is
+the claim, so the server — not a Stella-side clock — decides that an alert
+reaches the user exactly once. The desktop ticker returns as `ReminderTicker`,
+whose only job is to call `post_reminder_check()` on an interval, which posts
+onto the bridge's single command queue so every read still happens on the one
+worker thread that owns Stella. It arms only when a real Outline transport
+exists (`active_reminder_pump()` returns `None` otherwise), and the pump
+rate-limits its own HTTP cycle, so ticking often costs nothing.
+
+So Stella still wakes itself, but what it wakes into is a read of someone
+else's alert list — never a tool call, never a model turn. That distinction is
+the whole shape of this design.
 
 `stella_reminders.db` was never deleted from disk and no user data was
 destroyed: the file simply stopped being opened, written, or backed up. A user
@@ -110,10 +130,11 @@ who wants those rows can read them by hand from the old state directory.
 
 ## What is intentionally not implemented
 
-- No replacement scheduler, poller, or background wake for Outline overdue
-  items. Adding one would reintroduce the authority-free-but-noisy path the
-  removal was about; if Stella ever needs to notice on its own, it should be
-  designed as workspace-driven proactivity, not as a revived reminder clock.
+- No Stella-owned reminder clock, and no due-item list that outlives one
+  request. The wake-up exists only to ask Outline what Outline already
+  decided is due; if Outline says nothing, nothing happens. Anything richer
+  should be designed as workspace-driven proactivity, not as a revived
+  reminder store.
 - No local notification bridge (DBus, `notify-send`, cron). Those are system
   changes with their own trust surface and are outside the "model proposes,
   runtime authorizes" boundary as currently drawn.

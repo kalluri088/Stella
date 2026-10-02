@@ -33,6 +33,7 @@ from stella.commands import (
 )
 from stella.config import resolve_settings
 from stella.llm import Message
+from stella.outline_tools import active_reminder_pump
 from stella.persona import (
     ADDONS_FILE_NAME,
     MAX_PERSONA_BYTES,
@@ -69,10 +70,12 @@ from stella.trace import (
     DecisionEvent,
     FinalResponseEvent,
     InputReceivedEvent,
+    InteractionTrace,
     MemoryActionEvent,
     MemoryIndexSyncEvent,
     MemoryRetrievedEvent,
     MemoryWriteEvent,
+    ReminderLifecycleEvent,
     SemanticSearchUnavailableEvent,
     ToolResultEvent,
 )
@@ -223,6 +226,9 @@ def run_cli(
                 continue
             user_input = expand_template(body, call.argument)
 
+        # Real interactions are the only trigger: due Outline reminders are
+        # delivered through the existing bounded notify-only path.
+        _deliver_due_reminders(stella, output_fn, trace=flags.trace)
         status("Stella is thinking...")
 
         narrating = {"tool_seen": False}
@@ -263,6 +269,44 @@ def run_cli(
         else:
             # A deliberate no-op should not look like a silent failure.
             status("Stella has nothing to add.")
+
+
+def _deliver_due_reminders(
+    stella: Stella,
+    output_fn: Callable[[str], None],
+    trace: bool = False,
+) -> None:
+    """Run the trusted due-reminder check and show what was claimed.
+
+    A CLI session that is idle has no window to inform, so the sweep rides
+    the next interaction: anything Outline reports due since the last check
+    reaches the user exactly once.
+    """
+
+    if not isinstance(stella, Stella):
+        # Minimal test or embedding stubs may not carry the flow.
+        return
+    reminder_trace = InteractionTrace(interaction_id="reminder-check")
+    deliveries = stella.check_due_reminders(trace=reminder_trace)
+    for delivery in deliveries:
+        if delivery.delivered and delivery.message is not None:
+            output_fn(f"Stella: {delivery.message}")
+    if trace:
+        for event in reminder_trace.events:
+            line = _reminder_lifecycle_line(event)
+            if line is not None:
+                output_fn(line)
+
+
+def _reminder_lifecycle_line(event: object) -> str | None:
+    if not isinstance(event, ReminderLifecycleEvent):
+        return None
+    detail = event.action
+    if event.reminder_id is not None:
+        detail += f" #{event.reminder_id}"
+    if event.outcome:
+        detail += f" ({event.outcome})"
+    return _trace_line("reminder", detail)
 
 
 def format_trace(result: StellaResult) -> list[str]:
@@ -330,6 +374,10 @@ def format_trace(result: StellaResult) -> list[str]:
             if event.size_bytes is not None:
                 detail += f" ({event.size_bytes} bytes)"
             lines.append(_trace_line("action", detail))
+        elif isinstance(event, ReminderLifecycleEvent):
+            line = _reminder_lifecycle_line(event)
+            if line is not None:
+                lines.append(line)
         elif isinstance(event, MemoryIndexSyncEvent):
             status = "refreshed" if event.ok else "REFRESH FAILED"
             lines.append(_trace_line("memory", f"semantic index {status}"))
@@ -365,12 +413,18 @@ def format_startup(stella: Stella) -> list[str]:
         if hasattr(tool, "workspace"):
             workspace = str(tool.workspace)
             break
+    pump = active_reminder_pump()
     return [
         f"provider:  {type(llm).__name__ if llm is not None else 'unknown'}",
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {database if database is not None else 'in-memory'}",
         f"workspace: {workspace or 'not configured'}",
+        (
+            "alerts:    Outline reminders"
+            if pump is not None
+            else "alerts:    none (no Outline server)"
+        ),
     ]
 
 

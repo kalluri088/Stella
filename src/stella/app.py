@@ -79,7 +79,7 @@ from stella.semantic_memory import (
     SQLiteSemanticIndex,
     reconcile_semantic_index,
 )
-from stella.stella import Stella, StellaResult
+from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
     MAX_AUDIT_RECORDS,
     ActionPreview,
@@ -227,7 +227,8 @@ class StellaSession:
     """One continuous conversation shared by the CLI and the UI.
 
     It only orchestrates calls that the CLI already made inline:
-    ``Stella.process`` and the conversation history that surrounds it.
+    ``Stella.process``, the Outline reminder sweep that runs ahead of an
+    interaction, and the conversation history that surrounds them.
     """
 
     def __init__(
@@ -242,6 +243,19 @@ class StellaSession:
         # Opt-in observer for `stella reflect`: it records, it never
         # influences a turn. None (the default) means no recording.
         self.transcripts = transcripts
+
+    def check_due_reminders(self) -> tuple[ReminderDelivery, ...]:
+        """Claim whatever Outline reports as due, without consulting the Brain.
+
+        Stella keeps no reminder store, so this is one read of Outline's
+        claim funnel — and it returns nothing at all when that pump was
+        never armed.
+        """
+
+        if not isinstance(self.stella, Stella):
+            # Minimal test or embedding stubs may not carry the flow.
+            return ()
+        return self.stella.check_due_reminders()
 
     def run_turn(
         self,
@@ -1506,6 +1520,40 @@ class UiEvent:
     payload: object = None
 
 
+class ReminderTicker:
+    """Wakes on an interval and asks the bridge for one Outline claim sweep.
+
+    It owns no Stella state and schedules nothing for the user: the thread
+    only calls ``on_tick``, which posts onto the bridge's single command
+    queue, so every reminder read still happens on the one worker thread
+    that owns Stella. The Outline pump it feeds rate-limits its own HTTP
+    cycle, so ticking often costs nothing.
+    """
+
+    def __init__(
+        self,
+        on_tick: Callable[[], None],
+        interval_seconds: float = 5.0,
+    ) -> None:
+        self._on_tick = on_tick
+        self._interval = interval_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="stella-reminder-tick", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._on_tick()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+
+
 # Closes a chunked reply's play queue; no generated artifact path can
 # contain a NUL, so this sentinel string can never collide with one.
 _END_OF_SPEECH = "\x00stella-end-of-speech"
@@ -1517,16 +1565,20 @@ class StellaBridge:
     SQLite connections are thread-bound, and Stella's own state is not
     thread-safe, so exactly one worker thread touches the application
     layer. The UI thread only posts commands and drains events; it never
-    calls into ``Stella``, the dispatcher and memory. Every command is
-    wrapped so an unexpected failure becomes one
+    calls into ``Stella``, the dispatcher or memory itself. Every command
+    is wrapped so an unexpected failure becomes one
     friendly ``("error", ...)`` event instead of a stack trace.
     """
 
     def __init__(
         self,
         factory: Callable[[], StellaApplication],
+        *,
+        reminder_tick_seconds: float | None = 5.0,
     ) -> None:
         self.approvals = ApprovalBroker()
+        self._reminder_tick_seconds = reminder_tick_seconds
+        self._ticker: ReminderTicker | None = None
         self._application: StellaApplication | None = None
         self._memory: MemoryPanel | None = None
         self._history_stamp: str | None = None
@@ -1566,6 +1618,14 @@ class StellaBridge:
             return
         self._application = application
         self._rebind(application)
+        if self._reminder_tick_seconds is not None:
+            # Only a successfully started Stella gets a ticker, and it must
+            # be running before _ready releases the caller: stop() from the
+            # UI could otherwise catch a half-built ticker.
+            self._ticker = ReminderTicker(
+                self.post_reminder_check, self._reminder_tick_seconds
+            )
+            self._ticker.start()
         self._ready.set()
 
     def _rebind(self, application: StellaApplication) -> None:
@@ -1718,6 +1778,7 @@ class StellaBridge:
         self, user_input: str, spoken: bool = False
     ) -> TurnOutcome:
         session = self._require_session()
+        self._check_due_reminders()
         dead = threading.Event()
         self._narration_dead = dead
 
@@ -1782,6 +1843,21 @@ class StellaBridge:
             self._emit("note", "\n".join(action_history_lines(stella, limit)))
 
         self._post(handle)
+
+    def post_reminder_check(self) -> None:
+        """One Outline claim sweep, run on the worker thread.
+
+        This is the ticker's entire entry point: it posts, it never reads
+        reminders on the ticker thread itself.
+        """
+
+        self._post(self._check_due_reminders)
+
+    def _check_due_reminders(self) -> None:
+        session = self._require_session()
+        for delivery in session.check_due_reminders():
+            if delivery.delivered and delivery.message is not None:
+                self._emit("reminder_delivered", delivery.message)
 
     # -------------------------------------------------------------- voice
 
@@ -2278,6 +2354,11 @@ class StellaBridge:
         self._post(handle)
 
     def stop(self) -> None:
+        if self._ticker is not None:
+            # Stop the wake first: a ticker posting onto a queue nobody
+            # drains would otherwise leak a command per interval.
+            self._ticker.stop()
+            self._ticker = None
         self.approvals.deny_outstanding()
         self._interrupt_speech()
         if self._voice is not None:

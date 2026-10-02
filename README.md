@@ -250,11 +250,14 @@ without touching the live state.
 - Local models are slow and sometimes pick the wrong tool — Stella then
   fails closed to doing nothing rather than guessing. The window shows how
   long each turn took so "slow" never looks like "broken".
-- Stella no longer notifies anyone on her own — there is no reminder store,
-  no background ticker, and an open window stays quiet until you speak.
-  Scheduling and alerting happen inside the notes app you connect; a remind
-  alert there reaches only you, so "remind the team" is something she will
-  ask about rather than fake.
+- Stella keeps no reminders of her own. There is no reminder store, no
+  reminder panel and no reminder tool: "remind me to X at 18:00" is an alert
+  written into the notes app you connect, and that app is what rings. Stella
+  does still wake the desktop window on an interval to ask that app what is
+  due — a read that becomes one line of chat, with no tool call and no model
+  turn behind it — and she only does it while the notes app is actually
+  configured. A remind alert there reaches only you, so "remind the team" is
+  something she will ask about rather than fake.
 - File actions are limited to her workspace on purpose. There is no shell
   access and no "control my computer" mode.
 - Voice quality depends on the transcription/speech tools you install.

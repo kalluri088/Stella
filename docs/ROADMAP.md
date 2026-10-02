@@ -45,16 +45,18 @@ mechanism — not an aspiration.
 The bar for Stage A: "I should be talking, asking, and it should be
 working and helping me, even if not the fastest."
 
-- **A1. Idle reminder firing — done, then deliberately withdrawn.** The
-  ticker existed only to sweep Stella's own reminder table. That table is
-  gone (reminders are now an alert written into the connected Outline
-  workspace, which fires in that application), so `ReminderScheduler` was
-  removed with it and an open window is quiet until the user speaks. The
-  queue discipline it proved — a wake posts onto the one command queue and
-  never evaluates on the wake's own thread — is still pinned by
+- **A1. Idle reminder firing — done, then narrowed.** The ticker was built to
+  sweep Stella's own reminder table. That table is gone — reminders are now an
+  alert written into the connected Outline workspace — and `ReminderScheduler`
+  was removed with it. What replaced it is smaller: `ReminderTicker` wakes on
+  an interval only to ask the bridge for one Outline claim sweep, so an idle
+  window can still surface an alert the user scheduled elsewhere without
+  owning a schedule of its own. The queue discipline the original feature
+  proved — a wake posts onto the one command queue and never evaluates on the
+  wake's own thread — is still pinned by
+  `test_bridge_delivers_due_reminder_while_idle_without_any_turn` and
   `test_bridge_panel_command_queues_behind_a_busy_turn` in
-  `tests/test_app.py`. Reintroducing an idle informer is a design task, not
-  a checkbox; see `docs/REMINDERS.md`.
+  `tests/test_app.py`. See `docs/REMINDERS.md`.
 - **A2. Content-aware approval previews — done.** Approvals now show a
   bounded unified diff (edit), new content (write), loss excerpt
   (delete) or validated URL (network read), computed by app code only

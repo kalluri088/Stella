@@ -795,6 +795,15 @@ class StellaWindow:
             spacing1=8,
             spacing3=0,
         )
+        chat.tag_configure(
+            "alert",
+            foreground=THEME.warning,
+            lmargin1=14,
+            lmargin2=14,
+            rmargin=18,
+            spacing1=8,
+            spacing3=0,
+        )
         chat.tag_configure("gap", background=THEME.window)
 
     def _line(self, text: str, role: str = "note") -> None:
@@ -830,7 +839,7 @@ class StellaWindow:
             # so the window background repaints just that line; the
             # quote band stops at the message's last line.
             chat.insert("end", "\n", ("gap",))
-        elif role == "error":
+        elif role in ("error", "alert"):
             chat.insert("end", text + "\n", (role,))
             chat.insert("end", "\n", ("gap",))
         else:
@@ -1181,6 +1190,10 @@ class StellaWindow:
             # Core-known capability name, never model text.
             phase = str(payload).removeprefix("calling:").replace("_", " ")
             self._turn_activity = f"calling {phase}" if phase else ""
+        elif kind == "reminder_delivered":
+            # One Outline reminder this process claimed. Stella keeps no
+            # reminder store, so every line here names its source.
+            self._line(str(payload), role="alert")
         elif kind == "memories":
             self._show_memories(payload)
         elif kind == "memory_result":

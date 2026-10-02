@@ -20,6 +20,7 @@ from stella import app, provider_keys
 from stella.app import (
     ApprovalBroker,
     MemoryPanel,
+    ReminderTicker,
     StellaApplication,
     StellaBridge,
     StellaSession,
@@ -291,6 +292,51 @@ def test_session_custom_error_footer_is_used() -> None:
     assert outcome.error_message.endswith("Nothing was changed; try again.")
 
 
+# -------------------------------------------- Outline reminder sweep (bridge)
+
+
+def arm_outline_pump(
+    monkeypatch, titles: tuple[tuple[str, int, str], ...]
+) -> None:
+    """Pretend Outline reported these reminders due and claimed them here."""
+
+    import stella.stella as stella_module
+    from stella.outline_tools import OutlineDueReminder
+
+    claimed = tuple(
+        OutlineDueReminder(kind=kind, id=item_id, title=title, remind_at_ms=1)
+        for kind, item_id, title in titles
+    )
+
+    class FakePump:
+        def claim(self):
+            return claimed
+
+    monkeypatch.setattr(stella_module, "active_reminder_pump", lambda: FakePump())
+
+
+def test_session_check_due_reminders_delivers_the_claims(monkeypatch) -> None:
+    arm_outline_pump(monkeypatch, (("task", 1, "Water the plants"),))
+    session = StellaSession(make_recording_stella())
+
+    deliveries = session.check_due_reminders()
+
+    assert [delivery.message for delivery in deliveries] == [
+        "Outline reminder (task): Water the plants"
+    ]
+
+
+def test_session_check_without_an_armed_pump_delivers_nothing(monkeypatch) -> None:
+    # The ticker sweeps whether or not Outline was ever configured. With no
+    # pump armed there is nothing to read, and Stella says nothing.
+    import stella.stella as stella_module
+
+    monkeypatch.setattr(stella_module, "active_reminder_pump", lambda: None)
+    session = StellaSession(make_recording_stella())
+
+    assert session.check_due_reminders() == ()
+
+
 # ---------------------------------------------------------- MemoryPanel
 
 
@@ -548,6 +594,51 @@ def test_bridge_panel_command_queues_behind_a_busy_turn() -> None:
     assert kinds.index("turn") < kinds.index("memories")
     rows = next(event.payload for event in events if event.kind == "memories")
     assert rows == ("Prefers oat milk",)
+
+
+def test_bridge_delivers_due_reminders_before_the_turn_event(monkeypatch) -> None:
+    arm_outline_pump(monkeypatch, (("task", 3, "Private errand"),))
+    bridge = make_bridge(make_recording_stella())
+
+    bridge.post_turn("hello")
+    events = wait_for_event(bridge, "turn")
+
+    kinds = [event.kind for event in events]
+    assert kinds.index("reminder_delivered") < kinds.index("turn")
+    delivered = next(e.payload for e in events if e.kind == "reminder_delivered")
+    assert delivered == "Outline reminder (task): Private errand"
+    bridge.stop()
+
+
+def test_bridge_delivers_due_reminder_while_idle_without_any_turn(monkeypatch) -> None:
+    # An open-but-idle window still informs: the ticker's only act is to
+    # post one sweep onto the same command queue every turn already uses.
+    arm_outline_pump(monkeypatch, (("task", 4, "Idle errand"),))
+    bridge = make_bridge(
+        make_recording_stella(), reminder_tick_seconds=0.05
+    )
+    try:
+        events = wait_for_event(bridge, "reminder_delivered")
+    finally:
+        bridge.stop()
+
+    payloads = [
+        event.payload for event in events if event.kind == "reminder_delivered"
+    ]
+    assert payloads[0] == "Outline reminder (task): Idle errand"
+
+
+def test_reminder_ticker_stops_calling_after_stop() -> None:
+    calls: list[int] = []
+    ticker = ReminderTicker(lambda: calls.append(1), interval_seconds=0.02)
+    ticker.start()
+    time.sleep(0.15)
+    ticker.stop()
+    after = len(calls)
+    time.sleep(0.1)
+
+    assert after > 0
+    assert len(calls) == after
 
 
 def test_bridge_emits_activity_events_naming_the_called_capability() -> None:

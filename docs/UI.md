@@ -99,12 +99,14 @@ display, and can never approve a tool or change permissions.
 - Memory: list stored memories, keyword-search them, and forget the selected
   one. The list shows content only; internal database ids never appear and
   forgetting works by visible list position through `MemoryPanel`.
-- No reminder surface. Stella keeps no reminder store and no longer runs an
-  idle ticker, so there is nothing to list, schedule, or fire from the
-  window: a "remind me" is written into the connected Outline workspace and
-  that application alerts the user (`REMINDERS.md`). An open window is
-  therefore quiet until the user speaks — a real reduction in proactivity,
-  deliberate rather than pending.
+- No reminder surface. Stella keeps no reminder store, so there is nothing to
+  list, schedule or cancel from the window: a "remind me" is written into the
+  connected Outline workspace and that application owns the alert
+  (`REMINDERS.md`). What the window does keep is the delivery path — an idle
+  ticker asks Outline for the reminders this process can claim, and each claim
+  appears in the chat as an amber alert line. It is a read, not a turn: it
+  cannot reach the Brain, the LLM or any tool, and it is silent when no
+  Outline server is configured.
 - History: a section lists what Stella recently did — capability, time and
   honest outcome, newest first — from the durable action history, so
   earlier sessions are visible too. Entries are metadata only; file

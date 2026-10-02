@@ -347,8 +347,9 @@ by parroting the user. Their outputs stay user-facing: remembered content withou
 database ids, an honest "No stored memories." when empty, a failure when no
 memory matches, and a disclosed count when several memories matched an
 ambiguous update query. Stella keeps no reminder store of its own: a
-"remind me" is scheduled in the connected Outline workspace, which is what
-alerts the user; see `REMINDERS.md`.
+"remind me" is scheduled in the connected Outline workspace, which owns the
+alert; Stella only reads that workspace's due list back to surface it. See
+`REMINDERS.md`.
 
 Tools are standalone abstractions. They are invoked by the orchestration layer
 only after a `Brain` returns a tool decision. Stella delegates to the trusted
@@ -375,9 +376,9 @@ permission, and the result is not notification delivery or an action.
 The evaluator's only remaining producer is the connected workspace: an
 Outline result that reports overdue items is read during a turn and handed
 through this same surface. The reminder adapter is gone — `Stella` has no
-due-store sweep, no `ReminderDelivery`, and no ticker — so nothing in Stella
-converts a scheduled row into an event by itself. The layer stays generic
-rather than deleted because it carries rule 8: proactivity may increase
+due store, no reminder table and no reminder of its own — so the only scheduled
+alert it can act on is one Outline already declared due. The layer stays
+generic rather than deleted because it carries rule 8: proactivity may increase
 awareness, never authority, and an event observation grants no tool or action
 permission.
 
@@ -691,10 +692,11 @@ described in the architecture above, not here):
   (see `semantic_memory.py`, `ROADMAP.md` B2.1)
 - Multi-user data management and shared workspaces
 - Plugin registries, permissions, external APIs, subprocesses, or shell execution
-- Generalized event ingress, background notification delivery, autonomous
-  loops, schedulers, daemons, or heartbeats — with the reminder store gone,
-  Stella no longer wakes itself at all; anything due is read during a real
-  user interaction (see `REMINDERS.md`)
+- Generalized event ingress or action execution from a background source;
+  schedulers, daemons and loops of Stella's own. With the reminder store
+  gone, the one remaining timed wake (`ReminderTicker`) does nothing but ask
+  Outline for the alerts *it* already declared due, and the answer is one line
+  of chat — never a tool call, never a model turn (see `REMINDERS.md`)
 - Audio capture and output are limited to the explicit one-utterance desktop
   voice mode in `stella.voice` (see `VOICE.md`); there is no wake word,
   continuous listening, or streaming. Vision providers remain interfaces only;

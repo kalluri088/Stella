@@ -4,15 +4,24 @@
 
 ### Stella stops keeping its own reminders
 
-- The whole reminder feature is gone: `stella/reminders.py` (the store,
-  its SQLite table and the `pending → handled` transition), the
+- The reminder **store** is gone: `stella/reminders.py` (its SQLite table and
+  the `pending → handled` transition), the
   `reminder_create` / `reminder_list` / `reminder_cancel` tools,
-  `Stella.check_due_reminders()`, the window's Reminders panel and nav
-  entry, the desktop ticker that woke Stella every few seconds,
-  `ReminderLifecycleEvent` in the trace, `StellaSettings.reminders_db` /
+  `ReminderAction` / `ToolResult.reminder_action`, the window's Reminders
+  panel and nav entry, `ReminderScheduler`, `StellaSettings.reminders_db` /
   `STELLA_REMINDERS_DB`, and the reminders database's place in
-  `stella backup`. Nothing is user-approved any more, because nothing
-  needs approving.
+  `stella backup`. No reminder is user-approved any more, because no reminder
+  is stored.
+- **What survives is delivery, retargeted at Outline.**
+  `Stella.check_due_reminders()`, `ReminderDelivery` and
+  `ReminderLifecycleEvent` come back in a narrower form: they ask the Outline
+  reminder pump for the alerts *this process just claimed* and surface each as
+  one chat line, and the pump's `due → fire` claim is what makes an alert
+  reach the user exactly once. The desktop interval returns as
+  `ReminderTicker`, which exists only to post that read onto the bridge's
+  single command queue, arms only when a real Outline server is reachable, and
+  can never reach the Brain, the LLM or a tool. Without this, "remind me"
+  would be a silent no-op whenever the browser is closed.
 - **"Remind me" is now an Outline alert.** The same request creates or
   updates a task or event carrying a `remind` time, and the Outline app
   owns the notification. When no Outline capability is available Stella
@@ -25,11 +34,12 @@
   today?" is still the user's own schedule rather than a document
   lookup; one request is never satisfied by both systems; and when no
   due time can be determined Stella asks instead of guessing one.
-- **What this deliberately gives up:** Stella no longer wakes itself.
-  Reminder delivery was the only self-timed surface in the desktop app,
-  and it is gone — an alert now depends on Outline running with its own
-  alerts enabled, which is the point of moving it. No polling, scheduler
-  or background thread was added to compensate.
+- **What this deliberately gives up:** nothing polls on Stella's own schedule.
+  The ticker exists to ask a question, not to keep time — the pace of the
+  HTTP cycle belongs to the pump and the exactly-once decision belongs to
+  Outline. An alert therefore depends on Outline running with its own alerts
+  enabled, which is the point of moving it. Stella still schedules no
+  notification of its own and keeps no list of things that will fire later.
 - **What this deliberately does not touch:** the proactivity layer
   (`DueTaskEvent`, `ProactivityDelegation`, the informed/asking/silent
   decision) survives intact, because its rules — an external event is
@@ -47,12 +57,17 @@
   mutation. `docs/REMINDERS.md` records how to re-elevate just the
   alert-carrying call (`Tool.argument_risk()`) if that trade turns out to
   be wrong.
+- **A claimed reminder is still untrusted information (rule 6/7).** The
+  sweep never consults the Brain or the LLM, the trace records an id and a
+  title length rather than the title, and a hostile reminder title is
+  delivered as text only — a dangerous tool proposed afterwards still refuses.
+  `tests/test_outline_reminder_delivery.py` pins all of that.
 - Every invariant the reminder tests pinned was retargeted onto a
   surviving capability rather than dropped: panel-command authority onto
   the memory panel, worker-thread serialization onto a dedicated queue
   test, multi-word approval-mismatch verbs onto `key_send`, and audit
   classification and startup honesty onto the memory tools.
-  `uv run pytest` → 1697 passed, 5 skipped; `uv run ruff check .` clean.
+  `uv run pytest` → 1727 passed, 5 skipped; `uv run ruff check .` clean.
 
 ### Turns stop paying for words the model didn't need to write
 

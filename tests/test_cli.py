@@ -715,8 +715,14 @@ def test_cli_without_trace_shows_no_timeline() -> None:
     assert outputs == ["Stella: done", "Goodbye!"]
 
 
-def test_format_startup_describes_configuration_without_secrets() -> None:
+def test_format_startup_describes_configuration_without_secrets(
+    monkeypatch,
+) -> None:
     from types import SimpleNamespace
+
+    import stella.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "active_reminder_pump", lambda: None)
 
     llm = SimpleNamespace(
         model="qwen3:4b",
@@ -741,12 +747,17 @@ def test_format_startup_describes_configuration_without_secrets() -> None:
         "endpoint:  http://127.0.0.1:11434/v1",
         "memory db: /tmp/stella.db",
         "workspace: /tmp/ws",
+        "alerts:    none (no Outline server)",
     ]
     assert "SECRET-SENTINEL" not in "\n".join(lines)
 
 
-def test_format_startup_degrades_for_minimal_stella() -> None:
+def test_format_startup_degrades_for_minimal_stella(monkeypatch) -> None:
     from types import SimpleNamespace
+
+    import stella.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "active_reminder_pump", lambda: None)
 
     stella = SimpleNamespace(
         brain=None,
@@ -760,7 +771,25 @@ def test_format_startup_degrades_for_minimal_stella() -> None:
         "endpoint:  default",
         "memory db: in-memory",
         "workspace: not configured",
+        "alerts:    none (no Outline server)",
     ]
+
+
+def test_format_startup_names_the_outline_alert_source(monkeypatch) -> None:
+    # Reminders are Outline's now; startup says where alerts will come
+    # from rather than advertising a local store that no longer exists.
+    from types import SimpleNamespace
+
+    import stella.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "active_reminder_pump", lambda: object())
+    stella = SimpleNamespace(
+        brain=None,
+        memory=SimpleNamespace(),
+        tools=SimpleNamespace(_tools={}),
+    )
+
+    assert "alerts:    Outline reminders" in format_startup(stella)
 
 
 def test_cli_main_points_unconfigured_users_at_the_setup_window(

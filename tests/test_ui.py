@@ -471,6 +471,29 @@ def test_activity_event_carries_no_authority_and_ignores_blank_capability() -> N
         root.destroy()
 
 
+def test_window_shows_a_delivered_outline_reminder_in_the_chat() -> None:
+    # Stella keeps no reminders, so the one reminder line the window can
+    # show names where it came from.
+    root, window, bridge, _ = make_window()
+    try:
+        window._handle_event(
+            UiEvent("reminder_delivered", "Outline reminder (task): Stretch")
+        )
+        transcript = window._chat.get("1.0", "end")
+        # The delivery line says where the reminder came from, exactly once.
+        assert transcript.count("Outline reminder (task): Stretch") == 1
+        lines = transcript.splitlines()
+        line_no = next(
+            number
+            for number, line in enumerate(lines, start=1)
+            if "Stretch" in line
+        )
+        assert "alert" in window._chat.tag_names(f"{line_no}.0")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_window_shows_elapsed_time_and_cancel_ends_turn_cleanly() -> None:
     brain = GatedBrain()
     root, window, bridge, _ = make_window(brain=brain)

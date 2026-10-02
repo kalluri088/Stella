@@ -113,6 +113,22 @@ class SemanticSearchUnavailableEvent:
     provider_method: str
 
 
+@dataclass(frozen=True)
+class ReminderLifecycleEvent:
+    """Bounded metadata for one reminder the Outline pump just claimed.
+
+    Only the reminder id, a content length, and the lifecycle step are
+    recorded; the reminder text itself never enters the trace. Stella keeps
+    no reminder store, so the only step this event can report is a claimed
+    Outline item reaching the user.
+    """
+
+    action: str
+    reminder_id: int | None = None
+    content_chars: int = 0
+    outcome: str | None = None
+
+
 TraceEvent = (
     InputReceivedEvent
     | MemoryRetrievedEvent
@@ -125,6 +141,7 @@ TraceEvent = (
     | ActionReceiptEvent
     | MemoryIndexSyncEvent
     | SemanticSearchUnavailableEvent
+    | ReminderLifecycleEvent
 )
 
 

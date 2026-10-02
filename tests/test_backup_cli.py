@@ -7,7 +7,6 @@ import sqlite3
 from stella.app import (
     default_history_db,
     default_memory_db,
-    default_reminders_db,
     default_semantic_db,
     default_transcripts_db,
 )
@@ -43,7 +42,6 @@ def test_database_names_match_app_helpers():
         name.rpartition("/")[2]
         for name in (
             default_memory_db(),
-            default_reminders_db(),
             default_history_db(),
             default_transcripts_db(),
             default_semantic_db(),
@@ -68,7 +66,7 @@ def test_backup_copies_databases_and_manifest(tmp_path, capsys):
     ]
     assert manifest["config"] is True
     # Databases absent from the state dir are not fabricated into it.
-    assert not (dest / "stella_reminders.db").exists()
+    assert not (dest / "stella_semantic_index.db").exists()
     assert "Workspace files" in capsys.readouterr().out
 
 

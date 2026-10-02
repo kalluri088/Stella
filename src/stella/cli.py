@@ -1,7 +1,6 @@
 """Minimal synchronous command-line interface for Stella."""
 
 import argparse
-import datetime as dt
 import difflib
 import json
 import subprocess
@@ -34,6 +33,7 @@ from stella.commands import (
 )
 from stella.config import resolve_settings
 from stella.llm import Message
+from stella.outline_tools import active_reminder_pump
 from stella.persona import (
     ADDONS_FILE_NAME,
     MAX_PERSONA_BYTES,
@@ -203,8 +203,8 @@ def run_cli(
 
         call = parse_command_line(user_input)
         if call is not None:
-            # Commands never schedule reminders and never reach the
-            # Brain; a template's expansion becomes ordinary input.
+            # Commands never reach the Brain; a template's expansion
+            # becomes ordinary input.
             if call.is_control:
                 if _run_control_command(
                     call,
@@ -226,8 +226,8 @@ def run_cli(
                 continue
             user_input = expand_template(body, call.argument)
 
-        # Real interactions are the only scheduling trigger: due reminders
-        # are delivered through the existing bounded proactivity decision.
+        # Real interactions are the only trigger: due Outline reminders are
+        # delivered through the existing bounded notify-only path.
         _deliver_due_reminders(stella, output_fn, trace=flags.trace)
         status("Stella is thinking...")
 
@@ -276,15 +276,18 @@ def _deliver_due_reminders(
     output_fn: Callable[[str], None],
     trace: bool = False,
 ) -> None:
-    """Run the trusted per-interaction due-reminder check and show results."""
+    """Run the trusted due-reminder check and show what was claimed.
+
+    A CLI session that is idle has no window to inform, so the sweep rides
+    the next interaction: anything Outline reports due since the last check
+    reaches the user exactly once.
+    """
 
     if not isinstance(stella, Stella):
-        # Minimal test or embedding stubs may not carry the reminder flow.
+        # Minimal test or embedding stubs may not carry the flow.
         return
     reminder_trace = InteractionTrace(interaction_id="reminder-check")
-    deliveries = stella.check_due_reminders(
-        dt.datetime.now(dt.UTC), trace=reminder_trace
-    )
+    deliveries = stella.check_due_reminders(trace=reminder_trace)
     for delivery in deliveries:
         if delivery.delivered and delivery.message is not None:
             output_fn(f"Stella: {delivery.message}")
@@ -405,25 +408,23 @@ def format_startup(stella: Stella) -> list[str]:
     llm = getattr(getattr(stella, "brain", None), "llm", None)
     base_url = str(getattr(getattr(llm, "client", None), "base_url", "") or "")
     database = getattr(stella.memory, "database_path", None)
-    reminders_database = getattr(
-        getattr(stella, "reminders", None), "database_path", None
-    )
     workspace = None
     for tool in getattr(stella.tools, "_tools", {}).values():
         if hasattr(tool, "workspace"):
             workspace = str(tool.workspace)
             break
+    pump = active_reminder_pump()
     return [
         f"provider:  {type(llm).__name__ if llm is not None else 'unknown'}",
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {database if database is not None else 'in-memory'}",
-        (
-            f"reminders db: {reminders_database}"
-            if reminders_database is not None
-            else "reminders: disabled"
-        ),
         f"workspace: {workspace or 'not configured'}",
+        (
+            "alerts:    Outline reminders"
+            if pump is not None
+            else "alerts:    none (no Outline server)"
+        ),
     ]
 
 

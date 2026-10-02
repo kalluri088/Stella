@@ -303,8 +303,8 @@ A transcript has exactly the authority of typed user input — which is to say
 none of its own. It cannot approve a tool: `DANGEROUS` actions still raise the
 same approval request through `ApprovalBroker`, and spoken words such as
 "approve it now" are ordinary untrusted content that can never construct a
-`ToolApproval`. Filesystem and network verification receipts, memory tools,
-and reminder boundaries behave identically for spoken and typed requests.
+`ToolApproval`. Filesystem and network verification receipts and memory
+tool boundaries behave identically for spoken and typed requests.
 Playback output is an interface rendering; nothing it says feeds back into the
 decision path.
 

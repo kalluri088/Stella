@@ -2,7 +2,8 @@
 
 Stella is a personal assistant for your Linux desktop that runs on **your**
 machine and keeps **your** data. You chat with her like a person: ask
-questions, request file edits, store things to remember, set reminders. She
+questions, request file edits, store things to remember, schedule an alert
+in the notes app you already use. She
 can run entirely offline with a local model.
 
 The rule she never breaks: **nothing that changes your system happens without
@@ -28,8 +29,11 @@ checked that it did.
   embedding model coexists with your chat model, but the first call after
   a long idle can take a few seconds while it reloads.) Off by default,
   and while off the index file is never created.
-- **Remind** — "in 20 minutes, tell me to take the pan off the stove." An
-  open window delivers reminders on its own, even while you say nothing.
+- **Remind** — "in 20 minutes, tell me to take the pan off the stove." Stella
+  has no notifier of her own: she writes that as a task or event carrying a
+  remind time in your connected Outline workspace, and **Outline** is what
+  alerts you. If no workspace is connected she says she cannot schedule it,
+  rather than pretending she did.
 - **Work with files** — read, create, edit files inside her workspace folder.
   Before anything is written, you see a real diff or the exact new content
   and approve or cancel it. Afterwards she re-reads the disk and reports
@@ -168,7 +172,7 @@ development, or running several configurations side by side:
 | `STELLA_LLAMA_SERVER_BINARY` | `llama-server` command for the `llama` provider | `llama-server` |
 | `STELLA_LLAMA_SERVER_PORT` | Port for the Stella-owned brain | `8080` |
 | `STELLA_WORKSPACE` | Folder file actions may touch | `~/.local/share/stella/workspace` |
-| `STELLA_MEMORY_DB` / `STELLA_REMINDERS_DB` / `STELLA_HISTORY_DB` | State file locations | under `~/.local/share/stella` |
+| `STELLA_MEMORY_DB` / `STELLA_HISTORY_DB` | State file locations | under `~/.local/share/stella` |
 | `STELLA_PERSONA_DIR` | Persona file location | `~/.config/stella` |
 | `STELLA_TRANSCRIPTS` | Transcript recording on/off (`1`/`0`; overrides the saved setting) | off |
 | `STELLA_TRANSCRIPT_DB` | Transcript file location | `~/.local/share/stella/stella_transcript.db` |
@@ -200,7 +204,7 @@ scheduling choice, not a Stella configuration.
   a recording that is still being transcribed (nothing is sent to Stella),
   and **Cancel** also silences audio that is being spoken. Speech
   produced around a cancel is discarded, never played.
-- The tabs manage **Memories**, **Reminders**, **History** and **Settings**.
+- The tabs manage **Memories**, **History** and **Settings**.
 
 ### Slash commands
 
@@ -223,7 +227,7 @@ unknown `/name` says so and suggests near matches.
 All in `~/.local/share/stella` (or `$XDG_DATA_HOME/stella`): the config
 file, your verified API keys (`api_keys.json`, stored so only your user
 can read it, never printed and never part of a backup), your memories,
-your reminders, the action history, and her workspace
+and the action history, and her workspace
 folder — plain files you own. Her persona files are yours too, under
 `~/.config/stella`. The conversation transcript (used only for style
 reflection) is off by default and, when you turn it on, is one bounded
@@ -246,8 +250,14 @@ without touching the live state.
 - Local models are slow and sometimes pick the wrong tool — Stella then
   fails closed to doing nothing rather than guessing. The window shows how
   long each turn took so "slow" never looks like "broken".
-- Reminders are one-shot and only fire while Stella is running; nothing
-  recurring.
+- Stella keeps no reminders of her own. There is no reminder store, no
+  reminder panel and no reminder tool: "remind me to X at 18:00" is an alert
+  written into the notes app you connect, and that app is what rings. Stella
+  does still wake the desktop window on an interval to ask that app what is
+  due — a read that becomes one line of chat, with no tool call and no model
+  turn behind it — and she only does it while the notes app is actually
+  configured. A remind alert there reaches only you, so "remind the team" is
+  something she will ask about rather than fake.
 - File actions are limited to her workspace on purpose. There is no shell
   access and no "control my computer" mode.
 - Voice quality depends on the transcription/speech tools you install.

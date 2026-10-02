@@ -267,7 +267,6 @@ The current system intentionally includes:
 - one-shot due-task event evaluation with explicit, scoped delegation;
 - trusted one-shot event handoff with process-local duplicate suppression;
 - synchronous user-facing proactivity results without delivery infrastructure;
-- one-shot reminders surfaced during a real interaction;
 - a bounded provider-neutral input envelope with text compatibility;
 - one-shot audio-to-text normalization through a provider-neutral boundary;
 - one-shot image-to-text normalization through a provider-neutral boundary;

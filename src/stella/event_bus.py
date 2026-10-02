@@ -11,7 +11,7 @@ later; it is deliberately not a router and does not appear here.
 
 The trust model matches the rest of Stella: this module produces
 :class:`Match` records — reasons a human can read — and never takes an
-action. Feeding matches into reminders, notifications or the bridge is
+action. Feeding matches into notifications or the bridge is
 each consumer's own approved decision path.
 
 Because the checkpoint ships uncalibrated confidences (report 02/12,

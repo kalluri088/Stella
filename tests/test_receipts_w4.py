@@ -1,12 +1,11 @@
 """Report 33 W4: every mutation success path must mint a verified receipt.
 
 Failures always carried rich receipts; these tests pin the other half —
-that memory, reminder and Outline successes land an action_receipt in the
+that memory and Outline successes land an action_receipt in the
 tool result *and* in the audit trail, so `stella audit` (and the model's
 own observations) can see proof the action happened.
 """
 
-import datetime as dt
 
 from test_outline_tools import client as outline_client
 from test_outline_tools import server_routes
@@ -18,7 +17,6 @@ from stella.outline_tools import (
     OutlineError,
     OutlineUpdateTool,
 )
-from stella.reminders import InMemoryReminderStore
 from stella.tools import (
     ActionReceipt,
     ApprovalRequest,
@@ -26,8 +24,6 @@ from stella.tools import (
     MemoryForgetTool,
     MemoryUpdateTool,
     MemoryWriteTool,
-    ReminderCancelTool,
-    ReminderCreateTool,
     ToolApproval,
     ToolDispatcher,
     _audit_entry,
@@ -101,50 +97,6 @@ def test_memory_forget_verified_receipt_confirms_absence() -> None:
 
 def test_memory_forget_without_a_match_receipt_is_missing() -> None:
     result = MemoryForgetTool(InMemoryMemory()).execute({"query": "tea"})
-    assert not result.success
-    assert result.action_receipt is not None
-    assert result.action_receipt.status == "missing"
-
-
-# ---------------------------------------------------------------------------
-# reminders
-# ---------------------------------------------------------------------------
-
-
-def _create_arguments(minutes: int = 45) -> dict[str, object]:
-    due = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=minutes)
-    return {"content": "Stretch break", "due_at": due.isoformat()}
-
-
-def test_reminder_create_success_carries_verified_receipt() -> None:
-    result = ReminderCreateTool(InMemoryReminderStore()).execute(
-        _create_arguments()
-    )
-    assert result.success
-    assert result.action_receipt is not None
-    assert (result.action_receipt.action, result.action_receipt.status) == (
-        "create",
-        "verified",
-    )
-
-
-def test_reminder_cancel_verified_receipt_confirms_gone() -> None:
-    store = InMemoryReminderStore()
-    created = ReminderCreateTool(store).execute(_create_arguments())
-    assert created.success
-    result = ReminderCancelTool(store).execute({"query": "stretch"})
-    assert result.success
-    assert result.action_receipt is not None
-    assert (result.action_receipt.action, result.action_receipt.status) == (
-        "cancel",
-        "verified",
-    )
-
-
-def test_reminder_cancel_without_a_match_receipt_is_missing() -> None:
-    result = ReminderCancelTool(InMemoryReminderStore()).execute(
-        {"query": "stretch"}
-    )
     assert not result.success
     assert result.action_receipt is not None
     assert result.action_receipt.status == "missing"
@@ -338,18 +290,18 @@ def test_unverified_receipt_survives_into_the_serialized_audit_entry() -> None:
     # that a success-path receipt of any status round-trips.
     entry = _audit_entry(
         AuditRecord(
-            capability="reminder_create",
+            capability="memory_write",
             arguments={},
             risk_level=None,
             approval_required=False,
             approval_granted=None,
             execution_success=True,
             timestamp="now",
-            action_receipt=ActionReceipt("create", "verified"),
+            action_receipt=ActionReceipt("write", "verified"),
         )
     )
     assert entry["action_receipt"] == {
-        "action": "create",
+        "action": "write",
         "status": "verified",
         "size_bytes": None,
     }

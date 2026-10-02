@@ -2,12 +2,14 @@
 
 from stella.app import StellaSettings
 from stella.outline_tools import (
+    MAX_OUTPUT_LINES,
     OutlineClient,
     OutlineCreateTool,
     OutlineError,
     OutlineSearchTool,
     OutlineUpdateTool,
     build_outline_tools,
+    claim_due_reminders,
     outline_tool_summaries,
 )
 from stella.tools import ApprovalRequest, RiskLevel, action_summary
@@ -698,7 +700,9 @@ def test_remind_action_summary():
 
 
 # --------------------------------------------------------------------------
-# reminders boundary (report 30): remind must never read as Stella's own
+# reminders boundary (report 30, moved by the drop): remind is an alert the
+# Outline app owns — and since Stella's own reminder store left, the only
+# place a "remind me" can land
 # --------------------------------------------------------------------------
 
 
@@ -707,10 +711,10 @@ def test_remind_field_is_framed_as_outline_app_only():
     create = OutlineCreateTool(client)
     update = OutlineUpdateTool(client)
     assert "alert inside the Outline app itself" in create.description
-    assert "not Stella's own reminder" in create.description
+    assert "the only way Stella reminds anyone" in create.description
     schema_field = create.argument_schema["remind"]
-    assert "not Stella's own reminders" in schema_field
-    assert "alert inside the Outline app (not" in update.description
+    assert "where Stella's reminders live now" in schema_field
+    assert "alert inside the Outline app (where" in update.description
 
 
 def test_remind_me_prompt_without_outline_still_validates_the_same():
@@ -724,3 +728,224 @@ def test_remind_me_prompt_without_outline_still_validates_the_same():
     assert not tool.validate_arguments(
         {"kind": "task", "title": "t", "remind": "not-a-time"}
     )
+
+
+# --------------------------------------------------------------------------
+# reminder pump (report 54): Stella delivers due reminders with no browser
+# --------------------------------------------------------------------------
+
+
+def claim_client(routes):
+    server = FakeServer(routes)
+    return (
+        OutlineClient("http://127.0.0.1:8741", "t", server),
+        server,
+    )
+
+
+DUE_ITEMS = {
+    "items": [
+        {"kind": "task", "id": 7, "title": "file taxes", "remind_at": 100},
+        {"kind": "event", "id": 11, "title": " design review ", "remind_at": 200},
+        {"kind": "note", "id": 9, "title": "wrong kind", "remind_at": 1},
+        {"kind": "task", "id": True, "title": "bool id", "remind_at": 1},
+        {"kind": "task", "id": 8, "title": "  ", "remind_at": 1},
+        {"kind": "task", "id": 9, "title": "bad time", "remind_at": "100"},
+        "not-a-mapping",
+    ]
+}
+
+
+def test_claim_validates_rows_and_acknowledges_only_the_good_ones():
+    client, server = claim_client([
+        ("GET", "/api/v1/reminders/due", DUE_ITEMS),
+        ("POST", "/api/v1/reminders/fire", {"fired": 2}),
+    ])
+    due = claim_due_reminders(client)
+    assert [(d.kind, d.id, d.title) for d in due] == [
+        ("task", 7, "file taxes"),
+        ("event", 11, "design review"),
+    ]
+    fires = [c for c in server.calls if c[0] == "POST"]
+    assert len(fires) == 1
+    assert fires[0][2] == {"items": [{"kind": "task", "id": 7}, {"kind": "event", "id": 11}]}
+
+
+def test_claim_skips_the_ack_when_nothing_is_due():
+    client, server = claim_client([
+        ("GET", "/api/v1/reminders/due", {"items": []}),
+    ])
+    assert claim_due_reminders(client) == ()
+    assert not [c for c in server.calls if c[0] == "POST"]
+
+
+def test_claim_propagates_a_failed_ack_so_items_stay_due():
+    client, _ = claim_client([
+        ("GET", "/api/v1/reminders/due", DUE_ITEMS),
+        ("POST", "/api/v1/reminders/fire", OutlineError("rejected")),
+    ])
+    try:
+        claim_due_reminders(client)
+    except OutlineError:
+        pass
+    else:
+        raise AssertionError("a failed fire must raise, not silently drop")
+
+
+def test_pump_polls_at_most_once_a_minute_and_backs_off(monkeypatch):
+    import stella.outline_tools as module
+
+    probes = []
+    claims = []
+    monkeypatch.setattr(module, "_healthz", lambda c: probes.append(1) or True)
+    monkeypatch.setattr(
+        module, "claim_due_reminders", lambda c: claims.append(1) or ()
+    )
+    pump = module.OutlineReminderPump(OutlineClient("http://x", "t", FakeServer([])))
+    assert pump.claim() == ()
+    assert pump.claim() == ()  # same minute: no second HTTP cycle
+    assert len(probes) == 1 and len(claims) == 1
+    # a failing cycle doubles the quiet period
+    monkeypatch.setattr(module, "_healthz", lambda c: False)
+    assert pump.claim() == ()
+    assert len(claims) == 1
+
+
+def test_pump_backs_off_when_the_claim_fails(monkeypatch):
+    import stella.outline_tools as module
+
+    monkeypatch.setattr(module, "_healthz", lambda c: True)
+    calls = []
+
+    def boom(client):
+        calls.append(1)
+        raise OutlineError("server went away mid-poll")
+
+    monkeypatch.setattr(module, "claim_due_reminders", boom)
+    pump = module.OutlineReminderPump(OutlineClient("http://x", "t", FakeServer([])))
+    assert pump.claim() == ()
+    assert pump.claim() == ()
+    assert len(calls) == 1
+
+
+def test_pump_is_armed_only_by_a_real_transport_build(tmp_path, monkeypatch):
+    import stella.outline_tools as module
+
+    monkeypatch.setattr(module, "_ACTIVE_REMINDER_PUMP", None)
+    data_dir = tmp_path / "outline"
+    data_dir.mkdir()
+    (data_dir / "outline.token").write_text("secret-token\n")
+    env = {"OUTLINE_DATA_DIR": str(data_dir)}
+    # fake transport (tests): tools exist, pump stays unarmed
+    assert len(build_outline_tools(env, transport=FakeServer(server_routes()))) == 3
+    assert module.active_reminder_pump() is None
+    # real transport and a reachable server: the sweep is armed
+    monkeypatch.setattr(module, "_healthz", lambda c: True)
+    assert len(build_outline_tools({**env, "OUTLINE_URL": "http://127.0.0.1:9"})) == 3
+    assert module.active_reminder_pump() is not None
+
+
+# --------------------------------------------------------------------------
+# search rendering parity: everything /api/v1/search resolves must survive
+# --------------------------------------------------------------------------
+
+
+def test_search_lines_keep_date_host_and_flattened_snippet():
+    search_payload = {"items": [
+        {"kind": "event", "id": 21, "title": "dentist",
+         "snippet": "", "starts_at": 1_760_000_000_000},
+        {"kind": "note", "id": 44, "title": "",
+         "snippet": "soil was dry\n  second line padded out with quite a lot of text so that the bound has to bite here here here here here here here here here here here here here here here here here",
+         "starts_at": None, "host_kind": "project", "host_id": 5,
+         "host_title": "Garden"},
+        {"kind": "task", "id": 12, "title": "drink water", "snippet": "",
+         "starts_at": None},
+    ]}
+    tool = OutlineSearchTool(client(("GET", "/api/v1/search", search_payload)))
+    result = tool.execute({"query": "x"})
+    assert result.success
+    lines = result.output.splitlines()[1:]  # skip the untrusted-data header
+    assert lines[1].startswith("[note#44] → in [project#5] Garden · soil was dry second line")
+    assert "\n" not in lines[1]
+    assert len(lines[1].split(" · ")[1]) <= 120
+    assert lines[2] == "[task#12] drink water"
+    assert lines[0].startswith("[event#21] dentist — ")
+
+
+def test_today_view_includes_upcoming_events_and_open_count():
+    today = {
+        "overdue_tasks": [], "today_tasks": [], "events": [],
+        "water_total_ml": 0,
+        "upcoming_events": [{"id": 31, "title": "lunch with Sam",
+                             "starts_at": 1_760_100_000_000}],
+        "open_task_count": 2,
+    }
+    tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
+    result = tool.execute({"when": "today"})
+    assert "open tasks: 2" in result.output
+    assert "next up: lunch with Sam" in result.output
+
+
+def test_today_view_survives_missing_optional_fields():
+    routes = [
+        ("GET", "/api/v1/today", {"overdue_tasks": [], "today_tasks": [],
+                                  "events": [], "water_total_ml": 0}),
+    ]
+    tool = OutlineSearchTool(client(*routes))
+    result = tool.execute({"when": "today"})
+    assert "water today: 0 ml" in result.output
+    assert "open tasks" not in result.output
+
+
+def test_today_view_keeps_time_sensitive_sections_under_overdue_flood():
+    today = {
+        "overdue_tasks": [
+            {"id": 100 + i, "title": f"stale {i}", "due_at": 1_759_000_000_000}
+            for i in range(30)
+        ],
+        "today_tasks": [{"id": 7, "title": "standup", "due_at": 2}],
+        "events": [{"id": 21, "title": "dentist", "starts_at": 1_760_000_000_000}],
+        "water_total_ml": 500,
+        "upcoming_events": [
+            {"id": 31, "title": "lunch", "starts_at": 1_760_100_000_000},
+            {"id": 32, "title": "review", "starts_at": 1_760_200_000_000},
+            {"id": 33, "title": "trip", "starts_at": 1_760_300_000_000},
+        ],
+        "active_timers": [],
+        "open_task_count": 40,
+    }
+    tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
+    result = tool.execute({"when": "today"})
+    lines = result.output.splitlines()[1:]
+    assert lines[0] == "water today: 500 ml · open tasks: 40"
+    assert any("[task#7] standup" in line for line in lines)
+    assert any("next up: lunch" in line for line in lines)
+    assert any("next up: review" in line for line in lines)
+    assert not any("next up: trip" in line for line in lines)
+    assert sum(1 for line in lines if "OVERDUE" in line) == 3
+    assert "(+1 more)" in result.output  # upcoming section overflow
+    assert "(+27 more)" in result.output  # overdue section overflow
+    assert len(lines) <= MAX_OUTPUT_LINES
+
+
+def test_today_sections_are_unmarked_when_they_fit():
+    result = OutlineSearchTool(client()).execute({"when": "today"})
+    assert "(+" not in result.output
+
+
+def test_today_next_up_does_not_repeat_a_scheduled_event():
+    later_today = {"id": 6, "title": "midnight snack",
+                   "starts_at": 1_760_000_000_000}
+    tomorrow = {"id": 9, "title": "futuresite",
+                "starts_at": 1_760_300_000_000}
+    today = {
+        "overdue_tasks": [], "today_tasks": [], "events": [later_today],
+        "water_total_ml": 0, "active_timers": [],
+        # /today deliberately lists a later-today event in both sets
+        "upcoming_events": [later_today, tomorrow],
+    }
+    tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
+    result = tool.execute({"when": "today"})
+    lines = result.output.splitlines()[1:]
+    assert sum("midnight snack" in line for line in lines) == 1
+    assert any("next up: futuresite" in line for line in lines)

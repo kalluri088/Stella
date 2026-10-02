@@ -21,7 +21,6 @@ from stella.app import (
     default_data_dir,
     default_history_db,
     default_memory_db,
-    default_reminders_db,
     default_semantic_db,
     default_transcripts_db,
     default_vad_model,
@@ -98,7 +97,6 @@ def test_every_state_path_hangs_off_the_one_data_directory(
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     root = tmp_path / "xdg" / "stella"
     assert Path(default_memory_db()) == root / "stella_memory.db"
-    assert Path(default_reminders_db()) == root / "stella_reminders.db"
     assert Path(default_history_db()) == root / "stella_action_history.db"
     assert Path(default_transcripts_db()) == root / "stella_transcript.db"
     assert Path(default_semantic_db()) == root / "stella_semantic_index.db"

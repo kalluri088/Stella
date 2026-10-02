@@ -7,7 +7,6 @@ approval dialogs answer the dispatcher's live request, and closing a
 dialog denies rather than fabricates authorization.
 """
 
-import datetime as dt
 import os
 import re
 import threading
@@ -33,7 +32,6 @@ from stella.brain import Brain, Decision, DecisionKind
 from stella.context import Context
 from stella.llm import LLMClient
 from stella.memory import InMemoryMemory, MemoryItem
-from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella
 from stella.tools import (
     ActionPreview,
@@ -145,18 +143,14 @@ def make_window(
     tool: Tool | None = None,
     voice: VoicePanel | None = None,
     settings: StellaSettings | None = None,
-    reminders: InMemoryReminderStore | None = None,
-    reminder_tick_seconds: float | None = 5.0,
 ) -> tuple[tk.Tk, StellaWindow, StellaBridge, InMemoryMemory]:
     memory = InMemoryMemory()
-    store = reminders if reminders is not None else InMemoryReminderStore()
     tools = ToolDispatcher([tool or EchoTool()])
     stella = Stella(
         brain or AnswerBrain(),
         AnswerLLM(),
         tools,
         memory,
-        reminders=store,
     )
 
     def factory() -> StellaApplication:
@@ -166,9 +160,7 @@ def make_window(
             voice,
         )
 
-    bridge = StellaBridge(
-        factory, reminder_tick_seconds=reminder_tick_seconds
-    )
+    bridge = StellaBridge(factory)
     root = tk.Tk()
     window = StellaWindow(
         root, bridge, settings or StellaSettings(model="test")
@@ -286,26 +278,6 @@ def test_transcript_separates_roles_in_the_widget_tree() -> None:
         root.destroy()
 
 
-def test_window_informs_about_due_reminder_while_idle() -> None:
-    # Stage A D1: with no user input at all, the bridge tick must place
-    # the due reminder into the transcript through the existing pump.
-    now = dt.datetime.now(dt.UTC)
-    store = InMemoryReminderStore()
-    assert store.create(
-        "Idle ping", now + dt.timedelta(milliseconds=200), now
-    )
-    root, window, bridge, _ = make_window(
-        reminders=store, reminder_tick_seconds=0.05
-    )
-    try:
-        pump(root, 2.0)
-        transcript = window._chat.get("1.0", "end")
-        assert "Reminder: Idle ping is due today." in transcript
-    finally:
-        bridge.stop()
-        root.destroy()
-
-
 def test_settings_apply_preserves_voice_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,34 +307,6 @@ def test_settings_apply_preserves_voice_configuration(
         assert applied.voice_transcription == "off"
         assert applied.voice_speech == "off"
         assert applied.speech_command == "my-tts {text} {output}"
-    finally:
-        bridge.stop()
-        root.destroy()
-
-
-def test_window_reminder_panel_uses_trusted_tools() -> None:
-    root, window, bridge, _ = make_window()
-    try:
-        due = (dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)).isoformat()
-        window._reminder_content.insert(0, "Water the plants")
-        window._reminder_due.insert(0, due)
-        window._add_reminder()
-        pump(root, 0.6)
-        rows = [
-            window._reminder_list.get(i)
-            for i in range(window._reminder_list.size())
-        ]
-        assert rows == [f"Water the plants — due {due}"]
-
-        window._reminder_list.selection_set(0)
-        window._cancel_reminder()
-        pump(root, 0.6)
-        rows = [
-            window._reminder_list.get(i)
-            for i in range(window._reminder_list.size())
-        ]
-        assert rows == ["(no pending reminders)"]
-        assert window._reminder_status.cget("text").startswith("✓")
     finally:
         bridge.stop()
         root.destroy()
@@ -482,7 +426,7 @@ def test_approval_dialog_shows_read_only_preview_then_answers_request() -> None:
 def test_activity_event_names_the_capability_on_the_status_line() -> None:
     # Report 35 target 3: the long tool+synthesis stretch no longer reads
     # as a dead pane — a calling:<capability> event upgrades the status
-    # line to "Stella is calling reminder list · …" and a fresh turn
+    # line to "Stella is calling memory list · …" and a fresh turn
     # reverts to the generic wording.
     root, window, bridge, _ = make_window()
     try:
@@ -493,10 +437,10 @@ def test_activity_event_names_the_capability_on_the_status_line() -> None:
             "Stella is working · "
         )
 
-        window._handle_event(UiEvent("activity", "calling:reminder_list"))
+        window._handle_event(UiEvent("activity", "calling:memory_list"))
         window._render_working_status()
         assert str(window._status.cget("text")).startswith(
-            "Stella is calling reminder list · "
+            "Stella is calling memory list · "
         )
 
         # A new turn clears the label; narration never sticks.
@@ -522,6 +466,29 @@ def test_activity_event_carries_no_authority_and_ignores_blank_capability() -> N
         assert str(window._status.cget("text")).startswith(
             "Stella is working · "
         )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_shows_a_delivered_outline_reminder_in_the_chat() -> None:
+    # Stella keeps no reminders, so the one reminder line the window can
+    # show names where it came from.
+    root, window, bridge, _ = make_window()
+    try:
+        window._handle_event(
+            UiEvent("reminder_delivered", "Outline reminder (task): Stretch")
+        )
+        transcript = window._chat.get("1.0", "end")
+        # The delivery line says where the reminder came from, exactly once.
+        assert transcript.count("Outline reminder (task): Stretch") == 1
+        lines = transcript.splitlines()
+        line_no = next(
+            number
+            for number, line in enumerate(lines, start=1)
+            if "Stretch" in line
+        )
+        assert "alert" in window._chat.tag_names(f"{line_no}.0")
     finally:
         bridge.stop()
         root.destroy()

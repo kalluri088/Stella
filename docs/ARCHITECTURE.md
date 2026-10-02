@@ -2,7 +2,7 @@
 
 ## What Stella is becoming
 
-Stella is built as a small, understandable personal assistant. The v1 product is a local-first desktop assistant: conversation, user-controlled memory, workspace file actions with independent verification, one-shot reminders, and optional one-utterance voice — all behind the trusted approval boundary. The priority is to keep a few clear, provider-agnostic boundaries rather than add autonomous behavior. Each component is intentionally small and can be tested independently.
+Stella is built as a small, understandable personal assistant. The v1 product is a local-first desktop assistant: conversation, user-controlled memory, workspace file actions with independent verification, and optional one-utterance voice — all behind the trusted approval boundary. The priority is to keep a few clear, provider-agnostic boundaries rather than add autonomous behavior. Each component is intentionally small and can be tested independently.
 
 ## Current MVP philosophy
 
@@ -339,20 +339,17 @@ workspace tools (`filesystem_read` is `SENSITIVE`; `filesystem_write`,
 `NetworkReadTool` (`DANGEROUS`), the memory tools (`memory_list` is
 `SENSITIVE`, while `memory_write`, `memory_update` and `memory_forget` are
 `DANGEROUS` and require exact application approval before they mutate stored
-memory), the reminder tools `reminder_create` (`DANGEROUS`), `reminder_list`
-(`SENSITIVE`), and `reminder_cancel` (`DANGEROUS`) managing the user's own
-one-shot reminders through a trusted `stella.reminders` store (see
-`REMINDERS.md`), and `PersonaEditTool` (`DANGEROUS`, limited to the two
+memory), and `PersonaEditTool` (`DANGEROUS`, limited to the two
 persona files; see `PERSONA.md`). The opt-in Outline, web and desktop tools
 below add to this core only when their gates are open. `EchoTool` exists for tests but is
 deliberately unregistered: an echo capability lets a confused model "succeed"
 by parroting the user. Their outputs stay user-facing: remembered content without internal
 database ids, an honest "No stored memories." when empty, a failure when no
 memory matches, and a disclosed count when several memories matched an
-ambiguous update query. The Phase 3 reminder tools `reminder_create`
-(`DANGEROUS`), `reminder_list` (`SENSITIVE`), and `reminder_cancel`
-(`DANGEROUS`) manage the user's own one-shot reminders through a trusted
-`stella.reminders` store; see `REMINDERS.md`.
+ambiguous update query. Stella keeps no reminder store of its own: a
+"remind me" is scheduled in the connected Outline workspace, which owns the
+alert; Stella only reads that workspace's due list back to surface it. See
+`REMINDERS.md`.
 
 Tools are standalone abstractions. They are invoked by the orchestration layer
 only after a `Brain` returns a tool decision. Stella delegates to the trusted
@@ -376,14 +373,14 @@ The separate `stella.proactivity` module contains the focused one-shot
 the Brain, and the tool dispatcher: an event observation cannot grant
 permission, and the result is not notification delivery or an action.
 
-Phase 3 connects persisted reminders to that same evaluator rather than
-adding a second decision system. `Stella.check_due_reminders()` turns each
-due reminder in the trusted `stella.reminders` store into a `DueTaskEvent`
-with an exactly-scoped delegation, delivers the resulting message only after
-the store confirms the terminal `handled` transition (otherwise delivery is
-withheld), and suppresses duplicates in-session and across restarts. The CLI
-performs this check once per user interaction: there is no scheduler,
-daemon, or heartbeat, and a due reminder grants no tool or action authority.
+The evaluator's only remaining producer is the connected workspace: an
+Outline result that reports overdue items is read during a turn and handed
+through this same surface. The reminder adapter is gone — `Stella` has no
+due store, no reminder table and no reminder of its own — so the only scheduled
+alert it can act on is one Outline already declared due. The layer stays
+generic rather than deleted because it carries rule 8: proactivity may increase
+awareness, never authority, and an event observation grants no tool or action
+permission.
 
 `Stella.handoff_due_task_event()` is the trusted application boundary around
 that evaluator. The application constructs the event and supplies its stable
@@ -464,13 +461,14 @@ The three tools stay three; capabilities grow as `kind`/`action` values:
 task `edit`/`reschedule` (with recurrence and tags on create), event
 `reschedule`/`edit`, note and project `edit`, person-link `attach`/`detach`,
 tag-filtered and `kind=person` search, `kind=graph` — a text rendering of
-anyone's connections neighborhood — and `remind` (an ISO-8601 reminder time
+anyone's connections neighborhood — and `remind` (an ISO-8601 alert time
 on task/event create, and an edit field where `null` clears it). Stella
 mirrors Outline's compact recurrence/tag token validators (source of truth:
 `outline_server/api/__init__.py`), rejecting malformed values before any
-request leaves. The `remind` field alerts inside the Outline app only:
-a plain "remind me" is always a Stella `reminder_create`, never an
-Outline call (`docs/REMINDERS.md`, report 30). The API-first parity rule holds with two documented
+request leaves. Since Stella's own reminder store was dropped, this field
+is the only alert Stella can arrange: a plain "remind me" becomes an Outline
+task or event carrying that time (`docs/REMINDERS.md`, report 30 as moved by
+the drop). The API-first parity rule holds with two documented
 exceptions: bulk export is UI-only, and the force-graph *layout* is
 rendering-only (the connections it shows are full parity).
 
@@ -523,7 +521,7 @@ exact-argument approval dialog, whose preview names the concrete window
 `stella.app` is the shared application layer that both interfaces build on.
 `build_application(StellaSettings)` constructs the `OpenAILLMClient` or
 `OllamaLLMClient`, `LLMBrain`, a `ToolDispatcher` holding the registered
-capabilities, `SQLiteMemory`, and the `SQLiteReminderStore`, then wraps them in
+capabilities, `SQLiteMemory`, then wraps them in
 a `Stella` instance and a `StellaApplication` that owns their lifecycle.
 For the OpenAI-family provider the settings carry only the non-secret
 `preset` id; the key itself is resolved at build time through
@@ -544,15 +542,15 @@ touchpoints — env override, `Settings` field, `from_saved`,
 `tests/test_settings_wiring.py` fails if any one of them drifts.
 `StellaSession` holds the conversation `Message` history and
 runs one turn through `Stella.process()` with shared error and display rules,
-and the small panel classes (`MemoryPanel`, `ReminderPanel`, `ApprovalBroker`,
-and `VoicePanel`) expose memory, reminder, approval, and voice operations only
+and the small panel classes (`MemoryPanel`, `ApprovalBroker`, and
+`VoicePanel`) expose memory, approval, and voice operations only
 through the existing trusted APIs. `VoicePanel` combines the `stella.voice`
 recorder, player, and provider abstractions; its transcript enters through
 `StellaSession.run_turn()` like any typed message, so voice adds no second
 orchestration path. Neither interface implements a second orchestration path.
 
 `stella.cli` is a thin terminal interface over that layer. It repeatedly reads
-input, delivers due reminders, calls `StellaSession.run_turn()`, displays the
+input, calls `StellaSession.run_turn()`, displays the
 answer or tool output, and exits on `exit`, `quit`, or end-of-file. It closes
 the SQLite connections when the session ends. The graphical interface in
 `stella.ui` is an equally thin Tkinter client of the same layer; see
@@ -592,7 +590,7 @@ Manual testing showed that a natural-language response claiming that Stella will
   `stella.app` layer; they do not make decisions, call providers directly for
   conversation handling, bypass `Stella`, or manufacture approvals.
 - `stella.app` builds and wires the trusted components and exposes shared
-  session, memory, reminder, and approval-broker behavior to both interfaces;
+  session, memory, and approval-broker behavior to both interfaces;
   it adds no decision path of its own.
 
 Memory participates in both sides of the response path, but only explicitly. Stella reads matching items before decision-making and writes one item only when the returned decision contains a `MemoryWriteRequest`. Ordinary conversation and retrieved memories are not written automatically.
@@ -651,7 +649,7 @@ observation is the whole answer. The fast path runs only when the marker is
 set, the call was the turn's first and only tool step, and the tool itself
 opts in: `Tool.terminal` is a trusted runtime property, true only for
 capabilities whose successful output is already display-ready, non-secret
-text (`datetime`, `system_info`, `reminder_list`). Then the observation is
+text (`datetime`, `system_info`). Then the observation is
 rendered verbatim — for `terminal` tools — or synthesized in one dedicated
 final-response call, and the middle re-decision call is skipped entirely.
 Failed observations, every non-terminal capability, and the honest synthesis
@@ -694,9 +692,11 @@ described in the architecture above, not here):
   (see `semantic_memory.py`, `ROADMAP.md` B2.1)
 - Multi-user data management and shared workspaces
 - Plugin registries, permissions, external APIs, subprocesses, or shell execution
-- Generalized event ingress, background notification delivery, autonomous
-  loops, schedulers, daemons, or heartbeats — reminder checks happen only
-  during a real user interaction (see `REMINDERS.md`)
+- Generalized event ingress or action execution from a background source;
+  schedulers, daemons and loops of Stella's own. With the reminder store
+  gone, the one remaining timed wake (`ReminderTicker`) does nothing but ask
+  Outline for the alerts *it* already declared due, and the answer is one line
+  of chat — never a tool call, never a model turn (see `REMINDERS.md`)
 - Audio capture and output are limited to the explicit one-utterance desktop
   voice mode in `stella.voice` (see `VOICE.md`); there is no wake word,
   continuous listening, or streaming. Vision providers remain interfaces only;
@@ -742,9 +742,8 @@ described in the architecture above, not here):
 │       ├── os_tools.py        # opt-in Hyprland screen/focus/type tools
 │       ├── outline_tools.py   # opt-in Outline app search/create/update tools
 │       ├── persona.py         # style files, edit snapshot history, reflection
-│       ├── proactivity.py     # due-reminder surface during interaction
+│       ├── proactivity.py     # due-task surface during interaction
 │       ├── provider_keys.py   # provider presets, verified keys, 0600 store
-│       ├── reminders.py       # one-shot reminder store
 │       ├── semantic_memory.py # provider-neutral semantic retrieval + local fallback
 │       ├── stella.py          # turn orchestration
 │       ├── tools.py           # tools, dispatcher, risk, approval, receipts
@@ -787,7 +786,7 @@ stored key for the OpenAI slot (and a custom endpoint) for that launch —
 while every named preset (Claude, Grok, …) resolves only against its own
 stored key — `STELLA_LLM_PROVIDER=ollama|openai` overrides
 provider selection, `OPENAI_BASE_URL` and `OLLAMA_BASE_URL` point either
-client at a non-default address, and `STELLA_MEMORY_DB`, `STELLA_REMINDERS_DB`
+client at a non-default address, and `STELLA_MEMORY_DB`
 and `STELLA_WORKSPACE` override the state locations, which default under the
 XDG data directory (`~/.local/share/stella`). Verified API keys live in
 `api_keys.json` next to those files, in the same directory, at 0600 — see

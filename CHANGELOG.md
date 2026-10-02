@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+### Stella stops keeping its own reminders
+
+- The reminder **store** is gone: `stella/reminders.py` (its SQLite table and
+  the `pending → handled` transition), the
+  `reminder_create` / `reminder_list` / `reminder_cancel` tools,
+  `ReminderAction` / `ToolResult.reminder_action`, the window's Reminders
+  panel and nav entry, `ReminderScheduler`, `StellaSettings.reminders_db` /
+  `STELLA_REMINDERS_DB`, and the reminders database's place in
+  `stella backup`. No reminder is user-approved any more, because no reminder
+  is stored.
+- **What survives is delivery, retargeted at Outline.**
+  `Stella.check_due_reminders()`, `ReminderDelivery` and
+  `ReminderLifecycleEvent` come back in a narrower form: they ask the Outline
+  reminder pump for the alerts *this process just claimed* and surface each as
+  one chat line, and the pump's `due → fire` claim is what makes an alert
+  reach the user exactly once. The desktop interval returns as
+  `ReminderTicker`, which exists only to post that read onto the bridge's
+  single command queue, arms only when a real Outline server is reachable, and
+  can never reach the Brain, the LLM or a tool. Without this, "remind me"
+  would be a silent no-op whenever the browser is closed.
+- **"Remind me" is now an Outline alert.** The same request creates or
+  updates a task or event carrying a `remind` time, and the Outline app
+  owns the notification. When no Outline capability is available Stella
+  says plainly that it cannot schedule a notification instead of
+  inventing a reminder or claiming one exists. `docs/REMINDERS.md`
+  records where the behaviour went.
+- **The rulings that were never about storage stayed.** A due alert can
+  reach only this user, so "remind the team …" is still `kind=ask`
+  rather than a note the user alone would receive; a vague "what's on
+  today?" is still the user's own schedule rather than a document
+  lookup; one request is never satisfied by both systems; and when no
+  due time can be determined Stella asks instead of guessing one.
+- **What this deliberately gives up:** nothing polls on Stella's own schedule.
+  The ticker exists to ask a question, not to keep time — the pace of the
+  HTTP cycle belongs to the pump and the exactly-once decision belongs to
+  Outline. An alert therefore depends on Outline running with its own alerts
+  enabled, which is the point of moving it. Stella still schedules no
+  notification of its own and keeps no list of things that will fire later.
+- **What this deliberately does not touch:** the proactivity layer
+  (`DueTaskEvent`, `ProactivityDelegation`, the informed/asking/silent
+  decision) survives intact, because its rules — an external event is
+  untrusted information (rule 7) and proactivity may raise awareness but
+  never authority (rule 8) — are not reminder-specific. Only the
+  reminder→`DueTaskEvent` adapter was cut. Existing
+  `stella_reminders.db` files are left exactly where they are: nothing
+  is migrated, rewritten or deleted.
+- **What this gives up on confirmation:** `reminder_create` was
+  `DANGEROUS`, so every "remind me" asked before it wrote. `outline_create`
+  is `SENSITIVE` — Stella's standing classification for Outline writes —
+  so the same sentence is now an ordinary workspace write with no dialog.
+  Accepted: the write is bounded to the connected workspace, it is
+  reversible in Outline, and gating it would mean gating every Outline
+  mutation. `docs/REMINDERS.md` records how to re-elevate just the
+  alert-carrying call (`Tool.argument_risk()`) if that trade turns out to
+  be wrong.
+- **A claimed reminder is still untrusted information (rule 6/7).** The
+  sweep never consults the Brain or the LLM, the trace records an id and a
+  title length rather than the title, and a hostile reminder title is
+  delivered as text only — a dangerous tool proposed afterwards still refuses.
+  `tests/test_outline_reminder_delivery.py` pins all of that.
+- Every invariant the reminder tests pinned was retargeted onto a
+  surviving capability rather than dropped: panel-command authority onto
+  the memory panel, worker-thread serialization onto a dedicated queue
+  test, multi-word approval-mismatch verbs onto `key_send`, and audit
+  classification and startup honesty onto the memory tools.
+  `uv run pytest` → 1727 passed, 5 skipped; `uv run ruff check .` clean.
+
 ### Turns stop paying for words the model didn't need to write
 
 - Report 35's first target — decode time is the whole turn: the two
@@ -23,9 +90,9 @@
   turn went silent for 6-17 s. The activity observer gained a
   `calling:<capability>` event fired the instant a validated tool is
   about to run (app-known name, never model text), and every surface
-  uses it: the CLI prints "(Stella is calling reminder_list...)", the Tk
+  uses it: the CLI prints "(Stella is calling memory_list...)", the Tk
   status line upgrades "Stella is working · 7 s" to "Stella is calling
-  reminder list · 7 s", and voice keeps its existing filler untouched.
+  memory list · 7 s", and voice keeps its existing filler untouched.
 
 ### The composer remembers what you sent
 
@@ -70,7 +137,7 @@
 
 - Report 35's second target: tools whose successful output is already
   user-facing text now carry a `terminal` flag in the dispatcher
-  contract (`datetime`, `system_info`, `reminder_list`). When the
+  contract (`datetime`, `system_info`). When the
   brain marks such a call `tool_final`, the runtime renders the
   observation verbatim and the turn costs exactly one model call
   instead of two — halving the dominant latency on those turns.
@@ -144,10 +211,10 @@
 ### Success paths now carry action receipts
 
 - Report 33's W4: failures always logged rich receipts, but a
-  *successful* memory write/update/forget, reminder create/cancel, or
+  *successful* memory write/update/forget or
   Outline mutation landed `action_receipt: null` — so `stella audit`
   had no proof the action happened, and a model that couldn't see its
-  own success re-proposed reminder creates. Every mutation success
+  own success re-proposed the write. Every mutation success
   path now re-reads the resulting state and records a
   `verified`/`unverified` receipt; missing targets record `missing`,
   and an unreachable Outline server records `unverified` rather than

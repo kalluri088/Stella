@@ -56,8 +56,6 @@ for the orchestration details.
 | `web_search` / `web_fetch` | DANGEROUS (only registered when the web capability is enabled) | `WEB.md` |
 | `memory_list` | SENSITIVE | `OUTCOME_MEMORY.md` |
 | `memory_write` / `memory_update` / `memory_forget` | DANGEROUS | `OUTCOME_MEMORY.md` |
-| `reminder_create` / `reminder_cancel` | DANGEROUS | `REMINDERS.md` |
-| `reminder_list` | SENSITIVE | `REMINDERS.md` |
 | `persona_edit` | DANGEROUS (two files only) | `PERSONA.md` |
 
 `EchoTool` exists in `tools.py` but is **deliberately not registered**: a
@@ -123,7 +121,7 @@ application-owned tool class, default `False`. A model field named
 
 When the marker is set, the call is the turn's first and only tool step, the
 observation succeeded, and the tool declares itself terminal
-(`datetime`, `system_info`, `reminder_list`), the response is built directly
+(`datetime`, `system_info`), the response is built directly
 from that observation — for terminal tools rendered verbatim — and the
 middle re-decision call is skipped. A failed observation, a non-terminal
 tool, or a multi-step plan keeps the honest synthesis path unchanged.
@@ -133,13 +131,12 @@ affected by it: `tool_final` can make a turn cheaper, never more powerful.
 `Tool.terminal` is the one place tool output reaches the user without model
 synthesis, so it is an opt-in trust decision: only capabilities whose
 successful output is fully constructed by trusted code — a value from a
-fixed allowlist (`datetime`, `system_info`) or the user's own stored
-reminder rows (`reminder_list`) — may set it. A tool that could
+fixed allowlist (`datetime`, `system_info`) — may set it. A tool that could
 echo fetched or file-sourced text stays on the synthesized path.
 
 ## Verification & receipts (mutating tools)
 
-Every filesystem, memory, reminder, persona, and network mutation verifies its
+Every filesystem, memory, persona, and network mutation verifies its
 resulting state with trusted application code before reporting success and
 returns a bounded `ActionReceipt(action, status, size_bytes)` on its
 `ToolResult`. Statuses are `verified`, `unverified`, `inconclusive`, `failed`,

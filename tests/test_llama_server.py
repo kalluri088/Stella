@@ -24,7 +24,6 @@ from stella.llama_server import (
 from stella.llm import FakeLLMClient as FakeLLM
 from stella.memory import InMemoryMemory
 from stella.ollama_client import OllamaLLMClient
-from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella
 from stella.tools import ToolDispatcher
 
@@ -399,7 +398,6 @@ def _llama_settings(tmp_path, **overrides) -> StellaSettings:
         "provider": "llama",
         "model": str(tmp_path / "brain.gguf"),
         "memory_db": str(tmp_path / "memory.db"),
-        "reminders_db": str(tmp_path / "reminders.db"),
         "history_db": str(tmp_path / "history.db"),
         "transcripts_db": str(tmp_path / "transcripts.db"),
         "semantic_db": str(tmp_path / "semantic.db"),
@@ -493,7 +491,6 @@ def _make_llama_application(
         FakeLLM(),
         ToolDispatcher([]),
         InMemoryMemory(),
-        reminders=InMemoryReminderStore(),
     )
     return StellaApplication(
         StellaSession(stella), settings, brain_server=server

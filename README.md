@@ -204,6 +204,13 @@ scheduling choice, not a Stella configuration.
   a recording that is still being transcribed (nothing is sent to Stella),
   and **Cancel** also silences audio that is being spoken. Speech
   produced around a cancel is discarded, never played.
+- What Stella says aloud is the reply's words, not its formatting: markdown
+  marks, table pipes and emoji are stripped before any voice engine sees the
+  text, and a link is spoken by its label ("a link" for a bare address)
+  because you cannot open one with your ears. Nothing is paraphrased or
+  summarised on the way.
+- When "Speak replies" is on, a due Outline alert is said as well as shown —
+  one at a time, never over a reply, and never when speech is off.
 - The tabs manage **Memories**, **History** and **Settings**.
 
 ### Slash commands

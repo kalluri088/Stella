@@ -124,6 +124,11 @@ So Stella still wakes itself, but what it wakes into is a read of someone
 else's alert list — never a tool call, never a model turn. That distinction is
 the whole shape of this design.
 
+When speech output is on, that one line is also spoken: the alert reaches the
+ear as well as the chat, in its own single slot, dropped unheard if a reply or
+a cancel takes the speaker first, and silent entirely when the user never
+switched speech on. See `VOICE.md` ("Spoken alerts").
+
 `stella_reminders.db` was never deleted from disk and no user data was
 destroyed: the file simply stopped being opened, written, or backed up. A user
 who wants those rows can read them by hand from the old state directory.

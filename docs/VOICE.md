@@ -15,6 +15,20 @@ response text — and only that text — is rendered through the existing
 `SpeechProvider` abstraction and played. The text stays visible either way.
 Internal trace/debug information is never spoken.
 
+What reaches a speaker is the reply's **words**, not its screen formatting.
+`SpeechOutput` — the one boundary every provider is called through — passes
+the text through `stella.spoken_form.speakable()`, which strips markdown a
+synthesizer would otherwise read aloud as noise: heading hashes, `**bold**`
+and `*italic*` markers, backticks, bullet and number markers, table pipes,
+horizontal rules, blockquote chevrons, emoji and zero-width marks. A list is
+joined into one running sentence with commas, which is also what gives the
+voice its pauses. Two conversions say something instead of nothing: a written
+link keeps its label and drops its address, and a bare URL becomes "a link" —
+a listener cannot open an address. Nothing else is rewritten: no paraphrase,
+no reordering, no number or time expansion (reading "18:00" as "six p.m." is
+a claim about the user's clock that Stella does not own), and no summarising.
+The visible reply is always the model's own text, markup and all.
+
 Flow:
 
 ```text
@@ -136,6 +150,31 @@ The narration rules the tests enforce:
 - Approval prompts are never narrated and never described by a phrase;
   narration is phase-level only, so nothing spoken pressures the answer to
   an approval question.
+
+## Spoken alerts
+
+An Outline reminder this process claims is delivered as one amber chat line
+(`REMINDERS.md`). When speech output is on, the same line is also spoken — a
+background alert reaching the ear as well as the screen, which is what makes
+the desktop window useful in a voice session rather than only glanceable.
+
+Three rules keep it a notification and not a second conversation:
+
+- It speaks **only** when the user switched speech on. A silent setup never
+  hears it, and turning speech off is a complete mute.
+- One announcement at a time, in its own slot: an alert that arrives while
+  Stella is already speaking is dropped unheard. The visible line already
+  said everything, so nothing is lost and announcements never pile up.
+- The answer is still the priority. A reply, a cancel, or **Stop speaking**
+  retires an alert that has not started; unheard audio never follows the
+  reply onto the speakers.
+
+The spoken text is the runtime's own line ("Outline reminder (task): …"), so
+the model authors nothing that is heard here. The reminder title itself is
+untrusted Outline content, exactly as it is on screen: it is rendered as
+speech and nothing else — it cannot approve a tool, start a turn, or reach
+the Brain, and it passes through the same markup-stripping boundary as a
+reply (`stella/spoken_form.py`).
 
 ## Barge-in (optional interrupt-by-voice)
 

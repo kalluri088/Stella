@@ -986,6 +986,7 @@ UPDATE_ACTIONS: dict[str, set[str]] = {
     "event": {"reschedule", "edit", "restore"},
     "project": {"activate", "archive", "edit", "restore"},
     "note": {"edit"},
+    "person": {"restore"},
     "timer": {"pause", "resume", "stop", "cancel"},
     "link": {"attach", "detach"},
 }
@@ -1073,12 +1074,13 @@ class OutlineUpdateTool(Tool):
             "Updates one existing Outline item by id (from outline_search): "
             "tasks complete|open|reschedule|edit|restore (restore "
             "un-deletes a task by id), events reschedule|edit|restore "
-            "(restore un-deletes an event by id) "
-            "(reschedule needs due_at, ISO-8601, and keeps the event's "
+            "(restore un-deletes an event by id; reschedule needs due_at, "
+            "ISO-8601, and keeps the event's "
             "duration; never invent a time — ask the user), projects "
             "activate|archive|edit|restore (restore un-deletes a project "
             "by id and brings back exactly the tasks its delete took with "
-            "it), notes edit, timers "
+            "it), notes edit, people restore (un-deletes a person by "
+            "id; their links and notes were never touched), timers "
             "pause|resume|stop|cancel. edit takes an 'edits' object "
             "(task: title|body|priority|recurrence|tags|remind; event: "
             "title|location|body|remind; note: body; project: title|body); "
@@ -1094,7 +1096,7 @@ class OutlineUpdateTool(Tool):
     @property
     def argument_schema(self) -> dict[str, object]:
         return {
-            "kind": "task|event|note|project|timer|link",
+            "kind": "task|event|note|project|person|timer|link",
             "id": "positive integer (for kind=link: the entity's id)",
             "action": "complete|open|reschedule|edit|restore|activate|archive|"
                       "pause|resume|stop|cancel|attach|detach",
@@ -1279,6 +1281,10 @@ class OutlineUpdateTool(Tool):
                     "PATCH", f"/api/v1/projects/{item_id}", body={"status": status}
                 )
                 return _updated(kind, item_id, action, row, "")
+            if kind == "person":
+                client.request("POST", f"/api/v1/people/{item_id}/restore")
+                row = client.request("GET", f"/api/v1/people/{item_id}")
+                return _updated(kind, item_id, action, row, "")
             row = client.request(
                 "PATCH", f"/api/v1/timers/{item_id}", body={"action": action}
             )
@@ -1398,7 +1404,7 @@ def _updated(
         "update",
         "verified" if row.get("id") == item_id else "unverified",
     )
-    title = row.get("title") or row.get("label") or ""
+    title = row.get("title") or row.get("label") or row.get("name") or ""
     suffix = f" ({detail})" if detail else ""
     return ToolResult(
         success=True,

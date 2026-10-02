@@ -703,7 +703,7 @@ CREATE_KINDS = {"task", "event", "note", "water", "timer", "project", "person"}
 # smuggle a due_at, and required fields are per-kind (an event without a
 # start time is nonsense, so validate_arguments says so).
 CREATE_ALLOWED_BY_KIND: dict[str, set[str]] = {
-    "task": {"kind", "title", "due_at", "remind", "project", "body", "recurrence", "tags"},
+    "task": {"kind", "title", "due_at", "remind", "project", "body", "recurrence", "tags", "priority"},
     "event": {"kind", "title", "due_at", "remind", "body", "duration_ms"},
     "note": {"kind", "title", "project", "body"},
     "water": {"kind", "title", "amount_ml"},
@@ -741,7 +741,8 @@ class OutlineCreateTool(Tool):
             "If the user did not state an exact time, ask "
             "them instead of inventing one. Tasks may repeat "
             "(recurrence: daily|weekly|weekdays|monthly|every:<minutes>) "
-            "and carry tags. 'project' must name an existing project "
+            "and carry tags; priority 1..3 marks a task urgent. "
+            "'project' must name an existing project "
             "(exact title) for tasks; notes attach to a project, "
             "defaulting to Inbox."
         )
@@ -764,6 +765,7 @@ class OutlineCreateTool(Tool):
                           "every:<minutes 60..525600> (kind=task)",
             "tags": "optional list of up to 20 tag names [A-Za-z0-9_-]{1,40} "
                     "(kind=task)",
+            "priority": "optional integer 0..3, 3 most urgent (kind=task)",
         }
 
     @property
@@ -796,6 +798,9 @@ class OutlineCreateTool(Tool):
             return False
         tags = arguments.get("tags")
         if tags is not None and not _tag_list_ok(tags):
+            return False
+        priority = arguments.get("priority")
+        if priority is not None and not _int_in_range(priority, 0, 3):
             return False
         amount = arguments.get("amount_ml")
         duration = arguments.get("duration_ms")
@@ -843,6 +848,8 @@ class OutlineCreateTool(Tool):
                     ).strip().lower()
                 if arguments.get("tags") is not None:
                     task_body["tags"] = _clean_tags(list(arguments["tags"]))
+                if arguments.get("priority") is not None:
+                    task_body["priority"] = int(arguments["priority"])
                 if remind_at is not None:
                     task_body["remind_at"] = remind_at
                 row = client.request("POST", "/api/v1/tasks", body=task_body)

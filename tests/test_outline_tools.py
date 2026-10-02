@@ -1007,3 +1007,16 @@ def test_task_lines_show_priority():
     assert "[task#1] urgent !!!" in output
     assert "[task#2] plain" in output and "plain !" not in output
     assert "[task#3] weird" in output and "weird !" not in output
+
+
+def test_create_task_priority_reaches_the_api_and_bounds_are_rejected():
+    srv = FakeServer(server_routes())
+    tool = OutlineCreateTool(OutlineClient("http://127.0.0.1:8741", "t", srv))
+    assert tool.execute({"kind": "task", "title": "file taxes", "priority": 3}).success
+    post = next(c for c in srv.calls if c[0] == "POST" and c[1] == "/api/v1/tasks")
+    assert post[2]["priority"] == 3
+    base = {"kind": "task", "title": "x"}
+    assert tool.validate_arguments({**base, "priority": 0})
+    assert not tool.validate_arguments({**base, "priority": 4})
+    assert not tool.validate_arguments({**base, "priority": "high"})
+    assert not tool.validate_arguments({**base, "priority": True})

@@ -984,7 +984,7 @@ def _created(kind: str, row: object, due_at: int | None) -> ToolResult:
 UPDATE_ACTIONS: dict[str, set[str]] = {
     "task": {"complete", "open", "reschedule", "edit", "restore"},
     "event": {"reschedule", "edit"},
-    "project": {"activate", "archive", "edit"},
+    "project": {"activate", "archive", "edit", "restore"},
     "note": {"edit"},
     "timer": {"pause", "resume", "stop", "cancel"},
     "link": {"attach", "detach"},
@@ -1075,7 +1075,9 @@ class OutlineUpdateTool(Tool):
             "un-deletes a task by id), events reschedule|edit "
             "(reschedule needs due_at, ISO-8601, and keeps the event's "
             "duration; never invent a time — ask the user), projects "
-            "activate|archive|edit, notes edit, timers "
+            "activate|archive|edit|restore (restore un-deletes a project "
+            "by id and brings back exactly the tasks its delete took with "
+            "it), notes edit, timers "
             "pause|resume|stop|cancel. edit takes an 'edits' object "
             "(task: title|body|priority|recurrence|tags|remind; event: "
             "title|location|body|remind; note: body; project: title|body); "
@@ -1263,6 +1265,10 @@ class OutlineUpdateTool(Tool):
                             sorted(str(f) for f in arguments["edits"])  # type: ignore[union-attr]
                         ),
                     )
+                if action == "restore":
+                    client.request("POST", f"/api/v1/projects/{item_id}/restore")
+                    row = client.request("GET", f"/api/v1/projects/{item_id}")
+                    return _updated(kind, item_id, action, row, "")
                 status = "archived" if action == "archive" else "active"
                 row = client.request(
                     "PATCH", f"/api/v1/projects/{item_id}", body={"status": status}

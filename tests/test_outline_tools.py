@@ -1033,3 +1033,19 @@ def test_update_task_restore_round_trip():
     assert not tool.validate_arguments(
         {"kind": "task", "id": 7, "action": "restore", "edits": {"title": "x"}}
     )
+
+
+def test_update_project_restore_round_trip():
+    tool = OutlineUpdateTool(client(
+        (
+            "POST",
+            "/api/v1/projects/4/restore",
+            {"restored": True, "id": 4, "tasks_restored": 3},
+        ),
+        ("GET", "/api/v1/projects/4", {"id": 4, "title": "Attic", "status": "active"}),
+    ))
+    result = tool.execute({"kind": "project", "id": 4, "action": "restore"})
+    assert result.success and ": restore" in result.output
+    assert not tool.validate_arguments(
+        {"kind": "project", "id": 4, "action": "restore", "edits": {"title": "x"}}
+    )

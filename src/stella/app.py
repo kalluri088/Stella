@@ -1607,13 +1607,21 @@ class ApprovalBroker:
     to the dispatcher's original request object. A UI answer can therefore
     never approve a different capability or a different argument set, and
     unmade requests default to denial.
+
+    ``on_wait`` is called with ``True`` just before the block and with
+    ``False`` in a ``finally`` after it, so whatever the bridge hangs on an
+    unanswered dialog is always released — by the answer, by a cancel, and
+    by the exit-time denial alike.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, on_wait: Callable[[bool], None] | None = None
+    ) -> None:
         self._lock = threading.Lock()
         self._tokens = itertools.count()
         self._waiting: dict[int, _PendingApproval] = {}
         self._outstanding = queue.Queue()
+        self._on_wait = on_wait
 
     def request(
         self,
@@ -1629,7 +1637,14 @@ class ApprovalBroker:
         # dispatcher request, so a preview can never change what the
         # answer authorizes.
         self._outstanding.put((token, request, preview))
-        pending.answered.wait()
+        notify = self._on_wait
+        if notify is not None:
+            notify(True)
+        try:
+            pending.answered.wait()
+        finally:
+            if notify is not None:
+                notify(False)
         with self._lock:
             self._waiting.pop(token, None)
         return ToolApproval(request=request, approved=pending.approved)
@@ -1745,7 +1760,16 @@ class StellaBridge:
         *,
         reminder_tick_seconds: float | None = 5.0,
     ) -> None:
-        self.approvals = ApprovalBroker()
+        # One decision on screen is a promise about the microphone: wake
+        # and barge-in stand down until it is answered. The broker owns
+        # the moment (it is the one that waits), so it raises and lowers
+        # this flag around its own wait.
+        self._approval_open = threading.Event()
+        # Shutdown is one-way: once stop() begins, nothing may arm an ear
+        # again, because the threads that release an approval or a
+        # playback slot are not ordered against it.
+        self._stopping = threading.Event()
+        self.approvals = ApprovalBroker(on_wait=self._approval_wait)
         self._reminder_tick_seconds = reminder_tick_seconds
         self._ticker: ReminderTicker | None = None
         self._application: StellaApplication | None = None
@@ -1966,6 +1990,12 @@ class StellaBridge:
     def _begin_barge_in(self) -> None:
         """Arm the ear for one speaking episode; problems retire the ear."""
 
+        if self._approval_open.is_set() or self._stopping.is_set():
+            # Talking over Stella must not be mistaken for an answer, and
+            # cancelling the turn while its own dialog is open is exactly
+            # that confusion: the dialog on screen is the only input. And
+            # a shutdown that has begun never arms a capture again.
+            return
         listener = self._barge
         if listener is None:
             return
@@ -1984,6 +2014,24 @@ class StellaBridge:
         if self._barge is not None:
             self._barge.stop()
 
+    def _approval_wait(self, waiting: bool) -> None:
+        """Take the ears off the microphone while a decision is pending.
+
+        Called by the broker around its wait. An outstanding dialog is the
+        one moment Stella must not be listening: a wake phrase arriving
+        then would either queue a takeover behind the user's own decision
+        or, worse, make hands-free input look like an answer to it. The
+        release is the broker's ``finally``, so a cancelled turn or an
+        unanswered exit cannot strand the ear asleep.
+        """
+
+        if waiting:
+            self._approval_open.set()
+            self._suspend_wake()
+        else:
+            self._approval_open.clear()
+            self._resume_wake()
+
     def _suspend_wake(self) -> None:
         """Take the wake ear off the microphone.
 
@@ -1999,18 +2047,21 @@ class StellaBridge:
         """Re-arm the wake ear once the microphone is free again.
 
         Safe to call from anywhere, any time: a wake ear that is not
-        configured, still inside a wake capture or under live playback
-        stays asleep, and a faulted detector retires the ear silently
-        (the router-degradation precedent — broken means disabled, not
-        noisy).
+        configured, still inside a wake capture, under live playback,
+        waiting on an on-screen decision or inside a shutdown that has
+        begun stays asleep, and a faulted detector retires the ear
+        silently (the router-degradation precedent — broken means
+        disabled, not noisy).
         """
 
         listener = self._wake
         if (
             listener is None
+            or self._stopping.is_set()
             or self._wake_listening
             or self._speaking
             or self._interludes
+            or self._approval_open.is_set()
         ):
             return
         if listener.failed:
@@ -2062,6 +2113,16 @@ class StellaBridge:
         panel = self._voice
         if self._wake_listening:
             return  # a wake session already owns the microphone
+        if self._approval_open.is_set():
+            # Say why nothing happened: a silent refusal would leave the
+            # user wondering whether the wake word worked at all. The ear
+            # stays off — the dialog is answered with a press, not a voice.
+            self._emit(
+                "voice_error",
+                "Stella is waiting for a decision on screen; "
+                "press Allow or Cancel.",
+            )
+            return
         if panel is None:
             # No transcription configured: keep the ear, wake stays
             # honest by doing exactly nothing else.
@@ -2780,6 +2841,7 @@ class StellaBridge:
         self._post(handle)
 
     def stop(self) -> None:
+        self._stopping.set()
         if self._ticker is not None:
             # Stop the wake first: a ticker posting onto a queue nobody
             # drains would otherwise leak a command per interval.

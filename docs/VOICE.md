@@ -185,7 +185,9 @@ voice, and a confirmed utterance does exactly what the **Cancel** button
 already does — stop the audio and cancel the turn. The detector has no other
 authority: it cannot approve tools, cannot inject text, and produces one
 interruption per speaking episode. Outside of speech playback the ear is not
-running at all, so there is still no always-on listening.
+running at all, so there is still no always-on listening. While an approval
+dialog is open it does not arm either: cancelling that turn from the voice
+would be the one thing the dialog exists to prevent.
 
 The default mode is `auto`: the ear arms only once you have named a capture
 source with `STELLA_BARGE_SOURCE` — which is also the documented way to point
@@ -296,7 +298,10 @@ actually running, and speech is only claimed after a transcript was produced.
   the microphone open while Stella is idle, and one confirmed phrase is
   exactly a **Listen** press: it starts the same capture, records nothing
   until it fires, and gains no authority of its own. Off by default, and
-  suspended whenever Stella is speaking, narrating or already capturing.
+  suspended whenever Stella is speaking, narrating, already capturing or
+  waiting on an on-screen approval — a dangerous action is answered by a
+  press on that dialog and nothing else, so the ears stay off the
+  microphone until it is.
 - **Cancel** — while listening, abort the current recording without
   transcribing it; while transcribing, abandon the transcription in flight.
 - **Stop speaking** — end the current spoken reply (playing sentence and

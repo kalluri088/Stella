@@ -33,6 +33,7 @@ from stella.audio_output import SpeechArtifact
 from stella.brain import Brain, Decision, DecisionKind
 from stella.llm import LLMClient
 from stella.mic_tap import MicTap
+from stella.tools import ApprovalRequest
 from stella.voice import TapRecorder, VoiceError
 from stella.wake import (
     FRAME_BYTES,
@@ -555,6 +556,60 @@ class FakeWakeEar:
         self.stops += 1
 
 
+class FakeBarge:
+    """Duck-typed barge-in ear: it counts arming and nothing else."""
+
+    def __init__(self) -> None:
+        self.starts = 0
+        self.stops = 0
+        self.failed = False
+        self.on_speech = None
+
+    def start(self) -> None:
+        self.starts += 1
+
+    def stop(self) -> None:
+        self.stops += 1
+
+
+class PendingApproval:
+    """One genuine request parked in front of the broker on its own thread.
+
+    Driven through the real :class:`ApprovalBroker` rather than by setting
+    a flag, because the point of the Stage 3 rule is that the microphone
+    stands down for as long as the *broker* is waiting — including for
+    however long the answer never comes.
+    """
+
+    def __init__(self, bridge: StellaBridge) -> None:
+        self.bridge = bridge
+        self.token: int | None = None
+        self.approved: bool | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        approval = self.bridge.approvals.request(
+            ApprovalRequest("cap", {"value": "x"})
+        )
+        self.approved = approval.approved
+
+    def open(self, timeout: float = 5.0) -> "PendingApproval":
+        self._thread.start()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            item = self.bridge.next_approval_request()
+            if item is not None:
+                self.token = item[0]
+                return self
+            time.sleep(0.02)
+        raise AssertionError("no approval request appeared")
+
+    def close(self, approved: bool = False) -> None:
+        assert self.token is not None
+        assert self.bridge.resolve_approval(self.token, approved) is True
+        self._thread.join(5)
+
+
 def make_stella(content: str = "noted"):
     from stella.memory import InMemoryMemory
     from stella.stella import Stella
@@ -572,6 +627,7 @@ def make_wake_bridge(
     wake: FakeWake | None,
     ear: FakeWakeEar | None,
     notice: str | None = None,
+    barge: FakeBarge | None = None,
 ) -> tuple[StellaBridge, VoicePanel, FakePlayer]:
     player = FakePlayer()
     panel = VoicePanel(
@@ -581,6 +637,7 @@ def make_wake_bridge(
         StellaSession(make_stella()),
         StellaSettings(model="test"),
         panel,
+        barge_in=barge,
         wake=wake,
         wake_ear=ear,
         wake_notice=notice,
@@ -781,5 +838,84 @@ def test_a_cancelled_interlude_still_releases_the_wake_ear() -> None:
         player.hold.set()
         render.set()
         drain_until(bridge, lambda e: wake.starts >= 2)
+    finally:
+        bridge.stop()
+
+
+def test_a_pending_approval_suppresses_wake_takeover() -> None:
+    wake = FakeWake()
+    ear = FakeWakeEar()
+    bridge, panel, _player = make_wake_bridge(wake, ear)
+    approval = PendingApproval(bridge).open()
+    try:
+        # The dialog itself takes the ear off the microphone: hands-free
+        # input is never a way to answer a dangerous-action request.
+        assert wake.stops >= 1
+        assert wake.starts == 1
+        wake.on_wake()  # the user says the phrase at the open dialog
+        events = drain_until(
+            bridge, lambda e: any(x.kind == "voice_error" for x in e)
+        )
+        honest = [e for e in events if e.kind == "voice_error"]
+        assert "waiting for a decision on screen" in str(honest[-1].payload)
+        assert "Allow or Cancel" in str(honest[-1].payload)
+        # Refused means refused: no listening state, no recorder, and no
+        # utterance watcher armed to endpoint a capture that never began.
+        assert not voice_state(events, "listening")
+        assert panel._recorder.started == 0
+        assert ear.starts == 0
+        approval.close()
+        drain_until(bridge, lambda e: wake.starts >= 2)
+    finally:
+        bridge.stop()
+
+
+def test_an_unanswered_approval_never_strands_a_wake_takeover() -> None:
+    # The refusal is not a deferred command: the phrase spoken during the
+    # dialog is gone, so answering it later must not start a recording the
+    # user stopped caring about.
+    wake = FakeWake()
+    bridge, panel, _player = make_wake_bridge(wake, FakeWakeEar())
+    approval = PendingApproval(bridge).open()
+    try:
+        wake.on_wake()
+        drain_until(bridge, lambda e: any(x.kind == "voice_error" for x in e))
+        approval.close()
+        drain_until(bridge, lambda e: wake.starts >= 2)
+        time.sleep(0.2)
+        assert panel._recorder.started == 0
+        assert not any(
+            e.kind == "voice_state" and e.payload == "listening"
+            for e in bridge.poll()
+        )
+    finally:
+        bridge.stop()
+
+
+def test_a_pending_approval_does_not_arm_barge_in() -> None:
+    barge = FakeBarge()
+    wake = FakeWake()
+    bridge, panel, player = make_wake_bridge(
+        wake, FakeWakeEar(), barge=barge
+    )
+    approval = PendingApproval(bridge).open()
+    try:
+        panel.speech_enabled = True
+        bridge.post_turn("hi")
+        drain_until(bridge, lambda e: voice_state(e, "speaking"))
+        # Stella talks while a decision is on screen; interrupting her now
+        # would cancel the very turn that dialog belongs to.
+        assert barge.starts == 0
+        player.hold.set()
+        drain_until(bridge, lambda e: voice_state(e, "idle"))
+        approval.close()
+        assert wake.starts >= 2
+        bridge.post_turn("again")
+        drain_until(bridge, lambda e: voice_state(e, "speaking"))
+        # The refusal was for that episode only: the next one arms normally.
+        assert barge.starts == 1
+        # And the episode retires it again on the way out. (The player is
+        # already released, so this may have happened before the poll.)
+        drain_until(bridge, lambda e: barge.stops >= 1)
     finally:
         bridge.stop()

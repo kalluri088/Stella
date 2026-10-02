@@ -1035,6 +1035,18 @@ def test_update_task_restore_round_trip():
     )
 
 
+def test_update_event_restore_round_trip():
+    tool = OutlineUpdateTool(client(
+        ("POST", "/api/v1/events/9/restore", {"restored": True, "id": 9}),
+        ("GET", "/api/v1/events/9", {"id": 9, "title": "standup", "starts_at": 5}),
+    ))
+    result = tool.execute({"kind": "event", "id": 9, "action": "restore"})
+    assert result.success and ": restore" in result.output
+    assert not tool.validate_arguments(
+        {"kind": "event", "id": 9, "action": "restore", "edits": {"title": "x"}}
+    )
+
+
 def test_update_project_restore_round_trip():
     tool = OutlineUpdateTool(client(
         (

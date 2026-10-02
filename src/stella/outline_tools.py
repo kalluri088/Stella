@@ -983,7 +983,7 @@ def _created(kind: str, row: object, due_at: int | None) -> ToolResult:
 
 UPDATE_ACTIONS: dict[str, set[str]] = {
     "task": {"complete", "open", "reschedule", "edit", "restore"},
-    "event": {"reschedule", "edit"},
+    "event": {"reschedule", "edit", "restore"},
     "project": {"activate", "archive", "edit", "restore"},
     "note": {"edit"},
     "timer": {"pause", "resume", "stop", "cancel"},
@@ -1072,7 +1072,8 @@ class OutlineUpdateTool(Tool):
         return (
             "Updates one existing Outline item by id (from outline_search): "
             "tasks complete|open|reschedule|edit|restore (restore "
-            "un-deletes a task by id), events reschedule|edit "
+            "un-deletes a task by id), events reschedule|edit|restore "
+            "(restore un-deletes an event by id) "
             "(reschedule needs due_at, ISO-8601, and keeps the event's "
             "duration; never invent a time — ask the user), projects "
             "activate|archive|edit|restore (restore un-deletes a project "
@@ -1203,6 +1204,10 @@ class OutlineUpdateTool(Tool):
                     detail = f"{detail}; {suffix}" if detail else suffix
                 return _updated(kind, item_id, action, row, detail)
             if kind == "event":
+                if action == "restore":
+                    client.request("POST", f"/api/v1/events/{item_id}/restore")
+                    row = client.request("GET", f"/api/v1/events/{item_id}")
+                    return _updated(kind, item_id, action, row, "")
                 current = client.request("GET", f"/api/v1/events/{item_id}")
                 if not isinstance(current, Mapping):
                     return ToolResult(

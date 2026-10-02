@@ -56,6 +56,10 @@ def server_routes(extra=(), **named):
         ("GET", "/api/v1/search", {"items": [
             {"kind": "task", "id": 12, "title": "drink water", "snippet": ""},
         ]}),
+        ("GET", "/api/v1/trash", {"items": [
+            {"kind": "task", "id": 9, "label": "old draft", "deleted_at": 5},
+            {"kind": "person", "id": 46, "label": "Ada", "deleted_at": 6},
+        ], "count": 2, "next": None}),
         ("GET", "/api/v1/tasks", {"items": [
             {"id": 12, "title": "drink water", "due_at": None, "status": "open"},
         ], "next_before_id": None}),
@@ -161,6 +165,19 @@ def test_search_rejects_bad_arguments():
     assert not tool.validate_arguments({"when": "yesterday"})
     assert not tool.validate_arguments({"query": "x", "extra": "y"})
     assert tool.validate_arguments({"when": "overdue"})
+    assert tool.validate_arguments({"kind": "trash"})  # no query needed to list the trash
+
+
+def test_search_trash_lists_deleted_items():
+    srv = FakeServer(server_routes())
+    result = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute({"kind": "trash"})
+    assert result.success
+    assert "2 item(s) in the trash" in result.output
+    assert "[task#9] old draft" in result.output
+    assert "[person#46] Ada" in result.output  # label comes from name
+    assert any(path.startswith("/api/v1/trash") for _, path, _ in srv.calls)
 
 
 def test_search_reports_unreachable_server_as_failure():

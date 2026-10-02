@@ -276,8 +276,14 @@ actually running, and speech is only claimed after a transcript was produced.
 
 ## Controls
 
-- **Listen / Stop** — start or stop one explicit recording. No continuous
-  listening, no wake word, no background recording.
+- **Listen / Stop** — start or stop one explicit recording. Recording only
+  happens inside an explicit press, or inside one wake-initiated capture
+  when `STELLA_WAKE_WORD=on`; there is no background recording either way.
+- **Wake word (opt-in)** — with `STELLA_WAKE_WORD=on` a local detector holds
+  the microphone open while Stella is idle, and one confirmed phrase is
+  exactly a **Listen** press: it starts the same capture, records nothing
+  until it fires, and gains no authority of its own. Off by default, and
+  suspended whenever Stella is speaking, narrating or already capturing.
 - **Cancel** — while listening, abort the current recording without
   transcribing it; while transcribing, abandon the transcription in flight.
 - **Stop speaking** — end the current spoken reply (playing sentence and

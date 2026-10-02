@@ -116,6 +116,14 @@ from stella.voice import (
     SubprocessRecorder,
     VoiceError,
 )
+from stella.wake import (
+    DEFAULT_WAKE_MODEL,
+    WakeEndpoint,
+    WakeListener,
+    WakeSpotter,
+    WakeUtteranceEar,
+    default_wake_model_dir,
+)
 from stella.web_tools import build_web_tools
 
 __all__ = [
@@ -341,6 +349,10 @@ class StellaSession:
 
 VOICE_MODES = {"auto", "openai", "off"}
 BARGE_MODES = {"auto", "off", "on"}
+# Stricter than barge-in: an always-open microphone is exactly the
+# privacy line docs/VOICE.md draws, so wake starts only on an explicit
+# "on" — there is no "auto" that could half-engage it by accident.
+WAKE_MODES = {"off", "on"}
 ENV_ON = {"1", "true", "on", "yes"}
 ENV_OFF = {"0", "false", "off", "no"}
 
@@ -554,6 +566,11 @@ class StellaSettings:
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
     barge_threshold: float = 0.5
+    wake_word: str = "off"
+    wake_model: str = DEFAULT_WAKE_MODEL
+    wake_model_dir: str = field(default_factory=default_wake_model_dir)
+    wake_source: str | None = None
+    wake_threshold: float = 0.5
     decision_max_tokens: int | None = DEFAULT_DECISION_MAX_TOKENS
     answer_max_tokens: int | None = DEFAULT_ANSWER_MAX_TOKENS
     ollama_think: bool | None = None
@@ -599,6 +616,19 @@ class StellaSettings:
         if not 0.0 < barge_threshold < 1.0:
             raise SystemExit(
                 "STELLA_BARGE_THRESHOLD must be a speech probability "
+                "strictly between 0 and 1"
+            )
+        wake_mode = os.environ.get("STELLA_WAKE_WORD", "off").casefold()
+        if wake_mode not in WAKE_MODES:
+            raise SystemExit("STELLA_WAKE_WORD must be 'on' or 'off'")
+        raw_wake_threshold = os.environ.get("STELLA_WAKE_THRESHOLD", "0.5")
+        try:
+            wake_threshold = float(raw_wake_threshold)
+        except ValueError:
+            wake_threshold = -1.0
+        if not 0.0 < wake_threshold < 1.0:
+            raise SystemExit(
+                "STELLA_WAKE_THRESHOLD must be a wake probability "
                 "strictly between 0 and 1"
             )
         raw_port = os.environ.get(
@@ -654,6 +684,16 @@ class StellaSettings:
             ),
             "barge_source": os.environ.get("STELLA_BARGE_SOURCE") or None,
             "barge_threshold": barge_threshold,
+            "wake_word": wake_mode,
+            "wake_model": (
+                os.environ.get("STELLA_WAKE_MODEL") or DEFAULT_WAKE_MODEL
+            ),
+            "wake_model_dir": (
+                os.environ.get("STELLA_WAKE_MODEL_DIR")
+                or default_wake_model_dir()
+            ),
+            "wake_source": os.environ.get("STELLA_WAKE_SOURCE") or None,
+            "wake_threshold": wake_threshold,
             "decision_max_tokens": _env_token_budget(
                 "STELLA_DECISION_MAX_TOKENS", DEFAULT_DECISION_MAX_TOKENS
             ),
@@ -773,6 +813,9 @@ class StellaApplication:
     brain_server: LlamaBrainServer | None = None
     barge_in: BargeInListener | None = None
     barge_notice: str | None = None
+    wake: WakeListener | None = None
+    wake_ear: WakeUtteranceEar | None = None
+    wake_notice: str | None = None
 
     def close(self) -> None:
         # The brain process is Stella's child: closing the application
@@ -783,6 +826,12 @@ class StellaApplication:
             # The ear is Stella's child too: its capture process ends
             # with the application, never outliving the window.
             self.barge_in.stop()
+        if self.wake is not None:
+            # Same rule for the always-armed wake ear: it can outlive a
+            # closed window only by being Stella's child, and it is not.
+            self.wake.stop()
+        if self.wake_ear is not None:
+            self.wake_ear.stop()
         if self.voice is not None:
             self.voice.dispose()
         memory = self.session.stella.memory
@@ -988,6 +1037,20 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         barge_in = build_barge_in(settings)
     except VoiceError as error:
         barge_notice = str(error)
+    # Wake word follows the barge-in rule: explicitly opt-in, and an
+    # enabled-but-broken ear is one honest startup message, never a
+    # failed launch.
+    wake: WakeListener | None = None
+    wake_ear: WakeUtteranceEar | None = None
+    wake_notice: str | None = None
+    try:
+        wake = build_wake(settings)
+        if wake is not None:
+            wake_ear = build_wake_ear(settings)
+    except VoiceError as error:
+        wake = None
+        wake_ear = None
+        wake_notice = str(error)
     # Last possible moment to spawn the brain: nothing after this can
     # fail and strand the process (stop() also runs inside a failed
     # start(), and close() owns it afterwards).
@@ -1005,6 +1068,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         brain_server=brain_server,
         barge_in=barge_in,
         barge_notice=barge_notice,
+        wake=wake,
+        wake_ear=wake_ear,
+        wake_notice=wake_notice,
     )
 
 
@@ -1342,6 +1408,54 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     )
 
 
+def build_wake(settings: StellaSettings) -> WakeListener | None:
+    """Assemble the wake-word ear, or None when the feature is off.
+
+    Unlike barge-in there is no ``auto``: an always-open microphone is
+    the one line the voice doctrine does not cross by default, so the
+    ear arms only when ``STELLA_WAKE_WORD`` says ``on``. The spotter is
+    re-armed at every :meth:`WakeListener.start`, so one wake phrase is
+    at most one wake however long it echoes.
+
+    Like :func:`build_barge_in` this raises :class:`VoiceError` when the
+    feature was asked for but cannot work (missing extra, missing ONNX
+    models): the reason surfaces once as a message instead of the ear
+    silently doing nothing forever.
+    """
+
+    if settings.wake_word == "off":
+        return None
+    spotter = WakeSpotter(
+        model_dir=settings.wake_model_dir,
+        model_name=settings.wake_model,
+        threshold=settings.wake_threshold,
+    )
+    return WakeListener(
+        feed=spotter.feed,
+        command=capture_command(settings.wake_source),
+        reset=spotter.reset,
+    )
+
+
+def build_wake_ear(settings: StellaSettings) -> WakeUtteranceEar:
+    """The hands-free endpointer for one wake-initiated capture.
+
+    It shares the push-to-talk microphone and the same local VAD the
+    barge-in ear uses; its only output is "the utterance finished" (or
+    "never arrived"), which is exactly a Stop- or Cancel-button press.
+    A missing VAD model raises here and degrades the whole wake feature
+    to one honest startup notice — endpointing without it would mean
+    every wake capture ran to its timeout.
+    """
+
+    vad = SileroVad(settings.vad_model)
+    return WakeUtteranceEar(
+        features=vad.features,
+        endpoint=WakeEndpoint(),
+        command=capture_command(settings.wake_source),
+    )
+
+
 def _openai_speech_client(api_key: str) -> object:
     from openai import OpenAI
 
@@ -1584,6 +1698,18 @@ class StellaBridge:
         self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
         self._barge: BargeInListener | None = None
+        # Wake periphery state: the long-lived ear, the short-lived
+        # utterance watcher, and whether a wake-initiated capture owns
+        # the microphone right now (worker-thread-owned flags).
+        self._wake: WakeListener | None = None
+        self._wake_ear: WakeUtteranceEar | None = None
+        self._wake_listening = False
+        self._speaking = False
+        # An interlude — a work phrase or an alert — is also Stella's own
+        # voice on the speakers, but it never owns the reply's playback
+        # slot, so it holds the wake ear off through its own count.
+        self._interludes = 0
+        self._interludes_lock = threading.Lock()
         self._playback: threading.Thread | None = None
         self._speech_interrupt: threading.Event | None = None
         self._speech_consumer: threading.Thread | None = None
@@ -1652,6 +1778,31 @@ class StellaBridge:
             # An enabled-but-unusable ear is reported once, honestly,
             # and changes nothing else about how Stella behaves.
             self._emit("voice_error", application.barge_notice)
+        if self._wake is not None and self._wake is not application.wake:
+            # Same replacement rule as the barge ear: the old wake
+            # capture must not outlive the settings that grew it.
+            self._wake.stop()
+        if (
+            self._wake_ear is not None
+            and self._wake_ear is not application.wake_ear
+        ):
+            self._wake_ear.stop()
+        self._wake = application.wake
+        self._wake_ear = application.wake_ear
+        # A rebuild retires any in-flight wake session with the old
+        # ears: the flag must not outlive the watcher that set it, or
+        # the new ear could never re-arm.
+        self._wake_listening = False
+        if self._wake is not None:
+            self._wake.on_wake = self._on_wake
+        if self._wake_ear is not None:
+            self._wake_ear.on_finish = self._on_wake_utterance
+        if application.wake_notice is not None:
+            self._emit("voice_error", application.wake_notice)
+        else:
+            # A configured, usable wake ear is armed right away: wake is
+            # the one microphone that listens while Stella does nothing.
+            self._resume_wake()
 
     def _serve(self) -> None:
         while True:
@@ -1711,6 +1862,9 @@ class StellaBridge:
             # blamed on (or erased by) this one mid-flight.
             self._turn_cancel.clear()
             self._speak_after(self._handle_turn(user_input))
+            # A typed turn may have ended in speech (which re-arms the
+            # wake ear itself) or in silence (which needs it here).
+            self._resume_wake()
 
         self._post(handle)
 
@@ -1774,6 +1928,135 @@ class StellaBridge:
     def _end_barge_in(self) -> None:
         if self._barge is not None:
             self._barge.stop()
+
+    def _suspend_wake(self) -> None:
+        """Take the wake ear off the microphone.
+
+        Stella is speaking or capturing; her own voice must never wake
+        her (the measured barge-in echo lesson). Idempotent from any
+        thread.
+        """
+
+        if self._wake is not None:
+            self._wake.stop()
+
+    def _resume_wake(self) -> None:
+        """Re-arm the wake ear once the microphone is free again.
+
+        Safe to call from anywhere, any time: a wake ear that is not
+        configured, still inside a wake capture or under live playback
+        stays asleep, and a faulted detector retires the ear silently
+        (the router-degradation precedent — broken means disabled, not
+        noisy).
+        """
+
+        listener = self._wake
+        if (
+            listener is None
+            or self._wake_listening
+            or self._speaking
+            or self._interludes
+        ):
+            return
+        if listener.failed:
+            self._wake = None
+            return
+        try:
+            listener.start()
+        except VoiceError as error:
+            self._wake = None
+            self._emit("voice_error", str(error))
+
+    def _begin_interlude(self) -> None:
+        """Hold the wake ear off for one spoken work phrase or alert.
+
+        Suspending here, not only in the reply's playback path, is the
+        difference between a phrase that cannot wake her and one that
+        can: narration plays while a turn is in flight, when the ear is
+        otherwise armed on purpose.
+        """
+
+        with self._interludes_lock:
+            self._interludes += 1
+        self._suspend_wake()
+
+    def _end_interlude(self) -> None:
+        """Release one interlude, re-arming the ear if nothing else plays.
+
+        Every path out of an interlude comes through here, including a
+        cancelled one: an ear left asleep by a phrase that never played
+        would silence wake for the rest of the session.
+        """
+
+        with self._interludes_lock:
+            self._interludes -= 1
+        self._resume_wake()
+
+    def _on_wake(self) -> None:
+        """One confirmed wake phrase is exactly one Listen-button press.
+
+        Called from the wake thread; the entire authority is posting one
+        command onto the worker. The detector contributes no decision,
+        no text and no approval — a woken utterance travels the same
+        ``run_turn`` path as anything typed.
+        """
+
+        self._post(self._wake_takeover)
+
+    def _wake_takeover(self) -> None:
+        panel = self._voice
+        if self._wake_listening:
+            return  # a wake session already owns the microphone
+        if panel is None:
+            # No transcription configured: keep the ear, wake stays
+            # honest by doing exactly nothing else.
+            self._resume_wake()
+            return
+        self._suspend_wake()
+        self._end_barge_in()
+        try:
+            panel.start_listening()
+        except VoiceError as error:
+            self._emit("voice_error", str(error))
+            self._resume_wake()
+            return
+        self._wake_listening = True
+        self._emit("voice_state", "listening")
+        ear = self._wake_ear
+        if ear is None or ear.failed:
+            self._wake_ear = None
+            return
+        try:
+            ear.start()
+        except VoiceError as error:
+            # No endpointer: the capture stays push-to-talk's problem —
+            # the user's Stop press ends it exactly as before.
+            self._wake_ear = None
+            self._emit("voice_error", str(error))
+
+    def _on_wake_utterance(self, kind: str) -> None:
+        """Called from the utterance watcher thread when it decides the
+        woken utterance ended: it posts, the worker acts."""
+
+        self._post(lambda: self._wake_utterance_done(kind))
+
+    def _wake_utterance_done(self, kind: str) -> None:
+        if not self._wake_listening:
+            return  # the session was retired (Cancel, rebuild)
+        self._wake_listening = False
+        if self._wake_ear is not None:
+            self._wake_ear.stop()
+        if kind == "complete":
+            # Exactly the Stop-button path: transcribe and run the turn.
+            self.post_listen_stop()
+        else:
+            # "timeout"/"cap": the ear woke but heard nothing usable —
+            # the Cancel path, plus one honest line about nothing sent.
+            self.post_listen_cancel()
+            self._emit(
+                "voice_error",
+                "Stella woke up but heard no words. Nothing was sent.",
+            )
 
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
@@ -1939,6 +2222,7 @@ class StellaBridge:
         reply the user asked for is still coming and reports itself.
         """
 
+        self._begin_interlude()
         try:
             try:
                 path = panel.synthesize_phrase(phrase, self._should_cancel)
@@ -1955,6 +2239,7 @@ class StellaBridge:
                 panel.dispose_artifact(path)
         finally:
             self._narration_lock.release()
+            self._end_interlude()
 
     def _announce(self, message: str) -> None:
         """Offer one delivered alert aloud, without ever blocking.
@@ -1992,6 +2277,7 @@ class StellaBridge:
     ) -> None:
         """Synthesize and play one alert off the worker thread, silently."""
 
+        self._begin_interlude()
         try:
             try:
                 path = panel.synthesize_phrase(message, self._should_cancel)
@@ -2008,6 +2294,7 @@ class StellaBridge:
                 panel.dispose_artifact(path)
         finally:
             self._announcement_lock.release()
+            self._end_interlude()
 
     def _flush_narration(self) -> None:
         """Retire every background interlude: nothing Stella spoke on its
@@ -2030,12 +2317,14 @@ class StellaBridge:
                 )
                 return
             try:
-                # Push-to-talk takes the microphone back: the barge-in
-                # ear never competes with an explicit Listen press.
+                # Push-to-talk takes the microphone back: neither ear
+                # ever competes with an explicit Listen press.
                 self._end_barge_in()
+                self._suspend_wake()
                 panel.start_listening()
             except VoiceError as error:
                 self._emit("voice_error", str(error))
+                self._resume_wake()
             else:
                 # The UI shows "Listening..." only after this event: the
                 # window never claims to listen when nothing is recording.
@@ -2064,10 +2353,12 @@ class StellaBridge:
                     "Voice input was cancelled at your request. Nothing "
                     "was sent to Stella.",
                 )
+                self._resume_wake()
                 return
             except VoiceError as error:
                 # A failed transcript is never replaced with invented text.
                 self._emit("voice_error", str(error))
+                self._resume_wake()
                 return
             self._emit("voice_transcript", transcript)
             # From here the transcript follows the exact typed-input path,
@@ -2079,14 +2370,25 @@ class StellaBridge:
                     transcript, spoken=self._voice_conversation()
                 )
             )
+            # The microphone is free again unless this reply is being
+            # spoken: live playback holds the wake ear off, and its own
+            # finish line re-arms it.
+            self._resume_wake()
 
         self._post(handle)
 
     def post_listen_cancel(self) -> None:
         def handle() -> None:
+            # A Cancel press also retires a wake-initiated session: the
+            # utterance watcher goes silent and a late finish callback
+            # finds the flag already down.
+            self._wake_listening = False
+            if self._wake_ear is not None:
+                self._wake_ear.stop()
             if self._voice is not None:
                 self._voice.abandon_listening()
             self._emit("voice_state", "idle")
+            self._resume_wake()
 
         self._post(handle)
 
@@ -2159,6 +2461,8 @@ class StellaBridge:
         panel.cancel_playback()
         if self._playback is not None:
             self._playback.join(timeout=2)
+        self._speaking = True
+        self._suspend_wake()
         self._emit("voice_state", "speaking")
         self._begin_barge_in()
 
@@ -2175,8 +2479,10 @@ class StellaBridge:
                 )
             finally:
                 self._end_barge_in()
+                self._speaking = False
                 panel.dispose_artifact(path)
                 self._emit("voice_state", "idle")
+                self._resume_wake()
 
         self._playback = threading.Thread(
             target=play, name="stella-playback", daemon=True
@@ -2234,7 +2540,9 @@ class StellaBridge:
                 finally:
                     panel.dispose_artifact(item)
             self._end_barge_in()
+            self._speaking = False
             self._emit("voice_state", "idle")
+            self._resume_wake()
 
         try:
             first = panel.synthesize(
@@ -2267,6 +2575,8 @@ class StellaBridge:
             self._playback.join(timeout=2)
         if self._speech_consumer is not None:
             self._speech_consumer.join(timeout=2)
+        self._speaking = True
+        self._suspend_wake()
         self._emit("voice_state", "speaking")
         self._begin_barge_in()
         outbox.put(first)
@@ -2426,6 +2736,11 @@ class StellaBridge:
         if self._voice is not None:
             self._voice.cancel_playback()
         self._end_barge_in()
+        # The wake ears go down the same way: shutdown must never leave a
+        # capture process reading the microphone after the window is gone.
+        self._suspend_wake()
+        if self._wake_ear is not None:
+            self._wake_ear.stop()
         self._post(None)
         self._thread.join(timeout=5)
         if self._playback is not None:

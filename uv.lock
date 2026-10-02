@@ -1501,6 +1501,9 @@ barge-in = [
 embed = [
     { name = "sentence-transformers" },
 ]
+wake = [
+    { name = "onnxruntime" },
+]
 web = [
     { name = "ddgs" },
 ]
@@ -1515,11 +1518,12 @@ dev = [
 requires-dist = [
     { name = "ddgs", marker = "extra == 'web'", specifier = ">=9.0" },
     { name = "onnxruntime", marker = "extra == 'barge-in'", specifier = ">=1.17" },
+    { name = "onnxruntime", marker = "extra == 'wake'", specifier = ">=1.17" },
     { name = "openai", specifier = ">=1.0" },
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
 ]
-provides-extras = ["embed", "barge-in", "web"]
+provides-extras = ["embed", "barge-in", "wake", "web"]
 
 [package.metadata.requires-dev]
 dev = [

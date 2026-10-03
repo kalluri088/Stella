@@ -350,6 +350,35 @@ def test_tag_rename_by_name_merges():
     assert "merged into #garden" in result.output
 
 
+def test_person_edit_round_trip_and_clearing():
+    tool = OutlineUpdateTool(
+        client(("PATCH", "/api/v1/people/46", {"id": 46, "name": "Ada"}))
+    )
+    result = tool.execute(
+        {
+            "kind": "person",
+            "id": 46,
+            "action": "edit",
+            "edits": {"phone": "555-0100", "email": ""},
+        }
+    )
+    assert result.success and result.action_receipt.status == "verified"
+    assert "edited email, phone" in result.output
+
+
+def test_person_edit_validation():
+    tool = OutlineUpdateTool(client())
+    assert tool.validate_arguments(
+        {"kind": "person", "id": 46, "action": "edit", "edits": {"name": "Grace"}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "person", "id": 46, "action": "edit", "edits": {"name": " "}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "person", "id": 46, "action": "edit", "edits": {"phone": "p" * 101}}
+    )
+
+
 def test_tag_rename_unknown_name_and_validation():
     tool = OutlineUpdateTool(client())  # no GET /api/v1/tags route -> not found
     result = tool.execute(

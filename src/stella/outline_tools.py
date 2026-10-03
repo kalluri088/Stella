@@ -1002,7 +1002,7 @@ UPDATE_ACTIONS: dict[str, set[str]] = {
     "event": {"reschedule", "edit", "restore"},
     "project": {"activate", "archive", "edit", "restore"},
     "note": {"edit"},
-    "person": {"restore"},
+    "person": {"restore", "edit"},
     "timer": {"pause", "resume", "stop", "cancel"},
     "link": {"attach", "detach"},
     "tag": {"edit"},
@@ -1028,6 +1028,7 @@ EDIT_FIELDS: dict[str, dict[str, str]] = {
     "note": {"body": "body"},
     "project": {"title": "title", "body": "description"},
     "tag": {"name": "name"},
+    "person": {"name": "name", "phone": "phone", "email": "email", "body": "notes"},
 }
 
 
@@ -1055,8 +1056,18 @@ def _edits_ok(kind: str, value: object) -> bool:
             if not _tag_list_ok(raw, allow_empty=True):
                 return False
         elif field == "name":
-            # kind=tag rename target
-            if not isinstance(raw, str) or not _TAG_RE.match(raw.strip()):
+            if not isinstance(raw, str):
+                return False
+            if kind == "tag":
+                # rename target is a tag token
+                if not _TAG_RE.match(raw.strip()):
+                    return False
+            elif not raw.strip() or len(raw.strip()) > 200:
+                return False
+        elif field in {"phone", "email"}:
+            # an empty string clears the contact detail
+            limit = 100 if field == "phone" else 200
+            if not isinstance(raw, str) or len(raw) > limit:
                 return False
         elif field == "remind":
             # JSON null clears the reminder
@@ -1102,10 +1113,12 @@ class OutlineUpdateTool(Tool):
             "activate|archive|edit|restore (restore un-deletes a project "
             "by id and brings back exactly the tasks its delete took with "
             "it), notes edit, people restore (un-deletes a person by "
-            "id; their links and notes were never touched), timers "
+            "id; their links and notes were never touched) or edit "
+            "(name|phone|email|body; phone/email \"\" clears them), timers "
             "pause|resume|stop|cancel. edit takes an 'edits' object "
             "(task: title|body|priority|recurrence|tags|remind; event: "
-            "title|location|body|remind; note: body; project: title|body). "
+            "title|location|body|remind; note: body; project: title|body; "
+            "person: name|phone|email|body). "
             "kind=tag action=edit renames a tag: id is the tag id or its "
             "current name, edits is {name: \"new-name\"}; renaming onto an "
             "existing tag merges them and every task keeps both sets of "
@@ -1319,6 +1332,20 @@ class OutlineUpdateTool(Tool):
                 )
                 return _updated(kind, item_id, action, row, "")
             if kind == "person":
+                if action == "edit":
+                    updated = client.request(
+                        "PATCH",
+                        f"/api/v1/people/{item_id}",
+                        body=_edit_body("person", arguments["edits"]),  # type: ignore[arg-type]
+                    )
+                    return _updated(
+                        kind,
+                        item_id,
+                        "edit",
+                        updated,
+                        "edited "
+                        + ", ".join(sorted(str(f) for f in arguments["edits"])),  # type: ignore[union-attr]
+                    )
                 client.request("POST", f"/api/v1/people/{item_id}/restore")
                 row = client.request("GET", f"/api/v1/people/{item_id}")
                 return _updated(kind, item_id, action, row, "")

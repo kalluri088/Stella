@@ -575,6 +575,23 @@ class TestBrowserFlagPersists:
 # ------------------------------------------------------------- the real renderer
 
 
+class TestReadCapped:
+    def test_within_cap_returns_all_untruncated(self, tmp_path):
+        f = tmp_path / "d"
+        f.write_bytes(b"hello")
+        assert browser_tools._read_capped(str(f), 100) == (b"hello", False)
+
+    def test_over_cap_returns_prefix_and_truncated(self, tmp_path):
+        f = tmp_path / "d"
+        f.write_bytes(b"0123456789")
+        assert browser_tools._read_capped(str(f), 4) == (b"0123", True)
+
+    def test_missing_file_raises_not_silent_empty(self, tmp_path):
+        # A vanished DOM file must fail loudly, not read as "no readable text".
+        with pytest.raises(OSError):
+            browser_tools._read_capped(str(tmp_path / "gone"), 10)
+
+
 @pytest.mark.skipif(
     sys.platform not in ("linux", "darwin"), reason="POSIX process-group teardown"
 )

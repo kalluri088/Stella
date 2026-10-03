@@ -306,13 +306,13 @@ def _reap(process: subprocess.Popen[bytes]) -> int | None:
 
 
 def _read_capped(path: str, cap: int) -> tuple[bytes, bool]:
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return b"", False
+    # Read cap+1 bytes: if the file is longer than the cap the read returns
+    # them all, so len(data) > cap is the truncation signal — no separate
+    # stat needed, and a vanished/unopenable file raises OSError that the
+    # caller reports as an honest failure instead of "no readable text".
     with open(path, "rb") as handle:
         data = handle.read(cap + 1)
-    return (data[:cap], size > cap or len(data) > cap)
+    return (data[:cap], len(data) > cap)
 
 
 def _render_impl(argv: list[str], cwd: str) -> BrowserRender:

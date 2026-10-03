@@ -312,29 +312,34 @@ def _chime(voice, kind: str) -> None:
     tones = _CHIME_TONES.get(kind)
     if not tones:
         return
-    path = tempfile.mktemp(prefix="stella-chime-", suffix=".wav")
+    # mkstemp creates the file exclusively (no symlink/TOCTOU race, and the
+    # deprecated mktemp would leak the name); the WAV is written straight
+    # through the returned descriptor so the fd is never reopened by name.
+    descriptor, path = tempfile.mkstemp(prefix="stella-chime-", suffix=".wav")
     try:
-        _write_chime(path, tones)
-    except OSError as error:
-        del error
-        return
-    try:
-        voice.play(path)
-    except VoiceError as error:
-        del error
+        try:
+            _write_chime(descriptor, tones)
+        except OSError:
+            return
+        try:
+            voice.play(path)
+        except VoiceError:
+            pass
     finally:
         try:
             os.remove(path)
-        except OSError as error:
-            del error
+        except OSError:
+            pass
 
 
 def _write_chime(
-    path: str, tones: tuple[tuple[float, float], ...], rate: int = 16000
+    descriptor: int, tones: tuple[tuple[float, float], ...], rate: int = 16000
 ) -> None:
-    """Render a tiny sine WAV: amplitude-shaped so it never clicks."""
+    """Render a tiny sine WAV into an already-created fd, amplitude-shaped so
+    it never clicks. ``wave.open`` on a file object does not close it, so the
+    owning ``os.fdopen`` context below does."""
 
-    with wave.open(path, "wb") as handle:
+    with os.fdopen(descriptor, "wb") as raw, wave.open(raw, "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(rate)

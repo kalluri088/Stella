@@ -487,6 +487,32 @@ def test_cancelling_a_streaming_answer_ends_the_turn_like_any_cancel() -> (
     assert result.response is None
 
 
+def test_a_streaming_sink_that_raises_cannot_bend_the_answer() -> None:
+    # The callback is presentation-only: a sink that trips over a dead
+    # synthesizer or widget must not cancel or corrupt the reply it is
+    # merely echoing, and the full recorded text still lands.
+    pieces = ["One. ", "Two."]
+    llm = PieceStreamingLLM(pieces)
+
+    def exploding_sink(piece: str) -> None:
+        raise RuntimeError("the sink died")
+
+    stella = Stella(
+        FixedBrain(Decision(DecisionKind.ANSWER)),
+        llm,
+        ToolDispatcher([]),
+        InMemoryMemory(),
+    )
+
+    result = stella.process(
+        Context(user_input="Current question"),
+        on_response_delta=exploding_sink,
+    )
+
+    assert result.response == "".join(pieces)
+    assert llm.stream_calls == 1
+
+
 def test_llm_brain_answer_content_is_used_without_second_llm_call() -> None:
     llm = RecordingLLM(
         response='{"kind":"answer","content":"The answer is 42."}'

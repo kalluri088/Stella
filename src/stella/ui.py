@@ -710,6 +710,9 @@ class StellaWindow:
             self._history_list,
         ):
             _style_listbox(box)
+        canvas = getattr(self, "_settings_canvas", None)
+        if canvas is not None:
+            canvas.configure(background=theme.window)
         for dialog in self._dialogs:
             dialog.configure(background=theme.surface)
             box = getattr(dialog, "preview_box", None)
@@ -1482,8 +1485,39 @@ class StellaWindow:
     def _build_settings_section(
         self, parent: ttk.Frame, settings: StellaSettings
     ) -> None:
-        frame = ttk.Frame(parent)
-        self._sections["settings"] = frame
+        outer = ttk.Frame(parent)
+        self._sections["settings"] = outer
+        canvas = tk.Canvas(outer, highlightthickness=0, bg=THEME.window)
+        scrollbar = ttk.Scrollbar(
+            outer, orient="vertical", command=canvas.yview
+        )
+        frame = ttk.Frame(canvas)
+        frame_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def _sync_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _sync_width(event):
+            canvas.itemconfig(frame_id, width=event.width)
+
+        frame.bind("<Configure>", _sync_scrollregion)
+        canvas.bind("<Configure>", _sync_width)
+
+        def _on_mousewheel(event):
+            widget = event.widget
+            while widget is not None:
+                if widget is canvas:
+                    delta = -1 if event.num == 4 else 1
+                    canvas.yview_scroll(delta, "units")
+                    return
+                widget = getattr(widget, "master", None)
+
+        canvas.bind_all("<Button-4>", _on_mousewheel, add="+")
+        canvas.bind_all("<Button-5>", _on_mousewheel, add="+")
+        self._settings_canvas = canvas
         self._section_header(
             frame, "Settings", "the minimal local configuration"
         )

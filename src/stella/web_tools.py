@@ -750,7 +750,8 @@ def web_tool_summaries(
     verb = (
         "search the web for" if capability == "web_search" else "fetch the page"
     )
-    return f"{verb} {json.dumps(subject.strip()[:120])} via {third_party}"
+    subject_text = json.dumps(subject.strip()[:120], ensure_ascii=False)
+    return f"{verb} {subject_text} via {third_party}"
 
 
 __all__ = [

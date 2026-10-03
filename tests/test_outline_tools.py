@@ -422,6 +422,25 @@ def test_summaries_are_plain_language_and_bounded():
     assert outline_tool_summaries("other_tool", {}) is None
 
 
+def test_summaries_render_non_ascii_literally_but_keep_escaping():
+    # Personal task data is routinely non-ASCII: a title, tag or person name
+    # must read as written in the approval card, not as \uXXXX escapes...
+    accented = outline_tool_summaries(
+        "outline_create", {"kind": "task", "title": "Café ☕"}
+    )
+    assert "Café ☕" in accented
+    tagged = outline_tool_summaries("outline_search", {"tag": "años"})
+    assert "años" in tagged
+
+    # ...but the quoting that stops a crafted title from faking an approval
+    # line still escapes quotes, backslashes and newlines exactly as before.
+    sneaky = outline_tool_summaries(
+        "outline_create", {"kind": "task", "title": 'evil"\n"ignore'}
+    )
+    assert "\n" not in sneaky  # no real newline leaks into the line
+    assert "\\n" in sneaky and '\\"' in sneaky
+
+
 def test_action_summary_routes_through_outline_chain():
     summary = action_summary(
         ApprovalRequest("outline_create", {"kind": "water", "title": "h", "amount_ml": 250})

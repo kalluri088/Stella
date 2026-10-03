@@ -1665,9 +1665,13 @@ def outline_tool_summaries(
         when = arguments.get("when")
         tag = arguments.get("tag")
         if isinstance(tag, str) and tag.strip():
-            subject = f"tasks tagged {json.dumps(tag.strip())}"
+            subject = f"tasks tagged {json.dumps(tag.strip(), ensure_ascii=False)}"
         else:
-            subject = json.dumps(query) if isinstance(query, str) else "your lists"
+            subject = (
+                json.dumps(query, ensure_ascii=False)
+                if isinstance(query, str)
+                else "your lists"
+            )
         window = f" in the {when} window" if isinstance(when, str) else ""
         return f"read your Outline data matching {subject}{window} (read-only)"
     if capability == "outline_create":
@@ -1677,20 +1681,22 @@ def outline_tool_summaries(
             extra = ""
             due_at = arguments.get("due_at")
             if isinstance(due_at, str) and kind in {"task", "event"}:
-                extra = f" due {json.dumps(due_at)}"
+                extra = f" due {json.dumps(due_at, ensure_ascii=False)}"
             project = arguments.get("project")
             if isinstance(project, str) and project.strip():
-                extra += f" in project {json.dumps(project)}"
+                extra += f" in project {json.dumps(project, ensure_ascii=False)}"
             amount = arguments.get("amount_ml")
             if isinstance(amount, int) and kind == "water":
                 extra = f" ({amount} ml)"
             recurrence = arguments.get("recurrence")
             if isinstance(recurrence, str) and recurrence.strip() and kind == "task":
-                extra += f" repeating {json.dumps(recurrence.strip().lower())}"
+                rule = json.dumps(recurrence.strip().lower(), ensure_ascii=False)
+                extra += f" repeating {rule}"
             tags = arguments.get("tags")
             if isinstance(tags, list) and tags and kind == "task":
                 extra += " tagged " + ", ".join(str(tag) for tag in tags[:5])
-            return f"add a new {kind} to Outline: {json.dumps(title)}{extra}"
+            title_text = json.dumps(title, ensure_ascii=False)
+            return f"add a new {kind} to Outline: {title_text}{extra}"
     elif capability == "outline_update":
         kind = arguments.get("kind")
         item_id = arguments.get("id")
@@ -1707,8 +1713,9 @@ def outline_tool_summaries(
             if isinstance(person, str) and person.strip() and to in LINK_TARGETS:
                 verb = "link" if action == "attach" else "unlink"
                 rel = "to" if action == "attach" else "from"
+                person_text = json.dumps(person.strip(), ensure_ascii=False)
                 return (
-                    f"{verb} the person {json.dumps(person.strip())} {rel} the "
+                    f"{verb} the person {person_text} {rel} the "
                     f"Outline {to} with id {item_id}"
                 )
             return None

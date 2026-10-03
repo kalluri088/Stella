@@ -361,6 +361,18 @@ def test_summaries_name_the_receiving_third_party():
     assert web_tool_summaries("web_search", {}, key_present=False) is None
 
 
+def test_summaries_render_non_ascii_query_literally():
+    # A search in another language is the common case; the approval card must
+    # show the literal query, not \uXXXX escapes, while still quoting it.
+    summary = web_tool_summaries(
+        "web_search", {"query": "météo Paris"}, key_present=False
+    )
+    assert '"météo Paris"' in summary
+    # A query that embeds a newline still cannot forge an extra approval line.
+    sneaky = web_tool_summaries("web_search", {"query": 'a\n"b'}, key_present=False)
+    assert "\n" not in sneaky
+
+
 def test_action_summary_routes_web_through_the_chain(monkeypatch):
     monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
     summary = action_summary(

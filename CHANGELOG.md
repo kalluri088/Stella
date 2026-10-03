@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+### Stella answers to her name, and says when the microphone is open
+
+- **A wake word whose entire authority is one button press.** `stella/wake.py`
+  runs a local openWakeWord classifier over raw frames and its only output is
+  the callback the **Listen** button already uses: one confirmed phrase is
+  exactly one press, and nothing else may follow from it. It holds the device
+  but records nothing until the phrase is confirmed, it never answers an
+  on-screen approval, and a wake that hears only a transcriber's filler for an
+  empty room is reported on screen and sent nowhere. There is deliberately no
+  `auto` — the ear exists only while a box the owner ticked says it does. The
+  `wake` extra and the ONNX files under `~/models/openwakeword` are the owner's
+  to install; Stella does not download a model, and the ear involves no key and
+  no network at all.
+- **One microphone, not three of them.** `stella/mic_tap.py` is the single
+  `pw-record`/`arecord` child that push-to-talk, the wake ear and the utterance
+  watcher that endpoints a wake-initiated recording all subscribe to, so the
+  device is never opened three times at once — the state that makes every
+  "device busy" voice failure hard to explain. A subscriber that falls behind
+  loses its oldest frame rather than stalling the reader; a dead capture tells
+  each consumer once and Stella's text path carries on. Barge-in deliberately
+  keeps its own process: it arms only while Stella speaks, when the wake ear is
+  suspended, and it may read a different echo-cancelled source.
+- **An open approval dialog takes every ear off the device.** Not merely
+  ignores it: the wake ear is suspended, so an interrupt-by-voice cannot cancel
+  from the voice the turn that is waiting on the owner's own click. Rule 10 is
+  the reason this is a suspend rather than a filter.
+- **Comprehension is found, named and bounded.** A local transcriber is
+  detected before any recording leaves the laptop, and whichever engine is
+  running is named on screen once per session (`Voice input uses voxtype
+  (whisper).`) rather than on every turn. `STELLA_VOICE_TRANSCRIPTION=openai`
+  is an instruction, not a fallback: naming the cloud skips the local branch
+  instead of quietly being intercepted by it. Cloud requests now carry a
+  timeout, because a stalled call holds the microphone's turn open in a way the
+  user cannot cancel.
+- **The voice already installed is used, and kept warm.** Synthesis prefers a
+  resident worker the owner placed at `~/tools/stella-speak-server` — probed
+  for whether it may run, never started at launch — over the robotic
+  `espeak` fallback, and `STELLA_SPEECH_RESIDENT` keeps one process loaded
+  across sentences so inter-sentence silence stops being model start-up.
+  Detection is local-first in both directions and no key decides anything while
+  a working local engine exists.
+- **Settings grew the box, and Apply acts on it.** `wake_word_enabled` is the
+  saved bool — the only new entry in `config.json`, and no secret in it — while
+  every consumer still reads the mode, so the two spellings cannot drift.
+  `STELLA_WAKE_WORD` overrides it for one launch in either direction and
+  decides the bool with it. Rebinding stops a replaced spotter and ear before
+  building the new session, so unticking really closes that capture instead of
+  leaving two subscribers behind.
+- **A dot, and a mute switch that is not decorative.** The dot is red while
+  Stella really holds the device — an armed ear, a capture in flight, an
+  interruption listener — read from the parties that can know, and dark the
+  moment the microphone is released. *Mute mic* stops the wake ear, refuses a
+  wake phrase that races the switch and a Listen press that arrives after it
+  with one shared sentence, takes down a wake capture already under way, and
+  leaves a hand-started recording and all output alone. The refusal lives in
+  one resume path, so no route — a Settings rebind included — can arm the ear
+  behind the switch by forgetting to ask.
+- **The trust model did not move.** A transcript still has exactly the
+  authority of typed user input and none of its own; `DANGEROUS` actions still
+  raise the same approval; nothing a wake ear or VAD hears is written to disk or
+  stored; and no voice path is ever stored in `api_keys.json`. What the scope
+  list gave up is one line, not the boundary: *wake-word detection* became an
+  opt-in capability and *always-listening audio* still means continuous
+  **recording**, which stays out, along with speaker identification and
+  streaming recognition.
+- **One file runs the real engines, by request.** `tests/test_voice_roundtrip.py`
+  is gated on `STELLA_VOICE_ROUNDTRIP=on` — skipped, never silently passed —
+  and never opens the microphone: fixed sentences go out through the resident
+  worker and back through the detected transcriber, using the same builders a
+  launched Stella uses, and every word has to return in order. Measured
+  2026-10-03, three sentences survived Kokoro → whisper whole, which is also
+  the deferred engine question answered. The same run found a real defect no
+  fake could see: the detected tool printed its own progress block on stdout,
+  so every live transcript carried it as user words until the transcript was
+  read out of that output instead of taken from it whole.
+- `uv run pytest` → 1854 passed, 7 skipped; `uv run ruff check .` clean;
+  `git diff --check` clean; the round trip run once with its switch on.
+  `docs/VOICE.md` is the authority for how any of this behaves, and
+  `docs/ROADMAP.md` records the scope rewrite as Stage D's D6.
+
+
 ### Stella's voice stops reading the markup aloud
 
 - **Spoken replies are now the words, not the formatting.** Everything a

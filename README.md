@@ -48,7 +48,8 @@ checked that it did.
   `STELLA_WAKE_WORD=on` for a single launch — is the only way Stella ever
   holds the microphone open while you are not speaking to her. A red dot
   says whenever it is open, and *Mute mic* puts every ear down for the
-  session.
+  session; `uv sync --extra wake` and local wake models are what the ear
+  needs to exist at all.
 - **Use your desktop (opt-in)** — with one setting on, Stella can read the
   focused Hyprland window, focus or move windows, and type into the window
   you nominate. Everything else about her is unchanged: the screen-wide
@@ -192,6 +193,11 @@ development, or running several configurations side by side:
 | `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
 | `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |
 | `STELLA_SPEECH_LOCAL_VOICE` / `STELLA_SPEECH_LOCAL_SPEED` | Voice name and rate asked of a resident speech worker (extra request keys; a worker may ignore them) | unset |
+| `STELLA_TRANSCRIPTION_COMMAND` / `STELLA_TRANSCRIPTION_MODEL` | A local transcriber to run instead of the detected `voxtype` CLI (a `{input}` template, run without a shell) / the OpenAI transcription model when the cloud path is chosen | unset / `whisper-1` |
+| `STELLA_SPEECH_COMMAND` / `STELLA_SPEECH_MODEL` / `STELLA_SPEECH_VOICE` | A local synthesizer (a `{text}` + `{output}` template that writes one audio file) / the OpenAI speech model and voice | unset / `tts-1` / `alloy` |
+| `STELLA_SPEECH_RESIDENT` | Keep one speech process warm between sentences so a local voice answers in milliseconds instead of re-loading its model on every phrase (`VOICE.md`) | off |
+| `STELLA_VOICE_BARGE_IN` / `STELLA_BARGE_SOURCE` / `STELLA_BARGE_THRESHOLD` / `STELLA_VAD_MODEL` | Interrupt Stella by speaking: `auto`/`on`/`off`, the capture source it reads (an echo-cancelled one is what makes it usable), how speech-like a frame must look, and where the small VAD model file is | `auto` / unset / `0.5` / found automatically |
+| `STELLA_WAKE_MODEL` / `STELLA_WAKE_MODEL_DIR` / `STELLA_WAKE_SOURCE` / `STELLA_WAKE_THRESHOLD` | Which openWakeWord classifier answers for the wake ear and where it is looked for, the capture source it reads, and how sure it has to be before it counts as a phrase | `hey_jarvis_v0.1.onnx` / `~/models/openwakeword` / unset / `0.5` |
 | `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`) for this launch only; the *Wake word* box in Settings is what is saved (`wake_word_enabled`), and this variable wins over it either way. Arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |
@@ -295,7 +301,7 @@ without touching the live state.
 - `docs/PERSONA.md` — personality as data: trust tiers, filters, and the
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
-  of scope (plugins, wake words, autonomous agents, cloud accounts…)
+  of scope (plugins, autonomous agents, cloud accounts…)
 - `tests/` — 1400+ tests; every "done" claim in this README is checked by
   one
 

@@ -604,10 +604,25 @@ inside that session, not before); D5 waits behind the voice work.
   trick targets 2–4× *slower* off (`route-read` 11.3 → 47.7 s). A
   scoped variant has nothing to capture; the shipped line is
   untouched and this parked idea is definitively answered.*
+- **D6. Hands-free wake, on the owner's terms (landed 2026-10-03 on
+  `feature/voice-integration`, reversing part of the note below).** The
+  owner asked for the wake word back, so the question was never *whether*
+  but *what it may be*: one local detector whose entire authority is
+  pressing the existing **Listen** button. It records nothing until a
+  phrase is confirmed, it never answers an on-screen approval, and there is
+  deliberately no `auto` mode — the ear exists only while a box the owner
+  ticked says so. A wake that hears only a transcriber's filler for an
+  empty room is reported and sent nowhere. The microphone is held by one
+  shared capture process instead of one per consumer, and the voice row
+  gained the two things that make an open microphone livable: a dot that
+  says when it is really open and a mute switch that puts every ear down
+  for the session. What the reversal did *not* buy: continuous
+  transcription, speaker identification, or any cloud speech hop. See
+  `docs/VOICE.md`.
 
 Explicitly **not** adopted from this input: the always-listening
-hands-free loop and any wake word (both remain on the out-of-scope
-list), KV-cache save/restore between sessions (no demonstrated
+hands-free loop as a background recorder, KV-cache save/restore between
+sessions (no demonstrated
 Stella weakness; we run one active conversation), per-persona tool
 behavior (C5's standing non-goal), and his single-card VRAM plan
 (it is a 12 GB plan for a different stack — only the *method*,
@@ -658,7 +673,10 @@ feel* — immediate, spoken, aware of the desk, proactive within rule 8.
 That ambition changes what we build *toward*, not the trust model it
 runs through: the Vision's non-goals stand, and wake-word/always-
 listening remain on the out-of-scope list until that section is
-deliberately rewritten with a measured case for them.
+deliberately rewritten with a measured case for them. *Rewritten
+2026-10-03, by the owner's own request rather than by research — and the
+rewrite changed the scope list, not the trust model: D6 in Stage D and the
+note at the end of this file record what landed and what still stands.*
 
 ## Deferred designs and their non-negotiable constraints
 
@@ -702,9 +720,18 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
 
 Not planned, in any stage, unless this section is deliberately rewritten:
 MCP integration, a plugin system, an autonomous agent loop, multi-user
-accounts, cloud hosting, mobile apps, wake-word detection,
-always-listening audio, speaker identification, emotion detection, a
-model marketplace, automatic large-model downloads, self-modifying
-behavior and self-learning beyond the approval-gated style notes of
-Stage C, Kubernetes/Docker orchestration, arbitrary shell access, and
-unrestricted computer control.
+accounts, cloud hosting, mobile apps, speaker identification, emotion
+detection, a model marketplace, automatic large-model downloads,
+self-modifying behavior and self-learning beyond the approval-gated style
+notes of Stage C, Kubernetes/Docker orchestration, arbitrary shell access,
+and unrestricted computer control.
+
+Two lines here were deliberately rewritten on 2026-10-03, and the rewrite
+is the whole record of why: *wake-word detection* became an opt-in
+capability (Stage D's D6, `docs/VOICE.md`), and *always-listening audio*
+was narrowed to what it has always meant here — continuous **recording**,
+which is still out. A ticked wake box holds the device open for a local
+classifier and stores nothing until a phrase is confirmed; a mute switch
+and an on-screen dot are what keep that visible and reversible. Speaker
+identification and emotion detection were not part of that rewrite and
+stay out.

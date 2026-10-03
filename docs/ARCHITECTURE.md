@@ -698,8 +698,11 @@ described in the architecture above, not here):
   Outline for the alerts *it* already declared due, and the answer is one line
   of chat — never a tool call, never a model turn (see `REMINDERS.md`)
 - Audio capture and output are limited to the explicit one-utterance desktop
-  voice mode in `stella.voice` (see `VOICE.md`); there is no wake word,
-  continuous listening, or streaming. Vision providers remain interfaces only;
+  voice mode in `stella.voice` (see `VOICE.md`); there is no continuous
+  listening or streaming. The one always-*open* path is the opt-in wake ear in
+  `stella.wake`: it holds the shared capture for a local classifier, records
+  nothing until a phrase is confirmed, and its whole authority is pressing the
+  existing **Listen** button. Vision providers remain interfaces only;
   video or environment processing, or provider-specific multimodal
   integrations beyond the current voice path are not implemented
 - Plugin loading, dynamic discovery, and permission checks (approval

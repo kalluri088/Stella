@@ -37,7 +37,19 @@ Listen button -> Recorder (one utterance) -> TranscriptionProvider
   -> StellaSession.run_turn (same path as typed input)
   -> response shown as text
   -> optional SpeechProvider -> Player -> audio (text remains visible)
+
+Wake word on (the ear replaces the finger, never the path):
+  shared tap -> wake classifier (records nothing) -> the same Listen press
+    -> Recorder -> ... the identical chain above ...
+
+Barge-in armed (a named echo-cancelled source, during playback only):
+  its own capture -> Silero VAD -> a confirmed utterance -> what Cancel does
+    -> audio stops, the turn is cancelled; nothing is transcribed or sent
 ```
+
+Neither branch adds a reasoning path: both end in something a button already
+does, which is why **Mute mic** needs no branch of its own. It lowers both
+ears and refuses the press, and the chain above simply never begins.
 
 A failed turn still produces an honest reply line; a failed voice stage never
 replaces it. If transcription fails or is empty, nothing is sent to Stella —
@@ -404,9 +416,17 @@ transcription or speech endpoints.
   `{input}` and prints the transcript on stdout (for example a `whisper.cpp`
   wrapper). Executed without a shell.
 - `STELLA_TRANSCRIPTION_ENGINE` (default `whisper`) — the engine handed to the
-  detected `voxtype` (`voxtype transcribe --engine <name> {input}`). It names
-  an engine, not a model size; the model a engine uses stays in voxtype's own
-  configuration.
+  detected `voxtype` (`voxtype -q transcribe --engine <name> {input}`). It
+  names an engine, not a model size; the model an engine uses stays in
+  voxtype's own configuration. The `-q` is a *global* flag and goes before
+  the subcommand, and it is not the whole story: even quiet, voxtype prints a
+  block about the file it loaded, its format and its resampling on stdout,
+  then a blank line, then the words. Stella reads the transcript out of that
+  stdout instead of taking it whole, because the block is the tool
+  describing its own work — heard verbatim, it would enter every spoken turn
+  as things the user said. This applies only to the built-in tool: a command
+  the owner writes is documented as printing the transcript on stdout, so its
+  bytes are the transcript and nothing else, blank lines included.
 - `STELLA_TRANSCRIPTION_TIMEOUT` (default `30` seconds, max `600`) — how long a
   cloud transcription request may take before Stella abandons it. A local
   command keeps its own 120-second ceiling.
@@ -438,10 +458,13 @@ mono the local transcribers expect; playback uses `pw-play`, `paplay`, or
   the resulting text message only.
 - Speech artifacts are removed after playback, and provider temp directories
   are disposed of at shutdown.
-- Recording happens only between an explicit Listen press and its stop; there
-  is no always-on capture and no autonomous voice-triggered action. The one
-  exception is opt-in barge-in, and even then the microphone feeds only a
-  local voiced/not-voiced decision that is never recorded or stored.
+- A recording exists only between an explicit Listen press (or one
+  wake-initiated capture) and its stop, and no voice path ever acts on its own.
+  An open microphone is a different thing from a recording: the opt-in wake ear
+  and barge-in each feed only local classifiers — a wake candidate and a
+  voiced/not-voiced decision — that are never written to disk or stored, and
+  audio reaches a recorder only after a phrase was confirmed. **Mute mic** takes
+  even the open handle away for the rest of the session.
 
 ## Security posture
 
@@ -454,10 +477,38 @@ tool boundaries behave identically for spoken and typed requests.
 Playback output is an interface rendering; nothing it says feeds back into the
 decision path.
 
+## Validation
+
+The normal suite never opens a microphone or a speaker: fakes stand in for
+the recorder and player, and the command providers are exercised only against
+this interpreter. One file crosses that line, deliberately and by request.
+
+`tests/test_voice_roundtrip.py` is gated on `STELLA_VOICE_ROUNDTRIP=on` and
+skipped, never silently passed, without it. It asks the synthesis engine this
+machine would itself pick to speak fixed sentences and reads the audio back
+through the detected transcriber — both sides built by the same functions a
+launched Stella uses — and asserts every word returns, in order. It never
+touches the microphone: the synthesized file is handed over as the recording
+a recorder "happened to stop on".
+
+That harness is also the answer to the engine question `MODELS.md` parks
+(bigger whisper engines, parakeet): it measures whichever pair is installed,
+and one lost word is a measurement. Measured 2026-10-03: three sentences
+through the resident Kokoro worker and voxtype's whisper engine came back
+whole and in order — and the run found a real defect no fake could see, the
+voxtype progress block described under "Providers and configuration", which
+was polluting every live transcript until it was read out of stdout.
+
 ## Known limitations
 
-- One utterance per Listen press; no streaming recognition, continuous
-  conversation, speaker identification, or emotion detection.
+- One utterance per Listen press — or per wake phrase, where that is on —
+  with no streaming recognition, no speaker identification and no emotion
+  detection. Stella hears *a* voice, never *whose* voice.
+- Wake detection is a local classifier: it has no idea who is talking, so
+  anyone in the room who says the phrase opens a capture, and any phrase it
+  mistakes for the word can too. That is the whole reason the opt-in is a
+  box the owner ticks and a dot on screen, and why **Mute mic** is one click
+  away.
 - Local transcription quality depends entirely on the configured command; Stella
   performs no speech modeling of its own.
 - `espeak` output is a fixed robotic voice and follows the text's language as

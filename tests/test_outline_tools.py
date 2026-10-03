@@ -3,6 +3,7 @@
 from stella.app import StellaSettings
 from stella.outline_tools import (
     MAX_OUTPUT_LINES,
+    OutlineBulkTool,
     OutlineClient,
     OutlineCreateTool,
     OutlineError,
@@ -122,10 +123,12 @@ def test_registered_when_server_answers():
         "outline_search",
         "outline_create",
         "outline_update",
+        "outline_bulk",
     ]
     assert tools[0].risk_level is RiskLevel.SAFE
     assert tools[1].risk_level is RiskLevel.SENSITIVE
     assert tools[2].risk_level is RiskLevel.SENSITIVE
+    assert tools[3].risk_level is RiskLevel.SENSITIVE
 
 
 def test_environment_token_wins_and_bad_url_rejected():
@@ -133,7 +136,7 @@ def test_environment_token_wins_and_bad_url_rejected():
     tools = build_outline_tools(
         {"OUTLINE_TOKEN": "t"}, transport=FakeServer(server_routes())
     )
-    assert len(tools) == 3
+    assert len(tools) == 4
 
 
 # --------------------------------------------------------------------------
@@ -949,11 +952,11 @@ def test_pump_is_armed_only_by_a_real_transport_build(tmp_path, monkeypatch):
     (data_dir / "outline.token").write_text("secret-token\n")
     env = {"OUTLINE_DATA_DIR": str(data_dir)}
     # fake transport (tests): tools exist, pump stays unarmed
-    assert len(build_outline_tools(env, transport=FakeServer(server_routes()))) == 3
+    assert len(build_outline_tools(env, transport=FakeServer(server_routes()))) == 4
     assert module.active_reminder_pump() is None
     # real transport and a reachable server: the sweep is armed
     monkeypatch.setattr(module, "_healthz", lambda c: True)
-    assert len(build_outline_tools({**env, "OUTLINE_URL": "http://127.0.0.1:9"})) == 3
+    assert len(build_outline_tools({**env, "OUTLINE_URL": "http://127.0.0.1:9"})) == 4
     assert module.active_reminder_pump() is not None
 
 
@@ -1166,3 +1169,120 @@ def test_update_project_restore_round_trip():
     assert not tool.validate_arguments(
         {"kind": "project", "id": 4, "action": "restore", "edits": {"title": "x"}}
     )
+
+
+# ---------------------------------------------------------------------------
+# bulk parity (report 90): outline_bulk drives POST /api/v1/tasks/bulk
+# ---------------------------------------------------------------------------
+
+
+def bulk_setup(payload):
+    """A tool over a fake server whose bulk route answers `payload`."""
+    srv = FakeServer(
+        server_routes((("POST", "/api/v1/tasks/bulk", payload),))
+    )
+    return OutlineBulkTool(OutlineClient("http://127.0.0.1:8741", "t", srv)), srv
+
+
+def bulk_post(srv):
+    return next(
+        c for c in srv.calls if c[0] == "POST" and c[1] == "/api/v1/tasks/bulk"
+    )
+
+
+def test_bulk_complete_dedupes_sorts_and_verifies():
+    tool, srv = bulk_setup({"updated": 3, "ids": [7, 8, 9], "spawned": 0})
+    result = tool.execute({"ids": [9, 7, 7, 8], "action": "complete"})
+    assert result.success and result.action_receipt.status == "verified"
+    assert bulk_post(srv)[2] == {"ids": [7, 8, 9], "patch": {"status": "done"}}
+    assert "Updated 3 of 3 Outline tasks: complete." in result.output
+
+
+def test_bulk_complete_reports_spawned_recurrence():
+    tool, _ = bulk_setup({"updated": 2, "ids": [4, 5], "spawned": 2})
+    result = tool.execute({"ids": [4, 5], "action": "complete"})
+    assert "complete, 2 next occurrences spawned." in result.output
+
+
+def test_bulk_open_and_priority_and_restore_bodies():
+    for action, extra, tail in (
+        ("open", {}, {"patch": {"status": "open"}}),
+        ("priority", {"priority": 3}, {"patch": {"priority": 3}}),
+        ("restore", {}, {"restore": True}),
+    ):
+        tool, srv = bulk_setup({"updated": 1, "ids": [6]})
+        result = tool.execute({"ids": [6], "action": action, **extra})
+        assert result.success, action
+        assert bulk_post(srv)[2] == {"ids": [6], **tail}
+
+
+def test_bulk_tags_add_cleans_and_tags_remove_shapes():
+    tool, srv = bulk_setup({"updated": 1, "ids": [6]})
+    result = tool.execute(
+        {"ids": [6], "action": "tags_add", "tags": ["Garden", "chore", "garden"]}
+    )
+    assert result.success
+    assert bulk_post(srv)[2] == {"ids": [6], "patch": {"tags_add": ["garden", "chore"]}}
+    tool2, srv2 = bulk_setup({"updated": 1, "ids": [6]})
+    assert tool2.execute({"ids": [6], "action": "tags_remove", "tags": ["home"]}).success
+    assert bulk_post(srv2)[2] == {"ids": [6], "patch": {"tags_remove": ["home"]}}
+
+
+def test_bulk_unverified_when_server_updates_fewer():
+    tool, _ = bulk_setup({"updated": 2, "ids": [7, 8]})
+    result = tool.execute({"ids": [7, 8, 9], "action": "complete"})
+    assert result.success and result.action_receipt.status == "unverified"
+    assert "Updated 2 of 3 Outline tasks" in result.output
+
+
+def test_bulk_failed_on_error_and_on_missing_count():
+    tool, _ = bulk_setup(OutlineError("rejected"))
+    result = tool.execute({"ids": [1], "action": "complete"})
+    assert not result.success and result.action_receipt.status == "failed"
+    tool2, _ = bulk_setup({"ids": []})  # 200 but no "updated" count
+    result2 = tool2.execute({"ids": [1], "action": "open"})
+    assert not result2.success and result2.action_receipt.status == "failed"
+
+
+def test_bulk_validation_matrix():
+    tool, _ = bulk_setup({"updated": 1, "ids": [1]})
+    assert tool.validate_arguments({"ids": [1], "action": "complete"})
+    assert tool.validate_arguments({"ids": [1], "action": "priority", "priority": 2})
+    assert tool.validate_arguments(
+        {"ids": [1], "action": "tags_add", "tags": ["home"]}
+    )
+    assert not tool.validate_arguments({})
+    assert not tool.validate_arguments({"ids": [], "action": "complete"})
+    assert not tool.validate_arguments({"ids": [1] * 201, "action": "complete"})
+    assert not tool.validate_arguments({"ids": [0], "action": "complete"})
+    assert not tool.validate_arguments({"ids": [True], "action": "complete"})
+    assert not tool.validate_arguments({"ids": ["1"], "action": "complete"})
+    assert not tool.validate_arguments({"ids": [1], "action": "delete"})
+    assert not tool.validate_arguments({"ids": [1], "action": "priority"})
+    assert not tool.validate_arguments(
+        {"ids": [1], "action": "priority", "priority": 4}
+    )
+    assert not tool.validate_arguments({"ids": [1], "action": "tags_add"})
+    assert not tool.validate_arguments(
+        {"ids": [1], "action": "complete", "priority": 2}
+    )  # stray keys
+    assert not tool.validate_arguments(
+        {"ids": [1], "action": "restore", "extra": 1}
+    )
+
+
+def test_bulk_action_summary():
+    assert outline_tool_summaries(
+        "outline_bulk", {"ids": [1, 2, 3], "action": "complete"}
+    ) == "complete 3 Outline tasks at once"
+    assert outline_tool_summaries("outline_bulk", {"ids": [], "action": "complete"}) is None
+    assert outline_tool_summaries("outline_bulk", {"ids": [1], "action": "delete"}) is None
+
+
+def test_bulk_never_deletes():
+    # Stella's policy: deletion is a UI-only gesture, so "delete" is not an
+    # accepted bulk action — the tool rejects it and its description says so.
+    tool, _ = bulk_setup({"updated": 1, "ids": [1]})
+    assert not tool.validate_arguments({"ids": [1], "action": "delete"})
+    assert "never deleted through Stella" in tool.description
+    assert outline_tool_summaries("outline_bulk", {"ids": [1], "action": "delete"}) is None

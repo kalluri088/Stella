@@ -1581,8 +1581,9 @@ class StellaWindow:
             frame,
             style="Dim.TLabel",
             text=(
-                "Adds outline_search, outline_create and outline_update "
-                "for the Outline task app over its local API. The tools "
+                "Adds outline_search, outline_create, outline_update "
+                "and outline_bulk for the Outline task app over its "
+                "local API. The tools "
                 "appear only while an Outline server is reachable; "
                 "reading never asks for approval, writing always does."
             ),

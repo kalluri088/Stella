@@ -8,8 +8,9 @@ the Stella-side half of that integration:
 * environment-gated exactly like ``os_tools.build_desktop_tools``: when the
   Outline server is not running or its token is unreadable, the tools are
   simply not registered and the model never sees them;
-* three coarse capabilities, one per verb (search/create/update). No
-  delete is exposed: Outline rows are removed in the UI, by the user.
+* four coarse capabilities, one per verb (search/create/update/bulk).
+  No delete is exposed: Outline rows are removed in the UI, by the
+  user.
 * API-first parity: the Outline web UI and these tools are thin clients
   of the same HTTP endpoints, so every capability works from both sides.
   Two deliberate, documented exceptions: bulk export (downloading whole
@@ -1492,6 +1493,123 @@ def _unwrap_task(envelope: object) -> tuple[object, object]:
     return envelope, None
 
 
+BULK_ACTIONS = {"complete", "open", "priority", "tags_add", "tags_remove", "restore"}
+
+
+class OutlineBulkTool(Tool):
+    """Apply one action to many Outline tasks in a single request."""
+
+    def __init__(self, client: OutlineClient) -> None:
+        self._client = client
+
+    @property
+    def name(self) -> str:
+        return "outline_bulk"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Applies one action to many Outline tasks at once, by ids "
+            "(from outline_search): complete, open, priority (needs "
+            "priority 1-3), tags_add / tags_remove (need tags), or "
+            "restore (un-deletes trashed tasks). One request covers the "
+            "whole set. Completing a recurring task still spawns its "
+            "next instance; reopening cancels an auto-spawn not yet "
+            "due. Tasks are never deleted through Stella — in bulk or "
+            "otherwise; deletions stay a deliberate UI gesture."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {
+            "ids": "list of positive integer task ids, at most 200",
+            "action": "complete|open|priority|tags_add|tags_remove|restore",
+            "priority": "integer 1-3 (required for action=priority)",
+            "tags": "list of tag names (required for tags_add/tags_remove)",
+        }
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.SENSITIVE
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        if not isinstance(arguments, dict):
+            return False
+        if set(arguments) - {"ids", "action", "priority", "tags"}:
+            return False
+        ids = arguments.get("ids")
+        if (
+            not isinstance(ids, list)
+            or not 1 <= len(ids) <= 200
+            or not all(
+                isinstance(i, int) and not isinstance(i, bool) and i >= 1
+                for i in ids
+            )
+        ):
+            return False
+        action = arguments.get("action")
+        if action not in BULK_ACTIONS:
+            return False
+        if action == "priority":
+            return _int_in_range(arguments.get("priority"), 1, 3)
+        if action in {"tags_add", "tags_remove"}:
+            return _tag_list_ok(arguments.get("tags"))
+        return not ({"priority", "tags"} & set(arguments))
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output="Invalid tool arguments.")
+        ids = sorted({int(i) for i in arguments["ids"]})  # type: ignore[arg-type]
+        action = str(arguments["action"])
+        body: dict[str, object] = {"ids": ids}
+        if action == "restore":
+            body["restore"] = True
+        elif action == "complete":
+            body["patch"] = {"status": "done"}
+        elif action == "open":
+            body["patch"] = {"status": "open"}
+        elif action == "priority":
+            body["patch"] = {"priority": arguments["priority"]}
+        elif action == "tags_add":
+            body["patch"] = {
+                "tags_add": _clean_tags(list(arguments["tags"]))  # type: ignore[arg-type]
+            }
+        else:
+            body["patch"] = {
+                "tags_remove": _clean_tags(list(arguments["tags"]))  # type: ignore[arg-type]
+            }
+        try:
+            payload = self._client.request("POST", "/api/v1/tasks/bulk", body=body)
+        except OutlineError as error:
+            return ToolResult(
+                success=False,
+                output=f"Outline bulk update failed: {error}",
+                action_receipt=ActionReceipt("update", "failed"),
+            )
+        updated = payload.get("updated") if isinstance(payload, Mapping) else None
+        if not isinstance(updated, int):
+            return ToolResult(
+                success=False,
+                output="Outline returned no result.",
+                action_receipt=ActionReceipt("update", "failed"),
+            )
+        spawned = payload.get("spawned")
+        detail = (
+            f", {spawned} next occurrences spawned"
+            if action == "complete" and isinstance(spawned, int) and spawned
+            else ""
+        )
+        return ToolResult(
+            success=True,
+            output=_line(
+                f"Updated {updated} of {len(ids)} Outline tasks: {action}{detail}."
+            ),
+            action_receipt=ActionReceipt(
+                "update", "verified" if updated == len(ids) else "unverified"
+            ),
+        )
+
+
 def _updated(
     kind: str, item_id: int, action: str, row: object, detail: str
 ) -> ToolResult:
@@ -1583,6 +1701,11 @@ def outline_tool_summaries(
             return None
         if action in UPDATE_ACTIONS.get(kind, set()):
             return f"{action} the Outline {kind} with id {item_id}"
+    if capability == "outline_bulk":
+        ids = arguments.get("ids")
+        action = arguments.get("action")
+        if isinstance(ids, list) and ids and action in BULK_ACTIONS:
+            return f"{action} {len(ids)} Outline tasks at once"
     return None
 
 
@@ -1617,6 +1740,7 @@ def build_outline_tools(
         OutlineSearchTool(client),
         OutlineCreateTool(client),
         OutlineUpdateTool(client),
+        OutlineBulkTool(client),
     ]
 
 

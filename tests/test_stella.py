@@ -253,6 +253,65 @@ class SequenceLLM(LLMClient):
         return self.responses.pop(0)
 
 
+class StreamAttemptLLM(RecordingLLM):
+    """Like ``RecordingLLM`` but notes every ``stream_chat`` attempt.
+
+    It never actually streams — the base class declines with ``None`` —
+    so it lets a test see whether Stella routed an answer through the
+    optional capability at all, and confirm the ordinary reply still
+    lands through ``chat``.
+    """
+
+    def __init__(self, response: str = "answer") -> None:
+        super().__init__(response)
+        self.stream_attempts = 0
+
+    def stream_chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        on_delta,
+        should_cancel=None,
+    ) -> None:
+        self.stream_attempts += 1
+        return super().stream_chat(messages, on_delta, should_cancel)
+
+
+class PieceStreamingLLM(RecordingLLM):
+    """A client that really streams: feeds deltas, returns the text."""
+
+    def __init__(self, pieces: list[str]) -> None:
+        super().__init__("".join(pieces))
+        self.pieces = pieces
+        self.streamed_text: list[str] = []
+        self.stream_calls = 0
+
+    def stream_chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        on_delta,
+        should_cancel=None,
+    ) -> str:
+        self.stream_calls += 1
+        self.messages.append(messages)
+        for piece in self.pieces:
+            on_delta(piece)
+            self.streamed_text.append(piece)
+        return "".join(self.pieces)
+
+
+class CancellingStreamLLM(RecordingLLM):
+    """A streaming client abandoned mid-answer by a cancel."""
+
+    def stream_chat(
+        self,
+        messages: list[Message | dict[str, str]],
+        on_delta,
+        should_cancel=None,
+    ) -> str:
+        on_delta("half an ")
+        raise ProviderRequestCancelled("cancelled mid-stream")
+
+
 class RecordingTool(Tool):
     name = "record"
     description = "Records structured arguments."
@@ -341,6 +400,91 @@ def test_stella_uses_llm_for_answer_decision() -> None:
         {"role": "user", "content": "Earlier question"}
     ]
     assert answer_context["decision"]["kind"] == "answer"
+
+
+def test_answer_without_a_delta_callback_never_reaches_stream_chat() -> None:
+    llm = StreamAttemptLLM()
+    stella = Stella(
+        FixedBrain(Decision(DecisionKind.ANSWER)),
+        llm,
+        ToolDispatcher([]),
+        InMemoryMemory(),
+    )
+
+    result = stella.process(Context(user_input="Current question"))
+
+    assert result.response == "answer"
+    assert llm.stream_attempts == 0
+    assert len(llm.messages) == 1
+
+
+def test_a_client_that_cannot_stream_falls_back_to_the_ordinary_call() -> None:
+    # The callback is offered, the client declines with None, and the
+    # answer still lands exactly once through chat — never twice.
+    llm = StreamAttemptLLM()
+    heard: list[str] = []
+    stella = Stella(
+        FixedBrain(Decision(DecisionKind.ANSWER)),
+        llm,
+        ToolDispatcher([]),
+        InMemoryMemory(),
+    )
+
+    result = stella.process(
+        Context(user_input="Current question"),
+        on_response_delta=heard.append,
+    )
+
+    assert llm.stream_attempts == 1
+    assert heard == []
+    assert result.response == "answer"
+    assert len(llm.messages) == 1
+
+
+def test_a_streaming_client_answers_once_with_text_matching_its_deltas() -> (
+    None
+):
+    pieces = ["One sentence. ", "And a second."]
+    llm = PieceStreamingLLM(pieces)
+    heard: list[str] = []
+    stella = Stella(
+        FixedBrain(Decision(DecisionKind.ANSWER)),
+        llm,
+        ToolDispatcher([]),
+        InMemoryMemory(),
+    )
+
+    result = stella.process(
+        Context(user_input="Current question"),
+        on_response_delta=heard.append,
+    )
+
+    assert heard == pieces
+    assert result.response == "".join(pieces)
+    assert llm.stream_calls == 1
+    # Exactly one answer request; the ordinary chat path was never taken.
+    assert len(llm.messages) == 1
+
+
+def test_cancelling_a_streaming_answer_ends_the_turn_like_any_cancel() -> (
+    None
+):
+    llm = CancellingStreamLLM()
+    heard: list[str] = []
+    stella = Stella(
+        FixedBrain(Decision(DecisionKind.ANSWER)),
+        llm,
+        ToolDispatcher([]),
+        InMemoryMemory(),
+    )
+
+    result = stella.process(
+        Context(user_input="Current question"),
+        on_response_delta=heard.append,
+    )
+
+    assert result.cancelled is True
+    assert result.response is None
 
 
 def test_llm_brain_answer_content_is_used_without_second_llm_call() -> None:

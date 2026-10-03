@@ -29,6 +29,21 @@ def test_fake_llm_client_accepts_normal_conversation_messages() -> None:
     assert client.chat([{"role": "user", "content": "hi"}]) == "hello"
 
 
+def test_stream_chat_default_declines_without_touching_the_callback() -> None:
+    # The base capability answers None ("I cannot stream") and never feeds
+    # a delta, so a caller knows it must run its own ordinary request.
+    client = FakeLLMClient(response="hello")
+    heard: list[str] = []
+
+    assert (
+        client.stream_chat(
+            [Message(role="user", content="hi")], heard.append
+        )
+        is None
+    )
+    assert heard == []
+
+
 # ------------------------------------------------------- run_cancellable
 
 

@@ -12,12 +12,14 @@ as soon as transcription is done, so nothing is persisted by default.
 
 from __future__ import annotations
 
+import array
 import json
 import os
 import queue
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import wave
@@ -779,7 +781,15 @@ class ResidentSpeechProvider(SpeechProvider):
     spot; the next sentence starts a fresh one. Nothing a worker says
     is trusted beyond "the file exists at the path we chose": the
     artifact reference is this provider's own bounded temp directory,
-    never a path from the worker's reply.
+    never a path from the worker's reply. That file is then opened
+    and shape-checked before the artifact is returned: unreadable,
+    zero-frame, sub-frame or peak-silent output raises VoiceError
+    the same way a broken worker would, and a well-shaped PCM s16
+    mono file has its leading and trailing silence trimmed and its
+    edges linearly faded so the first syllable lands without a
+    click. A valid-but-unsupported shape is passed through untouched
+    rather than rejected — this check exists to catch a broken
+    worker, not to police every WAV a future worker might produce.
     """
 
     def __init__(
@@ -877,6 +887,7 @@ class ResidentSpeechProvider(SpeechProvider):
                 raise VoiceError(f"Resident speech failed ({detail}).")
             if not os.path.exists(path):
                 raise VoiceError("Resident speech produced no audio file.")
+            _inspect_speech_artifact(path)
             return SpeechArtifact(reference=path)
 
     def dispose(self) -> None:
@@ -1010,6 +1021,167 @@ def _json_line(raw: str | None) -> dict | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+# A resident worker's reply is a promise about a file, not the file
+# itself: the shape and loudness checks below are what turn "the worker
+# said ok" into "the user heard something". The numbers match what the
+# local voice research surfaced for Kokoro-shaped output — 10 ms of
+# leading silence is inside the audible onset, 25/15 ms of safety pad
+# keeps the trim from clipping consonants, and 15/10 ms linear fades
+# kill the click a hard boundary would make. They are fixed here, not
+# configurable: this is a correctness rule, not a personality setting.
+_ARTIFACT_MIN_SECONDS = 0.01
+_ARTIFACT_PEAK_SILENCE_RATIO = 0.005
+_ARTIFACT_TRIM_SILENCE_RATIO = 0.01
+_ARTIFACT_LEADING_PAD_SECONDS = 0.025
+_ARTIFACT_TRAILING_PAD_SECONDS = 0.015
+_ARTIFACT_FADE_IN_SECONDS = 0.015
+_ARTIFACT_FADE_OUT_SECONDS = 0.01
+_ARTIFACT_MIN_SURVIVING_SECONDS = 0.05
+
+
+def _full_scale(sampwidth: int) -> int | None:
+    """Signed peak for a PCM sampwidth, or None if we do not decode it."""
+
+    return {1: 128, 2: 32768, 4: 2147483648}.get(sampwidth)
+
+
+def _decode_pcm(data: bytes, sampwidth: int):
+    """Return a signed sequence for peak scanning, or None if unsupported."""
+
+    if sampwidth == 1:
+        return [b - 128 for b in data]
+    if sampwidth == 2:
+        arr = array.array("h")
+        arr.frombytes(data)
+        if sys.byteorder != "little":
+            arr.byteswap()
+        return arr
+    if sampwidth == 4:
+        arr = array.array("i")
+        arr.frombytes(data)
+        if sys.byteorder != "little":
+            arr.byteswap()
+        return arr
+    return None
+
+
+def _apply_fade(samples, start: int, count: int, direction: str) -> None:
+    """Ramp `count` samples linearly, in from silence or out to silence.
+
+    A one-sample or zero-sample fade is a no-op: the click it prevents is
+    at least as loud as the fade would be, and dividing by a zero-length
+    ramp is a bug, not a feature.
+    """
+
+    if count <= 1:
+        return
+    if direction == "in":
+        for k in range(count):
+            samples[start + k] = (samples[start + k] * k) // count
+    else:
+        for k in range(count):
+            gain = count - 1 - k
+            samples[start + k] = (samples[start + k] * gain) // (count - 1)
+
+
+def _inspect_speech_artifact(path: str) -> None:
+    """Reject silent or truncated worker output; trim/fade PCM s16 mono.
+
+    The output side of the microphone: a WAV the pipeline can play is
+    not the same claim as audio the user can hear, and today's silent
+    bug class is a worker that returns ``ok`` with a zero-byte body, a
+    bare RIFF header, or a full file of samples below audibility. Each
+    of those is reported as a VoiceError so app.py's D2 degradation
+    rule takes over (text reply, no false "speaking" state) instead of
+    the pipeline playing nothing while the dot says Stella is talking.
+
+    For a well-shaped PCM s16 mono file — which is what Kokoro
+    actually produces — the artifact is additionally trimmed of
+    leading and trailing silence and given linear edge fades. Any
+    other shape (stereo, 24-bit, compressed) is validated and passed
+    through: this is a correctness fix, not a rewriting service.
+    """
+
+    try:
+        with wave.open(path, "rb") as source:
+            framerate = source.getframerate()
+            nchannels = source.getnchannels()
+            sampwidth = source.getsampwidth()
+            nframes = source.getnframes()
+            comptype = source.getcomptype()
+            data = source.readframes(nframes)
+    except (wave.Error, OSError, EOFError) as error:
+        raise VoiceError(
+            "Resident speech produced an unreadable audio file."
+        ) from error
+
+    if (
+        framerate <= 0
+        or nframes == 0
+        or nframes < framerate * _ARTIFACT_MIN_SECONDS
+    ):
+        raise VoiceError("Resident speech produced only silence.")
+
+    scale = _full_scale(sampwidth)
+    if scale is None:
+        return  # shape we do not decode: file exists and is a real WAV
+    samples = _decode_pcm(data, sampwidth)
+    if samples is None:
+        return
+    peak = max((abs(int(s)) for s in samples), default=0)
+    if peak < scale * _ARTIFACT_PEAK_SILENCE_RATIO:
+        raise VoiceError("Resident speech produced only silence.")
+
+    if nchannels != 1 or sampwidth != 2 or comptype != "NONE":
+        return  # validated but not the trimmable shape
+
+    arr = samples  # already an array("h") at native byte order for us
+    trim_threshold = int(scale * _ARTIFACT_TRIM_SILENCE_RATIO)
+    first = next(
+        (i for i, s in enumerate(arr) if abs(int(s)) >= trim_threshold),
+        None,
+    )
+    if first is None:
+        # Peak scan already said audible, so this is unreachable in
+        # practice; raise anyway rather than rewrite a file we cannot
+        # locate the boundaries of.
+        raise VoiceError("Resident speech produced only silence.")
+    last = next(
+        i
+        for i in range(len(arr) - 1, -1, -1)
+        if abs(int(arr[i])) >= trim_threshold
+    )
+    leading_pad = int(framerate * _ARTIFACT_LEADING_PAD_SECONDS)
+    trailing_pad = int(framerate * _ARTIFACT_TRAILING_PAD_SECONDS)
+    start = max(0, first - leading_pad)
+    end = min(len(arr), last + 1 + trailing_pad)
+    min_surviving = int(framerate * _ARTIFACT_MIN_SURVIVING_SECONDS)
+    if end - start < min_surviving:
+        return  # too short for a trim to leave anything worth fading
+
+    trimmed = arr[start:end]
+    fade_in = min(
+        int(framerate * _ARTIFACT_FADE_IN_SECONDS), len(trimmed) // 2
+    )
+    fade_out = min(
+        int(framerate * _ARTIFACT_FADE_OUT_SECONDS), len(trimmed) // 2
+    )
+    _apply_fade(trimmed, 0, fade_in, "in")
+    _apply_fade(trimmed, len(trimmed) - fade_out, fade_out, "out")
+    if sys.byteorder != "little":
+        trimmed.byteswap()
+    try:
+        with wave.open(path, "wb") as sink:
+            sink.setnchannels(nchannels)
+            sink.setsampwidth(sampwidth)
+            sink.setframerate(framerate)
+            sink.writeframes(trimmed.tobytes())
+    except (wave.Error, OSError) as error:
+        raise VoiceError(
+            "Resident speech artifact could not be finalized."
+        ) from error
 
 
 class OpenAISpeechProvider(SpeechProvider):

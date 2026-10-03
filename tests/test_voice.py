@@ -9,9 +9,11 @@ voice failures never fabricate text or corrupt conversation state, and no
 raw audio is persisted by default.
 """
 
+import array
 import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import threading
@@ -61,6 +63,7 @@ from stella.voice import (
     SubprocessRecorder,
     TapRecorder,
     VoiceError,
+    _inspect_speech_artifact,
     is_transcription_junk,
     voxtype_transcript,
 )
@@ -2460,8 +2463,20 @@ def test_cancel_just_after_synthesis_discards_the_artifact() -> None:
 # ---------------------------------------------------- resident speech (D2)
 
 _RESIDENT_FAKE = """
-import json, sys
+import json, struct, sys, wave
 print(json.dumps({"ready": True}), flush=True)
+_FRAMES = struct.pack("<400h", *([8000, -8000] * 200))
+def _emit(path):
+    # A short non-silent PCM s16 mono WAV: enough to pass the resident
+    # provider's shape and peak checks, too short for the trim/fade
+    # path to have anything meaningful to rewrite. Existing tests
+    # keep asserting "the file exists at the reference", and this
+    # fake honours that promise exactly.
+    with wave.open(path, "wb") as sink:
+        sink.setnchannels(1)
+        sink.setsampwidth(2)
+        sink.setframerate(24000)
+        sink.writeframes(_FRAMES)
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -2473,7 +2488,7 @@ for line in sys.stdin:
         continue
     if req["text"] == "silent":
         continue
-    open(req["output"], "wb").write(b"RIFF")
+    _emit(req["output"])
     print(json.dumps({"id": req["id"], "ok": True}), flush=True)
 """
 
@@ -2576,8 +2591,9 @@ def test_resident_missing_command_fails_honestly() -> None:
 # about being told which voice to use. Asking for one therefore has to be
 # a change it can ignore, not a new protocol.
 _RESIDENT_ECHO = """
-import json, sys
+import json, struct, sys, wave
 print(json.dumps({"ready": True}), flush=True)
+_FRAMES = struct.pack("<400h", *([8000, -8000] * 200))
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -2585,7 +2601,11 @@ for line in sys.stdin:
     req = json.loads(line)
     with open(sys.argv[1], "w") as sink:
         json.dump(req, sink)
-    open(req["output"], "wb").write(b"RIFF")
+    with wave.open(req["output"], "wb") as sink:
+        sink.setnchannels(1)
+        sink.setsampwidth(2)
+        sink.setframerate(24000)
+        sink.writeframes(_FRAMES)
     print(json.dumps({"id": req["id"], "ok": True}), flush=True)
 """
 
@@ -2737,3 +2757,140 @@ def test_build_voice_selects_the_resident_provider_only_with_a_command() -> None
         ),
         ResidentSpeechProvider,
     )
+
+
+# ------------------------------------- resident speech artifact checks
+
+_ARTIFACT_RATE = 24000
+
+
+def _write_wav(
+    path,
+    frames_bytes: bytes,
+    *,
+    nchannels: int = 1,
+    sampwidth: int = 2,
+    framerate: int = _ARTIFACT_RATE,
+) -> None:
+    with wave.open(str(path), "wb") as sink:
+        sink.setnchannels(nchannels)
+        sink.setsampwidth(sampwidth)
+        sink.setframerate(framerate)
+        sink.writeframes(frames_bytes)
+
+
+def _tone(nframes: int, amplitude: int = 8000) -> bytes:
+    """Alternating ±amplitude square wave — audible for a peak scan."""
+
+    if nframes % 2:
+        nframes += 1
+    return struct.pack("<" + "h" * nframes, *([amplitude, -amplitude] * (nframes // 2)))
+
+
+def _read_samples(path) -> array.array:
+    with wave.open(str(path), "rb") as source:
+        data = source.readframes(source.getnframes())
+    arr = array.array("h")
+    arr.frombytes(data)
+    return arr
+
+
+def test_zero_frame_artifact_is_rejected(tmp_path) -> None:
+    path = tmp_path / "empty.wav"
+    _write_wav(path, b"")
+    with pytest.raises(VoiceError, match="silence"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_below_ten_millisecond_artifact_is_rejected(tmp_path) -> None:
+    # The output-side analogue of the input side's ≤44-byte bare-header
+    # reject: a worker that returns ok but wrote less than a frame's
+    # worth of audible sound is a broken worker.
+    path = tmp_path / "short.wav"
+    _write_wav(path, _tone(200))  # ~8 ms at 24 kHz
+    with pytest.raises(VoiceError, match="silence"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_all_silent_pcm_is_rejected(tmp_path) -> None:
+    # 1 s of zeros is well-shaped and long, but there is nothing to hear:
+    # the Pipecat "max consecutive zero-audio contexts" case, done right
+    # in a single-shot provider.
+    path = tmp_path / "silent.wav"
+    _write_wav(path, b"\x00\x00" * _ARTIFACT_RATE)
+    with pytest.raises(VoiceError, match="silence"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_truncated_artifact_is_rejected(tmp_path) -> None:
+    path = tmp_path / "riff-only.wav"
+    path.write_bytes(b"RIFF")
+    with pytest.raises(VoiceError, match="unreadable"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_leading_silence_is_trimmed(tmp_path) -> None:
+    path = tmp_path / "trim.wav"
+    silence = b"\x00\x00" * _ARTIFACT_RATE  # 1 s
+    tone = _tone(_ARTIFACT_RATE)  # 1 s
+    _write_wav(path, silence + tone)
+    _inspect_speech_artifact(str(path))
+    arr = _read_samples(path)
+    # The 1 s of leading silence is gone; the surviving audio is the
+    # tone plus a 25 ms pad before it and a 15 ms pad after.
+    assert 24000 <= len(arr) <= 26400
+    # The 25 ms before the tone starts is silent (that is the pad).
+    leading_pad = _ARTIFACT_RATE * 25 // 1000
+    assert all(abs(s) < 328 for s in arr[:leading_pad])
+
+
+def test_fade_in_and_out_applied(tmp_path) -> None:
+    path = tmp_path / "fade.wav"
+    _write_wav(path, _tone(_ARTIFACT_RATE))
+    _inspect_speech_artifact(str(path))
+    arr = _read_samples(path)
+    fade_in = _ARTIFACT_RATE * 15 // 1000
+    fade_out = _ARTIFACT_RATE * 10 // 1000
+    assert arr[0] == 0  # first sample fully faded in from silence
+    assert abs(arr[fade_in + 100]) == 8000  # middle of the tone is untouched
+    assert arr[-1] == 0  # last sample fully faded out to silence
+    # Fade-in magnitude is non-decreasing.
+    for i in range(fade_in - 1):
+        assert abs(arr[i]) <= abs(arr[i + 1])
+    # Fade-out magnitude is non-increasing.
+    tail = len(arr) - fade_out
+    for i in range(tail, len(arr) - 1):
+        assert abs(arr[i]) >= abs(arr[i + 1])
+
+
+def test_stereo_is_passed_through_unchanged(tmp_path) -> None:
+    # Shape check runs, but this is not the trimmable shape — a valid
+    # stereo artifact is a worker's business, not ours to rewrite.
+    path = tmp_path / "stereo.wav"
+    nframes = _ARTIFACT_RATE // 2  # 500 ms
+    stereo = struct.pack("<" + "h" * (2 * nframes), *([8000, -8000] * nframes))
+    _write_wav(path, stereo, nchannels=2)
+    before = path.read_bytes()
+    _inspect_speech_artifact(str(path))
+    assert path.read_bytes() == before
+
+
+def test_unsupported_sampwidth_is_passed_through_unchanged(tmp_path) -> None:
+    # 8-bit unsigned PCM: peak-scan decodes it fine, but it is not the
+    # shape the trim path understands.
+    path = tmp_path / "s8.wav"
+    data = bytes([228, 28] * (_ARTIFACT_RATE // 2))
+    _write_wav(path, data, sampwidth=1)
+    before = path.read_bytes()
+    _inspect_speech_artifact(str(path))
+    assert path.read_bytes() == before
+
+
+def test_short_surviving_audio_is_not_rewritten(tmp_path) -> None:
+    # 40 ms of loud audio is audible but shorter than the 50 ms minimum
+    # surviving window: trimming to a click is worse than leaving it.
+    path = tmp_path / "tiny.wav"
+    _write_wav(path, _tone(_ARTIFACT_RATE * 40 // 1000))
+    before = path.read_bytes()
+    _inspect_speech_artifact(str(path))
+    assert path.read_bytes() == before

@@ -1571,11 +1571,8 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "Conversation text is stored in a bounded local file; "
-                "'stella reflect' turns it into style proposals that "
-                "only take effect if you approve them."
-            ),
+            text="Stores conversation text locally; 'stella reflect' turns "
+            "it into style proposals you approve.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._semantic_var = tk.BooleanVar(
@@ -1602,14 +1599,8 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "Stored approved memories are additionally indexed by the "
-                "chosen embedding so related phrasings can still be found; "
-                "matches are always labeled as weaker hints, never as "
-                "understanding. Ollama uses a local embedding model "
-                "(STELLA_EMBED_MODEL); MiniLM needs the stella[embed] extra "
-                "and runs on CPU."
-            ),
+            text="Indexes memories by embedding so related phrasings match "
+            "as weaker hints, never as understanding.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._os_tools_var = tk.BooleanVar(
@@ -1623,12 +1614,8 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "Adds screen_read, window_focus and key_send on a Hyprland "
-                "desktop. Every use asks you first, with the exact window "
-                "named; screen text is read by local OCR only and typing "
-                "only ever goes to a window Stella just focused."
-            ),
+            text="Adds screen_read, window_focus, key_send on Hyprland; "
+            "every use asks first and names the window.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._outline_tools_var = tk.BooleanVar(
@@ -1642,13 +1629,8 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "Adds outline_search, outline_create, outline_update "
-                "and outline_bulk for the Outline task app over its "
-                "local API. The tools "
-                "appear only while an Outline server is reachable; "
-                "reading never asks for approval, writing always does."
-            ),
+            text="Adds outline_search/create/update/bulk over Outline's "
+            "local API; writes need approval.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._web_tools_var = tk.BooleanVar(value=settings.web_tools_enabled)
@@ -1660,13 +1642,8 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "Adds web_search and web_fetch. Every use asks you first "
-                "and names where the data goes: a TinyFish key (free tier, "
-                "a commercial decision) or the keyless ddgs/https path. "
-                "Page text comes back marked as untrusted. Needs the "
-                "stella[web] extra for the keyless fallback."
-            ),
+            text="Adds web_search and web_fetch (TinyFish or keyless ddgs); "
+            "every use asks first.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)
@@ -1678,35 +1655,24 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "Say \"hey Jarvis\" and Stella starts listening, so no "
-                "button press is needed. The microphone stays open for a "
-                "local detector only: it classifies frames and records "
-                "nothing until the phrase fires, and nothing at all is "
-                "kept when it does not. One confirmed phrase is exactly a "
-                "Listen press — it grants no authority, and it never "
-                "answers an approval dialog for you. Needs the "
-                "stella[wake] extra and the models under ~/models/"
-                "openwakeword; without them the box simply does nothing."
-            ),
+            text="Say \"hey Jarvis\" to start listening; the mic stays open "
+            "for a local detector that records nothing until the phrase fires.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text=(
-                "The API key is verified once, then kept in a private "
-                "file inside Stella's data directory and used in every "
-                "later session; an exported OPENAI_API_KEY overrides the "
-                "stored key for the OpenAI slot on that launch."
-            ),
+            text="The API key is verified once, then kept in a private file "
+            "inside Stella's data directory; an exported OPENAI_API_KEY "
+            "overrides it for that launch.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         actions = ttk.Frame(frame)
-        actions.pack(fill="x", padx=6, pady=6)
-        ttk.Button(actions, text="Apply", command=self._apply_settings).pack(
-            side="left"
-        )
+        actions.pack(fill="x", padx=6, pady=(14, 6))
+        ttk.Button(
+            actions, text="Apply", command=self._apply_settings,
+            style="Accent.TButton",
+        ).pack(side="left")
         ttk.Button(
             actions, text="Test connection", command=self._test_connection
         ).pack(side="left", padx=6)

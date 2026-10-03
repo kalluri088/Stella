@@ -1005,6 +1005,7 @@ UPDATE_ACTIONS: dict[str, set[str]] = {
     "person": {"restore"},
     "timer": {"pause", "resume", "stop", "cancel"},
     "link": {"attach", "detach"},
+    "tag": {"edit"},
 }
 LINK_TARGETS = {"task", "event", "project"}
 # model-facing field name -> Outline API field, per kind (values are
@@ -1026,6 +1027,7 @@ EDIT_FIELDS: dict[str, dict[str, str]] = {
     },
     "note": {"body": "body"},
     "project": {"title": "title", "body": "description"},
+    "tag": {"name": "name"},
 }
 
 
@@ -1051,6 +1053,10 @@ def _edits_ok(kind: str, value: object) -> bool:
         elif field == "tags":
             # an empty list clears the task's tags
             if not _tag_list_ok(raw, allow_empty=True):
+                return False
+        elif field == "name":
+            # kind=tag rename target
+            if not isinstance(raw, str) or not _TAG_RE.match(raw.strip()):
                 return False
         elif field == "remind":
             # JSON null clears the reminder
@@ -1099,7 +1105,11 @@ class OutlineUpdateTool(Tool):
             "id; their links and notes were never touched), timers "
             "pause|resume|stop|cancel. edit takes an 'edits' object "
             "(task: title|body|priority|recurrence|tags|remind; event: "
-            "title|location|body|remind; note: body; project: title|body); "
+            "title|location|body|remind; note: body; project: title|body). "
+            "kind=tag action=edit renames a tag: id is the tag id or its "
+            "current name, edits is {name: \"new-name\"}; renaming onto an "
+            "existing tag merges them and every task keeps both sets of "
+            "tags. "
             "remind is an ISO-8601 alert inside the Outline app (not "
             "Stella's own reminders), null clears it; "
             "recurrence null and tags [] clear. kind=link id=<entity id> "
@@ -1112,8 +1122,9 @@ class OutlineUpdateTool(Tool):
     @property
     def argument_schema(self) -> dict[str, object]:
         return {
-            "kind": "task|event|note|project|person|timer|link",
-            "id": "positive integer (for kind=link: the entity's id)",
+            "kind": "task|event|note|project|person|timer|link|tag",
+            "id": "positive integer (for kind=link: the entity's id; "
+                  "for kind=tag: the tag id or its current name)",
             "action": "complete|open|reschedule|edit|restore|activate|archive|"
                       "pause|resume|stop|cancel|attach|detach",
             "due_at": "ISO-8601 datetime (required for reschedule)",
@@ -1135,7 +1146,15 @@ class OutlineUpdateTool(Tool):
         if kind not in UPDATE_ACTIONS:
             return False
         item_id = arguments.get("id")
-        if not isinstance(item_id, int) or isinstance(item_id, bool) or item_id < 1:
+        if kind == "tag" and isinstance(item_id, str):
+            # tags may be named instead of numbered: "rename tag gardn"
+            if not item_id.strip() or len(item_id.strip()) > 40:
+                return False
+        elif (
+            not isinstance(item_id, int)
+            or isinstance(item_id, bool)
+            or item_id < 1
+        ):
             return False
         action = arguments.get("action")
         if action not in UPDATE_ACTIONS[str(kind)]:
@@ -1168,12 +1187,14 @@ class OutlineUpdateTool(Tool):
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
         kind = str(arguments["kind"])
-        item_id = int(arguments["id"])
         action = str(arguments["action"])
         client = self._client
         try:
             if kind == "link":
                 return self._link(arguments)
+            if kind == "tag":
+                return self._tag_rename(arguments)
+            item_id = int(arguments["id"])
             if kind == "task":
                 if action == "restore":
                     client.request("POST", f"/api/v1/tasks/{item_id}/restore")
@@ -1324,6 +1345,45 @@ class OutlineUpdateTool(Tool):
                 output=str(error),
                 action_receipt=ActionReceipt(receipt_action, status),
             )
+
+    def _tag_rename(self, arguments: dict[str, object]) -> ToolResult:
+        client = self._client
+        name = str(arguments["edits"]["name"]).strip().lower()  # type: ignore[index]
+        handle = arguments["id"]
+        tag_id: int | None = handle if isinstance(handle, int) else None
+        if tag_id is None:
+            tag_id = _entity_id_by_title(
+                client, "/api/v1/tags", str(handle).strip(), key="name"
+            )
+        if tag_id is None:
+            return ToolResult(
+                success=False,
+                output=(
+                    f"no Outline tag {json.dumps(str(handle))} — tag names "
+                    "come from task tags in outline_search results"
+                ),
+                action_receipt=ActionReceipt("update", "missing"),
+            )
+        row = client.request("PATCH", f"/api/v1/tags/{tag_id}", body={"name": name})
+        if not isinstance(row, Mapping) or not isinstance(row.get("id"), int):
+            return ToolResult(
+                success=False,
+                output="Outline returned no tag.",
+                action_receipt=ActionReceipt("update", "failed"),
+            )
+        # A rename that lands on an existing tag merges: the response row
+        # is the surviving tag, so its id differs from the one we patched.
+        result_name = str(row.get("name", ""))
+        detail = (
+            f"renamed to #{result_name}"
+            if row.get("id") == tag_id
+            else f"merged into #{result_name}"
+        )
+        return ToolResult(
+            success=True,
+            output=_line(f"Updated Outline tag #{tag_id}: {detail}."),
+            action_receipt=ActionReceipt("update", "verified"),
+        )
 
     def _link(self, arguments: dict[str, object]) -> ToolResult:
         person = str(arguments["person"]).strip()

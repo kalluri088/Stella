@@ -321,6 +321,53 @@ def test_update_validation_matrix():
     )
 
 
+def test_tag_rename_plain():
+    tool = OutlineUpdateTool(
+        client(("PATCH", "/api/v1/tags/6", {"id": 6, "name": "garden"}))
+    )
+    result = tool.execute(
+        {"kind": "tag", "id": 6, "action": "edit", "edits": {"name": "Garden"}}
+    )
+    assert result.success and result.action_receipt.status == "verified"
+    assert "renamed to #garden" in result.output
+
+
+def test_tag_rename_by_name_merges():
+    tool = OutlineUpdateTool(
+        client(
+            ("GET", "/api/v1/tags", {"items": [
+                {"id": 6, "name": "gardn", "open_count": 2},
+                {"id": 2, "name": "garden", "open_count": 3},
+            ]}),
+            # merge: the response row is the surviving tag, a different id
+            ("PATCH", "/api/v1/tags/6", {"id": 2, "name": "garden"}),
+        )
+    )
+    result = tool.execute(
+        {"kind": "tag", "id": "GARDN", "action": "edit", "edits": {"name": "garden"}}
+    )
+    assert result.success and result.action_receipt.status == "verified"
+    assert "merged into #garden" in result.output
+
+
+def test_tag_rename_unknown_name_and_validation():
+    tool = OutlineUpdateTool(client())  # no GET /api/v1/tags route -> not found
+    result = tool.execute(
+        {"kind": "tag", "id": "ghost", "action": "edit", "edits": {"name": "x"}}
+    )
+    assert not result.success and result.action_receipt.status == "missing"
+    assert not tool.validate_arguments(
+        {"kind": "tag", "id": "", "action": "edit", "edits": {"name": "x"}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "tag", "id": 6, "action": "edit", "edits": {"name": "bad name!"}}
+    )
+    assert not tool.validate_arguments(
+        {"kind": "tag", "id": 6, "action": "edit", "edits": {"title": "x"}}
+    )
+    assert not tool.validate_arguments({"kind": "tag", "id": 6, "action": "complete"})
+
+
 # --------------------------------------------------------------------------
 # approval summaries (action_summary chain)
 # --------------------------------------------------------------------------

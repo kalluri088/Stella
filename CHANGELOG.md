@@ -167,6 +167,30 @@
   which escaped the tool's own shaping into the dispatcher's blanket handler;
   it now catches `http.client.HTTPException` like `web_tools` does, so every
   fetch failure returns the honest message and receipt.
+- **A file preview survives the byte cap cutting a character.** The approval
+  preview's `_preview_file_text` reads one 8 KiB window and decodes it strict;
+  when the cap landed inside a multi-byte character the decode failed and a
+  perfectly good text file showed no preview at all. It now drops up to three
+  trailing bytes — only when the read really was truncated — so a partial code
+  point recovers while genuinely non-UTF-8 bytes still yield nothing.
+- **The kill reaping window is measured on the monotonic clock.** The orphan
+  cleanup loop timed its grace period with the wall clock, so an NTP step
+  landing mid-shutdown could cut the wait short and report a just-killed
+  process as not gone. File-mtime comparisons stay on the wall clock, where a
+  real timestamp is what is being compared.
+- **Approval summaries show non-ASCII as written.** `outline_tool_summaries`
+  and `web_tool_summaries` quoted the subject with `json.dumps`' default
+  `ensure_ascii=True`, so an accented or CJK task title, person name, tag or
+  search query came back as `\uXXXX` escapes on the approval card. They now use
+  `ensure_ascii=False` like the shell and browser summaries already did; the
+  quoting still escapes quotes, backslashes and newlines, so a crafted title
+  cannot forge an extra line.
+- **A literal `{output}` in spoken text stays text.** `CommandSpeechProvider`
+  built its argv with two chained `str.replace` calls, so the `{text}` filled
+  first could then have a `{output}` inside it substituted with the output wav
+  path by the second pass. Both placeholders now fill in one regex pass whose
+  callback is never rescanned, so a token in the answer text is read aloud as
+  the literal word.
 - **Intentionally left alone after checking:** the web budget is a
   *Stella-side* per-hour throttle, not TinyFish's server quota, so charging it
   before the backend is known is correct (and refunding on failure would invite

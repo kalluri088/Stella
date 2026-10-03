@@ -648,7 +648,31 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
   free of OpenAI-specific events, and must prove streaming does not alter
   decisions, authorization, audit records, memory writes, or step limits.
   Measured TTFT (~1.6 s) says the win is modest until the final-response path
-  is separated from the structured decision JSON.
+  is separated from the structured decision JSON. Spoken replies were the
+  case hoped to justify it: overlap chunk-0 synthesis (~0.42–0.87 s of
+  measured render) with the tokens of a longer reply still arriving.
+  **Tried and rejected on this stack (2026-10-03, `4e818b2` on
+  `feature/voice-integration`; the finding is architectural and applies
+  to `master` too).** Stages 1-5 of the copper-delta-trout plan landed
+  an optional `stream_chat`, a native Ollama streaming transport, a
+  `StreamingSentenceSplitter`, a lazy chunked pipeline that consumed
+  it, and a `STELLA_TURN_TRACE` diagnostic. The bench (9 turns per
+  arm, three fixed three-sentence prompts, real Ollama on 11434 with
+  the resident Kokoro worker) reported `first_artifact` at
+  essentially the same time on both arms, and none of the marks the
+  streaming path exists to fire ever appeared. Root cause is not the
+  wiring: `LLMBrain` sets `answer_content_is_final = True` and
+  `Stella.process` at the ANSWER branch returns `decision.content`
+  directly without ever calling `synthesise`, so a real spoken turn
+  installs the callback and never runs the code that would consume
+  it. Streaming's premise — that a long spoken reply sits silent while
+  the model writes the rest — is only true when the reply is composed
+  on a path that has a "rest" to overlap; on the fast path, the reply
+  exists whole at the end of the same LLM call that made the decision.
+  Re-opening this needs a Brain design that separates decide from
+  answer for spoken turns (which is exactly what the fast path's own
+  comment rejects: an extra LLM call for identical authority), not
+  another streaming layer.
 - **Fast-path local router** — limited to existing `SAFE` fixed-argument
   capabilities (`datetime` first, `system_info` later, only after observing
   real false-positive behavior), a short documented exact-phrase allowlist

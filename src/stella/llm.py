@@ -146,33 +146,6 @@ class LLMClient(ABC):
             )
         return LLMResponse(content=self.chat(messages))
 
-    def stream_chat(
-        self,
-        messages: list[MessageInput],
-        on_delta: Callable[[str], None],
-        should_cancel: CancelCheck | None = None,
-    ) -> str | None:
-        """Answer like :meth:`chat`, feeding ``on_delta`` as text arrives.
-
-        An optional capability, mirroring how :meth:`chat_with_tools`
-        falls back to :meth:`chat`: the base implementation reports
-        ``None`` — "I cannot stream this, the caller must answer its own
-        way" — and a client that can stream returns the same complete
-        text :meth:`chat` would have, having handed it to ``on_delta`` in
-        pieces first. The caller uses the return value verbatim and never
-        reassembles it from the deltas, so a client that streams and one
-        that does not leave identical history behind.
-
-        ``on_delta`` receives plain response text only — no
-        provider-specific event crosses this boundary — and only ever the
-        final answer, never a decision, a tool call or reasoning. A
-        client that streams must still honour ``should_cancel`` the way
-        :meth:`chat` does.
-        """
-
-        del messages, on_delta, should_cancel
-        return None
-
 
 class FakeLLMClient(LLMClient):
     """Deterministic client for tests."""

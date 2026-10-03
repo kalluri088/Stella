@@ -176,7 +176,6 @@ class Stella:
         context: Context,
         should_cancel: Callable[[], bool] | None = None,
         on_activity: Callable[[str], None] | None = None,
-        on_response_delta: Callable[[str], None] | None = None,
     ) -> StellaResult:
         """Process a context according to the brain's decision.
 
@@ -204,24 +203,6 @@ class Stella:
         approval or risk decision consults it, and an exception it
         raises is swallowed, so narration can never break or bend a
         turn.
-
-        ``on_response_delta`` is a second presentation-only observer,
-        offered only when a caller wants the final answer before it is
-        finished (spoken replies start on the first sentence). When it is
-        ``None`` the response is synthesized exactly as before, on the
-        non-streaming path. When it is present, the answer call is routed
-        through the client's optional streaming capability; a client that
-        cannot stream returns ``None`` and the call falls back to the
-        ordinary path unchanged, so the two ways of answering are never
-        both used. Either way the recorded response is the one complete
-        string the client returns — history, trace and memory are
-        computed from identical bytes whether or not deltas were fed along
-        the way. A streaming request that is cancelled, or fails on the
-        transport, reports through the same ``ProviderRequestCancelled`` /
-        ``OSError`` paths a non-streaming request already uses, and an
-        exception from the callback itself is swallowed as it is for
-        ``on_activity``, so streaming bends neither the decision nor its
-        outcome.
         """
 
         trace = InteractionTrace()
@@ -235,17 +216,6 @@ class Stella:
                 return
             try:
                 on_activity(kind)
-            except Exception:  # noqa: BLE001, S110 - presentation is inert
-                pass
-
-        def emit_delta(piece: str) -> None:
-            # The streaming observer is as inert as notify: a sink that
-            # trips over a synthesizer or a dead UI widget must never
-            # cancel, fail or bend the answer it is only echoing.
-            if on_response_delta is None:
-                return
-            try:
-                on_response_delta(piece)
             except Exception:  # noqa: BLE001, S110 - presentation is inert
                 pass
         conversation_history = select_conversation_history(
@@ -405,21 +375,6 @@ class Stella:
                     Message(role="system", content=VOICE_STYLE_NOTE),
                     *messages[1:],
                 ]
-            if on_response_delta is not None:
-                # An optional capability: a client that cannot stream
-                # answers None and we fall through to the ordinary call
-                # below, so the answer is never requested twice.
-                streamed = (
-                    self.llm.stream_chat(
-                        messages,
-                        emit_delta,
-                        should_cancel=should_cancel,
-                    )
-                    if should_cancel is not None
-                    else self.llm.stream_chat(messages, emit_delta)
-                )
-                if streamed is not None:
-                    return streamed
             if should_cancel is not None:
                 return self.llm.chat(messages, should_cancel=should_cancel)
             return self.llm.chat(messages)

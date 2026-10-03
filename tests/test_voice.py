@@ -62,6 +62,7 @@ from stella.voice import (
     TapRecorder,
     VoiceError,
     is_transcription_junk,
+    voxtype_transcript,
 )
 
 
@@ -413,6 +414,71 @@ def test_transcription_command_reads_stdout() -> None:
         )
     )
     assert transcript.strip() == "spoken words"
+
+
+def test_voxtype_progress_block_is_not_heard_as_words() -> None:
+    # The real stdout shape of ``voxtype -q transcribe``: the flag moves
+    # its INFO log to stderr but not the status lines, so four lines
+    # about the file, a blank line, then the words. Read whole, every
+    # spoken turn would carry the tool's own narration into the
+    # conversation as things the user said.
+    stdout = (
+        'Loading audio file: "/tmp/recording.wav"\n'
+        "Audio format: 24000 Hz, 1 channel(s), Int\n"
+        "Resampling from 24000 Hz to 16000 Hz...\n"
+        "Processing 37599 samples (2.35s)...\n"
+        "\n"
+        "Bring the blue folder to the meeting at noon.\n"
+    )
+    assert voxtype_transcript(stdout) == (
+        "Bring the blue folder to the meeting at noon.\n"
+    )
+
+
+def test_voxtype_output_without_a_progress_block_is_passed_through() -> None:
+    # The first blank line is the boundary; an output with none is
+    # already only the transcript, and an empty one stays empty rather
+    # than becoming an invented phrase.
+    assert voxtype_transcript("one word\n") == "one word\n"
+    assert voxtype_transcript("") == ""
+
+
+def test_transcription_extract_runs_on_the_command_stdout() -> None:
+    provider = CommandTranscriptionProvider(
+        [
+            sys.executable,
+            "-c",
+            "print('status: working'); print(); print('the words')",
+            "{input}",
+        ],
+        timeout=30,
+        extract=voxtype_transcript,
+    )
+    transcript = provider.transcribe(
+        InputPart(
+            modality=InputModality.AUDIO,
+            provenance=InputProvenance.USER,
+            reference="/tmp/whatever.wav",
+        )
+    )
+    assert transcript == "the words\n"
+
+
+def test_an_owners_transcription_command_is_never_reinterpreted() -> None:
+    # STELLA_TRANSCRIPTION_COMMAND is documented as "prints the
+    # transcript on stdout", so a blank line inside that transcript is
+    # the user's text, not a progress boundary.
+    provider = CommandTranscriptionProvider(
+        [sys.executable, "-c", "print('one\\n\\ntwo')", "{input}"], timeout=30
+    )
+    transcript = provider.transcribe(
+        InputPart(
+            modality=InputModality.AUDIO,
+            provenance=InputProvenance.USER,
+            reference="/tmp/whatever.wav",
+        )
+    )
+    assert transcript == "one\n\ntwo\n"
 
 
 def test_transcription_command_missing_binary_is_a_voice_error() -> None:
@@ -817,11 +883,15 @@ def test_the_installed_local_tool_is_detected_before_the_cloud(
     assert isinstance(provider, CommandTranscriptionProvider)
     assert provider._template == [
         "voxtype",
+        "-q",
         "transcribe",
         "--engine",
         "whisper",
         "{input}",
     ]
+    # ``-q`` alone is not enough: what is left on stdout still starts with
+    # a progress block, so the built-in tool comes with its extraction.
+    assert provider._extract is voxtype_transcript
     # The name is what the owner is told once per session, so it has to
     # say which engine the recording went through.
     assert provider.name == "voxtype (whisper)"

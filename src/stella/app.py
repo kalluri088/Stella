@@ -119,6 +119,7 @@ from stella.voice import (
     VoiceError,
     default_speech_worker,
     is_transcription_junk,
+    voxtype_transcript,
 )
 from stella.wake import (
     DEFAULT_WAKE_MODEL,
@@ -1684,16 +1685,22 @@ def _build_transcriber(
     if settings.voice_transcription == "auto" and shutil.which("voxtype"):
         # voxtype's ``--engine`` names an engine (whisper, parakeet, ...),
         # not a model size: which Whisper model runs stays the tool's own
-        # configuration, and Stella does not reach into it.
+        # configuration, and Stella does not reach into it. ``-q`` is a
+        # *global* flag and must precede the subcommand; even quiet,
+        # voxtype still prints a progress block ahead of the words, so
+        # the transcript is read out of that stdout rather than taken
+        # from it whole.
         return CommandTranscriptionProvider(
             [
                 "voxtype",
+                "-q",
                 "transcribe",
                 "--engine",
                 settings.transcription_engine,
                 "{input}",
             ],
             name=f"voxtype ({settings.transcription_engine})",
+            extract=voxtype_transcript,
         )
     voice_key = provider_keys.effective_api_key("openai")
     if settings.voice_transcription in {"auto", "openai"} and voice_key:

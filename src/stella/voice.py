@@ -35,6 +35,8 @@ from stella.childproc import guarded_popen, recording_finalized_ok
 from stella.context import InputModality, InputPart
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     # The tap imports VoiceError from here, so this direction stays a
     # typing-only edge: the recorder takes frames from a subscriber, it
     # never reaches back into capture management.
@@ -54,6 +56,7 @@ __all__ = [
     "VoiceError",
     "default_speech_worker",
     "is_transcription_junk",
+    "voxtype_transcript",
 ]
 
 RECORD_BINARIES = ("pw-record", "arecord")
@@ -503,6 +506,23 @@ def is_transcription_junk(text: str) -> bool:
     return heard in _TRANSCRIPTION_NOISE_LINES
 
 
+def voxtype_transcript(stdout: str) -> str:
+    """Return only the transcript from a ``voxtype -q`` run.
+
+    voxtype's quiet flag moves its ``INFO`` log to stderr but still prints
+    a progress block on stdout — the file it loaded, the format it read it
+    as, the resample and processing lines — then a blank line and the
+    words. That block is the tool narrating its own work, not something
+    anybody said; read verbatim it would enter the conversation as user
+    text on every spoken turn. Output without a blank line is passed
+    through unchanged, since a run that printed no block is already only
+    the transcript (possibly empty, which the junk filter handles).
+    """
+
+    _progress, separator, words = stdout.partition("\n\n")
+    return words if separator else stdout
+
+
 class CommandTranscriptionProvider(TranscriptionProvider):
     """Runs a local command over the recorded file and reads its stdout.
 
@@ -510,6 +530,13 @@ class CommandTranscriptionProvider(TranscriptionProvider):
     audio path, e.g. ``["whisper-cli", "-m", "model.bin", "{input}"]``.
     Arguments are passed without a shell, so no quoting can be injected.
     ``name`` is what the user is told is transcribing them.
+
+    ``extract`` is optional and only ever supplied for the built-in
+    engine. A command the owner wrote themselves is documented as
+    "prints the transcript on stdout", so its stdout is the transcript
+    and nothing else; a tool that interleaves its own progress reporting
+    is Stella's problem to solve, not a licence to reinterpret the
+    owner's bytes.
     """
 
     def __init__(
@@ -517,6 +544,7 @@ class CommandTranscriptionProvider(TranscriptionProvider):
         template: list[str],
         timeout: float = 120.0,
         name: str = "a local command",
+        extract: Callable[[str], str] | None = None,
     ) -> None:
         if not template or not any("{input}" in part for part in template):
             raise ValueError(
@@ -525,6 +553,7 @@ class CommandTranscriptionProvider(TranscriptionProvider):
         self._template = list(template)
         self._timeout = timeout
         self.name = name
+        self._extract = extract
         self._process: subprocess.Popen[str] | None = None
         self._cancel_requested = False
         self._lock = threading.Lock()
@@ -593,7 +622,7 @@ class CommandTranscriptionProvider(TranscriptionProvider):
             raise VoiceError("Local transcription was cancelled.")
         if process.returncode != 0:
             raise VoiceError("Local transcription failed.")
-        return stdout
+        return stdout if self._extract is None else self._extract(stdout)
 
 
 class OpenAITranscriptionProvider(TranscriptionProvider):

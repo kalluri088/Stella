@@ -517,8 +517,12 @@ def _kill(pid: int) -> bool:
         os.kill(pid, signal.SIGKILL)
     except OSError:
         return False
-    deadline = time.time() + _DEATH_GRACE_SECONDS
-    while time.time() < deadline:
+    # Measure the reaping window with the monotonic clock: a system clock
+    # step (an NTP correction landing here) would otherwise make a wall-clock
+    # deadline end the wait early and report "not gone" for an orphan that
+    # just needed a few more milliseconds to be reaped.
+    deadline = time.monotonic() + _DEATH_GRACE_SECONDS
+    while time.monotonic() < deadline:
         try:
             waited, _status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:

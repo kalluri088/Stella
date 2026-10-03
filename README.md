@@ -46,7 +46,9 @@ checked that it did.
   on screen. Continuous hands-free listening is off by default: the wake
   word — the *Wake word* box in Settings, whose answer is saved, or
   `STELLA_WAKE_WORD=on` for a single launch — is the only way Stella ever
-  holds the microphone open while you are not speaking to her.
+  holds the microphone open while you are not speaking to her. A red dot
+  says whenever it is open, and *Mute mic* puts every ear down for the
+  session.
 - **Use your desktop (opt-in)** — with one setting on, Stella can read the
   focused Hyprland window, focus or move windows, and type into the window
   you nominate. Everything else about her is unchanged: the screen-wide

@@ -633,6 +633,7 @@ def make_wake_bridge(
     ear: FakeWakeEar | None,
     notice: str | None = None,
     barge: FakeBarge | None = None,
+    tap: MicTap | None = None,
 ) -> tuple[StellaBridge, VoicePanel, FakePlayer]:
     player = FakePlayer()
     panel = VoicePanel(
@@ -646,6 +647,7 @@ def make_wake_bridge(
         wake=wake,
         wake_ear=ear,
         wake_notice=notice,
+        mic_tap=tap,
     )
     return StellaBridge(lambda: application), panel, player
 
@@ -1123,4 +1125,181 @@ def test_disabling_wake_via_apply_stops_the_ear(
         # Unticking is final for this session: nothing re-arms afterwards.
         assert wake.starts == 1 and ear.starts == 0
     finally:
+        bridge.stop()
+
+
+# ------------------------------------------------ the mute switch and the dot
+#
+# Stage 7 makes an always-open microphone livable: a switch on the voice
+# row that puts every ear down for this session, and a dot that says when
+# Stella is holding the microphone open with no button pressed for it.
+# Both concern the input side alone — a microphone switch says nothing
+# about the speakers, so Stella goes on answering aloud.
+
+
+def test_mute_lowers_every_ear_and_unmute_raises_it_again() -> None:
+    wake = FakeWake()
+    bridge, _panel, _player = make_wake_bridge(wake, FakeWakeEar())
+    try:
+        assert wake.starts == 1
+        bridge.set_mic_muted(True)
+        drain_until(bridge, lambda e: wake.stops >= 1)
+        # Lowered, not merely ignored: the subscription goes, the shared
+        # capture ends with it, and that is why the dot may go dark.
+        assert wake.starts == 1
+        bridge.set_mic_muted(False)
+        drain_until(bridge, lambda e: wake.starts >= 2)
+    finally:
+        bridge.stop()
+
+
+def test_applying_new_settings_does_not_unmute_a_muted_session(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arming after a rebind goes through the same choke point as every
+    # other resume, so ticking the box while the switch is down records
+    # the choice without putting an ear back on the microphone.
+    bridge, _panel, _player = make_wake_bridge(None, None)
+    try:
+        bridge.set_mic_muted(True)
+        wake, ear, _panel = apply_wake_settings(
+            bridge, monkeypatch, tmp_path, enabled=True
+        )
+        assert (wake.starts, ear.starts) == (0, 0)
+        # The switch is what raises it, later, in this same session.
+        bridge.set_mic_muted(False)
+        drain_until(bridge, lambda e: wake.starts >= 1)
+    finally:
+        bridge.stop()
+
+
+def test_a_wake_phrase_that_races_the_switch_is_refused_out_loud() -> None:
+    wake = FakeWake()
+    ear = FakeWakeEar()
+    bridge, panel, _player = make_wake_bridge(wake, ear)
+    try:
+        bridge.set_mic_muted(True)
+        drain_until(bridge, lambda e: wake.stops >= 1)
+        wake.on_wake()  # the detector had already posted this phrase
+        events = drain_until(
+            bridge, lambda e: any(x.kind == "voice_error" for x in e)
+        )
+        honest = [e for e in events if e.kind == "voice_error"]
+        assert "microphone is muted" in str(honest[-1].payload)
+        assert not voice_state(events, "listening")
+        assert panel._recorder.started == 0
+        assert ear.starts == 0
+        assert wake.starts == 1  # a refusal never re-arms the ear
+    finally:
+        bridge.stop()
+
+
+def test_a_muted_listen_press_says_so_instead_of_going_silent() -> None:
+    wake = FakeWake()
+    bridge, panel, _player = make_wake_bridge(wake, FakeWakeEar())
+    try:
+        bridge.set_mic_muted(True)
+        drain_until(bridge, lambda e: wake.stops >= 1)
+        bridge.post_listen_start()
+        events = drain_until(
+            bridge, lambda e: any(x.kind == "voice_error" for x in e)
+        )
+        honest = [e for e in events if e.kind == "voice_error"]
+        assert "microphone is muted" in str(honest[-1].payload)
+        # A press is a press: the refusal is the answer, never silence,
+        # and never a recording that starts and has to be cancelled.
+        assert not voice_state(events, "listening")
+        assert panel._recorder.started == 0
+        assert panel._recorder.cancelled == 0
+    finally:
+        bridge.stop()
+
+
+def test_a_wake_capture_under_way_is_taken_down_by_the_switch() -> None:
+    wake = FakeWake()
+    ear = FakeWakeEar()
+    bridge, panel, _player = make_wake_bridge(wake, ear)
+    try:
+        wake.on_wake()
+        drain_until(bridge, lambda e: voice_state(e, "listening"))
+        assert bridge.mic_hot() is True
+        bridge.set_mic_muted(True)
+        # The same Cancel the button uses: nothing half-heard is
+        # transcribed or sent after the switch goes down.
+        drain_until(bridge, lambda e: voice_state(e, "idle"))
+        assert panel._recorder.cancelled == 1
+        assert ear.stops >= 1
+        assert wake.starts == 1  # going idle does not re-arm a muted mic
+        assert bridge.mic_hot() is False
+    finally:
+        bridge.stop()
+
+
+def test_muting_the_microphone_never_silences_a_reply() -> None:
+    wake = FakeWake()
+    bridge, panel, player = make_wake_bridge(wake, FakeWakeEar())
+    try:
+        bridge.set_mic_muted(True)
+        drain_until(bridge, lambda e: wake.stops >= 1)
+        panel.speech_enabled = True
+        bridge.post_turn("hi")
+        drain_until(bridge, lambda e: voice_state(e, "speaking"))
+        player.hold.set()
+        drain_until(bridge, lambda e: voice_state(e, "idle"))
+        assert player.played == 1  # a microphone switch is not a speaker one
+        assert wake.starts == 1  # ...and idle is not permission to re-arm
+    finally:
+        bridge.stop()
+
+
+def test_a_muted_microphone_never_arms_barge_in() -> None:
+    barge = FakeBarge()
+    wake = FakeWake()
+    bridge, panel, player = make_wake_bridge(
+        wake, FakeWakeEar(), barge=barge
+    )
+    try:
+        bridge.set_mic_muted(True)
+        drain_until(bridge, lambda e: wake.stops >= 1)
+        panel.speech_enabled = True
+        bridge.post_turn("hi")
+        drain_until(bridge, lambda e: voice_state(e, "speaking"))
+        assert barge.starts == 0, "mute left an ear on the microphone"
+        player.hold.set()
+        drain_until(bridge, lambda e: voice_state(e, "idle"))
+        # Unmuting is the whole repair: the next spoken reply is
+        # interruptible again, and the dot says so while it plays.
+        bridge.set_mic_muted(False)
+        drain_until(bridge, lambda e: wake.starts >= 2)
+        player.hold.clear()
+        bridge.post_turn("again")
+        drain_until(bridge, lambda e: voice_state(e, "speaking"))
+        assert barge.starts == 1
+        # Barge-in keeps its own capture process, so the shared tap cannot
+        # report it: this is the arming the bridge remembers on its own.
+        assert bridge.mic_hot() is True
+        # Retirement is the end of *this* episode: the switch-off the
+        # muted turn left behind is not the one being waited for.
+        stops_before = barge.stops
+        player.hold.set()
+        drain_until(bridge, lambda e: barge.stops > stops_before)
+        assert bridge.mic_hot() is False
+    finally:
+        bridge.stop()
+
+
+def test_the_dot_reads_the_shared_capture_whoever_opened_it() -> None:
+    # An indicator lit only by the bridge's own flags would go dark over a
+    # recording some other consumer started. The tap is the one thing that
+    # knows whether a capture process is alive, so the bridge asks it.
+    tap = MicTap(command=python_writer(40, endless=True))
+    bridge, _panel, _player = make_wake_bridge(None, None, tap=tap)
+    client = tap.subscribe("test-capture")
+    try:
+        assert bridge.mic_hot() is True
+        client.close()
+        wait_until(lambda: not tap.running())
+        assert bridge.mic_hot() is False
+    finally:
+        client.close()
         bridge.stop()

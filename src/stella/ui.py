@@ -1020,6 +1020,27 @@ class StellaWindow:
             state="normal" if speech_ok else "disabled",
         )
         self._speak_toggle.pack(side="left", padx=4)
+        # Mute is a session switch beside "Speak replies", not a capability
+        # opt-in: it is never saved, and its whole job is to be reachable in
+        # one click the moment the microphone feels wrong.
+        self._mute_var = tk.BooleanVar(value=False)
+        self._mute_toggle = ttk.Checkbutton(
+            row,
+            text="Mute mic",
+            variable=self._mute_var,
+            command=self._toggle_mute,
+            style="Card.TCheckbutton",
+            state="normal" if mic_ok else "disabled",
+        )
+        self._mute_toggle.pack(side="left", padx=4)
+        # The dot is the only sign of a microphone Stella is holding open
+        # with no button pressed for it — the wake ear, an interruption
+        # listener, a capture in flight. It is redrawn on the poll tick
+        # only when the answer changes.
+        self._mic_dot = ttk.Label(row, text="●", style="CardDim.TLabel")
+        self._mic_dot.pack(side="left", padx=(6, 0))
+        self._mic_dot_color: str | None = None
+        self._render_mic_hot()
         if not mic_ok:
             self._mic_button.configure(state="disabled")
         ttk.Label(
@@ -1030,9 +1051,22 @@ class StellaWindow:
                 "transcription provider)."
                 if not mic_ok
                 else "Listening and speaking are explicit; recordings are "
-                "removed right after transcription."
+                "removed right after transcription. A red dot means the "
+                "microphone is open right now."
             ),
         ).pack(anchor="w", padx=10, pady=(2, 6))
+
+    def _render_mic_hot(self) -> None:
+        # A ttk label repaints on every configure, so the dot is touched
+        # only when its color actually changes — which covers both the
+        # microphone opening and the theme being switched under it.
+        color = (
+            THEME.error if self._bridge.mic_hot() else THEME.text_dim
+        )
+        if color == self._mic_dot_color:
+            return
+        self._mic_dot_color = color
+        self._mic_dot.configure(foreground=color)
 
     def _toggle_listen(self) -> None:
         if self._busy:
@@ -1065,6 +1099,9 @@ class StellaWindow:
 
     def _toggle_speech(self) -> None:
         self._bridge.set_speech_enabled(self._speak_var.get())
+
+    def _toggle_mute(self) -> None:
+        self._bridge.set_mic_muted(self._mute_var.get())
 
     def _handle_voice_state(self, state: str) -> None:
         if state == "listening":
@@ -1153,6 +1190,7 @@ class StellaWindow:
             self._handle_event(event)
         self._drain_approvals()
         self._render_working_status()
+        self._render_mic_hot()
         self._root.after(100, self._tick)
 
     def _render_working_status(self) -> None:

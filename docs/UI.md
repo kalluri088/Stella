@@ -147,8 +147,11 @@ display, and can never approve a tool or change permissions.
   enter the same conversation path as typed input, and optionally hear the
   final response spoken ("Speak replies", off by default). A voice turn is
   cancellable end to end: **Cancel** beside Listen works while transcribing,
-  and **Cancel** beside Send also silences any spoken audio. See `VOICE.md`
-  for providers, privacy behavior, and controls.
+  and **Cancel** beside Send also silences any spoken audio. The dot beside
+  the controls is red for as long as the microphone is really open —
+  including while a wake-word ear is armed with no button pressed — and
+  **Mute mic** puts every ear down for the session without touching the
+  speakers. See `VOICE.md` for providers, privacy behavior, and controls.
 
 ## Appearance and themes
 

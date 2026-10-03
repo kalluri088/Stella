@@ -305,6 +305,19 @@ carries on. Barge-in deliberately keeps its own process: it is only ever armed
 while Stella speaks, when the wake ear is suspended, and it may point at a
 different echo-cancelled source.
 
+## What the always-open ear costs
+
+With wake on, three small ONNX classifiers run over every frame the shared
+capture delivers, in addition to the one `pw-record` child that
+push-to-talk starts anyway. The work is continuous rather than bursty, and
+it is the price of the opt-in: openWakeWord's own guidance puts a
+classifier of this size at a small fraction of one laptop core, which is
+why Stella keeps the ear armed for as long as the box is ticked instead of
+duty-cycling it. That figure is upstream's, not a measurement taken here —
+Stella has never timed her own idle cost on this machine. Barge-in is the
+louder neighbour: it is armed only while Stella is speaking, and its
+voice-activity model runs on that window alone.
+
 ## UI states
 
 The status line distinguishes "Listening...", "Transcribing...",
@@ -312,6 +325,14 @@ the elapsed "Stella is working · N s" turn state, and "Speaking...", and
 returns to idle when the utterance is finished.
 "Listening..." appears only while the recorder is
 actually running, and speech is only claimed after a transcript was produced.
+
+The dot beside the voice controls answers a question the status line cannot:
+*is the microphone open right now?* It is red while Stella holds the
+microphone — an armed wake ear, a capture in flight, an interruption
+listener waiting on her own voice — and dim when nothing does. The answer
+comes from the parties that can know it: the shared capture says whether its
+process is alive, and the wake and interruption sessions say when they hold
+the device — so it goes dark the moment the microphone is released.
 
 ## Controls
 
@@ -328,10 +349,10 @@ actually running, and speech is only claimed after a transcript was produced.
   Apply arms or stops the ear in the running session, so there is no
   restart to wait for and never a second capture for the same microphone.
   The ear is suspended whenever Stella is speaking, narrating, already
-  capturing or
-  waiting on an on-screen approval — a dangerous action is answered by a
-  press on that dialog and nothing else, so the ears stay off the
-  microphone until it closes. A wake that fires over silence is discarded:
+  capturing or waiting on an on-screen approval — a dangerous action is
+  answered by a press on that dialog and nothing else, so the ears stay off
+  the microphone until it closes. A wake that fires over silence is
+  discarded:
   the filler a transcriber invents for a quiet room ("Thank you.",
   `[Music]`) is recognised and reported
   (*Stella woke up but heard no words. Nothing was sent.*) instead of sent
@@ -342,6 +363,16 @@ actually running, and speech is only claimed after a transcript was produced.
 - **Stop speaking** — end the current spoken reply (playing sentence and
   queued ones); the turn is unaffected.
 - **Speak replies** — toggle speech output; it defaults to off.
+- **Mute mic** — put every ear down for this session. Nothing is saved:
+  the switch is there to be reached in one click the moment an open
+  microphone feels wrong, and the next launch starts unmuted. Muting stops
+  the wake ear, so its subscription leaves and the shared capture ends with
+  it; a wake phrase that races the switch is refused out loud rather than
+  recorded, and a **Listen** press while muted says so instead of going
+  silent. A recording already started by hand is left alone — the switch
+  answers for the ears that open themselves, not for a press already on
+  screen. Speaking and work narration are untouched: this is a microphone
+  switch, not a volume one.
 
 The microphone and speech buttons are disabled when the corresponding
 capability is not available in this configuration, so the UI never pretends

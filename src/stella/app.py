@@ -359,6 +359,11 @@ BARGE_MODES = {"auto", "off", "on"}
 WAKE_MODES = {"off", "on"}
 ENV_ON = {"1", "true", "on", "yes"}
 ENV_OFF = {"0", "false", "off", "no"}
+# The one sentence every path that will not open the microphone says, so
+# a muted Stella never answers a press with silence.
+_MIC_MUTED_MESSAGE = (
+    "The microphone is muted. Turn mute off to speak with Stella."
+)
 
 
 def _env_toggle(name: str) -> bool | None:
@@ -1962,6 +1967,16 @@ class StellaBridge:
         self._wake_ear: WakeUtteranceEar | None = None
         self._wake_listening = False
         self._speaking = False
+        # The shared capture, so the window can be told when the
+        # microphone is really being read (``mic_hot``).
+        self._tap: MicTap | None = None
+        # Mute is a session switch, never a saved setting: it takes the
+        # always-open ears off the microphone and refuses anything that
+        # would put them back. Barge-in is armed from the worker and
+        # retired from it, so the bridge tracks the arming itself — the
+        # fake ears in the tests answer presses, not ``running()``.
+        self._mic_muted = False
+        self._barge_armed = False
         # An interlude — a work phrase or an alert — is also Stella's own
         # voice on the speakers, but it never owns the reply's playback
         # slot, so it holds the wake ear off through its own count.
@@ -2021,6 +2036,10 @@ class StellaBridge:
             stella.approval_provider = self.approvals.request
         self._memory = MemoryPanel(stella.memory)
         self._voice = application.voice
+        # The tap belongs to the application being rebound to, and it is
+        # the one thing that can say whether a capture process is alive.
+        self._tap = application.mic_tap
+        self._barge_armed = False
         if (
             self._barge is not None
             and self._barge is not application.barge_in
@@ -2172,11 +2191,16 @@ class StellaBridge:
     def _begin_barge_in(self) -> None:
         """Arm the ear for one speaking episode; problems retire the ear."""
 
-        if self._approval_open.is_set() or self._stopping.is_set():
+        if (
+            self._approval_open.is_set()
+            or self._stopping.is_set()
+            or self._mic_muted
+        ):
             # Talking over Stella must not be mistaken for an answer, and
             # cancelling the turn while its own dialog is open is exactly
-            # that confusion: the dialog on screen is the only input. And
-            # a shutdown that has begun never arms a capture again.
+            # that confusion: the dialog on screen is the only input. A
+            # shutdown that has begun never arms a capture again, and a
+            # muted microphone never hears an interruption at all.
             return
         listener = self._barge
         if listener is None:
@@ -2191,8 +2215,13 @@ class StellaBridge:
         except VoiceError as error:
             self._barge = None
             self._emit("voice_error", str(error))
+        else:
+            # Barge-in keeps its own capture process, so the shared tap
+            # cannot report it: the bridge records the arming it just did.
+            self._barge_armed = True
 
     def _end_barge_in(self) -> None:
+        self._barge_armed = False
         if self._barge is not None:
             self._barge.stop()
 
@@ -2230,10 +2259,12 @@ class StellaBridge:
 
         Safe to call from anywhere, any time: a wake ear that is not
         configured, still inside a wake capture, under live playback,
-        waiting on an on-screen decision or inside a shutdown that has
-        begun stays asleep, and a faulted detector retires the ear
-        silently (the router-degradation precedent — broken means
-        disabled, not noisy).
+        waiting on an on-screen decision, muted from the voice row or
+        inside a shutdown that has begun stays asleep, and a faulted
+        detector retires the ear silently (the router-degradation
+        precedent — broken means disabled, not noisy). The mute test lives
+        here rather than at the dozen resume sites so that no path can arm
+        the ear by forgetting to ask.
         """
 
         listener = self._wake
@@ -2243,6 +2274,7 @@ class StellaBridge:
             or self._wake_listening
             or self._speaking
             or self._interludes
+            or self._mic_muted
             or self._approval_open.is_set()
         ):
             return
@@ -2295,6 +2327,12 @@ class StellaBridge:
         panel = self._voice
         if self._wake_listening:
             return  # a wake session already owns the microphone
+        if self._mic_muted:
+            # The one way a phrase can arrive while muted is a race with
+            # the switch itself: the ear had already posted before it went
+            # down. Say so instead of pretending the word was not heard.
+            self._emit("voice_error", _MIC_MUTED_MESSAGE)
+            return
         if self._approval_open.is_set():
             # Say why nothing happened: a silent refusal would leave the
             # user wondering whether the wake word worked at all. The ear
@@ -2469,6 +2507,52 @@ class StellaBridge:
                 # of inside the first reply.
                 self._voice.prewarm_speech()
 
+    def mic_hot(self) -> bool:
+        """True while Stella is holding the microphone open right now.
+
+        The indicator exists for the states nothing else on screen shows:
+        a wake ear armed while she is idle, a capture in flight, an
+        interruption ear opened for one spoken reply. It reads in-process
+        state only, so the window can ask it on its 100 ms tick;
+        ``voice_capabilities`` answers the other question — which
+        peripherals this configuration could use — and a real answer there
+        means looking up capture commands on disk, which is not something
+        to do ten times a second.
+        """
+
+        if self._wake_listening or self._barge_armed:
+            return True
+        tap = self._tap
+        return tap is not None and tap.running()
+
+    def set_mic_muted(self, muted: bool) -> None:
+        """Put every ear down for this session; a switch, never a setting.
+
+        Muting is not a filter that leaves the capture running and ignores
+        what it hears: the wake ear stops, its subscription goes, and the
+        shared process ends with it — which is why the indicator can go
+        dark truthfully. A wake capture already in flight is retired by
+        the same Cancel path the button uses, so nothing half-heard is
+        transcribed or sent. Output is untouched, because a microphone
+        switch says nothing about the speakers: Stella may still answer
+        aloud and still narrate the work she is doing.
+        """
+
+        def handle() -> None:
+            wanted = bool(muted)
+            if wanted == self._mic_muted:
+                return
+            self._mic_muted = wanted
+            if wanted:
+                if self._wake_listening:
+                    self.post_listen_cancel()
+                self._suspend_wake()
+                self._end_barge_in()
+            else:
+                self._resume_wake()
+
+        self._post(handle)
+
     def _voice_conversation(self) -> bool:
         """True when a voice turn is a spoken conversation.
 
@@ -2618,6 +2702,11 @@ class StellaBridge:
                     "voice_error",
                     "Voice input is not available in this configuration.",
                 )
+                return
+            if self._mic_muted:
+                # The press is honoured as what it is: a request for the
+                # microphone the switch has just taken away.
+                self._emit("voice_error", _MIC_MUTED_MESSAGE)
                 return
             try:
                 # Push-to-talk takes the microphone back: neither ear

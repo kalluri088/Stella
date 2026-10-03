@@ -666,9 +666,51 @@ def test_window_without_voice_keeps_the_mic_button_disabled() -> None:
     try:
         assert str(window._mic_button.cget("state")) == "disabled"
         assert str(window._speak_toggle.cget("state")) == "disabled"
+        assert str(window._mute_toggle.cget("state")) == "disabled"
         window._mic_button.invoke()  # a disabled button must do nothing
         pump(root, 0.2)
         assert window._listening is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_mute_switch_takes_the_microphone_from_the_window() -> None:
+    # The switch is one click on the voice row and the refusal is the
+    # bridge's, so the whole path — checkbox, command, worker, event,
+    # transcript — has to be wired for this to say anything at all.
+    recorder = WindowRecorder()
+    panel = VoicePanel(recorder, None, WindowTranscriber(), None)
+    root, window, bridge, _ = make_window(voice=panel)
+    try:
+        assert str(window._mute_toggle.cget("state")) == "normal"
+        window._mute_toggle.invoke()
+        window._mic_button.invoke()  # a press into a muted microphone
+        deadline = time.monotonic() + 5
+        while "muted" not in window._chat.get("1.0", "end"):
+            if time.monotonic() >= deadline:
+                break
+            root.update()
+            time.sleep(0.02)
+        assert "The microphone is muted" in window._chat.get("1.0", "end")
+        assert recorder.listening is False  # nothing was ever recorded
+        assert window._mic_button.cget("text") == "Listen"
+        # Unmuting is the whole repair: the very next press reaches the
+        # microphone again.
+        window._mute_toggle.invoke()
+        window._mic_button.invoke()
+        deadline = time.monotonic() + 5
+        while not window._listening and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert recorder.listening is True  # the press reached the microphone
+        window._mic_cancel.invoke()  # abandon it: leave nothing recording
+        deadline = time.monotonic() + 5
+        while recorder.listening and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert recorder.listening is False
+        assert recorder.abandoned == 1
     finally:
         bridge.stop()
         root.destroy()

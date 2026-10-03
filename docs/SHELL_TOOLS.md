@@ -9,11 +9,13 @@ before switching it on.
 ## What it is
 
 `shell_run` runs **one** command string through `/bin/sh -c` (or `cmd /c` on
-Windows), inside the Stella workspace, and returns the command's combined
-stdout+stderr and its exit status. There is exactly one verb — there is no
-`shell_list`, `shell_write`, or `shell_delete`; whatever those would do is
-already covered by the dedicated filesystem tools, which are easier to approve
-because they name one file each.
+Windows) and returns its combined stdout+stderr and exit status. Where
+bubblewrap is present the command first runs inside a filesystem jail (see
+"What sandbox means here"); where it is not, the command runs confined to the
+Stella workspace as its starting directory, and the tool says so. There is
+exactly one verb — there is no `shell_list`, `shell_write`, or `shell_delete`;
+whatever those would do is already covered by the dedicated filesystem tools,
+which are easier to approve because they name one file each.
 
 ## The four fences
 
@@ -41,19 +43,45 @@ because they name one file each.
    pulled off the network can never masquerade as a new instruction back to the
    runtime.
 
-## What "sandbox" honestly means here
+## What "sandbox" means here — a real jail when bubblewrap is present
 
-This is a confined **starting** directory, a hard **resource bound**, and a
-**human who approves the exact command each time** — model proposes, runtime
-authorizes. It is **not** kernel-level isolation. The command runs as *you*, so
-it can still `cd` out of the workspace and touch anything your own account can
-read or write, unless something else (permissions, a container) stops it. The
-guard is your eyes on the literal command, not a filesystem jail.
+When `bwrap` (bubblewrap — the sandbox Flatpak runs under, present by default
+on this Arch/systemd desktop) is available, `shell_run` executes the command
+**inside a filesystem jail**, not merely from a confined directory. What the
+jail does:
 
-If you want true isolation, run Stella itself inside a container or a VM;
-with that in place `shell_run` becomes a convenience behind your existing
-boundary. Without it, `shell_run` is still safe in the only way this design can
-promise: nothing runs that you did not approve by name, one command at a time.
+- **Read-only host, one writable exception.** The whole filesystem is mounted
+  read-only inside the box; only the Stella workspace (and a private `/tmp`
+  scratch) are writable. A mistaken or malicious approved command cannot edit
+  or delete a file outside the workspace — the host root is literally a
+  read-only mount.
+- **Your home is hidden.** `/home` is replaced by an empty tmpfs and only the
+  workspace is re-bound back, so `~/.ssh`, browser profiles, other projects
+  and your dotfiles are simply absent. A private, writable `HOME`
+  (`/home/stella`) is provided so tools that insist on one still run, isolated.
+- **Privilege is dropped.** The command loses every supplementary group
+  (docker, kvm, libvirt, wheel…), so it cannot reach the daemon groups that
+  would let it escalate beyond the ordinary account.
+- **Isolated namespaces.** A new user, PID, mount, UTS and IPC namespace: the
+  command cannot see or signal processes outside the box, and
+  `--die-with-parent` guarantees it goes away with Stella.
+- **Network, per command.** Outbound networking is allowed by default (an
+  approved command is expected to be able to `git pull`), and a command can
+  request `network: false` to run with no network at all. The approval card
+  says which either way.
+
+This is **defense in depth**, not a claim that a command is safe to run
+unapproved — the human approval of the literal command is still the authority
+(rules 3 and 10). And it is **not** a promise against a determined kernel
+exploit: for that, run Stella itself in a container or VM. The jail shrinks the
+blast radius *given* that a command runs; approval decides whether it runs.
+
+**When bubblewrap is absent**, the jail cannot be applied. Stella then falls
+back to the confined-starting-directory behaviour described in the four fences
+and **says so honestly** — both on the approval card ("the jail is NOT
+active") and in the result note ("ran WITHOUT the filesystem jail"). It never
+claims a jail it does not have. To fall back deliberately even when bwrap is
+present, set `STELLA_SHELL_SANDBOX=off` for the launch.
 
 ## Under the headless voice path (`stella voice`)
 
@@ -74,6 +102,12 @@ identical `ToolDispatcher` check as a typed turn.
 | stdout+stderr captured | 64,000 bytes | result announces truncation |
 | Wall clock | 120 seconds | whole group SIGINT→SIGTERM→SIGKILL |
 | Preview shown on approval | 60 lines / 4,000 chars | announced as truncated |
+| Filesystem (jail active) | host read-only except workspace + `/tmp` | write outside the workspace fails in-box |
+| ulimit safety nets (jail) | 120 s CPU · 1024 procs · 128 MiB file | a runaway stops before the timeout |
+
+The filesystem jail and ulimit rows apply only when bubblewrap is present;
+without it the first five fences still hold, and the result says the jail was
+unavailable.
 
 ## How to enable it
 
@@ -81,6 +115,12 @@ Settings → the *Shell commands (run programs in your workspace)* checkbox →
 Apply. Or one launch: `STELLA_SHELL_TOOLS=on stella`. Either way each command
 still asks. If you would rather not keep it enabled, `STELLA_SHELL_TOOLS=off`
 forces it off for that launch no matter what the box says.
+
+The bubblewrap jail is **on whenever the shell capability is on and `bwrap` is
+present** — the safe default. To run confined-only even when bwrap is available,
+`STELLA_SHELL_SANDBOX=off` for the launch. There is no config field for the
+jail: it is an execution policy, controlled by that one env knob, never a value
+that reaches the model.
 
 ## Capability map for the requested tool set
 
@@ -118,15 +158,33 @@ per-use approval as the web tools.
 - The kill path is bounded (≈ seconds) and uses the existing
   `stella.childproc` parent-death guarantee, so a killed command cannot outlive
   Stella if Stella itself is SIGKILLed.
-- No new hard dependency: `shell_run` is pure standard library (`subprocess`,
-  `selectors`, `signal`, `os`).
+- **No new dependency, and nothing downloaded.** `shell_run` is pure standard
+  library (`subprocess`, `selectors`, `signal`, `os`). The jail adds none
+  either: `stella/sandbox.py` only assembles a `bwrap` command line for a
+  binary the system already ships, and if that binary is missing the tool falls
+  back to the confined path and says so — it never requires or installs
+  anything.
+- The jail's command line carries the user's command as a **trailing positional
+  argument** and re-execs it via `/bin/sh -c "$1" sh`; the command string is
+  never pasted into the wrapper, so quotes, `$`, and `;` in a command cannot
+  rewrite the sandbox invocation.
 
 ## Validation
 
-`tests/test_shell_tools.py` proves, through an injected fake runner, every
-decision (validation, workspace confinement, the success/exit/timeout/
-truncation notes, untrusted-marker wrapping and forgery, the approval gate, and
-the config round-trip) without spawning a process; and then runs the real
+`tests/test_shell_tools.py` proves, through an injected fake runner and a
+scripted fake sandbox, every decision (validation incl. the `network` flag,
+jail-vs-confined selection, the fallback note when bubblewrap is absent, the
+workspace confinement, the success/exit/timeout/truncation notes,
+untrusted-marker wrapping and forgery, the approval gate, and the config
+round-trip) without depending on this host's tooling; then runs the real
 bounded reader against a few tiny, workspace-confined commands to prove the
-byte cap and the wall-clock group-kill actually work. `tests/test_settings_wiring.py`
-drift-guards that all six wiring touchpoints for the flag are present.
+byte cap and the wall-clock group-kill actually work; and, only on a host that
+has bubblewrap, runs a **real jailed command** to prove the host root is
+read-only and the real home is hidden inside the box.
+
+`tests/test_sandbox.py` proves the argv assembly itself — read-only root with
+the workspace as the single writable bind, the `/home` mask ordered before the
+workspace re-bind, the network toggle, the ulimit nets, and that the command is
+a trailing positional and not interpolated into the wrapper — plus a real
+sub-`bwrap` echo when the binary is present. `tests/test_settings_wiring.py`
+drift-guards that all six wiring touchpoints for the shell flag are present.

@@ -80,9 +80,13 @@ checked that it did.
   windows and type; web (`STELLA_WEB`) adds search and fetch; and shell
   (`STELLA_SHELL_TOOLS`) lets her **run one command you approve by name**,
   starting in your workspace, output and time bounded — off by default and
-  asking on every single use (see `docs/SHELL_TOOLS.md`; it is a confined
-  start directory plus your approval, not a filesystem jail). Every one
-  of their calls is still an approval prompt.
+  asking on every single use (see `docs/SHELL_TOOLS.md`). When **bubblewrap**
+  is present the command runs inside a real filesystem jail — your whole
+  tree read-only except the workspace and a private scratch, your home and
+  privileged groups hidden — switched off only with `STELLA_SHELL_SANDBOX=0`;
+  without bubblewrap it falls back honestly to a confined start directory plus
+  your approval, and says so. Every one of their calls is still an approval
+  prompt.
   See `docs/WEB.md`, `docs/SHELL_TOOLS.md` and the capability sections of
   `docs/ARCHITECTURE.md`.
 - **Show her work** — a History tab lists what she recently did, kept
@@ -203,6 +207,7 @@ development, or running several configurations side by side:
 | `STELLA_EMBED_MODEL` | Ollama embedding model name | `nomic-embed-text` |
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
 | `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` / `STELLA_SHELL_TOOLS` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off (OS tools on) |
+| `STELLA_SHELL_SANDBOX` | Run `shell_run` inside the bubblewrap filesystem jail when bubblewrap is installed (`1`/`0`; `0` drops to workspace-confinement only) | on |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 | `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
 | `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |

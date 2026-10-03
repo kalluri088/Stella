@@ -1745,8 +1745,10 @@ class StellaWindow:
             frame,
             style="Dim.TLabel",
             text="Adds shell_run: Stella runs one command you approve by "
-            "name, starting in the workspace, output bounded and timed out. "
-            "Off by default; every single use asks first.",
+            "name, output bounded and timed out. When bubblewrap is present "
+            "the command runs in a filesystem jail (host read-only, your home "
+            "hidden); without it it is confined to the workspace only and "
+            "says so. Off by default; every single use asks first.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)

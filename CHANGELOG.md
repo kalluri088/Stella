@@ -40,7 +40,38 @@
   added** — both need a paid API key and send prompts off the machine, and Stella
   does not ship a model- or network-dependent behavior it has not validated live.
 
-### Say it once, hands-free: `stella voice` and a private web key
+### `shell_run` gets a real jail: bubblewrap, when it is installed
+
+- **The shell command now runs in a filesystem jail, not just a start
+  directory.** On this Arch/Omarchy machine `bubblewrap` (`bwrap`) is already
+  present, so `shell_run` launches each approved command through it: your whole
+  filesystem is **read-only** inside the jail, the Stella workspace and a
+  private scratch `/tmp` are the **only** writable exceptions, your real home is
+  masked, privileged supplementary groups (docker/kvm/wheel…) are dropped, and
+  PID/mount/IPC/UTS namespaces are isolated. The command still runs as your
+  uid inside a user namespace, but it can no longer wander `cd`-ing into
+  `~/.ssh` or your project trees to write. Nothing was downloaded or installed —
+  `bwrap` is a pre-existing system binary, so Stella gains **no new dependency**.
+- **Honest and fail-closed about it.** The approval card now says which state it
+  is in: an *active jail* warning, or an *unavailable* warning ("the jail is NOT
+  active") when `bwrap` is missing or user namespaces are off, and every result
+  run without the jail carries a prelude saying so — the guard never silently
+  pretends isolation it does not have. Switch it off with
+  `STELLA_SHELL_SANDBOX=0`; there is **no config field for the jail** (a single
+  env knob, so it never needs the six-touchpoint settings wiring). A new
+  per-command `network` argument (default on) can drop `--share-net` to block a
+  command's network for that one use. The command string is still carried as a
+  trailing positional argument and re-executed via `sh -c "$1"`, never
+  interpolated into the wrapper, so it cannot forge jail flags.
+- **Proven against the real thing.** `tests/test_sandbox.py` checks the argv
+  shape (read-only host bind, home mask ordered before the workspace re-bind,
+  network toggle, `clearenv` + a fixed `PATH`/`HOME`, positional command) and
+  runs one `bwrap` echo for real; `tests/test_shell_tools.py` adds `TestSandboxJail`
+  (active/unavailable/off routing) and a `TestRealJail` that, when the jail is
+  available, proves the host is read-only, home is masked, and `~/.ssh` is not
+  reachable — each still workspace-confined and sub-second.
+
+
 
 - **`stella voice` — one hands-free turn for a keyboard shortcut.** A new
   no-screen mode runs a single voice turn from your most-recent saved settings,

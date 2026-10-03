@@ -63,10 +63,6 @@ def _normalize_term(term: str) -> str:
     return term
 
 
-def _matches_query(content: str, query: str) -> bool:
-    return relevance_score(content, query) > 0
-
-
 def relevance_score(content: str, query: str) -> int:
     """Deterministic lexical relevance of stored content to a query."""
 
@@ -155,6 +151,27 @@ class MemoryWriteResult:
     written: bool
 
 
+def _rank_by_relevance(
+    items: list[MemoryItem], query: str
+) -> list[MemoryItem]:
+    """Keep the items that match the query, best-relevance first.
+
+    Scores each item exactly once: the obvious filter-then-sort reads
+    ``relevance_score`` twice per item (once to keep it, once to order it),
+    which is wasted tokenization on every recall. The match test is the same
+    ``> 0`` the filter used; ordering is by (score, created_at, id) so results
+    are deterministic.
+    """
+
+    scored: list[tuple[int, int, int, MemoryItem]] = []
+    for item in items:
+        score = relevance_score(item.content, query)
+        if score > 0:
+            scored.append((score, item.created_at or 0, item.id or 0, item))
+    scored.sort(key=lambda entry: entry[:3], reverse=True)
+    return [entry[3] for entry in scored]
+
+
 class Memory(ABC):
     """Interface for storing and retrieving memory items."""
 
@@ -222,18 +239,7 @@ class InMemoryMemory(Memory):
         if query is None:
             return items
 
-        matches = [
-            item for item in items if _matches_query(item.content, query)
-        ]
-        return sorted(
-            matches,
-            key=lambda item: (
-                relevance_score(item.content, query),
-                item.created_at or 0,
-                item.id or 0,
-            ),
-            reverse=True,
-        )
+        return _rank_by_relevance(items, query)
 
     def update(self, memory_id: int, replacement: MemoryItem) -> bool:
         if not (
@@ -365,18 +371,7 @@ class SQLiteMemory(Memory):
                 items.append(item)
         if query is None:
             return items
-        matches = [
-            item for item in items if _matches_query(item.content, query)
-        ]
-        return sorted(
-            matches,
-            key=lambda item: (
-                relevance_score(item.content, query),
-                item.created_at or 0,
-                item.id or 0,
-            ),
-            reverse=True,
-        )
+        return _rank_by_relevance(items, query)
 
     def update(self, memory_id: int, replacement: MemoryItem) -> bool:
         if not (

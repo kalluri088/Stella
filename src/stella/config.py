@@ -188,6 +188,93 @@ def scan_ollama_models(
     )
 
 
+def scan_openai_models(
+    base_url: str,
+    api_key: str,
+    timeout: float = PROBE_TIMEOUT_SECONDS,
+) -> ModelScan:
+    """Query an OpenAI-compatible /models endpoint. Never downloads anything.
+
+    The base_url is expected to already carry the version path (for example
+    ``http://localhost:3001/v1``); this appends ``/models`` to it.
+    """
+
+    trimmed = base_url.rstrip("/")
+    url = f"{trimmed}/models"
+    request = urllib.request.Request(url, method="GET")
+    request.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return ModelScan(
+            reachable=True,
+            models=(),
+            message=(
+                f"{base_url} replied with error {error.code}. Check the "
+                "API key and base URL."
+            ),
+        )
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return ModelScan(
+            reachable=False,
+            models=(),
+            message=(
+                f"The endpoint at {base_url} is not reachable. Start it, "
+                "then try again."
+            ),
+        )
+    except json.JSONDecodeError:
+        return ModelScan(
+            reachable=True,
+            models=(),
+            message=(
+                f"{base_url} sent a response Stella could not read. Check "
+                "the endpoint points at an OpenAI-compatible server."
+            ),
+        )
+    models = _openai_model_names(payload)
+    if models is None:
+        return ModelScan(
+            reachable=True,
+            models=(),
+            message=(
+                f"{base_url} sent an unexpected model list. Check the "
+                "endpoint points at an OpenAI-compatible server."
+            ),
+        )
+    if not models:
+        return ModelScan(
+            reachable=True,
+            models=(),
+            message=f"{base_url} reported no models.",
+        )
+    return ModelScan(
+        reachable=True,
+        models=models,
+        message=f"Found {len(models)} model(s) at this endpoint.",
+    )
+
+
+def _openai_model_names(payload: object) -> tuple[str, ...] | None:
+    """Validate the OpenAI /models payload shape; None means malformed."""
+
+    if not isinstance(payload, dict):
+        return None
+    entries = payload.get("data")
+    if not isinstance(entries, list):
+        return None
+    names: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        name = entry.get("id")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        names.append(name)
+    return tuple(names)
+
+
 def _model_names(payload: object) -> tuple[str, ...] | None:
     """Validate the tags payload shape; None means malformed."""
 

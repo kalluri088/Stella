@@ -1063,18 +1063,22 @@ def test_settings_test_connection_without_model_is_local_only(
         root.destroy()
 
 
-def test_settings_list_models_is_ollama_only(
+def test_settings_list_models_needs_a_key_for_openai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = StellaSettings(provider="openai", model="gpt")
     root, window, bridge, _ = make_window(settings=settings)
     try:
         def fail_scan(*args, **kwargs):
-            raise AssertionError("must not scan a non-Ollama provider")
+            raise AssertionError("must not scan without an API key")
 
         monkeypatch.setattr(stella_config, "scan_ollama_models", fail_scan)
+        monkeypatch.setattr(stella_config, "scan_openai_models", fail_scan)
+        monkeypatch.setattr(
+            provider_keys, "effective_api_key", lambda *a, **k: None
+        )
         window._list_models()
-        assert "only available" in window._settings_status.cget("text")
+        assert "API key" in window._settings_status.cget("text")
     finally:
         bridge.stop()
         root.destroy()

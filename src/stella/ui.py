@@ -1870,12 +1870,29 @@ class StellaWindow:
 
     def _list_models(self) -> None:
         draft = self._draft_settings()
-        if draft.provider != "ollama":
+        if draft.provider == "ollama":
+            scan = config.scan_ollama_models(draft.ollama_base_url)
+        elif draft.provider == "openai":
+            preset = provider_keys.PRESETS[draft.preset or "openai"]
+            base_url = (
+                draft.openai_base_url
+                or preset.base_url
+                or "https://api.openai.com/v1"
+            )
+            api_key = self._settings_fields["API key"].get().strip()
+            if not api_key:
+                api_key = provider_keys.effective_api_key(preset.id) or ""
+            if not api_key:
+                self._settings_status.configure(
+                    text="Enter an API key before listing models."
+                )
+                return
+            scan = config.scan_openai_models(base_url, api_key)
+        else:
             self._settings_status.configure(
-                text="Model listing is only available for a local Ollama server."
+                text="Model listing is not available for this provider."
             )
             return
-        scan = config.scan_ollama_models(draft.ollama_base_url)
         self._settings_status.configure(text=scan.message)
         if scan.models:
             self._settings_fields["Model"].delete("0", "end")

@@ -70,6 +70,40 @@
   messages of any length, and the widget test pins the newline tags
   instead of their absence.
 
+### Provider presets, and your API key is now kept
+
+- Setup and Settings replace the three provider choices with a real
+  provider list: Ollama, local llama.cpp, OpenAI, Claude (Anthropic),
+  Grok (xAI), Groq, OpenRouter, Google Gemini, or any other
+  OpenAI-compatible endpoint. Picking one fills in the endpoint and
+  suggests models, and each hosted provider's key is verified against
+  that provider before it is ever stored.
+- A pasted key that clearly belongs to a different provider (a Claude
+  key under OpenAI, say) is refused with a hint to switch presets —
+  offline, before any request is sent and without the key material
+  appearing in the message.
+- Verified keys are stored permanently in `api_keys.json` in Stella's
+  private data directory, mode 0600, written atomically — never in
+  `config.json`, never in an environment variable the UI writes, never
+  shown again (only the last four characters). `OPENAI_API_KEY` still
+  overrides the OpenAI slot for a launch; named presets resolve only
+  against their own stored key. `stella backup` deliberately excludes
+  the key file. See `docs/SECRETS.md`.
+- **FreeLLMAPI (local router)** joins the picker: a self-hosted router
+  that pools your own free-tier provider keys behind one local
+  OpenAI-compatible endpoint (`localhost:3001`) with a `freellmapi-…`
+  unified token — Stella's first preset where genuinely bill-free
+  inference is the point. Groq's suggested models now name its current
+  free lineup; the previous ones were retired upstream.
+- Mid-session switching is a first-class path: Settings rebuilds the
+  model live on Apply (conversation and memory carry over, no restart),
+  and switching to a preset with no stored key is refused in the panel
+  instead of failing as a mysterious background error.
+- Under the hood the one OpenAI client learned a second tool dialect:
+  hosted presets that only speak Chat Completions get function tools
+  over that wire, proven on the full conformance matrix; OpenAI itself
+  keeps the Responses API.
+
 ### Malformed tool calls can no longer interrupt you for approval
 
 - Report 33's W5: an empty-argument or `{"arguments":…,"function":…}`

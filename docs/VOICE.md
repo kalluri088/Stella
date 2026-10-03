@@ -254,9 +254,15 @@ voice works when it cannot.
 All voice providers are optional and selected through the environment; nothing
 is mandatory and nothing fails at startup when audio tools are absent.
 
+When a cloud voice provider needs an OpenAI key, it is resolved exactly like
+the brain's: `OPENAI_API_KEY` for this launch, else the stored key for the
+**OpenAI slot only** (`api_keys.json`; see `SECRETS.md`). Keys stored for
+other presets (Claude, Grok, …) are never offered to OpenAI-compatible
+transcription or speech endpoints.
+
 - `STELLA_VOICE_TRANSCRIPTION` — `auto` (default), `openai`, or `off`.
   `auto` prefers a local command when `STELLA_TRANSCRIPTION_COMMAND` is set and
-  otherwise uses OpenAI Whisper when `OPENAI_API_KEY` is present; otherwise
+  otherwise uses OpenAI Whisper when an OpenAI key is available; otherwise
   voice input stays unavailable.
 - `STELLA_VOICE_SPEECH` — `auto` (default), `openai`, or `off`. `auto` prefers
   `STELLA_SPEECH_COMMAND`, then local `espeak-ng`/`espeak`, then OpenAI TTS

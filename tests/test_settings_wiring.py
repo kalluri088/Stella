@@ -116,3 +116,49 @@ def test_ui_opt_in_vars_are_exactly_the_table() -> None:
         "a BooleanVar capability checkbox appeared or vanished; add/remove it "
         "in UI_VARS together with the full six-touchpoint wiring"
     )
+
+
+# ---------------------------------------------------------------- plain fields
+#
+# Saved-configuration fields that are not capability opt-ins (no
+# *_env_override, no checkbox): they still must be persisted and read
+# back, so they get their own explicit table. A new field must appear
+# here or in OVERRIDE_FIELDS — test_config_fields_are_exactly_the_tables
+# closes the set in both directions. "core" only records which fields
+# existed before the drift guard; every plain field gets the same wiring
+# check.
+
+PLAIN_CONFIG_FIELDS = (
+    "provider",
+    "model",
+    "preset",
+    "ollama_base_url",
+    "openai_base_url",
+)
+
+
+def test_config_fields_are_exactly_the_tables() -> None:
+    assert set(config_module._CONFIG_FIELDS) == set(PLAIN_CONFIG_FIELDS) | set(
+        OVERRIDE_FIELDS.values()
+    ), (
+        "a saved-configuration field appeared or vanished; every one is "
+        "either a capability opt-in (OVERRIDE_FIELDS) or a plain field "
+        "(PLAIN_CONFIG_FIELDS)"
+    )
+
+
+@pytest.mark.parametrize("field", sorted(PLAIN_CONFIG_FIELDS))
+def test_plain_config_field_is_wired_end_to_end(field: str) -> None:
+    assert field in _settings_fields(), f"{field} is not a StellaSettings field"
+    assert re.search(rf"\b{field}=", inspect.getsource(StellaSettings.from_saved)), (
+        f"{field} is not passed through in from_saved"
+    )
+    assert re.search(
+        rf"\b{field}=", inspect.getsource(StellaSettings.from_environment)
+    ), f"{field} is not set in from_environment"
+    # provider/model are guaranteed by load_configuration and indexed
+    # directly; the optional fields are read with raw.get.
+    resolve_body = inspect.getsource(config_module.resolve_settings)
+    assert (
+        f'raw.get("{field}")' in resolve_body or f'raw["{field}"]' in resolve_body
+    ), f"{field} is not read back from config.json"

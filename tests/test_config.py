@@ -4,10 +4,11 @@ import json
 import os
 import stat
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 
-from stella import config
+from stella import config, provider_keys
 from stella.app import StellaSettings
 
 
@@ -83,6 +84,7 @@ def test_configuration_stores_only_non_secret_fields():
     raw = json.loads(text)
     assert set(raw) == {
         "provider",
+        "preset",
         "model",
         "ollama_base_url",
         "openai_base_url",
@@ -104,6 +106,43 @@ def test_configuration_file_is_private():
     )
     mode = stat.S_IMODE(os.stat(config.config_path()).st_mode)
     assert mode == 0o600
+
+
+def test_preset_roundtrips_through_the_saved_configuration():
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="openai",
+            model="claude-sonnet-4",
+            preset="anthropic",
+        )
+    )
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.preset == "anthropic"
+
+
+def test_legacy_configuration_without_a_preset_resolves_to_none():
+    config.save_configuration(
+        StellaSettings.from_saved(provider="openai", model="m")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    del raw["preset"]
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.preset is None
+
+
+def test_a_corrupt_preset_is_inert_not_fatal():
+    config.save_configuration(
+        StellaSettings.from_saved(provider="openai", model="m")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["preset"] = 42
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.preset is None
 
 
 @pytest.mark.parametrize(
@@ -393,6 +432,100 @@ def test_connection_test_reports_unreachable_endpoints(monkeypatch):
     result = config.test_connection(provider="openai", model="m", api_key="k")
     assert not result.ok
     assert "could not be reached" in result.message
+
+
+# ----------------------------------------------- key resolution & gates
+
+
+def _no_openai_client(*_args, **_kwargs):
+    raise AssertionError("no client may be built for a mismatched key")
+
+
+def test_a_mismatched_key_is_refused_before_any_request(monkeypatch):
+    # The weird case the user asked about: OpenAI selected, a Claude key
+    # pasted. The gate corrects offline — no client, no network call.
+    monkeypatch.setattr("openai.OpenAI", _no_openai_client)
+    result = config.test_connection(
+        provider="openai",
+        model="m",
+        api_key="sk-ant-api03-super-secret",
+        preset="openai",
+    )
+    assert not result.ok
+    assert "Claude (Anthropic)" in result.message
+    assert "sk-ant" not in result.message
+
+
+def test_a_stored_key_is_used_when_none_is_entered(monkeypatch):
+    provider_keys.save_api_key("anthropic", "sk-ant-stored-value")
+    monkeypatch.setattr("openai.OpenAI", _fake_openai(None))
+    result = config.test_connection(
+        provider="openai", model="m", api_key=None, preset="anthropic"
+    )
+    assert result.ok
+    assert "sk-ant-stored-value" not in result.message
+
+
+class _RecordingChat:
+    def __init__(self, error: Exception | None) -> None:
+        self.calls: list[dict] = []
+        self._error = error
+        self.completions = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        return SimpleNamespace(choices=[])
+
+
+class NotFoundInFake(Exception):
+    """Named like the SDK's NotFound so type-name detection fires."""
+
+
+def test_a_provider_without_a_models_endpoint_gets_a_chat_probe(monkeypatch):
+    # Anthropic-style endpoints may 404 on /models; the fallback is one
+    # bounded single-token chat completion, which still authenticates.
+    created: list = []
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key, base_url=None, timeout=None):
+            self.models = _FakeModels(NotFoundInFake())
+            self.chat = _RecordingChat(None)
+            created.append(self)
+
+    monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
+    result = config.test_connection(
+        provider="openai",
+        model="claude-sonnet-4-20250514",
+        api_key="sk-ant-key",
+        preset="anthropic",
+    )
+    assert result.ok
+    assert len(created) == 1
+    probe = created[0].chat
+    assert len(probe.calls) == 1
+    assert probe.calls[0]["max_tokens"] == 1
+    assert probe.calls[0]["model"] == "claude-sonnet-4-20250514"
+
+
+def test_the_openai_preset_never_falls_back_to_a_chat_probe(monkeypatch):
+    # OpenAI itself always serves /models; a 404 there is a real problem
+    # to report, not something to probe around.
+    created: list = []
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key, base_url=None, timeout=None):
+            self.models = _FakeModels(NotFoundInFake())
+            self.chat = _RecordingChat(AssertionError("must not probe"))
+            created.append(self)
+
+    monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
+    result = config.test_connection(
+        provider="openai", model="gpt-4o-mini", api_key="sk-key", preset="openai"
+    )
+    assert not result.ok
+    assert created[0].chat.calls == []
 
 
 # ----------------------------------------------------------- sanitize

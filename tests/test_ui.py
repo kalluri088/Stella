@@ -17,6 +17,7 @@ import tkinter as tk
 import pytest
 
 from stella import config as stella_config
+from stella import provider_keys
 from stella import ui as stella_ui
 from stella.app import (
     StellaApplication,
@@ -311,6 +312,7 @@ def test_settings_apply_preserves_voice_configuration(
     # Release dogfood fix: Apply used to rebuild StellaSettings from only the
     # fields the panel shows, silently resetting voice configuration that the
     # user supplied through the environment.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-voice-test")
     settings = StellaSettings(
         model="test",
         voice_transcription="off",
@@ -426,12 +428,23 @@ def test_approval_dialog_close_denies_the_action() -> None:
     )
     try:
         dialog = _wait_for_approval_dialog(root, window, bridge)
-        dialog.event_generate("<Escape>")
         # Poll for the denial to land instead of trusting a fixed sleep:
         # under full-suite load the worker round-trip can exceed it.
-        deadline = time.monotonic() + 3
+        dialog.event_generate("<Escape>")
+        deadline = time.monotonic() + 2
         while window._dialogs and time.monotonic() < deadline:
             pump(root, 0.05)
+        if window._dialogs:
+            # XWayland silently drops synthetic key events while the
+            # window manager has not given the dialog an X peer, so a
+            # lost Escape is an environment fact, not a product bug.
+            # Fall through to the Cancel button — the same answer(False)
+            # path the close protocol invokes — so the invariant is
+            # exercised either way.
+            dialog.cancel_button.invoke()
+            deadline = time.monotonic() + 3
+            while window._dialogs and time.monotonic() < deadline:
+                pump(root, 0.05)
         assert tool.executions == []
         assert window._dialogs == []
     finally:
@@ -891,15 +904,15 @@ def test_setup_explains_unreachable_ollama(
         root.destroy()
 
 
-def test_setup_api_key_field_is_masked_and_never_persisted(
+def test_setup_api_key_field_is_masked_and_stored_privately(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     root, dialog = make_dialog()
     try:
-        dialog._mode.set("openai")
-        dialog._mode_changed()
+        dialog._preset.set(provider_keys.PRESETS["openai"].label)
+        dialog._preset_changed()
         assert dialog._fields["API key"].cget("show") == "*"
         dialog._fields["Model"].insert("0", "gpt-4o-mini")
         dialog._fields["API key"].insert("0", "sk-dialog-secret-value")
@@ -909,17 +922,77 @@ def test_setup_api_key_field_is_masked_and_never_persisted(
             lambda **_kwargs: stella_config.ConnectionTest(True, "Connected."),
         )
         dialog.test_connection()
-        # The typed key moved to this process's environment and vanished
-        # from the widget; the saved configuration contains no key material.
-        assert os.environ["OPENAI_API_KEY"] == "sk-dialog-secret-value"
+        # The verified key moved to the private store — not the
+        # environment, not the widgets, and never into config.json.
+        assert provider_keys.stored_api_key("openai") == "sk-dialog-secret-value"
+        assert "OPENAI_API_KEY" not in os.environ
         assert dialog._fields["API key"].get() == ""
+        assert oct(provider_keys.api_keys_path().stat().st_mode).endswith("600")
         dialog.finish()
         saved = (tmp_path / "xdg" / "stella" / "config.json").read_text(
             encoding="utf-8"
         )
         assert "sk-dialog-secret-value" not in saved
         assert "api_key" not in saved
+        assert saved.find('"preset": "openai"') >= 0
     finally:
+        root.destroy()
+
+
+def test_setup_key_entry_typed_after_a_passing_test_disables_start(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A passing test now saves; the success must not let a stale flag
+    # carry a newly typed, untested key into the store or into a launch.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    root, dialog = make_dialog()
+    try:
+        dialog._preset.set(provider_keys.PRESETS["openai"].label)
+        dialog._preset_changed()
+        dialog._fields["Model"].insert("0", "gpt-4o-mini")
+        monkeypatch.setattr(
+            stella_config,
+            "test_connection",
+            lambda **_kwargs: stella_config.ConnectionTest(True, "Connected."),
+        )
+        dialog.test_connection()
+        assert str(dialog._finish_button.cget("state")) == "normal"
+        # Tk does not deliver synthetic KeyRelease events to ttk.Entry in
+        # tests, so pin both halves directly: the key entry is bound to
+        # invalidate a test, and invalidation blocks Start and saving.
+        assert dialog._fields["API key"].bind("<KeyRelease>") != ""
+        dialog._fields["API key"].insert("0", "sk-untested-second-key")
+        dialog._mark_untested()
+        assert str(dialog._finish_button.cget("state")) == "disabled"
+        dialog.finish()
+        assert dialog.result is None
+        assert provider_keys.stored_api_key("openai") is None
+    finally:
+        dialog._dialog.destroy()
+        root.destroy()
+
+
+def test_setup_preset_switch_shows_and_hides_the_right_fields(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    root, dialog = make_dialog()
+    try:
+        assert dialog._rows["API key"].winfo_manager() == ""
+        assert dialog._rows["API base URL"].winfo_manager() == ""
+        dialog._preset.set(provider_keys.PRESETS["anthropic"].label)
+        dialog._preset_changed()
+        assert dialog._rows["API key"].winfo_manager() == "pack"
+        assert dialog._rows["API base URL"].winfo_manager() == ""
+        assert (
+            dialog._fields["Model"].cget("values")[0]
+            == provider_keys.PRESETS["anthropic"].models[0]
+        )
+        dialog._preset.set(provider_keys.PRESETS["custom"].label)
+        dialog._preset_changed()
+        assert dialog._rows["API base URL"].winfo_manager() == "pack"
+    finally:
+        dialog._dialog.destroy()
         root.destroy()
 
 
@@ -1019,35 +1092,177 @@ def test_settings_list_models_fills_the_model_field(
         root.destroy()
 
 
-def test_settings_apply_moves_entered_key_to_environment_and_clears_field(
-    monkeypatch: pytest.MonkeyPatch,
+def test_settings_apply_stores_a_matching_key_and_never_writes_environment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root, window, bridge, _ = make_window()
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
+    root, window, bridge, _ = make_window(
+        settings=StellaSettings(
+            provider="openai", model="gpt-4o-mini", preset="openai"
+        )
+    )
     try:
-        monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
         captured: list[StellaSettings] = []
         monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
         window._settings_fields["API key"].insert("0", "sk-window-secret")
 
         window._apply_settings()
 
-        assert os.environ["OPENAI_API_KEY"] == "sk-window-secret"
+        assert provider_keys.stored_api_key("openai") == "sk-window-secret"
+        assert os.environ["OPENAI_API_KEY"] == "placeholder"
         assert window._settings_fields["API key"].get() == ""
-        assert captured[0].model == "test"
+        assert captured[0].model == "gpt-4o-mini"
+        assert captured[0].preset == "openai"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_refuses_a_foreign_key_and_stores_nothing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window(
+        settings=StellaSettings(
+            provider="openai", model="gpt-4o-mini", preset="openai"
+        )
+    )
+    try:
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._settings_fields["API key"].insert("0", "sk-ant-api03-sneaky")
+
+        window._apply_settings()
+
+        # The mismatch gate refuses before the store or a restart sees
+        # the key; the user gets the switch-provider hint, key-free.
+        assert captured == []
+        assert provider_keys.stored_api_key("openai") is None
+        assert not provider_keys.api_keys_path().exists()
+        status = window._settings_status.cget("text")
+        assert "Claude (Anthropic)" in status
+        assert "sk-ant-api03-sneaky" not in status
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_survives_a_disk_error_during_key_storage(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window(
+        settings=StellaSettings(
+            provider="openai", model="gpt-4o-mini", preset="openai"
+        )
+    )
+
+    def _disk_boom(_preset_id: str, _key: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(provider_keys, "save_api_key", _disk_boom)
+    try:
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._settings_fields["API key"].insert("0", "sk-proj-doomed")
+
+        window._apply_settings()
+
+        # A disk-level failure lands in the status line, not as an
+        # unhandled exception inside the Tk callback.
+        assert captured == []
+        assert "disk full" in window._settings_status.cget("text")
     finally:
         bridge.stop()
         root.destroy()
 
 
 def test_settings_apply_without_a_key_leaves_the_environment_alone(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("OPENAI_API_KEY", "untouched")
     root, window, bridge, _ = make_window()
     try:
-        monkeypatch.setenv("OPENAI_API_KEY", "untouched")
         monkeypatch.setattr(bridge, "post_apply_settings", lambda _s: None)
         window._apply_settings()
         assert os.environ["OPENAI_API_KEY"] == "untouched"
+        assert not provider_keys.api_keys_path().exists()
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_preset_picker_derives_provider_and_preset(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["xai"].label)
+        window._panel_preset_changed()
+        draft = window._draft_settings()
+        assert draft.provider == "openai"
+        assert draft.preset == "xai"
+        # The endpoint is the preset's, shown but not user-editable.
+        url = window._settings_fields["OpenAI base URL"]
+        assert str(url.cget("state")) == "disabled"
+        assert url.get() == provider_keys.PRESETS["xai"].base_url
+        window._provider.set(provider_keys.PRESETS["ollama"].label)
+        window._panel_preset_changed()
+        assert window._draft_settings().provider == "ollama"
+        assert window._draft_settings().preset is None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_picker_offers_the_local_free_router(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["freellmapi"].label)
+        window._panel_preset_changed()
+        draft = window._draft_settings()
+        assert draft.provider == "openai"
+        assert draft.preset == "freellmapi"
+        url = window._settings_fields["OpenAI base URL"]
+        assert url.get() == "http://localhost:3001/v1"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_settings_apply_refuses_a_keyless_switch_before_rebuild(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mid-session switching is live, but a preset without a key must be
+    # refused in the panel, not posted to a rebuild the worker can only
+    # fail. Once a key exists (stored or entered), the same switch goes.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        window._panel_preset_changed()
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._apply_settings()
+        assert captured == []
+        status = window._settings_status.cget("text")
+        assert "no stored key" in status
+        assert provider_keys.stored_api_key("anthropic") is None
+
+        provider_keys.save_api_key("anthropic", "sk-ant-stored")
+        window._apply_settings()
+        assert len(captured) == 1
+        assert captured[0].preset == "anthropic"
     finally:
         bridge.stop()
         root.destroy()

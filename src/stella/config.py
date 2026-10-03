@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -69,7 +70,21 @@ def save_configuration(settings: StellaSettings) -> None:
     }
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # Atomic replace: a crash or a full disk mid-write must never leave a
+    # truncated config.json, because load_configuration treats an
+    # unparseable file as "absent" and silently drops every saved setting.
+    # mkstemp creates the temp 0600, so it is private before the rename.
+    descriptor, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2) + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
     # Owner-only, and reported rather than assumed: on POSIX this is the
     # real 0o600 mode bit (a failure raises, as it always did); on
     # Windows an icacls grant is attempted and its outcome is returned

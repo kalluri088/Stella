@@ -117,6 +117,42 @@ def test_configuration_file_is_private():
     assert mode == 0o600
 
 
+def test_a_failed_save_leaves_the_previous_configuration_intact(monkeypatch):
+    # A non-atomic write truncated config.json before writing, so a crash
+    # or full disk mid-write could silently wipe every saved setting
+    # (load_configuration treats an unparseable file as "absent"). The
+    # atomic replace must leave the previous good file whole.
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="keeper")
+    )
+
+    class _FailingHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def write(self, _data):
+            raise OSError("disk full")
+
+    def fake_fdopen(descriptor, *_args, **_kwargs):
+        os.close(descriptor)  # do not leak the mkstemp descriptor
+        return _FailingHandle()
+
+    monkeypatch.setattr(config.os, "fdopen", fake_fdopen)
+    with pytest.raises(OSError):
+        config.save_configuration(
+            StellaSettings.from_saved(provider="ollama", model="replacement")
+        )
+
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    # The temp file is cleaned up, not left beside the config.
+    assert not list(config.config_path().parent.glob(".config.json.*.tmp"))
+
+
 def test_preset_roundtrips_through_the_saved_configuration():
     config.save_configuration(
         StellaSettings.from_saved(

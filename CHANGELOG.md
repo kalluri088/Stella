@@ -191,6 +191,15 @@
   path by the second pass. Both placeholders now fill in one regex pass whose
   callback is never rescanned, so a token in the answer text is read aloud as
   the literal word.
+- **Saving the configuration is atomic.** `save_configuration` wrote
+  `config.json` with `path.write_text`, which truncates the file before
+  writing, so a crash or a full disk partway through left an unparseable
+  file — and `load_configuration` treats an unparseable file as "absent",
+  silently dropping the provider, model and endpoints the owner had chosen.
+  It now writes a `0600` temp via `mkstemp` and `os.replace`s it into place,
+  the same pattern `provider_keys` and `persona` already use, so the previous
+  good file stays whole until the new one is complete. A test makes the write
+  fail and asserts the old settings survive and no temp is left behind.
 - **Intentionally left alone after checking:** the web budget is a
   *Stella-side* per-hour throttle, not TinyFish's server quota, so charging it
   before the backend is known is correct (and refunding on failure would invite

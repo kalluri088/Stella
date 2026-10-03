@@ -140,6 +140,41 @@
   ways) and, where a browser is installed, runs one bounded local-file render
   through the real renderer to prove the byte cap and clean teardown.
 
+### A small bug-and-latency pass (behaviour-preserving, each test-verified)
+
+- **The headless-voice chime stopped racing itself.** `_chime` used the
+  deprecated `tempfile.mktemp` and reopened the path with `wave.open`, which
+  follows a pre-created symlink; it now uses `mkstemp` and writes the WAV
+  straight through the returned descriptor (the atomic-write pattern already
+  used in `provider_keys`). Covered by the existing end-to-end chime test.
+- **`browser_read` no longer hides a vanished DOM file.** `_read_capped` called
+  `os.path.getsize` before reading — redundant (the `cap+1` read already proves
+  truncation) and a false-negative, because a transient `getsize` error returned
+  an empty "not-truncated" result and the tool reported "no readable text"
+  instead of failing. The stat is gone and the open error now propagates to an
+  honest failure.
+- **Memory recall scores each item once.** Both recall paths filtered with
+  `_matches_query` (which calls `relevance_score`) then sorted on a key calling
+  `relevance_score` again — double tokenization per item. Folded into one
+  `_rank_by_relevance` helper with identical match/order semantics; the now
+  unused `_matches_query` is removed.
+- **Bounded file reads reuse the probe buffer.** For a file larger than the
+  64 KiB binary probe, `_read_bounded_text` re-opened the file and re-read a
+  shorter prefix from byte 0 than it had already buffered; it now slices the
+  existing buffer. A new test covers the past-the-probe truncation branch.
+- **`network_read` handles a malformed response.** A server speaking garbage
+  makes `getresponse()` raise an `http.client` protocol error (not `OSError`),
+  which escaped the tool's own shaping into the dispatcher's blanket handler;
+  it now catches `http.client.HTTPException` like `web_tools` does, so every
+  fetch failure returns the honest message and receipt.
+- **Intentionally left alone after checking:** the web budget is a
+  *Stella-side* per-hour throttle, not TinyFish's server quota, so charging it
+  before the backend is known is correct (and refunding on failure would invite
+  a retry storm); the voice subprocess cancel is bounded by the parent-death
+  guarantee plus `_cancel_process_tree` on ordered shutdown, so it is not an
+  orphan leak; and `config`'s `… is True` reads are the safe idiom — a plain
+  `bool()` would wrongly enable a capability for a hand-edited `"false"`.
+
 ### Settings panel: honest outcomes, a fairer key check, friendlier defaults
 
 - **The after-Apply label now reflects what really happened.** The panel

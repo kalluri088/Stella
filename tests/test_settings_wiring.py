@@ -36,6 +36,7 @@ OVERRIDE_FIELDS = {
     "os_tools_env_override": "os_tools_enabled",
     "outline_tools_env_override": "outline_tools_enabled",
     "web_tools_env_override": "web_tools_enabled",
+    "wake_env_override": "wake_word_enabled",
 }
 
 # Settings checkbox that writes each opt-in field into the save dict.
@@ -45,6 +46,7 @@ UI_VARS = {
     "os_tools_enabled": "self._os_tools_var",
     "outline_tools_enabled": "self._outline_tools_var",
     "web_tools_enabled": "self._web_tools_var",
+    "wake_word_enabled": "self._wake_var",
 }
 
 
@@ -110,8 +112,9 @@ def test_ui_checkbox_writes_the_field_into_the_save_dict(field: str, var: str) -
 
 def test_ui_opt_in_vars_are_exactly_the_table() -> None:
     found = set(re.findall(r"(self\._\w+_var) = tk\.BooleanVar", UI_SOURCE))
-    # the speak toggle is a live session control, not a capability opt-in
-    expected = set(UI_VARS.values()) | {"self._speak_var"}
+    # the speak and mute toggles are live session controls, not capability
+    # opt-ins: they change what this running session does and are never saved
+    expected = set(UI_VARS.values()) | {"self._speak_var", "self._mute_var"}
     assert found == expected, (
         "a BooleanVar capability checkbox appeared or vanished; add/remove it "
         "in UI_VARS together with the full six-touchpoint wiring"

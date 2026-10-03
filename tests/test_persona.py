@@ -343,7 +343,10 @@ def test_persona_edit_refuses_symlink_target_without_touching_destination(
     outside = tmp_path / "outside.txt"
     outside.write_text("do not clobber", encoding="utf-8")
     link = tmp_path / "persona.md"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are unavailable on this platform")
     tool = PersonaEditTool(tmp_path)
 
     result = tool.execute(persona_arguments(tmp_path))
@@ -981,9 +984,14 @@ def test_read_persona_snapshot_refuses_escaped_or_oversized_names(
     )
     assert read_persona_snapshot(paths, mismatched) is None
 
-    # A symlinked history entry cannot escape the directory.
+    # A symlinked history entry cannot escape the directory. Where the
+    # platform has no symlinks, the check above still runs and this part
+    # is simply not applicable.
     linked = fake_snapshot_name(pid=8)
-    (history / linked).symlink_to(outside)
+    try:
+        (history / linked).symlink_to(outside)
+    except (NotImplementedError, OSError):
+        return
     via_link = PersonaSnapshot(
         "persona", linked, "2026-01-01T12:00:00+00:00", "unknown", None, 6
     )

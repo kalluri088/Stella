@@ -9,12 +9,16 @@ voice failures never fabricate text or corrupt conversation state, and no
 raw audio is persisted by default.
 """
 
+import array
+import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import threading
 import time
+import wave
 
 import pytest
 
@@ -32,9 +36,11 @@ from stella.app import (
 from stella.audio import TranscriptionProvider
 from stella.audio_output import SpeechArtifact, SpeechOutput, SpeechProvider
 from stella.brain import Brain, Decision, DecisionKind
+from stella.childproc import recording_finalized_ok
 from stella.context import Context, InputModality, InputPart, InputProvenance
 from stella.llm import LLMClient, Message, ProviderRequestCancelled
 from stella.memory import InMemoryMemory
+from stella.mic_tap import FRAME_BYTES, MicTap
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionReceipt,
@@ -49,12 +55,17 @@ from stella.tools import (
 from stella.voice import (
     CommandSpeechProvider,
     CommandTranscriptionProvider,
+    OpenAITranscriptionProvider,
     Player,
     Recorder,
     ResidentSpeechProvider,
     SubprocessPlayer,
     SubprocessRecorder,
+    TapRecorder,
     VoiceError,
+    _inspect_speech_artifact,
+    is_transcription_junk,
+    voxtype_transcript,
 )
 
 
@@ -408,6 +419,71 @@ def test_transcription_command_reads_stdout() -> None:
     assert transcript.strip() == "spoken words"
 
 
+def test_voxtype_progress_block_is_not_heard_as_words() -> None:
+    # The real stdout shape of ``voxtype -q transcribe``: the flag moves
+    # its INFO log to stderr but not the status lines, so four lines
+    # about the file, a blank line, then the words. Read whole, every
+    # spoken turn would carry the tool's own narration into the
+    # conversation as things the user said.
+    stdout = (
+        'Loading audio file: "/tmp/recording.wav"\n'
+        "Audio format: 24000 Hz, 1 channel(s), Int\n"
+        "Resampling from 24000 Hz to 16000 Hz...\n"
+        "Processing 37599 samples (2.35s)...\n"
+        "\n"
+        "Bring the blue folder to the meeting at noon.\n"
+    )
+    assert voxtype_transcript(stdout) == (
+        "Bring the blue folder to the meeting at noon.\n"
+    )
+
+
+def test_voxtype_output_without_a_progress_block_is_passed_through() -> None:
+    # The first blank line is the boundary; an output with none is
+    # already only the transcript, and an empty one stays empty rather
+    # than becoming an invented phrase.
+    assert voxtype_transcript("one word\n") == "one word\n"
+    assert voxtype_transcript("") == ""
+
+
+def test_transcription_extract_runs_on_the_command_stdout() -> None:
+    provider = CommandTranscriptionProvider(
+        [
+            sys.executable,
+            "-c",
+            "print('status: working'); print(); print('the words')",
+            "{input}",
+        ],
+        timeout=30,
+        extract=voxtype_transcript,
+    )
+    transcript = provider.transcribe(
+        InputPart(
+            modality=InputModality.AUDIO,
+            provenance=InputProvenance.USER,
+            reference="/tmp/whatever.wav",
+        )
+    )
+    assert transcript == "the words\n"
+
+
+def test_an_owners_transcription_command_is_never_reinterpreted() -> None:
+    # STELLA_TRANSCRIPTION_COMMAND is documented as "prints the
+    # transcript on stdout", so a blank line inside that transcript is
+    # the user's text, not a progress boundary.
+    provider = CommandTranscriptionProvider(
+        [sys.executable, "-c", "print('one\\n\\ntwo')", "{input}"], timeout=30
+    )
+    transcript = provider.transcribe(
+        InputPart(
+            modality=InputModality.AUDIO,
+            provenance=InputProvenance.USER,
+            reference="/tmp/whatever.wav",
+        )
+    )
+    assert transcript == "one\n\ntwo\n"
+
+
 def test_transcription_command_missing_binary_is_a_voice_error() -> None:
     provider = CommandTranscriptionProvider(
         ["/nonexistent/stella-missing-binary", "{input}"]
@@ -502,17 +578,141 @@ def test_speech_command_without_output_file_fails_honestly() -> None:
         provider.dispose()
 
 
+def python_writer(frames: int, *, keep_open: float = 0.0) -> list[str]:
+    """A fake capture: ``frames`` anonymous frames, then exit or wait.
+
+    No test that reads a microphone opens a real one; the same bounded
+    ``python -c`` writer the tap and wake tests use.
+    """
+
+    body = (
+        "import sys, time\n"
+        f"payload = b'\\x01\\x00' * ({FRAME_BYTES} // 2 * {frames})\n"
+        "sys.stdout.buffer.write(payload)\n"
+        "sys.stdout.buffer.flush()\n"
+        + (f"time.sleep({keep_open})\n" if keep_open else "")
+    )
+    return [sys.executable, "-c", body]
+
+
+def wait_until(condition, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition never held")
+
+
 def test_subprocess_recorder_stop_without_start_is_an_error() -> None:
     recorder = SubprocessRecorder()
     with pytest.raises(VoiceError, match="not listening"):
         recorder.stop()
 
 
+def test_tap_recorder_stop_without_start_is_an_error() -> None:
+    # Constructing a recorder over a tap opens nothing: the microphone
+    # stays closed until a recording actually starts.
+    tap = MicTap(command=python_writer(0))
+    recorder = TapRecorder(tap)
+    assert not tap.running()
+    with pytest.raises(VoiceError, match="not listening"):
+        recorder.stop()
+    assert not tap.running()
+
+
+class FakeTap:
+    """A tap whose frames are the test's own: no subprocess, no timing.
+
+    ``subscribe`` hands back a client that replays ``frames`` once and
+    then reports the end, exactly like a capture that ran out.
+    """
+
+    def __init__(self, frames: list[bytes]) -> None:
+        self.frames = frames
+        self.failed = False
+        self.closed = False
+        self.names: list[str] = []
+
+    def subscribe(self, name: str, *, backlog: int = 8) -> "FakeClient":
+        del backlog
+        self.names.append(name)
+        return FakeClient(self)
+
+
+class FakeClient:
+    def __init__(self, tap: FakeTap) -> None:
+        self._tap = tap
+        self._index = 0
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        del size
+        if self._index >= len(self._tap.frames):
+            return b""
+        frame = self._tap.frames[self._index]
+        self._index += 1
+        return frame
+
+    def close(self) -> None:
+        self.closed = True
+        self._tap.closed = True
+
+
+def test_the_tap_recorder_writes_a_readable_wav_from_shared_frames() -> None:
+    frames = [bytes([n]) * FRAME_BYTES for n in range(1, 6)]
+    tap = FakeTap(frames)
+    recorder = TapRecorder(tap)  # type: ignore[arg-type]
+    recorder.start()
+    assert tap.names == ["recorder"]
+    path = recorder.stop()
+    try:
+        with wave.open(path) as captured:
+            # The shape the local transcribers expect, whatever the
+            # capture subprocess happened to be.
+            assert captured.getnchannels() == 1
+            assert captured.getframerate() == 16000
+            assert captured.getsampwidth() == 2
+            assert captured.readframes(captured.getnframes()) == b"".join(
+                frames
+            )
+        assert recording_finalized_ok(0, path)
+    finally:
+        recorder.dispose()
+    assert tap.closed
+    assert not os.path.exists(path)
+
+
+def test_the_tap_recorder_records_the_shared_capture_end_to_end() -> None:
+    tap = MicTap(command=python_writer(200, keep_open=30.0))
+    recorder = TapRecorder(tap)
+    recorder.start()
+    assert tap.running()  # one capture subprocess serves the microphone
+    # The stand-in writer is a process that has to start before it can
+    # emit; this is its launch time, not a device's.
+    time.sleep(0.5)
+    path = recorder.stop()
+    try:
+        with wave.open(path) as captured:
+            assert captured.getnchannels() == 1
+            assert captured.getframerate() == 16000
+            assert captured.getnframes() > 0
+    finally:
+        recorder.dispose()
+    # The last subscriber left, so the capture goes with it.
+    assert not tap.running()
+    assert not os.path.exists(os.path.dirname(path))
+
+
+@pytest.mark.parametrize("kind", ["subprocess", "tap"])
 def test_recorder_stop_failure_removes_its_temp_directory(
+    kind: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Security audit F3: when stop() failed, the temporary directory holding
     # the captured audio was left behind in /tmp and unreachable later.
+    # Both recorders clear it the same way: the one that spawns its own
+    # capture and the one that reads the shared microphone tap.
     class SilentProcess:
         def send_signal(self, signal: int) -> None:
             return None
@@ -529,22 +729,334 @@ def test_recorder_stop_failure_removes_its_temp_directory(
         return path
 
     monkeypatch.setattr("stella.voice.tempfile.mkdtemp", spy)
-    monkeypatch.setattr(
-        "stella.voice.shutil.which",
-        lambda name: f"/usr/bin/{name}",
-    )
-    monkeypatch.setattr(
-        "stella.voice.subprocess.Popen",
-        lambda *args, **kwargs: SilentProcess(),
-    )
-    recorder = SubprocessRecorder()
+    recorder: Recorder
+    tap: MicTap | None = None
+    if kind == "subprocess":
+        monkeypatch.setattr(
+            "stella.voice.shutil.which",
+            lambda name: f"/usr/bin/{name}",
+        )
+        monkeypatch.setattr(
+            "stella.voice.subprocess.Popen",
+            lambda *args, **kwargs: SilentProcess(),
+        )
+        recorder = SubprocessRecorder()
+    else:
+        # A capture that hands over nothing and leaves: the empty file
+        # is what has to fail closed here.
+        tap = MicTap(command=python_writer(0))
+        recorder = TapRecorder(tap)
     recorder.start()
     assert len(created) == 1
+    if tap is not None:
+        # The dead source has to reach the recorder before its stop is a
+        # failure rather than a race.
+        wait_until(lambda: tap.failed)
 
     with pytest.raises(VoiceError, match="no recording"):
         recorder.stop()
 
     assert not os.path.exists(created[0])
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        ("pw-record", ["pw-record", "--rate", "16000", "--channels", "1"]),
+        (
+            "arecord",
+            [
+                "arecord",
+                "-q",
+                "-f",
+                "S16_LE",
+                "-r",
+                "16000",
+                "-c",
+                "1",
+                "-t",
+                "wav",
+            ],
+        ),
+    ],
+)
+def test_the_fallback_recorder_pins_16k_mono_wav(
+    present: str,
+    expected: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The recorder is the voice path that leaves a file behind, so the
+    # shape of that file is a contract: 16 kHz mono 16-bit, exactly what
+    # the shared tap delivers and what the local transcribers expect.
+    # Left to a device default, one machine's 44.1 kHz stereo is another
+    # machine's unusable transcript.
+    seen: list[list[str]] = []
+
+    class SilentProcess:
+        def __init__(self, argv: list[str]) -> None:
+            seen.append(list(argv))
+
+        def send_signal(self, signal: int) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        "stella.voice.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name == present else None,
+    )
+    monkeypatch.setattr(
+        "stella.voice.subprocess.Popen",
+        lambda argv, **kwargs: SilentProcess(argv),
+    )
+    recorder = SubprocessRecorder()
+    recorder.start()
+    with pytest.raises(VoiceError, match="no recording"):
+        recorder.stop()
+    assert seen[0][: len(expected)] == expected
+    assert seen[0][-1].endswith("capture.wav")
+
+
+def test_build_voice_records_from_the_shared_tap_when_one_exists() -> None:
+    settings = StellaSettings(model="test", voice_speech="off")
+    tapped = build_voice(settings, tap=MicTap(command=python_writer(0)))
+    own = build_voice(settings)
+    try:
+        assert isinstance(tapped._recorder, TapRecorder)
+        assert isinstance(own._recorder, SubprocessRecorder)
+    finally:
+        tapped.dispose()
+        own.dispose()
+
+
+# ------------------------------------------------- which transcriber is used
+
+VOXTYPE = "/usr/bin/voxtype"
+
+
+def only_voxtype(name: str) -> str | None:
+    """A PATH with voxtype in it and nothing else Stella looks for."""
+
+    return VOXTYPE if name == "voxtype" else None
+
+
+class FakeCloudClient:
+    """The one call :class:`OpenAITranscriptionProvider` makes, recorded."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        outer = self
+
+        class _Transcriptions:
+            def create(self, **kwargs):
+                outer.calls.append(kwargs)
+
+                class _Result:
+                    text = "remember the milk"
+
+                return _Result()
+
+        class _Audio:
+            transcriptions = _Transcriptions()
+
+        self.audio = _Audio()
+
+
+def audio_part(reference: str) -> InputPart:
+    return InputPart(
+        modality=InputModality.AUDIO,
+        provenance=InputProvenance.USER,
+        reference=reference,
+    )
+
+
+def test_the_installed_local_tool_is_detected_before_the_cloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    monkeypatch.setattr("stella.app.shutil.which", only_voxtype)
+    # A configured key is deliberately present: local-first means the key
+    # never decides anything while a working local engine is installed.
+    monkeypatch.setattr(
+        "stella.app.provider_keys.effective_api_key", lambda slot: "sk-cloud"
+    )
+    provider = _build_transcriber(StellaSettings(model="test"))
+    assert isinstance(provider, CommandTranscriptionProvider)
+    assert provider._template == [
+        "voxtype",
+        "-q",
+        "transcribe",
+        "--engine",
+        "whisper",
+        "{input}",
+    ]
+    # ``-q`` alone is not enough: what is left on stdout still starts with
+    # a progress block, so the built-in tool comes with its extraction.
+    assert provider._extract is voxtype_transcript
+    # The name is what the owner is told once per session, so it has to
+    # say which engine the recording went through.
+    assert provider.name == "voxtype (whisper)"
+
+
+def test_naming_the_cloud_engine_skips_the_local_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    looked_for: list[str] = []
+
+    def spy(name: str) -> str | None:
+        looked_for.append(name)
+        return only_voxtype(name)
+
+    monkeypatch.setattr("stella.app.shutil.which", spy)
+    monkeypatch.setattr(
+        "stella.app.provider_keys.effective_api_key", lambda slot: "sk-cloud"
+    )
+    monkeypatch.setattr(
+        "stella.app._openai_speech_client", lambda key: FakeCloudClient()
+    )
+    provider = _build_transcriber(
+        StellaSettings(model="test", voice_transcription="openai")
+    )
+    # ``openai`` is an instruction, not a fallback: an installed local
+    # tool must not quietly intercept the recording the user chose to
+    # upload (or the other way round, which is what this pins).
+    assert isinstance(provider, OpenAITranscriptionProvider)
+    assert "voxtype" not in looked_for
+
+
+def test_an_explicit_command_outranks_the_detected_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    monkeypatch.setattr("stella.app.shutil.which", only_voxtype)
+    provider = _build_transcriber(
+        StellaSettings(
+            model="test", transcription_command="whisper-cli {input}"
+        )
+    )
+    assert isinstance(provider, CommandTranscriptionProvider)
+    assert provider._template == ["whisper-cli", "{input}"]
+
+
+def test_without_a_local_tool_the_cloud_choice_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella.app import _build_transcriber
+
+    monkeypatch.setattr("stella.app.shutil.which", lambda name: None)
+    monkeypatch.setattr(
+        "stella.app.provider_keys.effective_api_key", lambda slot: "sk-cloud"
+    )
+    monkeypatch.setattr(
+        "stella.app._openai_speech_client", lambda key: FakeCloudClient()
+    )
+    provider = _build_transcriber(
+        StellaSettings(model="test", transcription_model="whisper-1")
+    )
+    assert isinstance(provider, OpenAITranscriptionProvider)
+    assert provider.name == "cloud transcription (whisper-1)"
+
+
+def test_the_cloud_transcription_request_is_bounded(tmp_path) -> None:
+    # A cloud call with no deadline holds the microphone's whole turn
+    # open, and a stalled request is exactly the wait a user cannot
+    # cancel from the keyboard they did not use.
+    client = FakeCloudClient()
+    path = tmp_path / "capture.wav"
+    path.write_bytes(b"RIFF fake")
+    provider = OpenAITranscriptionProvider(
+        client, model="whisper-1", timeout=7.5
+    )
+    assert provider.transcribe(audio_part(str(path))) == "remember the milk"
+    assert client.calls[-1]["timeout"] == 7.5
+
+
+def test_the_transcription_timeout_is_read_and_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fields = StellaSettings._environment_fields
+    for name in (
+        "STELLA_TRANSCRIPTION_TIMEOUT",
+        "STELLA_TRANSCRIPTION_ENGINE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert fields()["transcription_timeout"] == 30.0
+    monkeypatch.setenv("STELLA_TRANSCRIPTION_TIMEOUT", "90")
+    assert fields()["transcription_timeout"] == 90.0
+    for unusable in ("0", "-5", "soon"):
+        monkeypatch.setenv("STELLA_TRANSCRIPTION_TIMEOUT", unusable)
+        with pytest.raises(SystemExit, match="STELLA_TRANSCRIPTION_TIMEOUT"):
+            fields()
+    # ``--engine`` names an engine (whisper, parakeet, ...), so that is
+    # what this variable sets; the model size stays the tool's own choice.
+    monkeypatch.delenv("STELLA_TRANSCRIPTION_TIMEOUT")
+    monkeypatch.setenv("STELLA_TRANSCRIPTION_ENGINE", "parakeet")
+    assert fields()["transcription_engine"] == "parakeet"
+    # The name is spliced into a Stella-built argv, so nothing that could
+    # read as another option, a path, or two arguments is accepted.
+    for unusable in ("", "  ", "--engine", "whisper small", "bin/whisper"):
+        monkeypatch.setenv("STELLA_TRANSCRIPTION_ENGINE", unusable)
+        with pytest.raises(SystemExit, match="STELLA_TRANSCRIPTION_ENGINE"):
+            fields()
+
+
+def test_the_local_speech_choice_is_read_and_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fields = StellaSettings._environment_fields
+    for name in (
+        "STELLA_SPEECH_LOCAL_VOICE",
+        "STELLA_SPEECH_LOCAL_SPEED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert fields()["speech_local_voice"] is None
+    assert fields()["speech_local_speed"] is None
+    monkeypatch.setenv("STELLA_SPEECH_LOCAL_VOICE", "bf_isabella")
+    monkeypatch.setenv("STELLA_SPEECH_LOCAL_SPEED", "0.9")
+    assert fields()["speech_local_voice"] == "bf_isabella"
+    assert fields()["speech_local_speed"] == 0.9
+    for unusable in ("0", "-1", "fast"):
+        monkeypatch.setenv("STELLA_SPEECH_LOCAL_SPEED", unusable)
+        with pytest.raises(SystemExit, match="STELLA_SPEECH_LOCAL_SPEED"):
+            fields()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "   \n",
+        "Thank you.",
+        "thanks for watching!",
+        "[Music]",
+        "(upbeat music)",
+        "YOU",
+        "[inaudible].",
+    ],
+)
+def test_the_fillers_a_transcriber_invents_over_silence(text: str) -> None:
+    assert is_transcription_junk(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "remind me to say thank you",
+        "you there?",
+        "thanks for the reminder, add another",
+        "what is on today",
+    ],
+)
+def test_a_real_request_is_never_junk(text: str) -> None:
+    # Whole-line matching only: a sentence that happens to contain one of
+    # the filler phrases is the user's own request, and dropping it would
+    # be a worse bug than the silence hallucination this filter exists for.
+    assert not is_transcription_junk(text)
 
 
 def test_subprocess_player_stop_without_playback_is_harmless() -> None:
@@ -883,7 +1395,119 @@ def test_flushed_narration_never_reaches_a_speaker() -> None:
     bridge.stop()
 
 
-def test_failed_transcription_reaches_nothing_and_state_survives() -> None:
+def test_a_delivered_alert_is_spoken_when_speech_is_on() -> None:
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("Outline reminder (task): Take the bins out")
+
+    assert settle(lambda: player.played != [])
+    assert speech.spoken == ["Outline reminder (task): Take the bins out"]
+    bridge.stop()
+
+
+def test_an_alert_stays_silent_when_speech_is_off() -> None:
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("Outline reminder (task): Take the bins out")
+    time.sleep(0.2)
+
+    assert speech.spoken == []
+    bridge.stop()
+
+
+def test_alerts_never_stack_behind_each_other() -> None:
+    synth_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    panel = make_panel(speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("first alert")
+    assert settle(lambda: speech.spoken != [])
+    # One announcement owns the single slot; the next is dropped, not
+    # queued — its visible line already reached the user.
+    bridge._announce("second alert")
+    time.sleep(0.2)
+    assert speech.spoken == ["first alert"]
+
+    synth_gate.set()
+    assert settle(lambda: bridge._announcement_lock.acquire(blocking=False))
+    bridge._announcement_lock.release()
+    bridge.stop()
+
+
+def test_a_reply_retires_an_unheard_alert() -> None:
+    synth_gate = threading.Event()
+    speech = FakeSpeech(hold=synth_gate)
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("an alert still waiting on its audio")
+    assert settle(lambda: speech.spoken != [])
+    bridge._flush_narration()
+    synth_gate.set()
+
+    assert settle(lambda: os.listdir(speech.directory) == [])
+    assert player.played == []
+    bridge.stop()
+
+
+def test_alert_screen_marks_never_reach_a_speaker() -> None:
+    speech = FakeSpeech()
+    panel = make_panel(speech=speech)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+
+    bridge._announce("**Reminder**: see [notes](https://example.com/n)")
+
+    assert settle(lambda: speech.spoken != [])
+    assert speech.spoken == ["Reminder: see notes"]
+    bridge.stop()
+
+
+def test_a_claimed_alert_reaches_the_ear_as_well_as_the_screen(monkeypatch) -> None:
+    # The whole delivery path, end to end: the ticker posts one sweep, the
+    # sweep claims from Outline, and the one line it produces is both shown
+    # and — only because speech is on — spoken.
+    import stella.stella as stella_module
+    from stella.outline_tools import OutlineDueReminder
+
+    claimed = (
+        OutlineDueReminder(
+            kind="task", id=9, title="Private errand", remind_at_ms=1
+        ),
+    )
+
+    class FakePump:
+        def claim(self):
+            return claimed
+
+    monkeypatch.setattr(
+        stella_module, "active_reminder_pump", lambda: FakePump()
+    )
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(player=player, speech=speech)
+    panel.speech_enabled = True
+    application = StellaApplication(
+        StellaSession(make_answer_stella()),
+        StellaSettings(model="test"),
+        panel,
+    )
+    bridge = StellaBridge(lambda: application, reminder_tick_seconds=0.05)
+
+    alert = "Outline reminder (task): Private errand"
+    assert settle(lambda: speech.spoken == [alert])
+    assert settle(lambda: player.played != [])
+    bridge.stop()
     bridge = make_voice_bridge(
         make_answer_stella(),
         make_panel(
@@ -1839,8 +2463,20 @@ def test_cancel_just_after_synthesis_discards_the_artifact() -> None:
 # ---------------------------------------------------- resident speech (D2)
 
 _RESIDENT_FAKE = """
-import json, sys
+import json, struct, sys, wave
 print(json.dumps({"ready": True}), flush=True)
+_FRAMES = struct.pack("<400h", *([8000, -8000] * 200))
+def _emit(path):
+    # A short non-silent PCM s16 mono WAV: enough to pass the resident
+    # provider's shape and peak checks, too short for the trim/fade
+    # path to have anything meaningful to rewrite. Existing tests
+    # keep asserting "the file exists at the reference", and this
+    # fake honours that promise exactly.
+    with wave.open(path, "wb") as sink:
+        sink.setnchannels(1)
+        sink.setsampwidth(2)
+        sink.setframerate(24000)
+        sink.writeframes(_FRAMES)
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -1852,7 +2488,7 @@ for line in sys.stdin:
         continue
     if req["text"] == "silent":
         continue
-    open(req["output"], "wb").write(b"RIFF")
+    _emit(req["output"])
     print(json.dumps({"id": req["id"], "ok": True}), flush=True)
 """
 
@@ -1951,6 +2587,153 @@ def test_resident_missing_command_fails_honestly() -> None:
         provider.dispose()
 
 
+# The worker as it is installed reads id/text/output and knows nothing
+# about being told which voice to use. Asking for one therefore has to be
+# a change it can ignore, not a new protocol.
+_RESIDENT_ECHO = """
+import json, struct, sys, wave
+print(json.dumps({"ready": True}), flush=True)
+_FRAMES = struct.pack("<400h", *([8000, -8000] * 200))
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    with open(sys.argv[1], "w") as sink:
+        json.dump(req, sink)
+    with wave.open(req["output"], "wb") as sink:
+        sink.setnchannels(1)
+        sink.setsampwidth(2)
+        sink.setframerate(24000)
+        sink.writeframes(_FRAMES)
+    print(json.dumps({"id": req["id"], "ok": True}), flush=True)
+"""
+
+
+def _resident_echo(tmp_path):
+    record = tmp_path / "request.json"
+    provider = ResidentSpeechProvider(
+        [sys.executable, "-c", _RESIDENT_ECHO, str(record)],
+        timeout=10.0,
+        ready_timeout=10.0,
+    )
+    return provider, record
+
+
+def test_a_requested_voice_and_speed_are_sent_additively(
+    tmp_path,
+) -> None:
+    record = tmp_path / "request.json"
+    provider = ResidentSpeechProvider(
+        [sys.executable, "-c", _RESIDENT_ECHO, str(record)],
+        timeout=10.0,
+        ready_timeout=10.0,
+        voice="bf_isabella",
+        speed=1.2,
+    )
+    try:
+        artifact = provider.speak(SpeechOutput(text="a named voice"))
+        assert os.path.exists(artifact.reference)
+        request = json.loads(record.read_text())
+        # The three keys a worker already understands are untouched…
+        assert request["text"] == "a named voice"
+        assert set(request) == {"id", "text", "output", "voice", "speed"}
+        # …and the two new ones are exactly what the user asked for.
+        assert request["voice"] == "bf_isabella"
+        assert request["speed"] == 1.2
+    finally:
+        provider.dispose()
+
+
+def test_an_unnamed_worker_sees_the_request_it_has_always_seen(
+    tmp_path,
+) -> None:
+    provider, record = _resident_echo(tmp_path)
+    try:
+        provider.speak(SpeechOutput(text="plain"))
+        assert set(json.loads(record.read_text())) == {
+            "id",
+            "text",
+            "output",
+        }
+    finally:
+        provider.dispose()
+
+
+def test_prewarm_loads_the_worker_before_the_first_sentence() -> None:
+    provider = _resident()
+    try:
+        provider.prewarm()
+        assert provider._process is not None
+        warmed = provider._process.pid
+        # The warm-up is not a throwaway: the reply uses that process,
+        # which is the whole point of paying the model load early.
+        artifact = provider.speak(SpeechOutput(text="hello"))
+        assert os.path.exists(artifact.reference)
+        assert provider._process.pid == warmed
+    finally:
+        provider.dispose()
+
+
+def test_a_broken_worker_prewarms_silently_and_reports_when_asked() -> None:
+    # Nothing is on screen to explain a thread that failed at startup, so
+    # the warm-up stays quiet and the first real sentence carries the
+    # message to a user who wanted speech.
+    provider = ResidentSpeechProvider(
+        ["/definitely/not/here", "x"], ready_timeout=1.0
+    )
+    try:
+        provider.prewarm()
+        assert provider._process is None
+        with pytest.raises(VoiceError, match="not found"):
+            provider.speak(SpeechOutput(text="hello"))
+    finally:
+        provider.dispose()
+
+
+def test_prewarm_after_dispose_starts_nothing() -> None:
+    provider = _resident()
+    provider.dispose()
+    provider.prewarm()
+    assert provider._process is None
+
+
+def test_opting_into_speech_warms_a_resident_worker_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _resident()
+    warmed: list[str] = []
+    monkeypatch.setattr(provider, "prewarm", lambda: warmed.append("warm"))
+    panel = VoicePanel(None, None, None, provider)
+    bridge = make_voice_bridge(make_answer_stella(), panel)
+    try:
+        bridge.set_speech_enabled(True)
+        deadline = time.monotonic() + 2
+        while not warmed and time.monotonic() < deadline:
+            time.sleep(0.02)
+        # The tick is the first moment speaking is wanted, so the model
+        # load starts here rather than inside the first reply.
+        assert warmed == ["warm"]
+        bridge.set_speech_enabled(False)
+        bridge.set_speech_enabled(True)
+        # Once per session: re-ticking does not queue a second worker.
+        assert warmed == ["warm"]
+    finally:
+        bridge.stop()
+        provider.dispose()
+
+
+def test_a_provider_that_is_not_resident_is_never_warmed() -> None:
+    panel = VoicePanel(
+        None,
+        None,
+        None,
+        CommandSpeechProvider(["true", "{text}", "{output}"]),
+    )
+    panel.prewarm_speech()
+    assert panel._speech_warmed is False
+
+
 def test_build_voice_selects_the_resident_provider_only_with_a_command() -> None:
     from stella.app import _build_speech_provider
 
@@ -1974,3 +2757,140 @@ def test_build_voice_selects_the_resident_provider_only_with_a_command() -> None
         ),
         ResidentSpeechProvider,
     )
+
+
+# ------------------------------------- resident speech artifact checks
+
+_ARTIFACT_RATE = 24000
+
+
+def _write_wav(
+    path,
+    frames_bytes: bytes,
+    *,
+    nchannels: int = 1,
+    sampwidth: int = 2,
+    framerate: int = _ARTIFACT_RATE,
+) -> None:
+    with wave.open(str(path), "wb") as sink:
+        sink.setnchannels(nchannels)
+        sink.setsampwidth(sampwidth)
+        sink.setframerate(framerate)
+        sink.writeframes(frames_bytes)
+
+
+def _tone(nframes: int, amplitude: int = 8000) -> bytes:
+    """Alternating ±amplitude square wave — audible for a peak scan."""
+
+    if nframes % 2:
+        nframes += 1
+    return struct.pack("<" + "h" * nframes, *([amplitude, -amplitude] * (nframes // 2)))
+
+
+def _read_samples(path) -> array.array:
+    with wave.open(str(path), "rb") as source:
+        data = source.readframes(source.getnframes())
+    arr = array.array("h")
+    arr.frombytes(data)
+    return arr
+
+
+def test_zero_frame_artifact_is_rejected(tmp_path) -> None:
+    path = tmp_path / "empty.wav"
+    _write_wav(path, b"")
+    with pytest.raises(VoiceError, match="silence"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_below_ten_millisecond_artifact_is_rejected(tmp_path) -> None:
+    # The output-side analogue of the input side's ≤44-byte bare-header
+    # reject: a worker that returns ok but wrote less than a frame's
+    # worth of audible sound is a broken worker.
+    path = tmp_path / "short.wav"
+    _write_wav(path, _tone(200))  # ~8 ms at 24 kHz
+    with pytest.raises(VoiceError, match="silence"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_all_silent_pcm_is_rejected(tmp_path) -> None:
+    # 1 s of zeros is well-shaped and long, but there is nothing to hear:
+    # the Pipecat "max consecutive zero-audio contexts" case, done right
+    # in a single-shot provider.
+    path = tmp_path / "silent.wav"
+    _write_wav(path, b"\x00\x00" * _ARTIFACT_RATE)
+    with pytest.raises(VoiceError, match="silence"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_truncated_artifact_is_rejected(tmp_path) -> None:
+    path = tmp_path / "riff-only.wav"
+    path.write_bytes(b"RIFF")
+    with pytest.raises(VoiceError, match="unreadable"):
+        _inspect_speech_artifact(str(path))
+
+
+def test_leading_silence_is_trimmed(tmp_path) -> None:
+    path = tmp_path / "trim.wav"
+    silence = b"\x00\x00" * _ARTIFACT_RATE  # 1 s
+    tone = _tone(_ARTIFACT_RATE)  # 1 s
+    _write_wav(path, silence + tone)
+    _inspect_speech_artifact(str(path))
+    arr = _read_samples(path)
+    # The 1 s of leading silence is gone; the surviving audio is the
+    # tone plus a 25 ms pad before it and a 15 ms pad after.
+    assert 24000 <= len(arr) <= 26400
+    # The 25 ms before the tone starts is silent (that is the pad).
+    leading_pad = _ARTIFACT_RATE * 25 // 1000
+    assert all(abs(s) < 328 for s in arr[:leading_pad])
+
+
+def test_fade_in_and_out_applied(tmp_path) -> None:
+    path = tmp_path / "fade.wav"
+    _write_wav(path, _tone(_ARTIFACT_RATE))
+    _inspect_speech_artifact(str(path))
+    arr = _read_samples(path)
+    fade_in = _ARTIFACT_RATE * 15 // 1000
+    fade_out = _ARTIFACT_RATE * 10 // 1000
+    assert arr[0] == 0  # first sample fully faded in from silence
+    assert abs(arr[fade_in + 100]) == 8000  # middle of the tone is untouched
+    assert arr[-1] == 0  # last sample fully faded out to silence
+    # Fade-in magnitude is non-decreasing.
+    for i in range(fade_in - 1):
+        assert abs(arr[i]) <= abs(arr[i + 1])
+    # Fade-out magnitude is non-increasing.
+    tail = len(arr) - fade_out
+    for i in range(tail, len(arr) - 1):
+        assert abs(arr[i]) >= abs(arr[i + 1])
+
+
+def test_stereo_is_passed_through_unchanged(tmp_path) -> None:
+    # Shape check runs, but this is not the trimmable shape — a valid
+    # stereo artifact is a worker's business, not ours to rewrite.
+    path = tmp_path / "stereo.wav"
+    nframes = _ARTIFACT_RATE // 2  # 500 ms
+    stereo = struct.pack("<" + "h" * (2 * nframes), *([8000, -8000] * nframes))
+    _write_wav(path, stereo, nchannels=2)
+    before = path.read_bytes()
+    _inspect_speech_artifact(str(path))
+    assert path.read_bytes() == before
+
+
+def test_unsupported_sampwidth_is_passed_through_unchanged(tmp_path) -> None:
+    # 8-bit unsigned PCM: peak-scan decodes it fine, but it is not the
+    # shape the trim path understands.
+    path = tmp_path / "s8.wav"
+    data = bytes([228, 28] * (_ARTIFACT_RATE // 2))
+    _write_wav(path, data, sampwidth=1)
+    before = path.read_bytes()
+    _inspect_speech_artifact(str(path))
+    assert path.read_bytes() == before
+
+
+def test_short_surviving_audio_is_not_rewritten(tmp_path) -> None:
+    # 40 ms of loud audio is audible but shorter than the 50 ms minimum
+    # surviving window: trimming to a click is worse than leaving it.
+    path = tmp_path / "tiny.wav"
+    _write_wav(path, _tone(_ARTIFACT_RATE * 40 // 1000))
+    before = path.read_bytes()
+    _inspect_speech_artifact(str(path))
+    assert path.read_bytes() == before

@@ -20,8 +20,7 @@ from stella import app, provider_keys
 from stella.app import (
     ApprovalBroker,
     MemoryPanel,
-    ReminderPanel,
-    ReminderScheduler,
+    ReminderTicker,
     StellaApplication,
     StellaBridge,
     StellaSession,
@@ -37,7 +36,6 @@ from stella.llm import LLMClient, LLMResponse, Message, run_cancellable
 from stella.memory import InMemoryMemory, MemoryItem, SQLiteMemory
 from stella.minilm_embedding import MiniLMEmbeddingProvider
 from stella.ollama_embedding import OllamaEmbeddingProvider
-from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
@@ -220,7 +218,6 @@ def test_unverified_mutation_never_renders_as_verified_success() -> None:
 
 def make_recording_stella(
     decisions: list[Decision] | None = None,
-    reminders: InMemoryReminderStore | None = None,
 ) -> Stella:
     brain = ScriptedBrain(
         decisions
@@ -232,7 +229,6 @@ def make_recording_stella(
         SpyLLM(),
         ToolDispatcher([EchoTool()]),
         InMemoryMemory(),
-        reminders=reminders,
     )
 
 
@@ -296,17 +292,49 @@ def test_session_custom_error_footer_is_used() -> None:
     assert outcome.error_message.endswith("Nothing was changed; try again.")
 
 
-def test_check_due_reminders_delivers_through_the_trusted_flow() -> None:
-    store = InMemoryReminderStore()
-    assert store.create("Water the plants", REAL_NOW + dt.timedelta(hours=1), REAL_NOW)
-    session = StellaSession(make_recording_stella(reminders=store))
+# -------------------------------------------- Outline reminder sweep (bridge)
 
-    deliveries = session.check_due_reminders(REAL_NOW + dt.timedelta(hours=2))
+
+def arm_outline_pump(
+    monkeypatch, titles: tuple[tuple[str, int, str], ...]
+) -> None:
+    """Pretend Outline reported these reminders due and claimed them here."""
+
+    import stella.stella as stella_module
+    from stella.outline_tools import OutlineDueReminder
+
+    claimed = tuple(
+        OutlineDueReminder(kind=kind, id=item_id, title=title, remind_at_ms=1)
+        for kind, item_id, title in titles
+    )
+
+    class FakePump:
+        def claim(self):
+            return claimed
+
+    monkeypatch.setattr(stella_module, "active_reminder_pump", lambda: FakePump())
+
+
+def test_session_check_due_reminders_delivers_the_claims(monkeypatch) -> None:
+    arm_outline_pump(monkeypatch, (("task", 1, "Water the plants"),))
+    session = StellaSession(make_recording_stella())
+
+    deliveries = session.check_due_reminders()
 
     assert [delivery.message for delivery in deliveries] == [
-        "Water the plants is due today."
+        "Outline reminder (task): Water the plants"
     ]
-    assert session.check_due_reminders(REAL_NOW + dt.timedelta(hours=3)) == ()
+
+
+def test_session_check_without_an_armed_pump_delivers_nothing(monkeypatch) -> None:
+    # The ticker sweeps whether or not Outline was ever configured. With no
+    # pump armed there is nothing to read, and Stella says nothing.
+    import stella.stella as stella_module
+
+    monkeypatch.setattr(stella_module, "active_reminder_pump", lambda: None)
+    session = StellaSession(make_recording_stella())
+
+    assert session.check_due_reminders() == ()
 
 
 # ---------------------------------------------------------- MemoryPanel
@@ -361,65 +389,6 @@ def test_memory_panel_forget_without_selection_is_safe() -> None:
         "No memory is selected. Pick one from the list first."
     )
     assert len(panel.refresh()) == 2
-
-
-# --------------------------------------------------------- ReminderPanel
-
-
-def test_reminder_panel_matches_the_trusted_tool_wording() -> None:
-    store = InMemoryReminderStore()
-    panel = ReminderPanel(store)
-    due = (REAL_NOW + dt.timedelta(hours=1)).isoformat()
-
-    created = panel.create("Call the dentist", due)
-
-    assert created.success
-    assert created.output == (
-        f"Reminder created (ID 1): Call the dentist at {due}."
-    )
-    assert panel.pending_rows() == (("Call the dentist", due),)
-
-
-def test_reminder_panel_rejects_bad_input_honestly() -> None:
-    store = InMemoryReminderStore()
-    panel = ReminderPanel(store)
-
-    bad_time = panel.create("anything", "sometime tomorrow")
-    empty = panel.create("   ", (REAL_NOW + dt.timedelta(hours=1)).isoformat())
-
-    assert not bad_time.success
-    assert "ISO-8601" in bad_time.output
-    assert not empty.success
-    assert panel.pending_rows() == ()
-    assert store.pending() == ()
-
-
-def test_reminder_panel_cancel_requires_one_clear_match() -> None:
-    store = InMemoryReminderStore()
-    panel = ReminderPanel(store)
-    panel.create("Submit the assignment", (REAL_NOW + dt.timedelta(hours=1)).isoformat())
-    panel.create("Attend the meeting", (REAL_NOW + dt.timedelta(hours=2)).isoformat())
-
-    ambiguous = panel.cancel("the")
-    single = panel.cancel("assignment")
-
-    assert not ambiguous.success
-    assert "nothing was cancelled" in ambiguous.output
-    assert single.success
-    assert len(panel.pending_rows()) == 1
-
-
-def test_reminder_panel_without_a_store_stays_inert() -> None:
-    panel = ReminderPanel(None)
-
-    assert panel.available is False
-    assert panel.pending_rows() == ()
-    result = panel.create("anything", "2099-01-01T00:00:00+00:00")
-
-    assert not result.success
-    assert result.output == (
-        "Reminders are not available in this configuration."
-    )
 
 
 # -------------------------------------------------------- ApprovalBroker
@@ -591,6 +560,87 @@ def test_bridge_runs_a_turn_on_the_worker_thread() -> None:
     bridge.stop()
 
 
+def test_bridge_panel_command_queues_behind_a_busy_turn() -> None:
+    # Everything that touches Stella rides one command queue and one
+    # worker thread: a command posted while the worker is mid-turn waits
+    # its turn, so two operations can never be inside the core at once.
+    memory = InMemoryMemory()
+    memory.store(MemoryItem("Prefers oat milk"))
+    stella = Stella(
+        SleepingBrain(
+            [Decision(kind=DecisionKind.ANSWER, content="slow reply")], 0.6
+        ),
+        SpyLLM(),
+        ToolDispatcher([EchoTool()]),
+        memory,
+    )
+    bridge = make_bridge(stella)
+    try:
+        bridge.post_turn("hello")
+        time.sleep(0.2)  # the worker is now parked inside Brain.decide
+        bridge.post_memories()
+        events: list = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            events.extend(bridge.poll())
+            kinds = [event.kind for event in events]
+            if "turn" in kinds and "memories" in kinds:
+                break
+            time.sleep(0.02)
+    finally:
+        bridge.stop()
+
+    kinds = [event.kind for event in events]
+    assert kinds.index("turn") < kinds.index("memories")
+    rows = next(event.payload for event in events if event.kind == "memories")
+    assert rows == ("Prefers oat milk",)
+
+
+def test_bridge_delivers_due_reminders_before_the_turn_event(monkeypatch) -> None:
+    arm_outline_pump(monkeypatch, (("task", 3, "Private errand"),))
+    bridge = make_bridge(make_recording_stella())
+
+    bridge.post_turn("hello")
+    events = wait_for_event(bridge, "turn")
+
+    kinds = [event.kind for event in events]
+    assert kinds.index("reminder_delivered") < kinds.index("turn")
+    delivered = next(e.payload for e in events if e.kind == "reminder_delivered")
+    assert delivered == "Outline reminder (task): Private errand"
+    bridge.stop()
+
+
+def test_bridge_delivers_due_reminder_while_idle_without_any_turn(monkeypatch) -> None:
+    # An open-but-idle window still informs: the ticker's only act is to
+    # post one sweep onto the same command queue every turn already uses.
+    arm_outline_pump(monkeypatch, (("task", 4, "Idle errand"),))
+    bridge = make_bridge(
+        make_recording_stella(), reminder_tick_seconds=0.05
+    )
+    try:
+        events = wait_for_event(bridge, "reminder_delivered")
+    finally:
+        bridge.stop()
+
+    payloads = [
+        event.payload for event in events if event.kind == "reminder_delivered"
+    ]
+    assert payloads[0] == "Outline reminder (task): Idle errand"
+
+
+def test_reminder_ticker_stops_calling_after_stop() -> None:
+    calls: list[int] = []
+    ticker = ReminderTicker(lambda: calls.append(1), interval_seconds=0.02)
+    ticker.start()
+    time.sleep(0.15)
+    ticker.stop()
+    after = len(calls)
+    time.sleep(0.1)
+
+    assert after > 0
+    assert len(calls) == after
+
+
 def test_bridge_emits_activity_events_naming_the_called_capability() -> None:
     # Report 35 target 3: text surfaces get the calling:<capability>
     # event on every turn, spoken or not — the status line's source.
@@ -611,182 +661,6 @@ def test_bridge_emits_activity_events_naming_the_called_capability() -> None:
     activity = next(e.payload for e in events if e.kind == "activity")
     assert activity == "calling:echo"
     bridge.stop()
-
-
-def test_bridge_delivers_due_reminders_before_the_turn_event() -> None:
-    store = InMemoryReminderStore()
-    due = REAL_NOW + dt.timedelta(seconds=1)
-    assert store.create("Private errand", due, REAL_NOW)
-    bridge = make_bridge(make_recording_stella(reminders=store))
-
-    time.sleep(1.2)
-    bridge.post_turn("anything")
-    events = wait_for_event(bridge, "turn")
-
-    kinds = [event.kind for event in events]
-    assert kinds.index("reminder_delivered") < kinds.index("turn")
-    delivered = next(e.payload for e in events if e.kind == "reminder_delivered")
-    assert delivered == "Private errand is due today."
-    bridge.stop()
-
-
-# ------------------------------------------------------------ idle reminder ticks
-
-
-def test_bridge_delivers_due_reminder_while_idle_without_any_turn() -> None:
-    # Stage A D1: an open-but-idle window must still inform, unprompted.
-    now = dt.datetime.now(dt.UTC)
-    store = InMemoryReminderStore()
-    assert store.create("Idle errand", now + dt.timedelta(milliseconds=200), now)
-    bridge = make_bridge(
-        make_recording_stella(reminders=store), reminder_tick_seconds=0.05
-    )
-    try:
-        events = wait_for_event(bridge, "reminder_delivered")
-    finally:
-        bridge.stop()
-    payloads = [
-        event.payload
-        for event in events
-        if event.kind == "reminder_delivered"
-    ]
-    assert payloads == ["Idle errand is due today."]
-
-
-def test_bridge_tick_uses_the_injected_clock() -> None:
-    # Determinism: the sweep compares against the bridge's clock, so a
-    # fixed future "now" fires immediately with no sleeping past due time.
-    store = InMemoryReminderStore()
-    assert store.create("Future errand", REAL_NOW + dt.timedelta(hours=1), REAL_NOW)
-    fixed = REAL_NOW + dt.timedelta(hours=2)
-    bridge = make_bridge(
-        make_recording_stella(reminders=store),
-        reminder_tick_seconds=0.05,
-        now=lambda: fixed,
-    )
-    try:
-        events = wait_for_event(bridge, "reminder_delivered")
-    finally:
-        bridge.stop()
-    delivered = next(
-        event.payload
-        for event in events
-        if event.kind == "reminder_delivered"
-    )
-    assert delivered == "Future errand is due today."
-    assert store.pending() == ()
-
-
-def test_reminder_scheduler_stops_calling_after_stop() -> None:
-    calls: list[int] = []
-    scheduler = ReminderScheduler(
-        lambda: calls.append(1), interval_seconds=0.02
-    )
-    scheduler.start()
-    time.sleep(0.15)
-    scheduler.stop()
-
-    assert calls
-    settled = len(calls)
-    time.sleep(0.1)
-    assert len(calls) == settled
-
-
-def test_reminder_check_queues_behind_a_busy_turn() -> None:
-    # A sweep posted while the worker is mid-turn must wait its turn on
-    # the single command queue: no parallel Stella, no lost delivery.
-    now = dt.datetime.now(dt.UTC)
-    store = InMemoryReminderStore()
-    assert store.create(
-        "First errand", now + dt.timedelta(minutes=1), now
-    )
-    assert store.create(
-        "Second errand", now + dt.timedelta(minutes=5), now
-    )
-    sweep_count = 0
-
-    def staged_now() -> dt.datetime:
-        # The turn's own pre-sweep sees only the first reminder due;
-        # every later sweep (the queued one) sees both as due.
-        nonlocal sweep_count
-        sweep_count += 1
-        if sweep_count == 1:
-            return now + dt.timedelta(minutes=2)
-        return now + dt.timedelta(minutes=6)
-
-    stella = Stella(
-        SleepingBrain(
-            [Decision(kind=DecisionKind.ANSWER, content="slow reply")], 0.6
-        ),
-        SpyLLM(),
-        ToolDispatcher([EchoTool()]),
-        InMemoryMemory(),
-        reminders=store,
-    )
-    bridge = make_bridge(
-        stella, reminder_tick_seconds=None, now=staged_now
-    )
-    try:
-        bridge.post_turn("hello")
-        time.sleep(0.2)  # worker is now parked inside Brain.decide
-        bridge.post_reminder_check()
-        events: list = []
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            events.extend(bridge.poll())
-            deliveries = [e for e in events if e.kind == "reminder_delivered"]
-            if len(deliveries) == 2 and any(e.kind == "turn" for e in events):
-                break
-            time.sleep(0.02)
-    finally:
-        bridge.stop()
-
-    deliveries = [
-        event.payload
-        for event in events
-        if event.kind == "reminder_delivered"
-    ]
-    kinds = [event.kind for event in events]
-    assert deliveries[0] == "First errand is due today."
-    assert deliveries[1] == "Second errand is due today."
-    # The queued sweep could only run after the turn event: everything
-    # after "turn" is that second delivery and the panel refresh.
-    turn_index = kinds.index("turn")
-    assert deliveries[1] in [
-        event.payload for event in events[turn_index + 1 :]
-    ]
-    assert set(kinds[turn_index + 1 :]) <= {
-        "reminder_delivered",
-        "reminders",
-    }
-    assert store.pending() == ()
-
-
-def test_due_reminder_delivers_exactly_once_across_tick_and_turn() -> None:
-    # Tick and turn race to claim the same reminder; the store's atomic
-    # transition means the user is told exactly once.
-    now = dt.datetime.now(dt.UTC)
-    store = InMemoryReminderStore()
-    assert store.create(
-        "Contended errand", now + dt.timedelta(milliseconds=500), now
-    )
-    bridge = make_bridge(
-        make_recording_stella(reminders=store), reminder_tick_seconds=0.03
-    )
-    try:
-        bridge.post_turn("hello")
-        events = wait_for_event(bridge, "reminder_delivered")
-        time.sleep(0.3)  # let several more ticks pass
-        events.extend(bridge.poll())
-    finally:
-        bridge.stop()
-    deliveries = [
-        event.payload
-        for event in events
-        if event.kind == "reminder_delivered"
-    ]
-    assert deliveries == ["Contended errand is due today."]
-    assert any(event.kind == "turn" for event in events)
 
 
 def test_bridge_reports_startup_failure_without_a_stack_trace() -> None:
@@ -981,31 +855,35 @@ def test_bridge_shutdown_denies_an_unanswered_approval() -> None:
     assert tool.executions == []
 
 
-def test_bridge_reminder_commands_never_execute_dispatcher_tools() -> None:
+def test_bridge_panel_commands_never_execute_dispatcher_tools() -> None:
+    # The panel routes are a direct line to the stores, not to the model's
+    # tool surface: a panel command cannot reach a registered capability
+    # even when that capability would fire on the turn path.
     tool = DangerousTool()
-    store = InMemoryReminderStore()
+    memory = InMemoryMemory()
+    memory.store(MemoryItem("Prefers oat milk"))
     stella = Stella(
         ExplodingBrain(),
         SpyLLM(),
         ToolDispatcher([tool]),
-        InMemoryMemory(),
-        reminders=store,
+        memory,
     )
     bridge = make_bridge(stella)
 
-    bridge.post_reminder_add(
-        "File taxes", (REAL_NOW + dt.timedelta(hours=1)).isoformat()
-    )
-    events = wait_for_event(bridge, "reminders")
-    bridge.post_reminders()
-    events.extend(wait_for_event(bridge, "reminders"))
+    bridge.post_memories()
+    events = wait_for_event(bridge, "memories")
+    bridge.post_forget(0)
+    events.extend(wait_for_event(bridge, "memories"))
 
     rows = next(
         event.payload
         for event in reversed(events)
-        if event.kind == "reminders"
+        if event.kind == "memories"
     )
-    assert rows == (("File taxes", (REAL_NOW + dt.timedelta(hours=1)).isoformat()),)
+    assert rows == ()
+    assert [
+        event.payload for event in events if event.kind == "memory_result"
+    ] == ["That memory was forgotten."]
     assert tool.executions == []
     bridge.stop()
 
@@ -1234,7 +1112,7 @@ def test_default_state_paths_follow_xdg_not_the_working_directory(
 ) -> None:
     # Release blocker regression: desktop launchers start Stella from an
     # arbitrary working directory, so cwd-relative defaults silently lost
-    # memory and reminders across restarts.
+    # memory and history across restarts.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     arbitrary_cwd = tmp_path / "arbitrary"
     arbitrary_cwd.mkdir()
@@ -1244,7 +1122,7 @@ def test_default_state_paths_follow_xdg_not_the_working_directory(
 
     data = tmp_path / "xdg" / "stella"
     assert Path(settings.memory_db) == data / "stella_memory.db"
-    assert Path(settings.reminders_db) == data / "stella_reminders.db"
+    assert Path(settings.history_db) == data / "stella_action_history.db"
     assert Path(settings.workspace) == data / "workspace"
 
 
@@ -1349,7 +1227,6 @@ def _semantic_settings(
         model="test",
         ollama_base_url="http://127.0.0.1:9",
         memory_db=str(tmp_path / "state" / "memory.db"),
-        reminders_db=str(tmp_path / "state" / "reminders.db"),
         workspace=str(tmp_path / "workspace"),
         semantic_db=str(tmp_path / "state" / "semantic.db"),
         semantic_memory_enabled=enabled,
@@ -1544,7 +1421,6 @@ def test_build_application_creates_missing_state_directories(
         model="test",
         ollama_base_url="http://127.0.0.1:9",
         memory_db=str(tmp_path / "state" / "memory.db"),
-        reminders_db=str(tmp_path / "state" / "reminders.db"),
         workspace=str(tmp_path / "workspace"),
         voice_transcription="off",
         voice_speech="off",
@@ -1568,7 +1444,6 @@ def test_shared_application_error_message_omits_cli_exit_hint(
         model="test",
         ollama_base_url="http://127.0.0.1:9",
         memory_db=str(tmp_path / "state" / "memory.db"),
-        reminders_db=str(tmp_path / "state" / "reminders.db"),
         workspace=str(tmp_path / "workspace"),
         voice_transcription="off",
         voice_speech="off",
@@ -1590,13 +1465,12 @@ def test_misconfigured_voice_commands_never_prevent_startup(
 ) -> None:
     # Release blocker regression: an invalid optional voice command raised
     # during startup and left every later turn reporting "Stella is not
-    # running in this session", killing chat, memory and reminders too.
+    # running in this session", killing chat, memory and history too.
     settings = StellaSettings(
         provider="ollama",
         model="test",
         ollama_base_url="http://127.0.0.1:9",
         memory_db=str(tmp_path / "state" / "memory.db"),
-        reminders_db=str(tmp_path / "state" / "reminders.db"),
         workspace=str(tmp_path / "workspace"),
         transcription_command="stub-transcribe.sh",
         speech_command="ffmpeg -f lavfi -i sine",
@@ -1621,6 +1495,39 @@ def test_misconfigured_voice_commands_never_prevent_startup(
     assert "speech command must reference {text} and {output}" in str(
         output_error.value
     )
+
+
+def test_an_installed_speech_worker_is_detected_before_the_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The owner places a resident worker under ~/tools and Stella speaks
+    # through it: no setting, no PATH search, no package. The probe only
+    # asks whether the file may run, so this holds for any worker that
+    # answers the line protocol.
+    worker = tmp_path / "stella-speak-server"
+    worker.write_text("#!/bin/sh\nexit 0\n")
+    worker.chmod(0o755)
+    monkeypatch.setattr(app, "default_speech_worker", lambda: str(worker))
+
+    provider = app._build_speech_provider(StellaSettings(model="test"))
+
+    assert isinstance(provider, app.ResidentSpeechProvider)
+    assert provider._command == [str(worker)]
+    provider.dispose()
+
+
+def test_a_worker_that_may_not_run_leaves_the_plain_path_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    absent = tmp_path / "stella-speak-server"
+    monkeypatch.setattr(app, "default_speech_worker", lambda: str(absent))
+    monkeypatch.setattr(
+        app.shutil, "which", lambda name: "/usr/bin/espeak-ng"
+    )
+
+    provider = app._build_speech_provider(StellaSettings(model="test"))
+
+    assert isinstance(provider, app.CommandSpeechProvider)
 
 
 def test_bridge_wires_the_broker_into_the_stella_core() -> None:
@@ -1678,7 +1585,6 @@ def make_ollama_app(tmp_path: Path, base_url: str) -> StellaApplication:
             model="test-model",
             ollama_base_url=base_url,
             memory_db=str(tmp_path / "m.db"),
-            reminders_db=str(tmp_path / "r.db"),
             history_db=str(tmp_path / "h.db"),
             workspace=str(tmp_path / "ws"),
         )

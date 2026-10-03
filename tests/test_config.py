@@ -94,6 +94,9 @@ def test_configuration_stores_only_non_secret_fields():
         "os_tools_enabled",
         "outline_tools_enabled",
         "web_tools_enabled",
+        # The wake-word checkbox, like every other saved capability: one
+        # plain bool, no path and no key.
+        "wake_word_enabled",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):

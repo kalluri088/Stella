@@ -5,13 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "stella"
 version = "1.4.0"
-description = "Local-first desktop assistant for Linux: chat, user-controlled memory, approved file actions, and one-shot reminders"
+description = "Local-first desktop assistant for Linux: chat, user-controlled memory, and approved file actions"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "openai>=1.0",
+    "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,12 @@ embed = ["sentence-transformers>=3.0"]
 # pip 'silero-vad' package is deliberately not the route: it drags CUDA
 # torch in with it (research report 08).
 barge-in = ["onnxruntime>=1.17"]
+# Wake word: the openWakeWord ONNX chain (melspectrogram, embedding,
+# classifier) under the same onnxruntime. The pip 'openwakeword' package
+# is deliberately not the route: its tflite-runtime dependency has no
+# wheel for this Python, so the streaming pipeline is hand-ported in
+# stella/wake.py (the silero-vad precedent, one extra again).
+wake = ["onnxruntime>=1.17"]
 # Keyless web search fallback for the web capability: the raw DuckDuckGo
 # endpoints are bot-walled from this machine, the ddgs package is the
 # working path (research report 22). With a TinyFish key the tools run

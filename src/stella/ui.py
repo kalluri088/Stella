@@ -1,7 +1,7 @@
 """Local Tk graphical interface for Stella.
 
 The window is a thin view over the shared application layer: every
-conversation turn, memory edit, reminder change, and approval answer is
+conversation turn, memory edit, and approval answer is
 posted through ``StellaBridge``, whose single worker thread owns the
 trusted Stella core. This module never touches files, databases, tools,
 or the LLM directly, and it never manufactures authorization: approvals
@@ -12,9 +12,15 @@ The one deliberate exception is ``SetupDialog``, shown before any Stella
 application exists: it runs bounded provider probes, saves Stella's
 non-secret configuration file, and stores a verified API key in the
 private key file owned by ``stella.provider_keys`` (never in
-config.json, never in the environment). It never touches tools, memory,
-reminders, or approvals, and a successful setup grants nothing beyond
+config.json, never in the environment). It never touches tools, memory
+or approvals, and a successful setup grants nothing beyond
 "Stella can talk to this model".
+
+Typed slash commands are intercepted in the view through
+``stella.commands`` (a pure classifier and renderer that reads only the
+user's own template files); a command never reaches the bridge, and a
+template's expansion re-enters as an ordinary turn. Voice transcripts
+take a different path and are never command-parsed.
 """
 
 from __future__ import annotations
@@ -28,7 +34,6 @@ from tkinter import ttk
 
 from stella import config, provider_keys
 from stella.app import (
-    OutcomeStatus,
     StellaBridge,
     StellaSettings,
     TurnOutcome,
@@ -36,6 +41,17 @@ from stella.app import (
     build_application,
     default_data_dir,
     outcome_status,
+)
+from stella.commands import (
+    CommandCall,
+    expand_template,
+    help_lines,
+    load_template_body,
+    parse_command_line,
+    parse_limit,
+    status_lines,
+    suggest_commands,
+    version_line,
 )
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 from stella.tools import ActionPreview, ApprovalRequest, action_summary
@@ -74,7 +90,7 @@ class Theme:
     on_accent: str
     error: str
     ok: str
-    reminder: str
+    warning: str
     # The user's quote band. Stella's reply carries no band and no
     # label at all: the transcript separates roles as a terminal does —
     # a full-width "> " blockquote for the user, plain left-aligned
@@ -102,7 +118,7 @@ _DARK_THEME = Theme(
     on_accent="#141210",
     error="#ef4444",
     ok="#2dd4bf",
-    reminder="#d97706",
+    warning="#d97706",
     user_quote="#292524",
     user_head="#e7e5e4",
 )
@@ -123,7 +139,7 @@ _LIGHT_THEME = Theme(
     on_accent="#ffffff",
     error="#dc2626",
     ok="#0d9488",
-    reminder="#d97706",
+    warning="#d97706",
     # The single quote band sits on a pure-white transcript, so it must be
     # visibly apart from the background; the near-invisible off-white
     # (#f5f5f4) of the old two-band design washed out against #ffffff.
@@ -244,7 +260,7 @@ def _configure_styles(root: tk.Misc) -> None:
     style.configure("Dim.TLabel", foreground=THEME.text_dim)
     # Approval-dialog advisory line (mismatch warning): same surface as
     # TLabel, but impossible to mistake for the action heading.
-    style.configure("Warning.TLabel", foreground=THEME.reminder)
+    style.configure("Warning.TLabel", foreground=THEME.warning)
     # Rail labels sit on the sidebar color, not the content surface.
     style.configure(
         "RailDim.TLabel", background=THEME.rail, foreground=THEME.text_dim
@@ -448,7 +464,6 @@ class StellaWindow:
         self._pulse = 0
         self._turn_activity = ""
         self._dialogs: list[tk.Toplevel] = []
-        self._reminder_rows: tuple[tuple[str, str], ...] = ()
         root.title("Stella")
         root.geometry("1180x680")
         root.minsize(920, 560)
@@ -478,7 +493,6 @@ class StellaWindow:
         for key, label in (
             ("chat", "✎  Chat"),
             ("memories", "▤  Memories"),
-            ("reminders", "◷  Reminders"),
             ("history", "≡  History"),
             ("settings", "⚙  Settings"),
         ):
@@ -602,16 +616,14 @@ class StellaWindow:
         self._show_section("chat")
 
         self._build_memory_section(content)
-        self._build_reminder_section(content)
         self._build_history_section(content)
         self._build_settings_section(content, settings)
 
         self._line(
             "Ask Stella anything. The menu on the left manages memories, "
-            "reminders, recent actions, and the minimal local settings."
+            "recent actions, and the minimal local settings."
         )
         bridge.post_memories()
-        bridge.post_reminders()
         # Action history is durable, so the History section shows what
         # Stella did in earlier sessions, not only in this window.
         bridge.post_history()
@@ -695,7 +707,6 @@ class StellaWindow:
         )
         for box in (
             self._memory_list,
-            self._reminder_list,
             self._history_list,
         ):
             _style_listbox(box)
@@ -785,8 +796,8 @@ class StellaWindow:
             spacing3=0,
         )
         chat.tag_configure(
-            "reminder",
-            foreground=THEME.reminder,
+            "alert",
+            foreground=THEME.warning,
             lmargin1=14,
             lmargin2=14,
             rmargin=18,
@@ -828,7 +839,7 @@ class StellaWindow:
             # so the window background repaints just that line; the
             # quote band stops at the message's last line.
             chat.insert("end", "\n", ("gap",))
-        elif role == "reminder" or role == "error":
+        elif role in ("error", "alert"):
             chat.insert("end", text + "\n", (role,))
             chat.insert("end", "\n", ("gap",))
         else:
@@ -852,10 +863,67 @@ class StellaWindow:
         self._history_pos = None
         self._history_draft = ""
         self._line(f"You: {user_input}", role="user")
+        call = parse_command_line(user_input)
+        if call is not None:
+            # A typed command is handled here, on the view side of the
+            # bridge: it never reaches the model and never posts a turn
+            # unless a template expands into one below.
+            self._run_command(call)
+            return
+        self._start_turn(user_input)
+
+    def _start_turn(self, text: str) -> None:
         self._busy = True
         self._begin_turn_timer()
         self._status.configure(text="Stella is working · 0 s")
-        self._bridge.post_turn(user_input)
+        self._bridge.post_turn(text)
+
+    def _run_command(self, call: CommandCall) -> None:
+        if call.is_control:
+            if call.name == "exit":
+                self._on_close()
+                return
+            if call.name in {"trace", "debug"}:
+                self._line(
+                    f"/{call.name} belongs to the terminal: start Stella "
+                    f"with --{call.name} to see those renderings.",
+                    role="note",
+                )
+                return
+            if call.name == "clear":
+                self._bridge.post_clear_history()
+                return
+            if call.name == "history":
+                limit = parse_limit(call.argument)
+                if limit is None:
+                    self._line(
+                        "Usage: /history [number of records]", role="note"
+                    )
+                else:
+                    self._bridge.post_action_trail(limit)
+                return
+            if call.name == "help":
+                lines = help_lines()
+            elif call.name == "status":
+                settings, session, stella = self._bridge.status_snapshot()
+                lines = status_lines(
+                    settings=settings, session=session, stella=stella
+                )
+            else:
+                lines = [version_line()]
+            self._line("\n".join(lines), role="note")
+            return
+        body, error = load_template_body(call.name)
+        if error is not None:
+            self._line(error, role="note")
+            suggestions = suggest_commands(call.name)
+            if suggestions:
+                listed = ", ".join(f"/{name}" for name in suggestions)
+                self._line(f"Did you mean {listed}?", role="note")
+            return
+        # The expansion is ordinary input: it goes through the bridge
+        # exactly like a typed sentence, approvals included.
+        self._start_turn(expand_template(body, call.argument))
 
     def _recall(self, direction: int) -> str:
         # Up (-1) / Down (+1) through what this window sent. Returning
@@ -952,6 +1020,27 @@ class StellaWindow:
             state="normal" if speech_ok else "disabled",
         )
         self._speak_toggle.pack(side="left", padx=4)
+        # Mute is a session switch beside "Speak replies", not a capability
+        # opt-in: it is never saved, and its whole job is to be reachable in
+        # one click the moment the microphone feels wrong.
+        self._mute_var = tk.BooleanVar(value=False)
+        self._mute_toggle = ttk.Checkbutton(
+            row,
+            text="Mute mic",
+            variable=self._mute_var,
+            command=self._toggle_mute,
+            style="Card.TCheckbutton",
+            state="normal" if mic_ok else "disabled",
+        )
+        self._mute_toggle.pack(side="left", padx=4)
+        # The dot is the only sign of a microphone Stella is holding open
+        # with no button pressed for it — the wake ear, an interruption
+        # listener, a capture in flight. It is redrawn on the poll tick
+        # only when the answer changes.
+        self._mic_dot = ttk.Label(row, text="●", style="CardDim.TLabel")
+        self._mic_dot.pack(side="left", padx=(6, 0))
+        self._mic_dot_color: str | None = None
+        self._render_mic_hot()
         if not mic_ok:
             self._mic_button.configure(state="disabled")
         ttk.Label(
@@ -962,9 +1051,22 @@ class StellaWindow:
                 "transcription provider)."
                 if not mic_ok
                 else "Listening and speaking are explicit; recordings are "
-                "removed right after transcription."
+                "removed right after transcription. A red dot means the "
+                "microphone is open right now."
             ),
         ).pack(anchor="w", padx=10, pady=(2, 6))
+
+    def _render_mic_hot(self) -> None:
+        # A ttk label repaints on every configure, so the dot is touched
+        # only when its color actually changes — which covers both the
+        # microphone opening and the theme being switched under it.
+        color = (
+            THEME.error if self._bridge.mic_hot() else THEME.text_dim
+        )
+        if color == self._mic_dot_color:
+            return
+        self._mic_dot_color = color
+        self._mic_dot.configure(foreground=color)
 
     def _toggle_listen(self) -> None:
         if self._busy:
@@ -997,6 +1099,9 @@ class StellaWindow:
 
     def _toggle_speech(self) -> None:
         self._bridge.set_speech_enabled(self._speak_var.get())
+
+    def _toggle_mute(self) -> None:
+        self._bridge.set_mic_muted(self._mute_var.get())
 
     def _handle_voice_state(self, state: str) -> None:
         if state == "listening":
@@ -1085,6 +1190,7 @@ class StellaWindow:
             self._handle_event(event)
         self._drain_approvals()
         self._render_working_status()
+        self._render_mic_hot()
         self._root.after(100, self._tick)
 
     def _render_working_status(self) -> None:
@@ -1103,7 +1209,7 @@ class StellaWindow:
         # A quiet braille spinner says "alive" between the whole-second
         # updates; with no activity named yet the asserted prefix stays
         # exactly "Stella is working · ". A calling:<capability> event
-        # upgrades "working" to "calling reminder list" mid-turn, so the
+        # upgrades "working" to "calling memory list" mid-turn, so the
         # long tool+synthesis stretch never reads as a dead pane.
         self._pulse = (self._pulse + 1) % len(_SPINNER)
         self._status.configure(
@@ -1123,24 +1229,21 @@ class StellaWindow:
             phase = str(payload).removeprefix("calling:").replace("_", " ")
             self._turn_activity = f"calling {phase}" if phase else ""
         elif kind == "reminder_delivered":
-            self._line(f"Reminder: {payload}", role="reminder")
+            # One Outline reminder this process claimed. Stella keeps no
+            # reminder store, so every line here names its source.
+            self._line(str(payload), role="alert")
         elif kind == "memories":
             self._show_memories(payload)
         elif kind == "memory_result":
             self._memory_status.configure(text=str(payload))
-        elif kind == "reminders":
-            self._show_reminders(payload)
         elif kind == "history":
             self._show_history(payload)
-        elif kind == "reminder_result":
-            status: OutcomeStatus = payload
-            self._reminder_status.configure(
-                text=f"{status.symbol} {status.detail}"
-            )
         elif kind == "settings":
             self._line(f"(settings) {payload}")
         elif kind == "notice":
             self._line(f"(persona) {payload}")
+        elif kind == "note":
+            self._line(str(payload), role="note")
         elif kind == "voice_state":
             self._handle_voice_state(str(payload))
         elif kind == "voice_transcript":
@@ -1336,88 +1439,6 @@ class StellaWindow:
             return
         self._bridge.post_forget(selected[0])
 
-    # -------------------------------------------------------- reminders
-
-    def _build_reminder_section(self, parent: ttk.Frame) -> None:
-        frame = ttk.Frame(parent)
-        self._sections["reminders"] = frame
-        self._section_header(
-            frame, "Reminders", "one-shot promises Stella keeps locally"
-        )
-        card = ttk.Frame(frame, style="Card.TFrame")
-        card.pack(fill="both", expand=True)
-        self._reminder_list = tk.Listbox(
-            card, exportselection=False, height=10
-        )
-        _style_listbox(self._reminder_list)
-        self._reminder_list.pack(fill="both", expand=True, padx=12, pady=12)
-        form = ttk.Frame(frame)
-        form.pack(fill="x", pady=(10, 0))
-        add_row = ttk.Frame(form)
-        add_row.pack(fill="x", pady=2)
-        ttk.Label(add_row, text="What:", width=11).pack(side="left")
-        self._reminder_content = ttk.Entry(add_row)
-        self._reminder_content.pack(side="left", fill="x", expand=True)
-        due_row = ttk.Frame(form)
-        due_row.pack(fill="x", pady=2)
-        ttk.Label(due_row, text="Due (ISO):", width=11).pack(side="left")
-        self._reminder_due = ttk.Entry(due_row)
-        self._reminder_due.pack(side="left", fill="x", expand=True)
-        ttk.Label(
-            form,
-            style="Dim.TLabel",
-            text="Example due time: 2026-01-01T09:00:00+00:00",
-        ).pack(anchor="w", padx=(86, 0))
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(8, 0))
-        ttk.Button(
-            actions, text="Add reminder", command=self._add_reminder
-        ).pack(side="left")
-        ttk.Button(
-            actions,
-            text="Cancel selected",
-            command=self._cancel_reminder,
-        ).pack(side="left", padx=6)
-        ttk.Button(
-            actions, text="Refresh", command=self._refresh_reminders
-        ).pack(side="left")
-        self._reminder_status = ttk.Label(frame, text="", wraplength=460)
-        self._reminder_status.pack(pady=(6, 0), anchor="w")
-
-    def _refresh_reminders(self) -> None:
-        self._bridge.post_reminders()
-
-    def _show_reminders(self, rows: tuple[tuple[str, str], ...]) -> None:
-        self._reminder_rows = rows
-        self._reminder_list.delete(0, "end")
-        if not rows:
-            self._reminder_list.insert("end", "(no pending reminders)")
-            return
-        for content, due in rows:
-            self._reminder_list.insert("end", f"{content} — due {due}")
-
-    def _add_reminder(self) -> None:
-        content = self._reminder_content.get().strip()
-        due = self._reminder_due.get().strip()
-        if not content or not due:
-            self._reminder_status.configure(
-                text="A reminder needs both a message and a due time."
-            )
-            return
-        self._bridge.post_reminder_add(content, due)
-        self._reminder_content.delete(0, "end")
-        self._reminder_due.delete(0, "end")
-
-    def _cancel_reminder(self) -> None:
-        selected = self._reminder_list.curselection()
-        if not selected or selected[0] >= len(self._reminder_rows):
-            self._reminder_status.configure(
-                text="No reminder is selected. Pick one from the list first."
-            )
-            return
-        content, _due = self._reminder_rows[selected[0]]
-        self._bridge.post_reminder_cancel(content)
-
     # ---------------------------------------------------------- history
 
     def _build_history_section(self, parent: ttk.Frame) -> None:
@@ -1492,7 +1513,6 @@ class StellaWindow:
             ("OpenAI base URL", settings.openai_base_url or "", False),
             ("Ollama base URL", settings.ollama_base_url, False),
             ("Memory DB", settings.memory_db, False),
-            ("Reminders DB", settings.reminders_db, False),
             ("Workspace", settings.workspace, False),
         ):
             row = ttk.Frame(frame)
@@ -1615,6 +1635,28 @@ class StellaWindow:
             ),
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)
+        ttk.Checkbutton(
+            frame,
+            text="Wake word (always-open microphone)",
+            variable=self._wake_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text=(
+                "Say \"hey Jarvis\" and Stella starts listening, so no "
+                "button press is needed. The microphone stays open for a "
+                "local detector only: it classifies frames and records "
+                "nothing until the phrase fires, and nothing at all is "
+                "kept when it does not. One confirmed phrase is exactly a "
+                "Listen press — it grants no authority, and it never "
+                "answers an approval dialog for you. Needs the "
+                "stella[wake] extra and the models under ~/models/"
+                "openwakeword; without them the box simply does nothing."
+            ),
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -1699,13 +1741,17 @@ class StellaWindow:
             ollama_base_url=fields["Ollama base URL"].get().strip()
             or DEFAULT_OLLAMA_BASE_URL,
             memory_db=fields["Memory DB"].get().strip(),
-            reminders_db=fields["Reminders DB"].get().strip(),
             workspace=fields["Workspace"].get().strip(),
             transcripts_enabled=self._transcripts_var.get(),
             semantic_memory_enabled=self._semantic_var.get(),
             os_tools_enabled=self._os_tools_var.get(),
             outline_tools_enabled=self._outline_tools_var.get(),
             web_tools_enabled=self._web_tools_var.get(),
+            # The saved choice and the mode this session runs are one
+            # decision, so Apply moves both: the checkbox is what the
+            # owner wants, and a rebuild arms or stops the ear from it.
+            wake_word_enabled=self._wake_var.get(),
+            wake_word="on" if self._wake_var.get() else "off",
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],

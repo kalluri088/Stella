@@ -20,6 +20,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from platformdirs import user_config_dir
+
+from stella.portable import harden_private_file
+
 PERSONA_FILE_NAME = "persona.md"
 ADDONS_FILE_NAME = "persona.addons.md"
 
@@ -148,14 +152,20 @@ class PersonaPaths:
 
 
 def persona_directory() -> Path:
-    """The user-owned persona home: $STELLA_PERSONA_DIR or XDG config."""
+    """The user-owned persona home: $STELLA_PERSONA_DIR or the platform's
+    per-user config directory.
+
+    On Linux that is ``$XDG_CONFIG_HOME/stella`` falling back to
+    ``~/.config/stella``, which is where existing personas already live —
+    ``platformdirs`` implements exactly the XDG rule here, so nothing
+    moves. On the other platforms it resolves to their own config
+    location instead of inventing a POSIX one.
+    """
 
     override = os.environ.get("STELLA_PERSONA_DIR", "").strip()
     if override:
         return Path(override).expanduser()
-    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    base = Path(config_home) if config_home else Path.home() / ".config"
-    return base / "stella"
+    return Path(user_config_dir("stella", appauthor=False))
 
 
 class PersonaLoader:
@@ -732,6 +742,12 @@ def replace_persona_file(
     with os.fdopen(descriptor, "wb") as file:
         file.write(data)
     os.replace(temporary, target)
+    # Persona files are style text, not credentials, but they are written
+    # with owner-only intent on every platform. On POSIX the 0o600 above
+    # already did it; the mode argument is decorative on NTFS, so ask the
+    # platform's own mechanism. Best-effort and deliberately unreported
+    # to the caller: this write holds no secret worth failing over.
+    harden_private_file(target)
     return snapshot_error
 
 

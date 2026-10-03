@@ -4,13 +4,23 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from stella.spoken_form import speakable
+
 MAX_SPEECH_TEXT_CHARS = 4000
 MIN_SPEECH_CHUNK_CHARS = 12
 
 
 @dataclass(frozen=True)
 class SpeechOutput:
-    """Bounded final response text prepared for speech rendering."""
+    """Bounded final response text prepared for speech rendering.
+
+    Construction is the one place visible markup becomes spoken text: a
+    provider receives what :func:`stella.spoken_form.speakable` returns,
+    never the raw reply, so no engine is ever asked to read an asterisk
+    aloud. The words are the reply's own. A reply made entirely of
+    decoration keeps its original form rather than becoming an empty
+    utterance, because silence would look like a broken provider.
+    """
 
     text: str
 
@@ -19,6 +29,8 @@ class SpeechOutput:
             raise ValueError("speech output requires non-empty text")
         if len(self.text) > MAX_SPEECH_TEXT_CHARS:
             raise ValueError("speech output exceeds the output bound")
+        spoken = speakable(self.text) or self.text.strip()
+        object.__setattr__(self, "text", spoken)
 
 
 @dataclass(frozen=True)

@@ -12,15 +12,19 @@ as soon as transcription is done, so nothing is persisted by default.
 
 from __future__ import annotations
 
+import array
 import json
 import os
 import queue
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
+import wave
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from stella.audio import TranscriptionProvider
 from stella.audio_output import (
@@ -29,8 +33,16 @@ from stella.audio_output import (
     SpeechOutput,
     SpeechProvider,
 )
-from stella.childproc import guarded_popen
+from stella.childproc import guarded_popen, recording_finalized_ok
 from stella.context import InputModality, InputPart
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    # The tap imports VoiceError from here, so this direction stays a
+    # typing-only edge: the recorder takes frames from a subscriber, it
+    # never reaches back into capture management.
+    from stella.mic_tap import MicTap, TapClient
 
 __all__ = [
     "CommandSpeechProvider",
@@ -42,10 +54,21 @@ __all__ = [
     "ResidentSpeechProvider",
     "SubprocessPlayer",
     "SubprocessRecorder",
+    "TapRecorder",
     "VoiceError",
+    "default_speech_worker",
+    "is_transcription_junk",
+    "voxtype_transcript",
 ]
 
 RECORD_BINARIES = ("pw-record", "arecord")
+# Every capture on this machine is the same shape: the 16 kHz mono 16-bit
+# stream the local transcribers expect and the shared microphone tap
+# delivers. Pinning it explicitly is the difference between "a WAV file"
+# and a file the rest of Stella can actually read.
+CAPTURE_RATE = 16000
+CAPTURE_CHANNELS = 1
+CAPTURE_WIDTH = 2
 PLAY_COMMANDS = (
     lambda path: ["pw-play", path],
     lambda path: ["paplay", path],
@@ -56,6 +79,20 @@ PLAY_BINARIES = ("pw-play", "paplay", "aplay")
 
 class VoiceError(RuntimeError):
     """One friendly, user-facing voice failure. Never carries a trace."""
+
+
+def default_speech_worker() -> str:
+    """The resident synthesis worker Stella looks for on this machine.
+
+    The same home-relative convention as the wake models: a user places
+    the worker under ``~/tools`` and Stella finds it without a setting, a
+    search path or a package dependency. Nothing is installed here — the
+    probe only asks whether the file is executable.
+    """
+
+    return os.path.join(
+        os.path.expanduser("~"), "tools", "stella-speak-server"
+    )
 
 
 def _cancel_process_tree(process: subprocess.Popen) -> None:
@@ -151,9 +188,28 @@ class SubprocessRecorder(Recorder):
             self._directory = tempfile.mkdtemp(prefix=f"stella-voice-{os.getpid()}-")
             self._path = os.path.join(self._directory, "capture.wav")
             argv = (
-                ["pw-record", self._path]
+                [
+                    "pw-record",
+                    "--rate",
+                    str(CAPTURE_RATE),
+                    "--channels",
+                    str(CAPTURE_CHANNELS),
+                    self._path,
+                ]
                 if shutil.which("pw-record")
-                else ["arecord", "-q", "-f", "cd", "-t", "wav", self._path]
+                else [
+                    "arecord",
+                    "-q",
+                    "-f",
+                    "S16_LE",
+                    "-r",
+                    str(CAPTURE_RATE),
+                    "-c",
+                    str(CAPTURE_CHANNELS),
+                    "-t",
+                    "wav",
+                    self._path,
+                ]
             )
             try:
                 self._process = guarded_popen(
@@ -188,10 +244,13 @@ class SubprocessRecorder(Recorder):
             raise VoiceError(
                 f"Stella could not finish the recording ({error})."
             ) from error
-        # 44 bytes is a bare RIFF/WAVE header: nothing was captured.
-        if returncode not in (0, -signal.SIGINT, 2) or not os.path.exists(
-            path
-        ) or os.path.getsize(path) <= 44:
+        # One call decides whether the recorder finalized its file. The
+        # exit status is interpreted with this platform's conventions
+        # (POSIX reports death-by-signal as a negative code; Windows
+        # reports a console interrupt as an unsigned exit code) and the
+        # capture itself has to exist and be larger than a bare 44-byte
+        # RIFF/WAVE header. An unrecognised status fails closed.
+        if not recording_finalized_ok(returncode, path):
             self.dispose()
             raise VoiceError(
                 "The microphone produced no recording. Check that an input "
@@ -216,6 +275,143 @@ class SubprocessRecorder(Recorder):
             self._path = None
         if directory is not None:
             shutil.rmtree(directory, ignore_errors=True)
+
+
+class TapRecorder(Recorder):
+    """Records one clip from the shared microphone tap.
+
+    When Stella already keeps one capture open for the ears, a second
+    ``pw-record`` for push-to-talk is one more handle on the same device
+    and the classic "microphone is busy". This recorder takes frames from
+    the tap instead and writes the WAV itself, so the contract every
+    caller already relies on is unchanged: a private temporary path on
+    ``stop()``, removed by ``dispose()``, and the same honest failure
+    when nothing was captured.
+    """
+
+    def __init__(self, tap: MicTap) -> None:
+        self._tap = tap
+        self._client: TapClient | None = None
+        self._writer: wave.Wave_write | None = None
+        self._thread: threading.Thread | None = None
+        self._directory: str | None = None
+        self._path: str | None = None
+        self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        # The tap reports its own faults; a dead capture cannot record.
+        return not self._tap.failed
+
+    def start(self) -> None:
+        if not self.available():
+            raise VoiceError(
+                "The microphone is not available to Stella, so it cannot "
+                "be used for voice input."
+            )
+        with self._lock:
+            if self._thread is not None:
+                raise VoiceError("Stella is already listening.")
+            directory = tempfile.mkdtemp(prefix=f"stella-voice-{os.getpid()}-")
+            path = os.path.join(directory, "capture.wav")
+            client: TapClient | None = None
+            try:
+                client = self._tap.subscribe("recorder")
+                # The handle is not a local: the capture thread owns it
+                # until stop() or cancel() finalizes the file.
+                writer = wave.open(path, "wb")  # noqa: SIM115
+                writer.setnchannels(CAPTURE_CHANNELS)
+                writer.setsampwidth(CAPTURE_WIDTH)
+                writer.setframerate(CAPTURE_RATE)
+            except (OSError, ValueError, wave.Error, VoiceError) as error:
+                if client is not None:
+                    client.close()  # a failed open must not hold the tap
+                shutil.rmtree(directory, ignore_errors=True)
+                raise VoiceError(
+                    f"Stella could not start recording ({error})."
+                ) from error
+            self._directory = directory
+            self._path = path
+            self._client = client
+            self._writer = writer
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(client, writer),
+                name="stella-tap-recorder",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> str:
+        with self._lock:
+            thread, client, writer, path = (
+                self._thread,
+                self._client,
+                self._writer,
+                self._path,
+            )
+            self._thread = self._client = self._writer = None
+        if thread is None or writer is None or path is None:
+            raise VoiceError("Stella is not listening.")
+        # Leaving the tap ends the frame stream, so the writer thread
+        # finishes on its own and cannot be writing while the header is
+        # finalized.
+        if client is not None:
+            client.close()
+        thread.join(timeout=2)
+        if thread.is_alive():  # pragma: no cover - a wedged frame source
+            self.dispose()
+            raise VoiceError("Stella could not finish the recording.")
+        try:
+            writer.close()
+        except OSError as error:
+            self.dispose()
+            raise VoiceError(
+                f"Stella could not finish the recording ({error})."
+            ) from error
+        # Same conclusion the subprocess recorder reaches, same fail
+        # closed rule: no usable file means nothing goes to the model.
+        if not recording_finalized_ok(0, path):
+            self.dispose()
+            raise VoiceError(
+                "The microphone produced no recording. Check that an input "
+                "device is connected and not busy."
+            )
+        return path
+
+    def cancel(self) -> None:
+        with self._lock:
+            thread, client, writer = self._thread, self._client, self._writer
+            self._thread = self._client = self._writer = None
+        if client is not None:
+            client.close()
+        if thread is not None:
+            thread.join(timeout=2)
+        if writer is not None:
+            try:
+                writer.close()
+            except OSError as error:
+                del error  # the file is being thrown away anyway
+        self.dispose()
+
+    def dispose(self) -> None:
+        with self._lock:
+            directory, self._directory = self._directory, None
+            self._path = None
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    @staticmethod
+    def _run(client: TapClient, writer: wave.Wave_write) -> None:
+        # One subscriber reads one frame at a time, so a whole frame is
+        # what ``read()`` returns; ``b""`` is the tap saying it is done.
+        while True:
+            frame = client.read()
+            if not frame:
+                return
+            try:
+                writer.writeframes(frame)
+            except (OSError, wave.Error):  # pragma: no cover - disk gone
+                return
 
 
 class SubprocessPlayer(Player):
@@ -284,21 +480,82 @@ class SubprocessPlayer(Player):
                 del error
 
 
+# The lines a local Whisper model invents over silence or over the tail of
+# a recording. Matching is on the whole transcript, never a substring, so a
+# real request that happens to contain one of these words survives: no
+# confidence score, no model, no new dependency. Trailing punctuation is
+# stripped on both sides, so these are written in their bare form.
+_TRANSCRIPTION_NOISE_LINES = frozenset(
+    {
+        "",
+        "you",
+        "thanks",
+        "thank you",
+        "thanks for watching",
+        "thank you for watching",
+        "[music]",
+        "(upbeat music)",
+        "[applause]",
+        "[inaudible]",
+    }
+)
+
+
+def is_transcription_junk(text: str) -> bool:
+    """True for the filler a transcriber produces when nobody spoke."""
+
+    heard = text.strip().casefold().rstrip(".!?")
+    return heard in _TRANSCRIPTION_NOISE_LINES
+
+
+def voxtype_transcript(stdout: str) -> str:
+    """Return only the transcript from a ``voxtype -q`` run.
+
+    voxtype's quiet flag moves its ``INFO`` log to stderr but still prints
+    a progress block on stdout — the file it loaded, the format it read it
+    as, the resample and processing lines — then a blank line and the
+    words. That block is the tool narrating its own work, not something
+    anybody said; read verbatim it would enter the conversation as user
+    text on every spoken turn. Output without a blank line is passed
+    through unchanged, since a run that printed no block is already only
+    the transcript (possibly empty, which the junk filter handles).
+    """
+
+    _progress, separator, words = stdout.partition("\n\n")
+    return words if separator else stdout
+
+
 class CommandTranscriptionProvider(TranscriptionProvider):
     """Runs a local command over the recorded file and reads its stdout.
 
     ``template`` is an argv list where ``"{input}"`` is replaced by the
     audio path, e.g. ``["whisper-cli", "-m", "model.bin", "{input}"]``.
     Arguments are passed without a shell, so no quoting can be injected.
+    ``name`` is what the user is told is transcribing them.
+
+    ``extract`` is optional and only ever supplied for the built-in
+    engine. A command the owner wrote themselves is documented as
+    "prints the transcript on stdout", so its stdout is the transcript
+    and nothing else; a tool that interleaves its own progress reporting
+    is Stella's problem to solve, not a licence to reinterpret the
+    owner's bytes.
     """
 
-    def __init__(self, template: list[str], timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        template: list[str],
+        timeout: float = 120.0,
+        name: str = "a local command",
+        extract: Callable[[str], str] | None = None,
+    ) -> None:
         if not template or not any("{input}" in part for part in template):
             raise ValueError(
                 "a transcription command must reference {input}"
             )
         self._template = list(template)
         self._timeout = timeout
+        self.name = name
+        self._extract = extract
         self._process: subprocess.Popen[str] | None = None
         self._cancel_requested = False
         self._lock = threading.Lock()
@@ -367,7 +624,7 @@ class CommandTranscriptionProvider(TranscriptionProvider):
             raise VoiceError("Local transcription was cancelled.")
         if process.returncode != 0:
             raise VoiceError("Local transcription failed.")
-        return stdout
+        return stdout if self._extract is None else self._extract(stdout)
 
 
 class OpenAITranscriptionProvider(TranscriptionProvider):
@@ -375,11 +632,22 @@ class OpenAITranscriptionProvider(TranscriptionProvider):
 
     Only used when the user selects it (default ``auto`` falls back to it
     when an API key is configured); ``off`` disables it entirely.
+
+    ``timeout`` bounds the request (``STELLA_TRANSCRIPTION_TIMEOUT``):
+    without it a stalled cloud call held the microphone's turn open
+    indefinitely, which is exactly the wait a user cannot cancel.
     """
 
-    def __init__(self, client: object, model: str = "whisper-1") -> None:
+    def __init__(
+        self,
+        client: object,
+        model: str = "whisper-1",
+        timeout: float = 30.0,
+    ) -> None:
         self._client = client
         self._model = model
+        self._timeout = timeout
+        self.name = f"cloud transcription ({model})"
 
     def transcribe(self, audio: InputPart) -> str:
         if audio.modality is not InputModality.AUDIO:
@@ -389,7 +657,9 @@ class OpenAITranscriptionProvider(TranscriptionProvider):
         try:
             with open(audio.reference, "rb") as handle:
                 result = self._client.audio.transcriptions.create(  # type: ignore[attr-defined]
-                    model=self._model, file=handle
+                    model=self._model,
+                    file=handle,
+                    timeout=self._timeout,
                 )
         except VoiceError:
             raise
@@ -511,7 +781,15 @@ class ResidentSpeechProvider(SpeechProvider):
     spot; the next sentence starts a fresh one. Nothing a worker says
     is trusted beyond "the file exists at the path we chose": the
     artifact reference is this provider's own bounded temp directory,
-    never a path from the worker's reply.
+    never a path from the worker's reply. That file is then opened
+    and shape-checked before the artifact is returned: unreadable,
+    zero-frame, sub-frame or peak-silent output raises VoiceError
+    the same way a broken worker would, and a well-shaped PCM s16
+    mono file has its leading and trailing silence trimmed and its
+    edges linearly faded so the first syllable lands without a
+    click. A valid-but-unsupported shape is passed through untouched
+    rather than rejected — this check exists to catch a broken
+    worker, not to police every WAV a future worker might produce.
     """
 
     def __init__(
@@ -520,12 +798,21 @@ class ResidentSpeechProvider(SpeechProvider):
         *,
         timeout: float = 60.0,
         ready_timeout: float = 180.0,
+        voice: str | None = None,
+        speed: float | None = None,
     ) -> None:
         if not command:
             raise ValueError("a resident speech worker needs a command")
         self._command = list(command)
         self._timeout = timeout
         self._ready_timeout = ready_timeout
+        # Additive request fields, sent only when set. A worker that
+        # already chooses its own voice ignores the extra keys, so naming
+        # one here can never break an existing installation; it only makes
+        # a worker that reads them able to.
+        self._voice = voice
+        self._speed = speed
+        self._disposed = False
         self._directory = tempfile.mkdtemp(prefix=f"stella-speech-{os.getpid()}-")
         self._counter = 0
         self._request_id = 0
@@ -563,13 +850,20 @@ class ResidentSpeechProvider(SpeechProvider):
                 assert process.stdin is not None
                 self._request_id += 1
                 request_id = self._request_id
+                request = {
+                    "id": request_id,
+                    "text": bounded,
+                    "output": path,
+                }
+                # Additive: a worker that knows nothing about these keys
+                # ignores them and speaks as it always has, so naming a
+                # voice here is a request, never a requirement.
+                if self._voice is not None:
+                    request["voice"] = self._voice
+                if self._speed is not None:
+                    request["speed"] = self._speed
                 try:
-                    process.stdin.write(
-                        json.dumps(
-                            {"id": request_id, "text": bounded, "output": path}
-                        )
-                        + "\n"
-                    )
+                    process.stdin.write(json.dumps(request) + "\n")
                     process.stdin.flush()
                 except OSError as error:
                     self._retire_locked()
@@ -593,12 +887,36 @@ class ResidentSpeechProvider(SpeechProvider):
                 raise VoiceError(f"Resident speech failed ({detail}).")
             if not os.path.exists(path):
                 raise VoiceError("Resident speech produced no audio file.")
+            _inspect_speech_artifact(path)
             return SpeechArtifact(reference=path)
 
     def dispose(self) -> None:
         with self._lock:
+            self._disposed = True
             self._retire_locked()
         shutil.rmtree(self._directory, ignore_errors=True)
+
+    def prewarm(self) -> None:
+        """Pay the model load now, so the first reply does not wait for it.
+
+        Deliberately silent about failure: a worker that will not start is
+        reported by the first real synthesis, which has a user to tell. A
+        background thread that raised here would only print a traceback
+        nobody asked for. The disposed check is under the same lock
+        ``dispose()`` takes to retire the worker, so a warm-up that loses
+        the race cannot leave a process behind.
+        """
+
+        try:
+            with self._lock:
+                if self._disposed:
+                    return
+                self._ensure_worker_locked()
+        except Exception:  # noqa: BLE001 - best effort, never user-visible
+            # Includes VoiceError: a worker that will not start is the
+            # first real synthesis's message to deliver, not this
+            # thread's — and a warm-up thread has no one to tell.
+            return
 
     def _ensure_worker_locked(self) -> None:
         if self._process is not None and self._process.poll() is None:
@@ -703,6 +1021,167 @@ def _json_line(raw: str | None) -> dict | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+# A resident worker's reply is a promise about a file, not the file
+# itself: the shape and loudness checks below are what turn "the worker
+# said ok" into "the user heard something". The numbers match what the
+# local voice research surfaced for Kokoro-shaped output — 10 ms of
+# leading silence is inside the audible onset, 25/15 ms of safety pad
+# keeps the trim from clipping consonants, and 15/10 ms linear fades
+# kill the click a hard boundary would make. They are fixed here, not
+# configurable: this is a correctness rule, not a personality setting.
+_ARTIFACT_MIN_SECONDS = 0.01
+_ARTIFACT_PEAK_SILENCE_RATIO = 0.005
+_ARTIFACT_TRIM_SILENCE_RATIO = 0.01
+_ARTIFACT_LEADING_PAD_SECONDS = 0.025
+_ARTIFACT_TRAILING_PAD_SECONDS = 0.015
+_ARTIFACT_FADE_IN_SECONDS = 0.015
+_ARTIFACT_FADE_OUT_SECONDS = 0.01
+_ARTIFACT_MIN_SURVIVING_SECONDS = 0.05
+
+
+def _full_scale(sampwidth: int) -> int | None:
+    """Signed peak for a PCM sampwidth, or None if we do not decode it."""
+
+    return {1: 128, 2: 32768, 4: 2147483648}.get(sampwidth)
+
+
+def _decode_pcm(data: bytes, sampwidth: int):
+    """Return a signed sequence for peak scanning, or None if unsupported."""
+
+    if sampwidth == 1:
+        return [b - 128 for b in data]
+    if sampwidth == 2:
+        arr = array.array("h")
+        arr.frombytes(data)
+        if sys.byteorder != "little":
+            arr.byteswap()
+        return arr
+    if sampwidth == 4:
+        arr = array.array("i")
+        arr.frombytes(data)
+        if sys.byteorder != "little":
+            arr.byteswap()
+        return arr
+    return None
+
+
+def _apply_fade(samples, start: int, count: int, direction: str) -> None:
+    """Ramp `count` samples linearly, in from silence or out to silence.
+
+    A one-sample or zero-sample fade is a no-op: the click it prevents is
+    at least as loud as the fade would be, and dividing by a zero-length
+    ramp is a bug, not a feature.
+    """
+
+    if count <= 1:
+        return
+    if direction == "in":
+        for k in range(count):
+            samples[start + k] = (samples[start + k] * k) // count
+    else:
+        for k in range(count):
+            gain = count - 1 - k
+            samples[start + k] = (samples[start + k] * gain) // (count - 1)
+
+
+def _inspect_speech_artifact(path: str) -> None:
+    """Reject silent or truncated worker output; trim/fade PCM s16 mono.
+
+    The output side of the microphone: a WAV the pipeline can play is
+    not the same claim as audio the user can hear, and today's silent
+    bug class is a worker that returns ``ok`` with a zero-byte body, a
+    bare RIFF header, or a full file of samples below audibility. Each
+    of those is reported as a VoiceError so app.py's D2 degradation
+    rule takes over (text reply, no false "speaking" state) instead of
+    the pipeline playing nothing while the dot says Stella is talking.
+
+    For a well-shaped PCM s16 mono file — which is what Kokoro
+    actually produces — the artifact is additionally trimmed of
+    leading and trailing silence and given linear edge fades. Any
+    other shape (stereo, 24-bit, compressed) is validated and passed
+    through: this is a correctness fix, not a rewriting service.
+    """
+
+    try:
+        with wave.open(path, "rb") as source:
+            framerate = source.getframerate()
+            nchannels = source.getnchannels()
+            sampwidth = source.getsampwidth()
+            nframes = source.getnframes()
+            comptype = source.getcomptype()
+            data = source.readframes(nframes)
+    except (wave.Error, OSError, EOFError) as error:
+        raise VoiceError(
+            "Resident speech produced an unreadable audio file."
+        ) from error
+
+    if (
+        framerate <= 0
+        or nframes == 0
+        or nframes < framerate * _ARTIFACT_MIN_SECONDS
+    ):
+        raise VoiceError("Resident speech produced only silence.")
+
+    scale = _full_scale(sampwidth)
+    if scale is None:
+        return  # shape we do not decode: file exists and is a real WAV
+    samples = _decode_pcm(data, sampwidth)
+    if samples is None:
+        return
+    peak = max((abs(int(s)) for s in samples), default=0)
+    if peak < scale * _ARTIFACT_PEAK_SILENCE_RATIO:
+        raise VoiceError("Resident speech produced only silence.")
+
+    if nchannels != 1 or sampwidth != 2 or comptype != "NONE":
+        return  # validated but not the trimmable shape
+
+    arr = samples  # already an array("h") at native byte order for us
+    trim_threshold = int(scale * _ARTIFACT_TRIM_SILENCE_RATIO)
+    first = next(
+        (i for i, s in enumerate(arr) if abs(int(s)) >= trim_threshold),
+        None,
+    )
+    if first is None:
+        # Peak scan already said audible, so this is unreachable in
+        # practice; raise anyway rather than rewrite a file we cannot
+        # locate the boundaries of.
+        raise VoiceError("Resident speech produced only silence.")
+    last = next(
+        i
+        for i in range(len(arr) - 1, -1, -1)
+        if abs(int(arr[i])) >= trim_threshold
+    )
+    leading_pad = int(framerate * _ARTIFACT_LEADING_PAD_SECONDS)
+    trailing_pad = int(framerate * _ARTIFACT_TRAILING_PAD_SECONDS)
+    start = max(0, first - leading_pad)
+    end = min(len(arr), last + 1 + trailing_pad)
+    min_surviving = int(framerate * _ARTIFACT_MIN_SURVIVING_SECONDS)
+    if end - start < min_surviving:
+        return  # too short for a trim to leave anything worth fading
+
+    trimmed = arr[start:end]
+    fade_in = min(
+        int(framerate * _ARTIFACT_FADE_IN_SECONDS), len(trimmed) // 2
+    )
+    fade_out = min(
+        int(framerate * _ARTIFACT_FADE_OUT_SECONDS), len(trimmed) // 2
+    )
+    _apply_fade(trimmed, 0, fade_in, "in")
+    _apply_fade(trimmed, len(trimmed) - fade_out, fade_out, "out")
+    if sys.byteorder != "little":
+        trimmed.byteswap()
+    try:
+        with wave.open(path, "wb") as sink:
+            sink.setnchannels(nchannels)
+            sink.setsampwidth(sampwidth)
+            sink.setframerate(framerate)
+            sink.writeframes(trimmed.tobytes())
+    except (wave.Error, OSError) as error:
+        raise VoiceError(
+            "Resident speech artifact could not be finalized."
+        ) from error
 
 
 class OpenAISpeechProvider(SpeechProvider):

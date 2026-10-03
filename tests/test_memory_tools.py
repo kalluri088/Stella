@@ -52,7 +52,7 @@ def test_memory_write_stores_a_new_fact_and_reports_a_write_action() -> None:
     # Dogfood blocker: the memory_write answer-field route failed ~3/4 of the
     # time with the local 4B model (wrong tool or a silent do_nothing on an
     # explicit "remember" command). The tool route gives the model the same
-    # reliable reach it has for file and reminder tools.
+    # reliable reach it has for file and outline tools.
     memory = InMemoryMemory()
 
     result = MemoryWriteTool(memory).execute({"content": TEA})

@@ -1,8 +1,8 @@
 """Shared application layer used by both the CLI and the graphical UI.
 
-The UI is an interface to Stella, never a second Stella: every turn,
-memory edit, and reminder change here flows through the same trusted core
-(``Stella``, ``ToolDispatcher``, ``Memory``, ``ReminderStore``) that the CLI
+The UI is an interface to Stella, never a second Stella: every turn and
+memory edit here flows through the same trusted core
+(``Stella``, ``ToolDispatcher``, ``Memory``) that the CLI
 already uses. This module adds no new authorization path; it only reuses
 existing trusted operations, serialises access onto one worker thread, and
 maps existing ``ToolResult``/``ActionReceipt`` semantics onto honest
@@ -11,18 +11,18 @@ user-facing statuses.
 
 from __future__ import annotations
 
-import datetime as dt
 import itertools
 import os
 import queue
 import random
-import shlex
 import shutil
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from platformdirs import user_data_dir
 
 from stella import provider_keys
 from stella.audio import TranscriptionProvider
@@ -34,6 +34,7 @@ from stella.audio_output import (
 from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
 from stella.childproc import sweep_orphaned_children
+from stella.commands import action_history_lines
 from stella.context import (
     MAX_INPUT_CONTENT_CHARS,
     Context,
@@ -42,6 +43,7 @@ from stella.context import (
     InputPart,
     InputProvenance,
 )
+from stella.desktop import build_desktop_tools
 from stella.history import SQLiteActionHistory
 from stella.llama_server import (
     DEFAULT_LLAMA_SERVER_BINARY,
@@ -56,6 +58,7 @@ from stella.llm import (
     run_cancellable,
 )
 from stella.memory import Memory, MemoryItem, SQLiteMemory
+from stella.mic_tap import MicTap
 from stella.minilm_embedding import (
     MiniLMEmbeddingProvider,
     minilm_extra_available,
@@ -63,14 +66,13 @@ from stella.minilm_embedding import (
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL, OllamaLLMClient
 from stella.ollama_embedding import OllamaEmbeddingProvider
 from stella.openai_client import OpenAILLMClient
-from stella.os_tools import build_desktop_tools
 from stella.outline_tools import build_outline_tools
 from stella.persona import (
     PersonaLoader,
     ReflectionStore,
     TranscriptRecorder,
 )
-from stella.reminders import ReminderStore, SQLiteReminderStore
+from stella.portable import split_command
 from stella.semantic_memory import (
     EmbeddingProvider,
     LocalHashEmbeddingProvider,
@@ -95,9 +97,6 @@ from stella.tools import (
     MemoryWriteTool,
     NetworkReadTool,
     PersonaEditTool,
-    ReminderCancelTool,
-    ReminderCreateTool,
-    ReminderListTool,
     SystemInfoTool,
     ToolApproval,
     ToolDispatcher,
@@ -116,7 +115,19 @@ from stella.voice import (
     ResidentSpeechProvider,
     SubprocessPlayer,
     SubprocessRecorder,
+    TapRecorder,
     VoiceError,
+    default_speech_worker,
+    is_transcription_junk,
+    voxtype_transcript,
+)
+from stella.wake import (
+    DEFAULT_WAKE_MODEL,
+    WakeEndpoint,
+    WakeListener,
+    WakeSpotter,
+    WakeUtteranceEar,
+    default_wake_model_dir,
 )
 from stella.web_tools import build_web_tools
 
@@ -124,7 +135,6 @@ __all__ = [
     "ApprovalBroker",
     "MemoryPanel",
     "OutcomeStatus",
-    "ReminderPanel",
     "StellaApplication",
     "StellaBridge",
     "StellaSession",
@@ -229,9 +239,9 @@ class TurnOutcome:
 class StellaSession:
     """One continuous conversation shared by the CLI and the UI.
 
-    It only orchestrates calls that the CLI already made inline: the
-    trusted due-reminder check (per interaction, plus the UI bridge's
-    idle tick) and ``Stella.process``.
+    It only orchestrates calls that the CLI already made inline:
+    ``Stella.process``, the Outline reminder sweep that runs ahead of an
+    interaction, and the conversation history that surrounds them.
     """
 
     def __init__(
@@ -247,15 +257,18 @@ class StellaSession:
         # influences a turn. None (the default) means no recording.
         self.transcripts = transcripts
 
-    def check_due_reminders(
-        self, now: dt.datetime | None = None
-    ) -> tuple[ReminderDelivery, ...]:
+    def check_due_reminders(self) -> tuple[ReminderDelivery, ...]:
+        """Claim whatever Outline reports as due, without consulting the Brain.
+
+        Stella keeps no reminder store, so this is one read of Outline's
+        claim funnel — and it returns nothing at all when that pump was
+        never armed.
+        """
+
         if not isinstance(self.stella, Stella):
-            # Minimal test or embedding stubs may not carry the reminder flow.
+            # Minimal test or embedding stubs may not carry the flow.
             return ()
-        if now is None:
-            now = dt.datetime.now(dt.UTC)
-        return self.stella.check_due_reminders(now)
+        return self.stella.check_due_reminders()
 
     def run_turn(
         self,
@@ -341,8 +354,17 @@ class StellaSession:
 
 VOICE_MODES = {"auto", "openai", "off"}
 BARGE_MODES = {"auto", "off", "on"}
+# Stricter than barge-in: an always-open microphone is exactly the
+# privacy line docs/VOICE.md draws, so wake starts only on an explicit
+# "on" — there is no "auto" that could half-engage it by accident.
+WAKE_MODES = {"off", "on"}
 ENV_ON = {"1", "true", "on", "yes"}
 ENV_OFF = {"0", "false", "off", "no"}
+# The one sentence every path that will not open the microphone says, so
+# a muted Stella never answers a press with silence.
+_MIC_MUTED_MESSAGE = (
+    "The microphone is muted. Turn mute off to speak with Stella."
+)
 
 
 def _env_toggle(name: str) -> bool | None:
@@ -407,8 +429,8 @@ def os_tools_env_override() -> bool | None:
     """The STELLA_OS_TOOLS override, or None when it says nothing.
 
     Desktop tools see and touch the whole screen, so they are strictly
-    opt-in; registration is additionally gated on a real Hyprland
-    session (stella.os_tools), never on this flag alone.
+    opt-in; registration is additionally gated on a usable desktop
+    session (stella.desktop), never on this flag alone.
     """
 
     return _env_toggle("STELLA_OS_TOOLS")
@@ -437,6 +459,24 @@ def web_tools_env_override() -> bool | None:
     return _env_toggle("STELLA_WEB")
 
 
+def wake_env_override() -> bool | None:
+    """The STELLA_WAKE_WORD override, or None when it says nothing.
+
+    Detection holds the microphone open while nobody is speaking to Stella,
+    so it is never on by default and never on by accident: this variable
+    overrides the saved checkbox for one launch, it does not replace it.
+    Unlike the other toggles this one is a named mode, so only ``on`` and
+    ``off`` mean anything — an unset variable says nothing, and anything
+    else is rejected at launch by ``_environment_fields``, which reads the
+    identical variable.
+    """
+
+    raw = os.environ.get("STELLA_WAKE_WORD", "").strip().casefold()
+    if not raw:
+        return None
+    return raw == "on"
+
+
 SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
 
 
@@ -459,28 +499,25 @@ def semantic_provider_env_override() -> str | None:
 
 
 def default_data_dir() -> Path:
-    """Stella's persistent-state directory following the XDG base spec.
+    """Stella's persistent-state directory, per this platform's convention.
 
     Desktop launchers start applications from an arbitrary working
     directory, so state must not be relative to the current directory or
-    restarting would appear to lose memory and reminders.
+    restarting would appear to lose memory.
+
+    ``platformdirs`` implements the XDG base spec on Linux — ``$XDG_DATA_HOME``
+    or ``~/.local/share``, with ``stella`` appended and no author
+    subdirectory — so an existing Linux user's databases are still found
+    at exactly the path they were written to. On macOS and Windows the
+    same call resolves to those platforms' own per-user data locations
+    instead of inventing a POSIX one.
     """
 
-    return (
-        Path(
-            os.environ.get("XDG_DATA_HOME")
-            or os.path.expanduser("~/.local/share")
-        )
-        / "stella"
-    )
+    return Path(user_data_dir("stella", appauthor=False))
 
 
 def default_memory_db() -> str:
     return str(default_data_dir() / "stella_memory.db")
-
-
-def default_reminders_db() -> str:
-    return str(default_data_dir() / "stella_reminders.db")
 
 
 def default_history_db() -> str:
@@ -505,6 +542,14 @@ def default_vad_model() -> str:
     A ~2 MB model file, not a pip package: installing ``silero-vad``
     would drag CUDA torch in with it (research report 08 measured that
     5.4 GB trap). Stella runs the file itself through onnxruntime.
+
+    Deliberately under the user's home rather than the platform data
+    directory: the file is downloaded by hand, and ``Path.home()`` is the
+    one location that means the right thing on all three platforms
+    (``/home/user``, ``/Users/user``, ``C:\\Users\\user``), so an existing
+    Linux layout does not move and a Windows user's profile folder needs
+    no POSIX translation. ``STELLA_VAD_MODEL`` overrides it for anyone
+    who keeps the model elsewhere.
     """
 
     return str(Path.home() / "models" / "silero" / "silero_vad.onnx")
@@ -526,7 +571,6 @@ class StellaSettings:
     llama_binary: str = DEFAULT_LLAMA_SERVER_BINARY
     llama_port: int = DEFAULT_LLAMA_SERVER_PORT
     memory_db: str = field(default_factory=default_memory_db)
-    reminders_db: str = field(default_factory=default_reminders_db)
     history_db: str = field(default_factory=default_history_db)
     transcripts_db: str = field(default_factory=default_transcripts_db)
     transcripts_enabled: bool = False
@@ -535,6 +579,9 @@ class StellaSettings:
     os_tools_enabled: bool = False
     outline_tools_enabled: bool = False
     web_tools_enabled: bool = False
+    # The saved half of the wake-word opt-in. ``wake_word`` below stays the
+    # mode this launch actually runs, so the two never disagree.
+    wake_word_enabled: bool = False
     semantic_provider: str = "local-hash"
     semantic_embed_model: str = "nomic-embed-text"
     workspace: str = field(default_factory=default_workspace)
@@ -542,14 +589,23 @@ class StellaSettings:
     voice_speech: str = "auto"
     transcription_model: str = "whisper-1"
     transcription_command: str | None = None
+    transcription_engine: str = "whisper"
+    transcription_timeout: float = 30.0
     speech_model: str = "tts-1"
     speech_voice: str = "alloy"
     speech_command: str | None = None
+    speech_local_voice: str | None = None
+    speech_local_speed: float | None = None
     speech_resident: bool = False
     voice_barge_in: str = "auto"
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
     barge_threshold: float = 0.5
+    wake_word: str = "off"
+    wake_model: str = DEFAULT_WAKE_MODEL
+    wake_model_dir: str = field(default_factory=default_wake_model_dir)
+    wake_source: str | None = None
+    wake_threshold: float = 0.5
     decision_max_tokens: int | None = DEFAULT_DECISION_MAX_TOKENS
     answer_max_tokens: int | None = DEFAULT_ANSWER_MAX_TOKENS
     ollama_think: bool | None = None
@@ -597,6 +653,29 @@ class StellaSettings:
                 "STELLA_BARGE_THRESHOLD must be a speech probability "
                 "strictly between 0 and 1"
             )
+        wake_mode = os.environ.get("STELLA_WAKE_WORD", "off").casefold()
+        if wake_mode not in WAKE_MODES:
+            raise SystemExit("STELLA_WAKE_WORD must be 'on' or 'off'")
+        raw_wake_threshold = os.environ.get("STELLA_WAKE_THRESHOLD", "0.5")
+        try:
+            wake_threshold = float(raw_wake_threshold)
+        except ValueError:
+            wake_threshold = -1.0
+        if not 0.0 < wake_threshold < 1.0:
+            raise SystemExit(
+                "STELLA_WAKE_THRESHOLD must be a wake probability "
+                "strictly between 0 and 1"
+            )
+        raw_timeout = os.environ.get("STELLA_TRANSCRIPTION_TIMEOUT", "30")
+        try:
+            transcription_timeout = float(raw_timeout)
+        except ValueError:
+            transcription_timeout = -1.0
+        if not 0.0 < transcription_timeout <= 600.0:
+            raise SystemExit(
+                "STELLA_TRANSCRIPTION_TIMEOUT must be a timeout in seconds "
+                "between 0 and 600"
+            )
         raw_port = os.environ.get(
             "STELLA_LLAMA_SERVER_PORT", str(DEFAULT_LLAMA_SERVER_PORT)
         )
@@ -609,12 +688,37 @@ class StellaSettings:
                 "STELLA_LLAMA_SERVER_PORT must be a TCP port between "
                 "1 and 65535"
             )
+        raw_speed = os.environ.get("STELLA_SPEECH_LOCAL_SPEED")
+        if raw_speed is None:
+            speech_local_speed = None
+        else:
+            try:
+                speech_local_speed = float(raw_speed)
+            except ValueError:
+                speech_local_speed = -1.0
+            if not 0.0 < speech_local_speed <= 4.0:
+                raise SystemExit(
+                    "STELLA_SPEECH_LOCAL_SPEED must be a speech rate "
+                    "between 0 and 4"
+                )
+        transcription_engine = os.environ.get(
+            "STELLA_TRANSCRIPTION_ENGINE", "whisper"
+        )
+        # The name becomes one argv element after ``--engine`` in a command
+        # Stella builds itself, so an option-shaped or path-bearing value is
+        # a mistake worth refusing at launch rather than a flag to smuggle.
+        if (
+            not transcription_engine.strip()
+            or transcription_engine.startswith("-")
+            or any(bad in transcription_engine for bad in (" ", "\t", "/"))
+        ):
+            raise SystemExit(
+                "STELLA_TRANSCRIPTION_ENGINE must be a bare engine name "
+                "such as 'whisper'"
+            )
         return {
             "memory_db": os.environ.get(
                 "STELLA_MEMORY_DB", default_memory_db()
-            ),
-            "reminders_db": os.environ.get(
-                "STELLA_REMINDERS_DB", default_reminders_db()
             ),
             "history_db": os.environ.get(
                 "STELLA_HISTORY_DB", default_history_db()
@@ -643,9 +747,20 @@ class StellaSettings:
             "transcription_command": os.environ.get(
                 "STELLA_TRANSCRIPTION_COMMAND"
             ),
+            # The engine a detected local transcriber is told to use —
+            # voxtype's own engine names, not a model size (that stays in
+            # the tool's config).
+            "transcription_engine": transcription_engine,
+            "transcription_timeout": transcription_timeout,
             "speech_model": os.environ.get("STELLA_SPEECH_MODEL", "tts-1"),
             "speech_voice": os.environ.get("STELLA_SPEECH_VOICE", "alloy"),
             "speech_command": os.environ.get("STELLA_SPEECH_COMMAND"),
+            # Only a worker that reads these keys can honour them; the
+            # detected Kokoro worker today speaks its own built-in voice,
+            # so both stay None unless the owner says otherwise.
+            "speech_local_voice": os.environ.get("STELLA_SPEECH_LOCAL_VOICE")
+            or None,
+            "speech_local_speed": speech_local_speed,
             "speech_resident": _env_toggle("STELLA_SPEECH_RESIDENT") is True,
             "voice_barge_in": barge_mode,
             "vad_model": os.environ.get(
@@ -653,6 +768,16 @@ class StellaSettings:
             ),
             "barge_source": os.environ.get("STELLA_BARGE_SOURCE") or None,
             "barge_threshold": barge_threshold,
+            "wake_word": wake_mode,
+            "wake_model": (
+                os.environ.get("STELLA_WAKE_MODEL") or DEFAULT_WAKE_MODEL
+            ),
+            "wake_model_dir": (
+                os.environ.get("STELLA_WAKE_MODEL_DIR")
+                or default_wake_model_dir()
+            ),
+            "wake_source": os.environ.get("STELLA_WAKE_SOURCE") or None,
+            "wake_threshold": wake_threshold,
             "decision_max_tokens": _env_token_budget(
                 "STELLA_DECISION_MAX_TOKENS", DEFAULT_DECISION_MAX_TOKENS
             ),
@@ -681,6 +806,7 @@ class StellaSettings:
         os_tools_enabled: bool = False,
         outline_tools_enabled: bool = False,
         web_tools_enabled: bool = False,
+        wake_word_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -690,6 +816,17 @@ class StellaSettings:
         os_override = os_tools_env_override()
         outline_override = outline_tools_env_override()
         web_override = web_tools_env_override()
+        wake_override = wake_env_override()
+        # One decision with two spellings: the checkbox is what the owner
+        # saved, the mode is what this launch runs, and every consumer
+        # reads the mode. So the mode follows the bool — which is also how
+        # STELLA_WAKE_WORD wins for a single launch without rewriting the
+        # saved answer, in either direction.
+        wake_enabled = (
+            wake_word_enabled if wake_override is None else wake_override
+        )
+        environment = cls._environment_fields()
+        environment["wake_word"] = "on" if wake_enabled else "off"
         return cls(
             provider=provider,
             preset=preset,
@@ -721,7 +858,8 @@ class StellaSettings:
                 semantic_provider if provider_override is None
                 else provider_override
             ),
-            **cls._environment_fields(),
+            wake_word_enabled=wake_enabled,
+            **environment,
         )
 
     @classmethod
@@ -754,6 +892,7 @@ class StellaSettings:
             os_tools_enabled=os_tools_env_override() is True,
             outline_tools_enabled=outline_tools_env_override() is True,
             web_tools_enabled=web_tools_env_override() is True,
+            wake_word_enabled=wake_env_override() is True,
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
             ),
@@ -772,6 +911,11 @@ class StellaApplication:
     brain_server: LlamaBrainServer | None = None
     barge_in: BargeInListener | None = None
     barge_notice: str | None = None
+    wake: WakeListener | None = None
+    wake_ear: WakeUtteranceEar | None = None
+    wake_notice: str | None = None
+    voice_notice: str | None = None
+    mic_tap: MicTap | None = None
 
     def close(self) -> None:
         # The brain process is Stella's child: closing the application
@@ -782,14 +926,22 @@ class StellaApplication:
             # The ear is Stella's child too: its capture process ends
             # with the application, never outliving the window.
             self.barge_in.stop()
+        if self.wake is not None:
+            # Same rule for the always-armed wake ear: it can outlive a
+            # closed window only by being Stella's child, and it is not.
+            self.wake.stop()
+        if self.wake_ear is not None:
+            self.wake_ear.stop()
         if self.voice is not None:
             self.voice.dispose()
+        if self.mic_tap is not None:
+            # The shared capture is Stella's child as well, and it goes
+            # last: every consumer above has already handed back its
+            # subscription, so nothing is reading a pipe being closed.
+            self.mic_tap.stop()
         memory = self.session.stella.memory
         if isinstance(memory, SQLiteMemory):
             memory.close()
-        reminders = self.session.stella.reminders
-        if isinstance(reminders, SQLiteReminderStore):
-            reminders.close()
         history = self.session.stella.tools.history
         if isinstance(history, SQLiteActionHistory):
             history.close()
@@ -899,12 +1051,10 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # default state lives under XDG paths that do not exist on first run,
     # so ensure every configured location exists before opening it.
     Path(settings.memory_db).parent.mkdir(parents=True, exist_ok=True)
-    Path(settings.reminders_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.history_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.transcripts_db).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.workspace).mkdir(parents=True, exist_ok=True)
     memory = SQLiteMemory(settings.memory_db)
-    reminders = SQLiteReminderStore(settings.reminders_db)
     history = SQLiteActionHistory(settings.history_db, MAX_AUDIT_RECORDS)
     # Recording conversation text is strictly opt-in; the proposal queue
     # beside it is always available so a queued edit survives turning
@@ -945,9 +1095,6 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             MemoryWriteTool(memory),
             MemoryUpdateTool(memory),
             MemoryForgetTool(memory),
-            ReminderCreateTool(reminders),
-            ReminderListTool(reminders),
-            ReminderCancelTool(reminders),
             # Style data with its own write path: exactly the two persona
             # files, DANGEROUS, verified like every other mutation.
             PersonaEditTool(),
@@ -955,8 +1102,9 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         history=history,
     )
     # Desktop capabilities are doubly gated: an explicit opt-in flag and
-    # a real Hyprland session with the measured binaries (reports
-    # 03/11/13). Off or unavailable means the model never sees them.
+    # one adapter recognizing a real session with the binaries it needs
+    # (stella.desktop.registry). Off or unavailable means the model never
+    # sees them.
     if settings.os_tools_enabled:
         for tool in build_desktop_tools(os.environ):
             tools.register(tool)
@@ -979,13 +1127,8 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         tool=tools,
         memory=memory,
         max_tool_steps=2,
-        reminders=reminders,
         semantic_retriever=semantic_retriever,
     )
-    # The shared application backs the desktop UI too, so its session must
-    # not quote CLI-only instructions ("type 'exit'") in UI error messages.
-    # The interactive CLI loop builds its own StellaSession with the hint.
-    voice = build_voice(settings)
     # Barge-in is explicitly opt-in and its absence must never affect
     # anything else: an enabled-but-broken ear becomes one honest
     # message at startup (via the bridge), not a failed launch.
@@ -995,6 +1138,37 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         barge_in = build_barge_in(settings)
     except VoiceError as error:
         barge_notice = str(error)
+    # Wake word follows the barge-in rule: explicitly opt-in, and an
+    # enabled-but-broken ear is one honest startup message, never a
+    # failed launch.
+    wake: WakeListener | None = None
+    wake_ear: WakeUtteranceEar | None = None
+    wake_notice: str | None = None
+    mic_tap: MicTap | None = None
+    try:
+        mic_tap = build_mic_tap(settings)
+        wake = build_wake(settings, tap=mic_tap)
+        if wake is not None:
+            wake_ear = build_wake_ear(settings, tap=mic_tap)
+    except VoiceError as error:
+        wake = None
+        wake_ear = None
+        # A tap nothing subscribed to never opened a capture, so dropping
+        # it here costs nothing and leaves no child process behind.
+        mic_tap = None
+        wake_notice = str(error)
+    # The voice panel is built after the ears so push-to-talk can read
+    # their shared tap instead of opening a second handle on the same
+    # microphone. The shared application backs the desktop UI too, so its
+    # session must not quote CLI-only instructions ("type 'exit'") in UI
+    # error messages; the interactive CLI loop builds its own StellaSession
+    # with the hint.
+    voice = build_voice(settings, tap=mic_tap)
+    # Which transcriber is in use is a fact the owner is entitled to: a
+    # local engine and a cloud call look identical from the keyboard and
+    # are nothing like the same decision about the recording. Named once,
+    # at startup, by the provider's own name.
+    transcription_label = voice.transcription_label if voice else None
     # Last possible moment to spawn the brain: nothing after this can
     # fail and strand the process (stop() also runs inside a failed
     # start(), and close() owns it afterwards).
@@ -1012,6 +1186,15 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         brain_server=brain_server,
         barge_in=barge_in,
         barge_notice=barge_notice,
+        wake=wake,
+        wake_ear=wake_ear,
+        wake_notice=wake_notice,
+        voice_notice=(
+            f"Voice input uses {transcription_label}."
+            if transcription_label
+            else None
+        ),
+        mic_tap=mic_tap,
     )
 
 
@@ -1100,6 +1283,8 @@ class VoicePanel:
         self._input_notice = input_notice
         self._output_notice = output_notice
         self.speech_enabled = False
+        # Warmed once, and only after speech was asked for.
+        self._speech_warmed = False
 
     @property
     def input_available(self) -> bool:
@@ -1116,6 +1301,41 @@ class VoicePanel:
             and self._speech is not None
             and self._player.available()
         )
+
+    def prewarm_speech(self) -> None:
+        """Load a resident worker now, so the first spoken reply is not it.
+
+        The model load is several seconds and nothing about it is a
+        decision, so it happens on a background thread while the user does
+        something else. It is triggered by opting into spoken replies, not
+        at startup: a laptop whose voice output is off never pays to warm a
+        model it will not use. Failure stays silent — the first real
+        synthesis reports it to the turn that asked for speech.
+        """
+
+        if self._speech_warmed or not isinstance(
+            self._speech, ResidentSpeechProvider
+        ):
+            return
+        self._speech_warmed = True
+        threading.Thread(
+            target=self._speech.prewarm,
+            name="stella-speech-warmup",
+            daemon=True,
+        ).start()
+
+    @property
+    def transcription_label(self) -> str | None:
+        """What the user should be told is turning their voice into text.
+
+        A local transcriber and a cloud call are not the same decision —
+        one uploads — so which of them is in use is stated once per
+        session rather than left to be inferred from a misheard word.
+        """
+
+        if self._transcriber is None:
+            return None
+        return getattr(self._transcriber, "name", None)
 
     def start_listening(self) -> None:
         if self._recorder is None or self._transcriber is None:
@@ -1272,13 +1492,19 @@ class VoicePanel:
             provider_dispose()
 
 
-def build_voice(settings: StellaSettings) -> VoicePanel:
+def build_voice(
+    settings: StellaSettings, tap: MicTap | None = None
+) -> VoicePanel:
     """Assemble the local-first voice periphery; never raises at startup.
 
     A broken optional voice setting disables only that voice capability
     (the reason surfaces when voice is used) instead of preventing Stella
-    from starting: text chat, memory, actions and reminders must survive
+    from starting: text chat, memory and actions must survive
     a misconfigured transcription or speech command.
+
+    With a shared microphone tap the recorder reads frames from it;
+    without one it keeps its own capture subprocess. Either way the
+    panel sees the same ``Recorder`` contract.
     """
 
     try:
@@ -1288,7 +1514,9 @@ def build_voice(settings: StellaSettings) -> VoicePanel:
         sweep_orphaned_children()
     except Exception:  # noqa: BLE001, S110 - cleanup must not break voice
         pass
-    recorder = SubprocessRecorder()
+    recorder: Recorder = (
+        TapRecorder(tap) if tap is not None else SubprocessRecorder()
+    )
     player = SubprocessPlayer()
     input_notice: str | None = None
     output_notice: str | None = None
@@ -1349,6 +1577,84 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     )
 
 
+def build_mic_tap(settings: StellaSettings) -> MicTap | None:
+    """The one capture subprocess this site's microphone gets, if any.
+
+    Push-to-talk, the wake ear and its utterance watcher can all want
+    frames at the same moment, and three ``pw-record`` children on one
+    device is how a working microphone starts reporting itself busy. The
+    tap is shared by all three — but only when something listens while
+    Stella is idle, which today means wake. Barge-in arms while she
+    speaks, when no capture-based input is running, so it keeps its own
+    process and its own echo-cancelled source.
+
+    Constructing the tap opens nothing: the capture starts when the first
+    consumer subscribes and ends when the last one leaves.
+    """
+
+    if settings.wake_word == "off":
+        return None
+    try:
+        command = capture_command(settings.wake_source)
+    except ValueError as error:
+        raise VoiceError(str(error)) from error
+    return MicTap(command=command)
+
+
+def build_wake(
+    settings: StellaSettings, tap: MicTap | None = None
+) -> WakeListener | None:
+    """Assemble the wake-word ear, or None when the feature is off.
+
+    Unlike barge-in there is no ``auto``: an always-open microphone is
+    the one line the voice doctrine does not cross by default, so the
+    ear arms only when ``STELLA_WAKE_WORD`` says ``on``. The spotter is
+    re-armed at every :meth:`WakeListener.start`, so one wake phrase is
+    at most one wake however long it echoes.
+
+    Like :func:`build_barge_in` this raises :class:`VoiceError` when the
+    feature was asked for but cannot work (missing extra, missing ONNX
+    models): the reason surfaces once as a message instead of the ear
+    silently doing nothing forever.
+    """
+
+    if settings.wake_word == "off":
+        return None
+    spotter = WakeSpotter(
+        model_dir=settings.wake_model_dir,
+        model_name=settings.wake_model,
+        threshold=settings.wake_threshold,
+    )
+    return WakeListener(
+        feed=spotter.feed,
+        command=capture_command(settings.wake_source),
+        reset=spotter.reset,
+        tap=tap,
+    )
+
+
+def build_wake_ear(
+    settings: StellaSettings, tap: MicTap | None = None
+) -> WakeUtteranceEar:
+    """The hands-free endpointer for one wake-initiated capture.
+
+    It shares the push-to-talk microphone and the same local VAD the
+    barge-in ear uses; its only output is "the utterance finished" (or
+    "never arrived"), which is exactly a Stop- or Cancel-button press.
+    A missing VAD model raises here and degrades the whole wake feature
+    to one honest startup notice — endpointing without it would mean
+    every wake capture ran to its timeout.
+    """
+
+    vad = SileroVad(settings.vad_model)
+    return WakeUtteranceEar(
+        features=vad.features,
+        endpoint=WakeEndpoint(),
+        command=capture_command(settings.wake_source),
+        tap=tap,
+    )
+
+
 def _openai_speech_client(api_key: str) -> object:
     from openai import OpenAI
 
@@ -1361,17 +1667,47 @@ def _openai_speech_client(api_key: str) -> object:
 def _build_transcriber(
     settings: StellaSettings,
 ) -> TranscriptionProvider | None:
+    """Pick the one transcriber this configuration uses, local first.
+
+    The precedence is explicit command → a local transcriber already
+    installed → the cloud. A recording leaving the laptop is the last
+    resort, not the default, and ``STELLA_VOICE_TRANSCRIPTION=openai`` is
+    the one way to ask for it: naming the cloud skips the local branch
+    rather than falling through to it.
+    """
+
     if settings.voice_transcription == "off":
         return None
     if settings.transcription_command:
         return CommandTranscriptionProvider(
-            shlex.split(settings.transcription_command)
+            split_command(settings.transcription_command)
+        )
+    if settings.voice_transcription == "auto" and shutil.which("voxtype"):
+        # voxtype's ``--engine`` names an engine (whisper, parakeet, ...),
+        # not a model size: which Whisper model runs stays the tool's own
+        # configuration, and Stella does not reach into it. ``-q`` is a
+        # *global* flag and must precede the subcommand; even quiet,
+        # voxtype still prints a progress block ahead of the words, so
+        # the transcript is read out of that stdout rather than taken
+        # from it whole.
+        return CommandTranscriptionProvider(
+            [
+                "voxtype",
+                "-q",
+                "transcribe",
+                "--engine",
+                settings.transcription_engine,
+                "{input}",
+            ],
+            name=f"voxtype ({settings.transcription_engine})",
+            extract=voxtype_transcript,
         )
     voice_key = provider_keys.effective_api_key("openai")
     if settings.voice_transcription in {"auto", "openai"} and voice_key:
         return OpenAITranscriptionProvider(
             _openai_speech_client(voice_key),
             model=settings.transcription_model,
+            timeout=settings.transcription_timeout,
         )
     return None
 
@@ -1382,16 +1718,32 @@ def _build_speech_provider(
     if settings.voice_speech == "off":
         return None
     if settings.speech_command:
-        command = shlex.split(settings.speech_command)
+        command = split_command(settings.speech_command)
         if settings.speech_resident:
             # D2: one resident worker keeps the model loaded across
             # sentences; the per-sentence start-up floor of a plain
             # command provider is what users hear as inter-sentence
             # silence. Without a command there is nothing to keep
             # resident, so this path never applies to auto/espeak.
-            return ResidentSpeechProvider(command)
+            return ResidentSpeechProvider(
+                command,
+                voice=settings.speech_local_voice,
+                speed=settings.speech_local_speed,
+            )
         return CommandSpeechProvider(command)
     if settings.voice_speech == "auto":
+        worker = default_speech_worker()
+        if os.access(worker, os.X_OK):
+            # A worker the owner placed under ~/tools is the local answer
+            # before the robotic fallback: espeak is only reached when
+            # nothing better exists on the machine. The probe asks one
+            # question — may this file run — and starts nothing, so
+            # startup never waits for a model to load.
+            return ResidentSpeechProvider(
+                [worker],
+                voice=settings.speech_local_voice,
+                speed=settings.speech_local_speed,
+            )
         for binary in ("espeak-ng", "espeak"):
             if shutil.which(binary):
                 return CommandSpeechProvider(
@@ -1436,57 +1788,6 @@ class MemoryPanel:
         )
 
 
-class ReminderPanel:
-    """Trusted application-layer view over the existing reminder store.
-
-    Every mutation runs through the same ``Reminder*Tool`` implementations
-    (and therefore the same validation and honest output wording) that the
-    approved tool path uses. A reminder here remains a notification event:
-    nothing on this panel can execute other tools.
-    """
-
-    def __init__(self, store: ReminderStore | None) -> None:
-        self._store = store
-
-    @property
-    def available(self) -> bool:
-        return self._store is not None
-
-    def pending_rows(self) -> tuple[tuple[str, str], ...]:
-        """Pending reminders as (content, due-time) display pairs."""
-
-        if self._store is None:
-            return ()
-        return tuple(
-            (reminder.content, reminder.due_at.isoformat())
-            for reminder in self._store.pending()
-        )
-
-    def create(self, content: str, due_at_iso: str) -> ToolResult:
-        if self._store is None:
-            return self._unavailable()
-        return ReminderCreateTool(self._store).execute(
-            {"content": content, "due_at": due_at_iso}
-        )
-
-    def cancel(self, query: str) -> ToolResult:
-        if self._store is None:
-            return self._unavailable()
-        return ReminderCancelTool(self._store).execute({"query": query})
-
-    def list(self) -> ToolResult:
-        if self._store is None:
-            return self._unavailable()
-        return ReminderListTool(self._store).execute({})
-
-    @staticmethod
-    def _unavailable() -> ToolResult:
-        return ToolResult(
-            success=False,
-            output="Reminders are not available in this configuration.",
-        )
-
-
 class ApprovalBroker:
     """Bridge between the dispatcher's approval calls and a UI approver.
 
@@ -1496,13 +1797,21 @@ class ApprovalBroker:
     to the dispatcher's original request object. A UI answer can therefore
     never approve a different capability or a different argument set, and
     unmade requests default to denial.
+
+    ``on_wait`` is called with ``True`` just before the block and with
+    ``False`` in a ``finally`` after it, so whatever the bridge hangs on an
+    unanswered dialog is always released — by the answer, by a cancel, and
+    by the exit-time denial alike.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, on_wait: Callable[[bool], None] | None = None
+    ) -> None:
         self._lock = threading.Lock()
         self._tokens = itertools.count()
         self._waiting: dict[int, _PendingApproval] = {}
         self._outstanding = queue.Queue()
+        self._on_wait = on_wait
 
     def request(
         self,
@@ -1518,7 +1827,14 @@ class ApprovalBroker:
         # dispatcher request, so a preview can never change what the
         # answer authorizes.
         self._outstanding.put((token, request, preview))
-        pending.answered.wait()
+        notify = self._on_wait
+        if notify is not None:
+            notify(True)
+        try:
+            pending.answered.wait()
+        finally:
+            if notify is not None:
+                notify(False)
         with self._lock:
             self._waiting.pop(token, None)
         return ToolApproval(request=request, approved=pending.approved)
@@ -1578,12 +1894,14 @@ class UiEvent:
     payload: object = None
 
 
-class ReminderScheduler:
-    """Wakes on an interval and asks the bridge for one due-reminder sweep.
+class ReminderTicker:
+    """Wakes on an interval and asks the bridge for one Outline claim sweep.
 
-    It owns no Stella state: the ticker thread only calls ``on_tick``,
-    which posts onto the bridge's single command queue, so all reminder
-    evaluation still happens on the one worker thread that owns Stella.
+    It owns no Stella state and schedules nothing for the user: the thread
+    only calls ``on_tick``, which posts onto the bridge's single command
+    queue, so every reminder read still happens on the one worker thread
+    that owns Stella. The Outline pump it feeds rate-limits its own HTTP
+    cycle, so ticking often costs nothing.
     """
 
     def __init__(
@@ -1621,8 +1939,8 @@ class StellaBridge:
     SQLite connections are thread-bound, and Stella's own state is not
     thread-safe, so exactly one worker thread touches the application
     layer. The UI thread only posts commands and drains events; it never
-    calls into ``Stella``, the dispatcher, memory, or the reminder store
-    itself. Every command is wrapped so an unexpected failure becomes one
+    calls into ``Stella``, the dispatcher or memory itself. Every command
+    is wrapped so an unexpected failure becomes one
     friendly ``("error", ...)`` event instead of a stack trace.
     """
 
@@ -1631,18 +1949,46 @@ class StellaBridge:
         factory: Callable[[], StellaApplication],
         *,
         reminder_tick_seconds: float | None = 5.0,
-        now: Callable[[], dt.datetime] | None = None,
     ) -> None:
-        self.approvals = ApprovalBroker()
+        # One decision on screen is a promise about the microphone: wake
+        # and barge-in stand down until it is answered. The broker owns
+        # the moment (it is the one that waits), so it raises and lowers
+        # this flag around its own wait.
+        self._approval_open = threading.Event()
+        # Shutdown is one-way: once stop() begins, nothing may arm an ear
+        # again, because the threads that release an approval or a
+        # playback slot are not ordered against it.
+        self._stopping = threading.Event()
+        self.approvals = ApprovalBroker(on_wait=self._approval_wait)
         self._reminder_tick_seconds = reminder_tick_seconds
-        self._now = now if now is not None else (lambda: dt.datetime.now(dt.UTC))
-        self._scheduler: ReminderScheduler | None = None
+        self._ticker: ReminderTicker | None = None
         self._application: StellaApplication | None = None
         self._memory: MemoryPanel | None = None
-        self._reminders: ReminderPanel | None = None
         self._history_stamp: str | None = None
         self._voice: VoicePanel | None = None
         self._barge: BargeInListener | None = None
+        # Wake periphery state: the long-lived ear, the short-lived
+        # utterance watcher, and whether a wake-initiated capture owns
+        # the microphone right now (worker-thread-owned flags).
+        self._wake: WakeListener | None = None
+        self._wake_ear: WakeUtteranceEar | None = None
+        self._wake_listening = False
+        self._speaking = False
+        # The shared capture, so the window can be told when the
+        # microphone is really being read (``mic_hot``).
+        self._tap: MicTap | None = None
+        # Mute is a session switch, never a saved setting: it takes the
+        # always-open ears off the microphone and refuses anything that
+        # would put them back. Barge-in is armed from the worker and
+        # retired from it, so the bridge tracks the arming itself — the
+        # fake ears in the tests answer presses, not ``running()``.
+        self._mic_muted = False
+        self._barge_armed = False
+        # An interlude — a work phrase or an alert — is also Stella's own
+        # voice on the speakers, but it never owns the reply's playback
+        # slot, so it holds the wake ear off through its own count.
+        self._interludes = 0
+        self._interludes_lock = threading.Lock()
         self._playback: threading.Thread | None = None
         self._speech_interrupt: threading.Event | None = None
         self._speech_consumer: threading.Thread | None = None
@@ -1651,6 +1997,10 @@ class StellaBridge:
         # D3 narration: one non-blocking slot plus a per-turn retire event.
         self._narration_lock = threading.Lock()
         self._narration_dead: threading.Event | None = None
+        # A spoken alert shares neither slot: an announcement is not part of
+        # any turn, so it has its own single slot and its own retire event.
+        self._announcement_lock = threading.Lock()
+        self._announcement_dead: threading.Event | None = None
         self._events: queue.Queue[UiEvent] = queue.Queue()
         self._ready = threading.Event()
         self._thread = threading.Thread(
@@ -1680,11 +2030,11 @@ class StellaBridge:
         if self._reminder_tick_seconds is not None:
             # Only a successfully started Stella gets a ticker, and it must
             # be running before _ready releases the caller: stop() from the
-            # UI could otherwise catch a half-built scheduler.
-            self._scheduler = ReminderScheduler(
+            # UI could otherwise catch a half-built ticker.
+            self._ticker = ReminderTicker(
                 self.post_reminder_check, self._reminder_tick_seconds
             )
-            self._scheduler.start()
+            self._ticker.start()
         self._ready.set()
 
     def _rebind(self, application: StellaApplication) -> None:
@@ -1692,10 +2042,11 @@ class StellaBridge:
         if isinstance(stella, Stella):
             stella.approval_provider = self.approvals.request
         self._memory = MemoryPanel(stella.memory)
-        self._reminders = ReminderPanel(
-            getattr(stella, "reminders", None)
-        )
         self._voice = application.voice
+        # The tap belongs to the application being rebound to, and it is
+        # the one thing that can say whether a capture process is alive.
+        self._tap = application.mic_tap
+        self._barge_armed = False
         if (
             self._barge is not None
             and self._barge is not application.barge_in
@@ -1710,6 +2061,35 @@ class StellaBridge:
             # An enabled-but-unusable ear is reported once, honestly,
             # and changes nothing else about how Stella behaves.
             self._emit("voice_error", application.barge_notice)
+        if self._wake is not None and self._wake is not application.wake:
+            # Same replacement rule as the barge ear: the old wake
+            # capture must not outlive the settings that grew it.
+            self._wake.stop()
+        if (
+            self._wake_ear is not None
+            and self._wake_ear is not application.wake_ear
+        ):
+            self._wake_ear.stop()
+        self._wake = application.wake
+        self._wake_ear = application.wake_ear
+        # A rebuild retires any in-flight wake session with the old
+        # ears: the flag must not outlive the watcher that set it, or
+        # the new ear could never re-arm.
+        self._wake_listening = False
+        if self._wake is not None:
+            self._wake.on_wake = self._on_wake
+        if self._wake_ear is not None:
+            self._wake_ear.on_finish = self._on_wake_utterance
+        if application.wake_notice is not None:
+            self._emit("voice_error", application.wake_notice)
+        else:
+            # A configured, usable wake ear is armed right away: wake is
+            # the one microphone that listens while Stella does nothing.
+            self._resume_wake()
+        if application.voice_notice is not None:
+            # Not an error and not a per-turn remark: one line naming the
+            # transcriber this session actually got, then silence.
+            self._emit("notice", application.voice_notice)
 
     def _serve(self) -> None:
         while True:
@@ -1762,11 +2142,6 @@ class StellaBridge:
             raise RuntimeError("Stella is not running in this session.")
         return self._memory
 
-    def _require_reminders(self) -> ReminderPanel:
-        if self._reminders is None:
-            raise RuntimeError("Stella is not running in this session.")
-        return self._reminders
-
     def post_turn(self, user_input: str) -> None:
         def handle() -> None:
             # Clear at submission: this turn owns the flag from here on,
@@ -1774,6 +2149,9 @@ class StellaBridge:
             # blamed on (or erased by) this one mid-flight.
             self._turn_cancel.clear()
             self._speak_after(self._handle_turn(user_input))
+            # A typed turn may have ended in speech (which re-arms the
+            # wake ear itself) or in silence (which needs it here).
+            self._resume_wake()
 
         self._post(handle)
 
@@ -1820,6 +2198,17 @@ class StellaBridge:
     def _begin_barge_in(self) -> None:
         """Arm the ear for one speaking episode; problems retire the ear."""
 
+        if (
+            self._approval_open.is_set()
+            or self._stopping.is_set()
+            or self._mic_muted
+        ):
+            # Talking over Stella must not be mistaken for an answer, and
+            # cancelling the turn while its own dialog is open is exactly
+            # that confusion: the dialog on screen is the only input. A
+            # shutdown that has begun never arms a capture again, and a
+            # muted microphone never hears an interruption at all.
+            return
         listener = self._barge
         if listener is None:
             return
@@ -1833,10 +2222,184 @@ class StellaBridge:
         except VoiceError as error:
             self._barge = None
             self._emit("voice_error", str(error))
+        else:
+            # Barge-in keeps its own capture process, so the shared tap
+            # cannot report it: the bridge records the arming it just did.
+            self._barge_armed = True
 
     def _end_barge_in(self) -> None:
+        self._barge_armed = False
         if self._barge is not None:
             self._barge.stop()
+
+    def _approval_wait(self, waiting: bool) -> None:
+        """Take the ears off the microphone while a decision is pending.
+
+        Called by the broker around its wait. An outstanding dialog is the
+        one moment Stella must not be listening: a wake phrase arriving
+        then would either queue a takeover behind the user's own decision
+        or, worse, make hands-free input look like an answer to it. The
+        release is the broker's ``finally``, so a cancelled turn or an
+        unanswered exit cannot strand the ear asleep.
+        """
+
+        if waiting:
+            self._approval_open.set()
+            self._suspend_wake()
+        else:
+            self._approval_open.clear()
+            self._resume_wake()
+
+    def _suspend_wake(self) -> None:
+        """Take the wake ear off the microphone.
+
+        Stella is speaking or capturing; her own voice must never wake
+        her (the measured barge-in echo lesson). Idempotent from any
+        thread.
+        """
+
+        if self._wake is not None:
+            self._wake.stop()
+
+    def _resume_wake(self) -> None:
+        """Re-arm the wake ear once the microphone is free again.
+
+        Safe to call from anywhere, any time: a wake ear that is not
+        configured, still inside a wake capture, under live playback,
+        waiting on an on-screen decision, muted from the voice row or
+        inside a shutdown that has begun stays asleep, and a faulted
+        detector retires the ear silently (the router-degradation
+        precedent — broken means disabled, not noisy). The mute test lives
+        here rather than at the dozen resume sites so that no path can arm
+        the ear by forgetting to ask.
+        """
+
+        listener = self._wake
+        if (
+            listener is None
+            or self._stopping.is_set()
+            or self._wake_listening
+            or self._speaking
+            or self._interludes
+            or self._mic_muted
+            or self._approval_open.is_set()
+        ):
+            return
+        if listener.failed:
+            self._wake = None
+            return
+        try:
+            listener.start()
+        except VoiceError as error:
+            self._wake = None
+            self._emit("voice_error", str(error))
+
+    def _begin_interlude(self) -> None:
+        """Hold the wake ear off for one spoken work phrase or alert.
+
+        Suspending here, not only in the reply's playback path, is the
+        difference between a phrase that cannot wake her and one that
+        can: narration plays while a turn is in flight, when the ear is
+        otherwise armed on purpose.
+        """
+
+        with self._interludes_lock:
+            self._interludes += 1
+        self._suspend_wake()
+
+    def _end_interlude(self) -> None:
+        """Release one interlude, re-arming the ear if nothing else plays.
+
+        Every path out of an interlude comes through here, including a
+        cancelled one: an ear left asleep by a phrase that never played
+        would silence wake for the rest of the session.
+        """
+
+        with self._interludes_lock:
+            self._interludes -= 1
+        self._resume_wake()
+
+    def _on_wake(self) -> None:
+        """One confirmed wake phrase is exactly one Listen-button press.
+
+        Called from the wake thread; the entire authority is posting one
+        command onto the worker. The detector contributes no decision,
+        no text and no approval — a woken utterance travels the same
+        ``run_turn`` path as anything typed.
+        """
+
+        self._post(self._wake_takeover)
+
+    def _wake_takeover(self) -> None:
+        panel = self._voice
+        if self._wake_listening:
+            return  # a wake session already owns the microphone
+        if self._mic_muted:
+            # The one way a phrase can arrive while muted is a race with
+            # the switch itself: the ear had already posted before it went
+            # down. Say so instead of pretending the word was not heard.
+            self._emit("voice_error", _MIC_MUTED_MESSAGE)
+            return
+        if self._approval_open.is_set():
+            # Say why nothing happened: a silent refusal would leave the
+            # user wondering whether the wake word worked at all. The ear
+            # stays off — the dialog is answered with a press, not a voice.
+            self._emit(
+                "voice_error",
+                "Stella is waiting for a decision on screen; "
+                "press Allow or Cancel.",
+            )
+            return
+        if panel is None:
+            # No transcription configured: keep the ear, wake stays
+            # honest by doing exactly nothing else.
+            self._resume_wake()
+            return
+        self._suspend_wake()
+        self._end_barge_in()
+        try:
+            panel.start_listening()
+        except VoiceError as error:
+            self._emit("voice_error", str(error))
+            self._resume_wake()
+            return
+        self._wake_listening = True
+        self._emit("voice_state", "listening")
+        ear = self._wake_ear
+        if ear is None or ear.failed:
+            self._wake_ear = None
+            return
+        try:
+            ear.start()
+        except VoiceError as error:
+            # No endpointer: the capture stays push-to-talk's problem —
+            # the user's Stop press ends it exactly as before.
+            self._wake_ear = None
+            self._emit("voice_error", str(error))
+
+    def _on_wake_utterance(self, kind: str) -> None:
+        """Called from the utterance watcher thread when it decides the
+        woken utterance ended: it posts, the worker acts."""
+
+        self._post(lambda: self._wake_utterance_done(kind))
+
+    def _wake_utterance_done(self, kind: str) -> None:
+        if not self._wake_listening:
+            return  # the session was retired (Cancel, rebuild)
+        self._wake_listening = False
+        if self._wake_ear is not None:
+            self._wake_ear.stop()
+        if kind == "complete":
+            # Exactly the Stop-button path: transcribe and run the turn.
+            self.post_listen_stop(wake_session=True)
+        else:
+            # "timeout"/"cap": the ear woke but heard nothing usable —
+            # the Cancel path, plus one honest line about nothing sent.
+            self.post_listen_cancel()
+            self._emit(
+                "voice_error",
+                "Stella woke up but heard no words. Nothing was sent.",
+            )
 
     def _should_cancel(self) -> bool:
         return self._turn_cancel.is_set()
@@ -1876,26 +2439,56 @@ class StellaBridge:
         self._emit_history_if_new()
         return outcome
 
-    def post_reminder_check(self) -> None:
-        """One due-reminder sweep, run on the worker thread.
+    def status_snapshot(self) -> tuple[object | None, object | None, object | None]:
+        """(settings, session, stella) for ``/status`` rendering.
 
-        This is the ticker's entire entry point: it posts, it never
-        evaluates reminders on the ticker thread itself.
+        Pure attribute reads on already-built objects: nothing runs, no
+        database cursor opens — the same safety class as
+        ``voice_capabilities``.
+        """
+
+        if self._application is None:
+            return (None, None, None)
+        session = self._application.session
+        return (self._application.settings, session, session.stella)
+
+    def post_clear_history(self) -> None:
+        """Forget this session's conversation (worker thread owns it)."""
+
+        def handle() -> None:
+            self._require_session().history.clear()
+            self._emit(
+                "note",
+                "Conversation history cleared. Stored memories and the"
+                " action trail are untouched.",
+            )
+
+        self._post(handle)
+
+    def post_action_trail(self, limit: int = 10) -> None:
+        """Render ``/history`` on the worker and show it as a note."""
+
+        def handle() -> None:
+            stella = self._require_session().stella
+            self._emit("note", "\n".join(action_history_lines(stella, limit)))
+
+        self._post(handle)
+
+    def post_reminder_check(self) -> None:
+        """One Outline claim sweep, run on the worker thread.
+
+        This is the ticker's entire entry point: it posts, it never reads
+        reminders on the ticker thread itself.
         """
 
         self._post(self._check_due_reminders)
 
     def _check_due_reminders(self) -> None:
         session = self._require_session()
-        delivered = False
-        for delivery in session.check_due_reminders(self._now()):
+        for delivery in session.check_due_reminders():
             if delivery.delivered and delivery.message is not None:
                 self._emit("reminder_delivered", delivery.message)
-                delivered = True
-        if delivered and self._reminders is not None:
-            # A handled row disappears from the Reminders panel without
-            # waiting for the next user interaction.
-            self._emit("reminders", self._reminders.pending_rows())
+                self._announce(delivery.message)
 
     # -------------------------------------------------------------- voice
 
@@ -1915,6 +2508,57 @@ class StellaBridge:
 
         if self._voice is not None:
             self._voice.speech_enabled = bool(enabled)
+            if enabled:
+                # The tick is the first moment speaking is something the
+                # user wants; the worker's model load starts now instead
+                # of inside the first reply.
+                self._voice.prewarm_speech()
+
+    def mic_hot(self) -> bool:
+        """True while Stella is holding the microphone open right now.
+
+        The indicator exists for the states nothing else on screen shows:
+        a wake ear armed while she is idle, a capture in flight, an
+        interruption ear opened for one spoken reply. It reads in-process
+        state only, so the window can ask it on its 100 ms tick;
+        ``voice_capabilities`` answers the other question — which
+        peripherals this configuration could use — and a real answer there
+        means looking up capture commands on disk, which is not something
+        to do ten times a second.
+        """
+
+        if self._wake_listening or self._barge_armed:
+            return True
+        tap = self._tap
+        return tap is not None and tap.running()
+
+    def set_mic_muted(self, muted: bool) -> None:
+        """Put every ear down for this session; a switch, never a setting.
+
+        Muting is not a filter that leaves the capture running and ignores
+        what it hears: the wake ear stops, its subscription goes, and the
+        shared process ends with it — which is why the indicator can go
+        dark truthfully. A wake capture already in flight is retired by
+        the same Cancel path the button uses, so nothing half-heard is
+        transcribed or sent. Output is untouched, because a microphone
+        switch says nothing about the speakers: Stella may still answer
+        aloud and still narrate the work she is doing.
+        """
+
+        def handle() -> None:
+            wanted = bool(muted)
+            if wanted == self._mic_muted:
+                return
+            self._mic_muted = wanted
+            if wanted:
+                if self._wake_listening:
+                    self.post_listen_cancel()
+                self._suspend_wake()
+                self._end_barge_in()
+            else:
+                self._resume_wake()
+
+        self._post(handle)
 
     def _voice_conversation(self) -> bool:
         """True when a voice turn is a spoken conversation.
@@ -1972,6 +2616,7 @@ class StellaBridge:
         reply the user asked for is still coming and reports itself.
         """
 
+        self._begin_interlude()
         try:
             try:
                 path = panel.synthesize_phrase(phrase, self._should_cancel)
@@ -1988,14 +2633,73 @@ class StellaBridge:
                 panel.dispose_artifact(path)
         finally:
             self._narration_lock.release()
+            self._end_interlude()
+
+    def _announce(self, message: str) -> None:
+        """Offer one delivered alert aloud, without ever blocking.
+
+        An alert already on screen is the whole feature; speech is the same
+        event handed to the ear, so it obeys the reply's rules and none of
+        the turn's: only when the user switched speech on, only into a free
+        speaker (one announcement at a time, never queued behind itself),
+        never after a cancel, and never model-authored — the line is the
+        runtime's own. A failed announcement stays silent because the
+        visible line already said everything.
+        """
+
+        panel = self._voice
+        if (
+            panel is None
+            or not panel.speech_enabled
+            or not panel.output_available
+            or self._should_cancel()
+        ):
+            return
+        if not self._announcement_lock.acquire(blocking=False):
+            return
+        dead = threading.Event()
+        self._announcement_dead = dead
+        threading.Thread(
+            target=self._speak_alert,
+            args=(panel, message, dead),
+            name="stella-announce",
+            daemon=True,
+        ).start()
+
+    def _speak_alert(
+        self, panel: VoicePanel, message: str, dead: threading.Event
+    ) -> None:
+        """Synthesize and play one alert off the worker thread, silently."""
+
+        self._begin_interlude()
+        try:
+            try:
+                path = panel.synthesize_phrase(message, self._should_cancel)
+            except Exception:  # noqa: BLE001 - the text line already told it
+                return
+            if dead.is_set() or self._should_cancel():
+                panel.dispose_artifact(path)
+                return
+            try:
+                panel.play(path)
+            except Exception:  # noqa: BLE001, S110 - an alert stays silent
+                pass
+            finally:
+                panel.dispose_artifact(path)
+        finally:
+            self._announcement_lock.release()
+            self._end_interlude()
 
     def _flush_narration(self) -> None:
-        """Retire this turn's narration: nothing of it may follow onto
-        the speakers once the reply speaks, the user cancels, or playback
-        is stopped."""
+        """Retire every background interlude: nothing Stella spoke on its
+        own — a work phrase or an alert — may follow the reply onto the
+        speakers once the reply speaks, the user cancels, or playback is
+        stopped. Audio already audible finishes; unheard audio is dropped."""
 
         if self._narration_dead is not None:
             self._narration_dead.set()
+        if self._announcement_dead is not None:
+            self._announcement_dead.set()
 
     def post_listen_start(self) -> None:
         def handle() -> None:
@@ -2006,13 +2710,20 @@ class StellaBridge:
                     "Voice input is not available in this configuration.",
                 )
                 return
+            if self._mic_muted:
+                # The press is honoured as what it is: a request for the
+                # microphone the switch has just taken away.
+                self._emit("voice_error", _MIC_MUTED_MESSAGE)
+                return
             try:
-                # Push-to-talk takes the microphone back: the barge-in
-                # ear never competes with an explicit Listen press.
+                # Push-to-talk takes the microphone back: neither ear
+                # ever competes with an explicit Listen press.
                 self._end_barge_in()
+                self._suspend_wake()
                 panel.start_listening()
             except VoiceError as error:
                 self._emit("voice_error", str(error))
+                self._resume_wake()
             else:
                 # The UI shows "Listening..." only after this event: the
                 # window never claims to listen when nothing is recording.
@@ -2020,7 +2731,18 @@ class StellaBridge:
 
         self._post(handle)
 
-    def post_listen_stop(self) -> None:
+    def post_listen_stop(self, wake_session: bool = False) -> None:
+        """Finish one capture — the Stop button, or its wake-word twin.
+
+        ``wake_session`` marks a capture nobody pressed a button for, so
+        its transcript is the only thing standing between a mis-detected
+        wake phrase and a turn the user never asked for. The fixed filler
+        lines a transcriber invents over silence are therefore read as
+        what they are — no words — instead of going to the model. A
+        deliberate Listen press is never second-guessed: the user sees
+        that transcript on screen.
+        """
+
         def handle() -> None:
             panel = self._voice
             if panel is None:
@@ -2041,10 +2763,21 @@ class StellaBridge:
                     "Voice input was cancelled at your request. Nothing "
                     "was sent to Stella.",
                 )
+                self._resume_wake()
                 return
             except VoiceError as error:
                 # A failed transcript is never replaced with invented text.
                 self._emit("voice_error", str(error))
+                self._resume_wake()
+                return
+            if wake_session and is_transcription_junk(transcript):
+                # Same honest line as a wake that heard only silence: the
+                # words were not words, and nothing reached the model.
+                self._emit(
+                    "voice_error",
+                    "Stella woke up but heard no words. Nothing was sent.",
+                )
+                self._resume_wake()
                 return
             self._emit("voice_transcript", transcript)
             # From here the transcript follows the exact typed-input path,
@@ -2056,14 +2789,25 @@ class StellaBridge:
                     transcript, spoken=self._voice_conversation()
                 )
             )
+            # The microphone is free again unless this reply is being
+            # spoken: live playback holds the wake ear off, and its own
+            # finish line re-arms it.
+            self._resume_wake()
 
         self._post(handle)
 
     def post_listen_cancel(self) -> None:
         def handle() -> None:
+            # A Cancel press also retires a wake-initiated session: the
+            # utterance watcher goes silent and a late finish callback
+            # finds the flag already down.
+            self._wake_listening = False
+            if self._wake_ear is not None:
+                self._wake_ear.stop()
             if self._voice is not None:
                 self._voice.abandon_listening()
             self._emit("voice_state", "idle")
+            self._resume_wake()
 
         self._post(handle)
 
@@ -2136,6 +2880,8 @@ class StellaBridge:
         panel.cancel_playback()
         if self._playback is not None:
             self._playback.join(timeout=2)
+        self._speaking = True
+        self._suspend_wake()
         self._emit("voice_state", "speaking")
         self._begin_barge_in()
 
@@ -2152,8 +2898,10 @@ class StellaBridge:
                 )
             finally:
                 self._end_barge_in()
+                self._speaking = False
                 panel.dispose_artifact(path)
                 self._emit("voice_state", "idle")
+                self._resume_wake()
 
         self._playback = threading.Thread(
             target=play, name="stella-playback", daemon=True
@@ -2211,7 +2959,9 @@ class StellaBridge:
                 finally:
                     panel.dispose_artifact(item)
             self._end_barge_in()
+            self._speaking = False
             self._emit("voice_state", "idle")
+            self._resume_wake()
 
         try:
             first = panel.synthesize(
@@ -2244,6 +2994,8 @@ class StellaBridge:
             self._playback.join(timeout=2)
         if self._speech_consumer is not None:
             self._speech_consumer.join(timeout=2)
+        self._speaking = True
+        self._suspend_wake()
         self._emit("voice_state", "speaking")
         self._begin_barge_in()
         outbox.put(first)
@@ -2296,30 +3048,6 @@ class StellaBridge:
             message = memory.forget(index)
             self._emit("memory_result", message)
             self._emit("memories", memory.refresh())
-
-        self._post(handle)
-
-    def post_reminders(self) -> None:
-        def handle() -> None:
-            self._emit("reminders", self._require_reminders().pending_rows())
-
-        self._post(handle)
-
-    def post_reminder_add(self, content: str, due_at_iso: str) -> None:
-        def handle() -> None:
-            panel = self._require_reminders()
-            result = panel.create(content, due_at_iso)
-            self._emit("reminder_result", outcome_status(result))
-            self._emit("reminders", panel.pending_rows())
-
-        self._post(handle)
-
-    def post_reminder_cancel(self, query: str) -> None:
-        def handle() -> None:
-            panel = self._require_reminders()
-            result = panel.cancel(query)
-            self._emit("reminder_result", outcome_status(result))
-            self._emit("reminders", panel.pending_rows())
 
         self._post(handle)
 
@@ -2416,14 +3144,23 @@ class StellaBridge:
         self._post(handle)
 
     def stop(self) -> None:
-        if self._scheduler is not None:
-            self._scheduler.stop()
-            self._scheduler = None
+        self._stopping.set()
+        if self._ticker is not None:
+            # Stop the wake first: a ticker posting onto a queue nobody
+            # drains would otherwise leak a command per interval.
+            self._ticker.stop()
+            self._ticker = None
         self.approvals.deny_outstanding()
+        self._flush_narration()
         self._interrupt_speech()
         if self._voice is not None:
             self._voice.cancel_playback()
         self._end_barge_in()
+        # The wake ears go down the same way: shutdown must never leave a
+        # capture process reading the microphone after the window is gone.
+        self._suspend_wake()
+        if self._wake_ear is not None:
+            self._wake_ear.stop()
         self._post(None)
         self._thread.join(timeout=5)
         if self._playback is not None:

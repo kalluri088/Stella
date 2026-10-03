@@ -117,6 +117,13 @@ is gated:
 - No file lock around the store: two simultaneous setups writing the
   same preset is last-writer-wins per slot, which is documented rather
   than engineered around.
+- Nothing voice is ever stored there. A transcriber or synthesizer
+  command, the model a wake ear or the VAD loads, the capture source each
+  reads and the OpenAI model identifiers (`whisper-1`, `tts-1`, `alloy`)
+  are settings, so they live in `config.json` or the environment and never
+  in `api_keys.json` — which is also why no voice path can name a key file.
+  A cloud voice request uses the OpenAI slot's key like any other hosted
+  call, and only that slot's (`VOICE.md`).
 
 ## Residual risks
 

@@ -20,11 +20,11 @@ mechanism — not an aspiration.
    an approval whose `ApprovalRequest` matches the exact content, and
    tool outputs report honestly (`src/stella/memory.py`;
    `docs/OUTCOME_MEMORY.md`).
-3. **Awareness is not authority.** Proactivity and reminders run on a
-   notify-only runtime path that never consults the Brain, the LLM or
-   the dispatcher, and reminder text is treated as untrusted data
-   (`src/stella/proactivity.py`, `src/stella/reminders.py`;
-   `docs/REMINDERS.md`).
+3. **Awareness is not authority.** Proactivity runs on a notify-only
+   runtime path that never consults the Brain, the LLM or the
+   dispatcher, and anything an event or a scheduled item carries is
+   treated as untrusted data
+   (`src/stella/proactivity.py`; `docs/REMINDERS.md`).
 4. **Trusted execution with verification.** The full chain is
    LLM → Decision → ToolDispatcher → risk classification → exact
    single-use approval → execute → independent verification →
@@ -45,12 +45,18 @@ mechanism — not an aspiration.
 The bar for Stage A: "I should be talking, asking, and it should be
 working and helping me, even if not the fastest."
 
-- **A1. Idle reminder firing — done.** The UI bridge runs a daemon
-  ticker whose only action is posting a reminder check onto the
-  single-worker-thread command queue; delivery stays once-only via the
-  atomic `pending → handled` update. The CLI keeps fires-on-next-
-  interaction by design. (`ReminderScheduler` in `src/stella/app.py`,
-  `docs/REMINDERS.md`.)
+- **A1. Idle reminder firing — done, then narrowed.** The ticker was built to
+  sweep Stella's own reminder table. That table is gone — reminders are now an
+  alert written into the connected Outline workspace — and `ReminderScheduler`
+  was removed with it. What replaced it is smaller: `ReminderTicker` wakes on
+  an interval only to ask the bridge for one Outline claim sweep, so an idle
+  window can still surface an alert the user scheduled elsewhere without
+  owning a schedule of its own. The queue discipline the original feature
+  proved — a wake posts onto the one command queue and never evaluates on the
+  wake's own thread — is still pinned by
+  `test_bridge_delivers_due_reminder_while_idle_without_any_turn` and
+  `test_bridge_panel_command_queues_behind_a_busy_turn` in
+  `tests/test_app.py`. See `docs/REMINDERS.md`.
 - **A2. Content-aware approval previews — done.** Approvals now show a
   bounded unified diff (edit), new content (write), loss excerpt
   (delete) or validated URL (network read), computed by app code only
@@ -448,6 +454,25 @@ code no text file can influence (`src/stella/persona.py`,
   approval matching is untouched, and reflection still has no write
   path of its own. The editor copy predates the `$EDITOR` session;
   mid-edit states are not versioned.
+- **C7. Slash commands (CLI/TUI I/O layer) — done.** A typed line
+  starting with `/` is a runtime command, never an utterance: it is
+  intercepted in `run_cli` and the window's `_send` before the Brain,
+  so no model call or approval can be steered by it.
+  Two tiers: built-in control commands (`/exit`, `/status`, `/help`,
+  `/version`, `/clear` for the session's conversation, `/history` for
+  the newest action records, and terminal-only `/trace`/`/debug`
+  toggles that make
+  the startup flags session-mutable) and user-owned prompt templates
+  in `~/.config/stella/commands/<name>.md` whose `$ARGUMENTS`
+  expansion re-enters as *ordinary user input* — no authority beyond
+  typing the sentence out, approvals still gate every tool. Template
+  reads reuse the persona discipline (name regex, realpath
+  containment, no symlinks, 8 KiB cap); unknown names error locally
+  with suggestions and are never forwarded. Voice transcripts
+  and events take other paths into `run_turn` and are
+  structurally never command-parsed — a spoken "/exit" is a sentence.
+  Deliberately not built: inline shell execution, permission
+  frontmatter, `@file` embedding (rules 4, 13, 15).
 
 ## Stage D — conversational voice and decision speed (complete)
 
@@ -579,10 +604,25 @@ inside that session, not before); D5 waits behind the voice work.
   trick targets 2–4× *slower* off (`route-read` 11.3 → 47.7 s). A
   scoped variant has nothing to capture; the shipped line is
   untouched and this parked idea is definitively answered.*
+- **D6. Hands-free wake, on the owner's terms (landed 2026-10-03 on
+  `feature/voice-integration`, reversing part of the note below).** The
+  owner asked for the wake word back, so the question was never *whether*
+  but *what it may be*: one local detector whose entire authority is
+  pressing the existing **Listen** button. It records nothing until a
+  phrase is confirmed, it never answers an on-screen approval, and there is
+  deliberately no `auto` mode — the ear exists only while a box the owner
+  ticked says so. A wake that hears only a transcriber's filler for an
+  empty room is reported and sent nowhere. The microphone is held by one
+  shared capture process instead of one per consumer, and the voice row
+  gained the two things that make an open microphone livable: a dot that
+  says when it is really open and a mute switch that puts every ear down
+  for the session. What the reversal did *not* buy: continuous
+  transcription, speaker identification, or any cloud speech hop. See
+  `docs/VOICE.md`.
 
 Explicitly **not** adopted from this input: the always-listening
-hands-free loop and any wake word (both remain on the out-of-scope
-list), KV-cache save/restore between sessions (no demonstrated
+hands-free loop as a background recorder, KV-cache save/restore between
+sessions (no demonstrated
 Stella weakness; we run one active conversation), per-persona tool
 behavior (C5's standing non-goal), and his single-card VRAM plan
 (it is a 12 GB plan for a different stack — only the *method*,
@@ -633,7 +673,10 @@ feel* — immediate, spoken, aware of the desk, proactive within rule 8.
 That ambition changes what we build *toward*, not the trust model it
 runs through: the Vision's non-goals stand, and wake-word/always-
 listening remain on the out-of-scope list until that section is
-deliberately rewritten with a measured case for them.
+deliberately rewritten with a measured case for them. *Rewritten
+2026-10-03, by the owner's own request rather than by research — and the
+rewrite changed the scope list, not the trust model: D6 in Stage D and the
+note at the end of this file record what landed and what still stands.*
 
 ## Deferred designs and their non-negotiable constraints
 
@@ -651,28 +694,24 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
   is separated from the structured decision JSON. Spoken replies were the
   case hoped to justify it: overlap chunk-0 synthesis (~0.42–0.87 s of
   measured render) with the tokens of a longer reply still arriving.
-  **Tried and rejected on this stack (2026-10-03, `4e818b2` on
-  `feature/voice-integration`; the finding is architectural and applies
-  to `master` too).** Stages 1-5 of the copper-delta-trout plan landed
-  an optional `stream_chat`, a native Ollama streaming transport, a
-  `StreamingSentenceSplitter`, a lazy chunked pipeline that consumed
-  it, and a `STELLA_TURN_TRACE` diagnostic. The bench (9 turns per
-  arm, three fixed three-sentence prompts, real Ollama on 11434 with
-  the resident Kokoro worker) reported `first_artifact` at
-  essentially the same time on both arms, and none of the marks the
-  streaming path exists to fire ever appeared. Root cause is not the
-  wiring: `LLMBrain` sets `answer_content_is_final = True` and
-  `Stella.process` at the ANSWER branch returns `decision.content`
-  directly without ever calling `synthesise`, so a real spoken turn
-  installs the callback and never runs the code that would consume
-  it. Streaming's premise — that a long spoken reply sits silent while
-  the model writes the rest — is only true when the reply is composed
-  on a path that has a "rest" to overlap; on the fast path, the reply
-  exists whole at the end of the same LLM call that made the decision.
-  Re-opening this needs a Brain design that separates decide from
-  answer for spoken turns (which is exactly what the fast path's own
-  comment rejects: an extra LLM call for identical authority), not
-  another streaming layer.
+  **Tried and rejected on this stack (2026-10-03, `4e818b2`).** Stages 1-5 of
+  the copper-delta-trout plan landed an optional `stream_chat`, a native
+  Ollama streaming transport, a `StreamingSentenceSplitter`, a lazy chunked
+  pipeline that consumed it, and a `STELLA_TURN_TRACE` diagnostic. The bench
+  (9 turns per arm, three fixed three-sentence prompts, real Ollama on 11434
+  with the resident Kokoro worker) reported `first_artifact` at essentially
+  the same time on both arms, and none of the marks the streaming path exists
+  to fire ever appeared. Root cause is not the wiring: `LLMBrain` sets
+  `answer_content_is_final = True` and `Stella.process` at the ANSWER branch
+  returns `decision.content` directly without ever calling `synthesise`, so
+  a real spoken turn installs the callback and never runs the code that would
+  consume it. Streaming's premise — that a long spoken reply sits silent
+  while the model writes the rest — is only true when the reply is composed
+  on a path that has a "rest" to overlap; on the fast path, the reply exists
+  whole at the end of the same LLM call that made the decision. Re-opening
+  this needs a Brain design that separates decide from answer for spoken
+  turns (which is exactly what the fast path's own comment rejects: an extra
+  LLM call for identical authority), not another streaming layer.
 - **Fast-path local router** — limited to existing `SAFE` fixed-argument
   capabilities (`datetime` first, `system_info` later, only after observing
   real false-positive behavior), a short documented exact-phrase allowlist
@@ -697,9 +736,18 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
 
 Not planned, in any stage, unless this section is deliberately rewritten:
 MCP integration, a plugin system, an autonomous agent loop, multi-user
-accounts, cloud hosting, mobile apps, wake-word detection,
-always-listening audio, speaker identification, emotion detection, a
-model marketplace, automatic large-model downloads, self-modifying
-behavior and self-learning beyond the approval-gated style notes of
-Stage C, Kubernetes/Docker orchestration, arbitrary shell access, and
-unrestricted computer control.
+accounts, cloud hosting, mobile apps, speaker identification, emotion
+detection, a model marketplace, automatic large-model downloads,
+self-modifying behavior and self-learning beyond the approval-gated style
+notes of Stage C, Kubernetes/Docker orchestration, arbitrary shell access,
+and unrestricted computer control.
+
+Two lines here were deliberately rewritten on 2026-10-03, and the rewrite
+is the whole record of why: *wake-word detection* became an opt-in
+capability (Stage D's D6, `docs/VOICE.md`), and *always-listening audio*
+was narrowed to what it has always meant here — continuous **recording**,
+which is still out. A ticked wake box holds the device open for a local
+classifier and stores nothing until a phrase is confirmed; a mute switch
+and an on-screen dot are what keep that visible and reversible. Speaker
+identification and emotion detection were not part of that rewrite and
+stay out.

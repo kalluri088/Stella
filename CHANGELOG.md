@@ -2,6 +2,223 @@
 
 ## Unreleased
 
+### A silent speech artifact stops being a spoken turn
+
+- **`ResidentSpeechProvider` now checks what the worker actually wrote.**
+  A worker that reports `ok` but produces a zero-byte body, a bare RIFF
+  header, a sub-10 ms file, or a full-length file of samples below
+  audibility used to slip through with "the file exists at the path we
+  chose", play as nothing, and leave the UI dotting `speaking` while the
+  user waited for a voice that never came. The output side now gets the
+  same shape and silence check the input side already applies to a
+  recording (`stella/childproc.py::recording_finalized_ok`): the artifact
+  is opened with `wave`, its peak sample scanned, and any of unreadable,
+  too short, or silent raises `VoiceError`. `app.py`'s D2 degradation rule
+  already handles that case — the text reply stands and no false
+  "speaking" state is set — so the fix is honest failure, not new UI.
+- **PCM s16 mono gets a clean onset.** For the one shape Kokoro actually
+  produces, the artifact is additionally trimmed of leading and trailing
+  silence (25 ms pad before the first loud sample, 15 ms after the last)
+  and given linear edge fades (15 ms in, 10 ms out). Stereo, 24-bit,
+  and any compressed variant is validated and passed through unchanged —
+  this is a correctness fix, not a rewriting service — and the trim is
+  skipped when it would leave less than 50 ms of anything. Measured cost
+  is ~3 ms per synthesized chunk on the producer thread, well inside the
+  existing synth-while-play overlap.
+- **The trust model did not move.** Nothing about the ANSWER fast path,
+  `sentence_chunks`, `VOICE_STYLE_NOTE`, or the resident worker's
+  line-JSON protocol changed. `_speak_chunks` and its 3-deep queue are
+  untouched. The one-at-a-time player rule and the barge-in arming
+  discipline are the same as before this fix.
+- `uv run pytest tests/test_voice.py` → 122 passed (nine new cases in a
+  `resident speech artifact checks` section, and the resident-worker
+  fakes updated to emit a real short PCM s16 mono WAV in place of the
+  `b"RIFF"` bytes they wrote when nothing was checking); `uv run pytest
+  tests/test_app.py tests/test_audio_output.py` → 95 passed; `uv run
+  ruff check .` clean; `git diff --check` clean. `docs/VOICE.md` records
+  the new shape rule and the trim/fade window.
+
+### Stella answers to her name, and says when the microphone is open
+
+- **A wake word whose entire authority is one button press.** `stella/wake.py`
+  runs a local openWakeWord classifier over raw frames and its only output is
+  the callback the **Listen** button already uses: one confirmed phrase is
+  exactly one press, and nothing else may follow from it. It holds the device
+  but records nothing until the phrase is confirmed, it never answers an
+  on-screen approval, and a wake that hears only a transcriber's filler for an
+  empty room is reported on screen and sent nowhere. There is deliberately no
+  `auto` — the ear exists only while a box the owner ticked says it does. The
+  `wake` extra and the ONNX files under `~/models/openwakeword` are the owner's
+  to install; Stella does not download a model, and the ear involves no key and
+  no network at all.
+- **One microphone, not three of them.** `stella/mic_tap.py` is the single
+  `pw-record`/`arecord` child that push-to-talk, the wake ear and the utterance
+  watcher that endpoints a wake-initiated recording all subscribe to, so the
+  device is never opened three times at once — the state that makes every
+  "device busy" voice failure hard to explain. A subscriber that falls behind
+  loses its oldest frame rather than stalling the reader; a dead capture tells
+  each consumer once and Stella's text path carries on. Barge-in deliberately
+  keeps its own process: it arms only while Stella speaks, when the wake ear is
+  suspended, and it may read a different echo-cancelled source.
+- **An open approval dialog takes every ear off the device.** Not merely
+  ignores it: the wake ear is suspended, so an interrupt-by-voice cannot cancel
+  from the voice the turn that is waiting on the owner's own click. Rule 10 is
+  the reason this is a suspend rather than a filter.
+- **Comprehension is found, named and bounded.** A local transcriber is
+  detected before any recording leaves the laptop, and whichever engine is
+  running is named on screen once per session (`Voice input uses voxtype
+  (whisper).`) rather than on every turn. `STELLA_VOICE_TRANSCRIPTION=openai`
+  is an instruction, not a fallback: naming the cloud skips the local branch
+  instead of quietly being intercepted by it. Cloud requests now carry a
+  timeout, because a stalled call holds the microphone's turn open in a way the
+  user cannot cancel.
+- **The voice already installed is used, and kept warm.** Synthesis prefers a
+  resident worker the owner placed at `~/tools/stella-speak-server` — probed
+  for whether it may run, never started at launch — over the robotic
+  `espeak` fallback, and `STELLA_SPEECH_RESIDENT` keeps one process loaded
+  across sentences so inter-sentence silence stops being model start-up.
+  Detection is local-first in both directions and no key decides anything while
+  a working local engine exists.
+- **Settings grew the box, and Apply acts on it.** `wake_word_enabled` is the
+  saved bool — the only new entry in `config.json`, and no secret in it — while
+  every consumer still reads the mode, so the two spellings cannot drift.
+  `STELLA_WAKE_WORD` overrides it for one launch in either direction and
+  decides the bool with it. Rebinding stops a replaced spotter and ear before
+  building the new session, so unticking really closes that capture instead of
+  leaving two subscribers behind.
+- **A dot, and a mute switch that is not decorative.** The dot is red while
+  Stella really holds the device — an armed ear, a capture in flight, an
+  interruption listener — read from the parties that can know, and dark the
+  moment the microphone is released. *Mute mic* stops the wake ear, refuses a
+  wake phrase that races the switch and a Listen press that arrives after it
+  with one shared sentence, takes down a wake capture already under way, and
+  leaves a hand-started recording and all output alone. The refusal lives in
+  one resume path, so no route — a Settings rebind included — can arm the ear
+  behind the switch by forgetting to ask.
+- **The trust model did not move.** A transcript still has exactly the
+  authority of typed user input and none of its own; `DANGEROUS` actions still
+  raise the same approval; nothing a wake ear or VAD hears is written to disk or
+  stored; and no voice path is ever stored in `api_keys.json`. What the scope
+  list gave up is one line, not the boundary: *wake-word detection* became an
+  opt-in capability and *always-listening audio* still means continuous
+  **recording**, which stays out, along with speaker identification and
+  streaming recognition.
+- **One file runs the real engines, by request.** `tests/test_voice_roundtrip.py`
+  is gated on `STELLA_VOICE_ROUNDTRIP=on` — skipped, never silently passed —
+  and never opens the microphone: fixed sentences go out through the resident
+  worker and back through the detected transcriber, using the same builders a
+  launched Stella uses, and every word has to return in order. Measured
+  2026-10-03, three sentences survived Kokoro → whisper whole, which is also
+  the deferred engine question answered. The same run found a real defect no
+  fake could see: the detected tool printed its own progress block on stdout,
+  so every live transcript carried it as user words until the transcript was
+  read out of that output instead of taken from it whole.
+- `uv run pytest` → 1854 passed, 7 skipped; `uv run ruff check .` clean;
+  `git diff --check` clean; the round trip run once with its switch on.
+  `docs/VOICE.md` is the authority for how any of this behaves, and
+  `docs/ROADMAP.md` records the scope rewrite as Stage D's D6.
+
+
+### Stella's voice stops reading the markup aloud
+
+- **Spoken replies are now the words, not the formatting.** Everything a
+  speaker renders goes through one new boundary —
+  `stella/spoken_form.speakable()`, applied when `SpeechOutput` is built — so
+  no engine is ever asked to say "asterisk asterisk". Heading hashes,
+  bold/italic/strikethrough markers, backticks, bullets and list numbers,
+  table pipes, rules, blockquote chevrons, emoji and zero-width marks are
+  removed; list items are joined with commas, which is also what gives the
+  voice its pauses. Applies to every provider (local command, resident
+  worker, OpenAI) and to the whole reply or each chunk of it, because the
+  conversion is idempotent and belongs to the boundary, not to a provider.
+- **Two honest substitutions, and no others.** A written link keeps its label
+  and loses its address; a bare URL becomes "a link" — a listener cannot open
+  either. Nothing is paraphrased, reordered, summarised, or expanded: times
+  stay "18:00", numbers stay numbers, because a wrong expansion is worse than
+  an awkward one and Stella owns no locale for hours. A reply made entirely
+  of decoration would become silence, so `SpeechOutput` keeps the original
+  text in that one case rather than looking broken.
+- **A delivered Outline alert is also spoken.** When speech output is on, the
+  amber alert line a claim produces is read aloud too, through its own
+  single slot: never while another announcement owns the speaker, dropped
+  unheard the moment a reply speaks or the user cancels or stops playback,
+  silent on failure, and never spoken at all when speech is off. The text is
+  the runtime's own line; the reminder title inside it stays untrusted
+  information that is rendered and nothing more.
+- **Shutdown now retires background speech.** `StellaBridge.stop()` performs
+  the same flush a reply performs, so an unheard narration phrase or alert
+  cannot start playing after the application has been closed.
+- `uv run pytest` → 1750 passed, 5 skipped; `uv run ruff check .` clean.
+  `docs/VOICE.md` carries the rules ("Spoken alerts", and the rewritten
+  speech-output paragraph).
+
+### Stella stops keeping its own reminders
+
+- The reminder **store** is gone: `stella/reminders.py` (its SQLite table and
+  the `pending → handled` transition), the
+  `reminder_create` / `reminder_list` / `reminder_cancel` tools,
+  `ReminderAction` / `ToolResult.reminder_action`, the window's Reminders
+  panel and nav entry, `ReminderScheduler`, `StellaSettings.reminders_db` /
+  `STELLA_REMINDERS_DB`, and the reminders database's place in
+  `stella backup`. No reminder is user-approved any more, because no reminder
+  is stored.
+- **What survives is delivery, retargeted at Outline.**
+  `Stella.check_due_reminders()`, `ReminderDelivery` and
+  `ReminderLifecycleEvent` come back in a narrower form: they ask the Outline
+  reminder pump for the alerts *this process just claimed* and surface each as
+  one chat line, and the pump's `due → fire` claim is what makes an alert
+  reach the user exactly once. The desktop interval returns as
+  `ReminderTicker`, which exists only to post that read onto the bridge's
+  single command queue, arms only when a real Outline server is reachable, and
+  can never reach the Brain, the LLM or a tool. Without this, "remind me"
+  would be a silent no-op whenever the browser is closed.
+- **"Remind me" is now an Outline alert.** The same request creates or
+  updates a task or event carrying a `remind` time, and the Outline app
+  owns the notification. When no Outline capability is available Stella
+  says plainly that it cannot schedule a notification instead of
+  inventing a reminder or claiming one exists. `docs/REMINDERS.md`
+  records where the behaviour went.
+- **The rulings that were never about storage stayed.** A due alert can
+  reach only this user, so "remind the team …" is still `kind=ask`
+  rather than a note the user alone would receive; a vague "what's on
+  today?" is still the user's own schedule rather than a document
+  lookup; one request is never satisfied by both systems; and when no
+  due time can be determined Stella asks instead of guessing one.
+- **What this deliberately gives up:** nothing polls on Stella's own schedule.
+  The ticker exists to ask a question, not to keep time — the pace of the
+  HTTP cycle belongs to the pump and the exactly-once decision belongs to
+  Outline. An alert therefore depends on Outline running with its own alerts
+  enabled, which is the point of moving it. Stella still schedules no
+  notification of its own and keeps no list of things that will fire later.
+- **What this deliberately does not touch:** the proactivity layer
+  (`DueTaskEvent`, `ProactivityDelegation`, the informed/asking/silent
+  decision) survives intact, because its rules — an external event is
+  untrusted information (rule 7) and proactivity may raise awareness but
+  never authority (rule 8) — are not reminder-specific. Only the
+  reminder→`DueTaskEvent` adapter was cut. Existing
+  `stella_reminders.db` files are left exactly where they are: nothing
+  is migrated, rewritten or deleted.
+- **What this gives up on confirmation:** `reminder_create` was
+  `DANGEROUS`, so every "remind me" asked before it wrote. `outline_create`
+  is `SENSITIVE` — Stella's standing classification for Outline writes —
+  so the same sentence is now an ordinary workspace write with no dialog.
+  Accepted: the write is bounded to the connected workspace, it is
+  reversible in Outline, and gating it would mean gating every Outline
+  mutation. `docs/REMINDERS.md` records how to re-elevate just the
+  alert-carrying call (`Tool.argument_risk()`) if that trade turns out to
+  be wrong.
+- **A claimed reminder is still untrusted information (rule 6/7).** The
+  sweep never consults the Brain or the LLM, the trace records an id and a
+  title length rather than the title, and a hostile reminder title is
+  delivered as text only — a dangerous tool proposed afterwards still refuses.
+  `tests/test_outline_reminder_delivery.py` pins all of that.
+- Every invariant the reminder tests pinned was retargeted onto a
+  surviving capability rather than dropped: panel-command authority onto
+  the memory panel, worker-thread serialization onto a dedicated queue
+  test, multi-word approval-mismatch verbs onto `key_send`, and audit
+  classification and startup honesty onto the memory tools.
+  `uv run pytest` → 1727 passed, 5 skipped; `uv run ruff check .` clean.
+
 ### Turns stop paying for words the model didn't need to write
 
 - Report 35's first target — decode time is the whole turn: the two
@@ -23,9 +240,9 @@
   turn went silent for 6-17 s. The activity observer gained a
   `calling:<capability>` event fired the instant a validated tool is
   about to run (app-known name, never model text), and every surface
-  uses it: the CLI prints "(Stella is calling reminder_list...)", the Tk
+  uses it: the CLI prints "(Stella is calling memory_list...)", the Tk
   status line upgrades "Stella is working · 7 s" to "Stella is calling
-  reminder list · 7 s", and voice keeps its existing filler untouched.
+  memory list · 7 s", and voice keeps its existing filler untouched.
 
 ### The composer remembers what you sent
 
@@ -48,11 +265,29 @@
   manifest promises — and touches no live state. A database too
   damaged to even open now reports broken instead of raising.
 
+### Typed slash commands join the CLI and the window
+
+- A line starting with `/` is now handled by the interface itself and
+  never reaches the model: `/exit`, `/status` (provider, model, web
+  backend and where your data lives), `/help`, `/version`, `/clear`
+  (forget this session's conversation; memories and the action trail
+  are untouched), `/history` (the newest action records, the same
+  bounded trail `stella audit` prints), and
+  `/trace on|off` / `/debug on|off` in the terminal — the startup
+  flags, now session-mutable. Users can also drop a Markdown file into
+  `~/.config/stella/commands/` and it becomes a command: `$ARGUMENTS`
+  in the file is replaced by what you type after the name, and the
+  expansion enters as ordinary input with no extra authority —
+  approvals still gate every tool. Unknown names error locally with
+  near-miss suggestions; template reads follow the persona discipline
+  (no symlinks, size cap, containment); voice transcripts are never
+  command-parsed, so a spoken "/exit" remains a thing you said.
+
 ### One LLM call for cheap read-only answers
 
 - Report 35's second target: tools whose successful output is already
   user-facing text now carry a `terminal` flag in the dispatcher
-  contract (`datetime`, `system_info`, `reminder_list`). When the
+  contract (`datetime`, `system_info`). When the
   brain marks such a call `tool_final`, the runtime renders the
   observation verbatim and the turn costs exactly one model call
   instead of two — halving the dominant latency on those turns.
@@ -126,10 +361,10 @@
 ### Success paths now carry action receipts
 
 - Report 33's W4: failures always logged rich receipts, but a
-  *successful* memory write/update/forget, reminder create/cancel, or
+  *successful* memory write/update/forget or
   Outline mutation landed `action_receipt: null` — so `stella audit`
   had no proof the action happened, and a model that couldn't see its
-  own success re-proposed reminder creates. Every mutation success
+  own success re-proposed the write. Every mutation success
   path now re-reads the resulting state and records a
   `verified`/`unverified` receipt; missing targets record `missing`,
   and an unreachable Outline server records `unverified` rather than

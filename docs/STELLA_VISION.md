@@ -267,7 +267,6 @@ The current system intentionally includes:
 - one-shot due-task event evaluation with explicit, scoped delegation;
 - trusted one-shot event handoff with process-local duplicate suppression;
 - synchronous user-facing proactivity results without delivery infrastructure;
-- one-shot reminders surfaced during a real interaction;
 - a bounded provider-neutral input envelope with text compatibility;
 - one-shot audio-to-text normalization through a provider-neutral boundary;
 - one-shot image-to-text normalization through a provider-neutral boundary;
@@ -284,7 +283,12 @@ It intentionally does not include:
 - generalized event ingress, notification delivery, background schedulers,
   daemons, or heartbeats;
 - wake words, continuous listening, or always-on audio; interruption is
-  user-initiated, never ambient;
+  user-initiated, never ambient; *(amended 2026-10-03, by the owner's own
+  request: a wake word exists now, and what this line keeps is the part that
+  was never negotiable — nothing is recorded or acted on ambiently. The ear
+  holds the device open for a local classifier behind a box the owner ticks,
+  its entire authority is one **Listen** press, and **Mute mic** gives the
+  microphone back. Continuous listening is still out. See `VOICE.md`.)*
 - continuous video or environment observation, camera or desktop capture, and
   raw-media retention; image/video stay at their one-shot boundaries with no
   provider-specific processing behind them;

@@ -5,7 +5,7 @@ binds 127.0.0.1 and guards every route with a token file. These tools are
 the Stella-side half of that integration:
 
 * stdlib only — ``urllib.request`` over loopback, no new dependencies;
-* environment-gated exactly like ``os_tools.build_desktop_tools``: when the
+* environment-gated exactly like ``stella.desktop`` registration: when the
   Outline server is not running or its token is unreadable, the tools are
   simply not registered and the model never sees them;
 * four coarse capabilities, one per verb (search/create/update/bulk).
@@ -42,6 +42,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
+
+from platformdirs import user_data_dir
 
 from stella.tools import ActionReceipt, RiskLevel, Tool, ToolResult
 
@@ -136,7 +138,9 @@ def _client_from_environment(env: Mapping[str, str]) -> OutlineClient | None:
 
     Token precedence mirrors the rest of Stella's environment handling:
     ``OUTLINE_TOKEN`` wins, otherwise the server's own data directory
-    (``OUTLINE_DATA_DIR``, default ``~/.local/share/outline``) supplies
+    (``OUTLINE_DATA_DIR``, defaulting to this platform's per-user data
+    directory for the app ``outline`` — on Linux
+    ``$XDG_DATA_HOME/outline`` or ``~/.local/share/outline``) supplies
     ``outline.token``.
     """
 
@@ -146,8 +150,16 @@ def _client_from_environment(env: Mapping[str, str]) -> OutlineClient | None:
     token = (env.get("OUTLINE_TOKEN") or "").strip()
     if not token:
         data_dir = env.get("OUTLINE_DATA_DIR")
-        root = Path(data_dir).expanduser() if data_dir else (
-            Path.home() / ".local" / "share" / "outline"
+        # Same resolution the Outline server itself uses: an explicit
+        # directory wins, otherwise this platform's per-user data
+        # directory with the app name "outline" and no author segment.
+        # On Linux that is exactly ``$XDG_DATA_HOME/outline`` falling back
+        # to ``~/.local/share/outline``, so a token written by either
+        # program is still found by the other.
+        root = (
+            Path(data_dir).expanduser()
+            if data_dir
+            else Path(user_data_dir("outline", appauthor=False))
         )
         try:
             token = (root / "outline.token").read_text("utf-8").strip()
@@ -753,8 +765,9 @@ class OutlineCreateTool(Tool):
             "Times are ISO-8601 (due_at for tasks; due_at is the start "
             "for events, which run one hour unless duration_ms says "
             "otherwise). remind sets an alert inside the Outline app "
-            "itself (tasks and events) — it is not Stella's own reminder, "
-            "which is what a plain \"remind me\" should use. "
+            "itself (tasks and events) and is now the only way Stella "
+            "reminds anyone: a plain \"remind me\" becomes an Outline "
+            "task or event carrying that remind time. "
             "If the user did not state an exact time, ask "
             "them instead of inventing one. Tasks may repeat "
             "(recurrence: daily|weekly|weekdays|monthly|every:<minutes>) "
@@ -771,8 +784,8 @@ class OutlineCreateTool(Tool):
             "title": "the item's title (a person's name; for water the label)",
             "due_at": "optional ISO-8601 datetime",
             "remind": "optional ISO-8601 datetime for an alert inside "
-                      "the Outline app (kind=task|event; not Stella's "
-                      "own reminders)",
+                      "the Outline app (kind=task|event; where Stella's "
+                      "reminders live now)",
             "project": "optional existing project title",
             "body": "optional note text / task notes / event description",
             "amount_ml": "optional integer 1-5000 (kind=water)",
@@ -1124,8 +1137,8 @@ class OutlineUpdateTool(Tool):
             "current name, edits is {name: \"new-name\"}; renaming onto an "
             "existing tag merges them and every task keeps both sets of "
             "tags. "
-            "remind is an ISO-8601 alert inside the Outline app (not "
-            "Stella's own reminders), null clears it; "
+            "remind is an ISO-8601 alert inside the Outline app (where "
+            "Stella's reminders live now), null clears it; "
             "recurrence null and tags [] clear. kind=link id=<entity id> "
             "to=<task|event|project> person=<name> attach|detach connects "
             "a person to an item (this is what the UI's graph shows). "

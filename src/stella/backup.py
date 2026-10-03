@@ -29,7 +29,6 @@ from pathlib import Path
 #: ``stella.app`` path helpers so the list cannot drift from the runtime.
 DATABASES = (
     "stella_memory.db",
-    "stella_reminders.db",
     "stella_action_history.db",
     "stella_transcript.db",
     "stella_semantic_index.db",

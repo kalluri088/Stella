@@ -7,7 +7,6 @@ approval dialogs answer the dispatcher's live request, and closing a
 dialog denies rather than fabricates authorization.
 """
 
-import datetime as dt
 import os
 import re
 import threading
@@ -33,7 +32,6 @@ from stella.brain import Brain, Decision, DecisionKind
 from stella.context import Context
 from stella.llm import LLMClient
 from stella.memory import InMemoryMemory, MemoryItem
-from stella.reminders import InMemoryReminderStore
 from stella.stella import Stella
 from stella.tools import (
     ActionPreview,
@@ -145,18 +143,14 @@ def make_window(
     tool: Tool | None = None,
     voice: VoicePanel | None = None,
     settings: StellaSettings | None = None,
-    reminders: InMemoryReminderStore | None = None,
-    reminder_tick_seconds: float | None = 5.0,
 ) -> tuple[tk.Tk, StellaWindow, StellaBridge, InMemoryMemory]:
     memory = InMemoryMemory()
-    store = reminders if reminders is not None else InMemoryReminderStore()
     tools = ToolDispatcher([tool or EchoTool()])
     stella = Stella(
         brain or AnswerBrain(),
         AnswerLLM(),
         tools,
         memory,
-        reminders=store,
     )
 
     def factory() -> StellaApplication:
@@ -166,9 +160,7 @@ def make_window(
             voice,
         )
 
-    bridge = StellaBridge(
-        factory, reminder_tick_seconds=reminder_tick_seconds
-    )
+    bridge = StellaBridge(factory)
     root = tk.Tk()
     window = StellaWindow(
         root, bridge, settings or StellaSettings(model="test")
@@ -286,26 +278,6 @@ def test_transcript_separates_roles_in_the_widget_tree() -> None:
         root.destroy()
 
 
-def test_window_informs_about_due_reminder_while_idle() -> None:
-    # Stage A D1: with no user input at all, the bridge tick must place
-    # the due reminder into the transcript through the existing pump.
-    now = dt.datetime.now(dt.UTC)
-    store = InMemoryReminderStore()
-    assert store.create(
-        "Idle ping", now + dt.timedelta(milliseconds=200), now
-    )
-    root, window, bridge, _ = make_window(
-        reminders=store, reminder_tick_seconds=0.05
-    )
-    try:
-        pump(root, 2.0)
-        transcript = window._chat.get("1.0", "end")
-        assert "Reminder: Idle ping is due today." in transcript
-    finally:
-        bridge.stop()
-        root.destroy()
-
-
 def test_settings_apply_preserves_voice_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,34 +307,6 @@ def test_settings_apply_preserves_voice_configuration(
         assert applied.voice_transcription == "off"
         assert applied.voice_speech == "off"
         assert applied.speech_command == "my-tts {text} {output}"
-    finally:
-        bridge.stop()
-        root.destroy()
-
-
-def test_window_reminder_panel_uses_trusted_tools() -> None:
-    root, window, bridge, _ = make_window()
-    try:
-        due = (dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)).isoformat()
-        window._reminder_content.insert(0, "Water the plants")
-        window._reminder_due.insert(0, due)
-        window._add_reminder()
-        pump(root, 0.6)
-        rows = [
-            window._reminder_list.get(i)
-            for i in range(window._reminder_list.size())
-        ]
-        assert rows == [f"Water the plants — due {due}"]
-
-        window._reminder_list.selection_set(0)
-        window._cancel_reminder()
-        pump(root, 0.6)
-        rows = [
-            window._reminder_list.get(i)
-            for i in range(window._reminder_list.size())
-        ]
-        assert rows == ["(no pending reminders)"]
-        assert window._reminder_status.cget("text").startswith("✓")
     finally:
         bridge.stop()
         root.destroy()
@@ -482,7 +426,7 @@ def test_approval_dialog_shows_read_only_preview_then_answers_request() -> None:
 def test_activity_event_names_the_capability_on_the_status_line() -> None:
     # Report 35 target 3: the long tool+synthesis stretch no longer reads
     # as a dead pane — a calling:<capability> event upgrades the status
-    # line to "Stella is calling reminder list · …" and a fresh turn
+    # line to "Stella is calling memory list · …" and a fresh turn
     # reverts to the generic wording.
     root, window, bridge, _ = make_window()
     try:
@@ -493,10 +437,10 @@ def test_activity_event_names_the_capability_on_the_status_line() -> None:
             "Stella is working · "
         )
 
-        window._handle_event(UiEvent("activity", "calling:reminder_list"))
+        window._handle_event(UiEvent("activity", "calling:memory_list"))
         window._render_working_status()
         assert str(window._status.cget("text")).startswith(
-            "Stella is calling reminder list · "
+            "Stella is calling memory list · "
         )
 
         # A new turn clears the label; narration never sticks.
@@ -522,6 +466,29 @@ def test_activity_event_carries_no_authority_and_ignores_blank_capability() -> N
         assert str(window._status.cget("text")).startswith(
             "Stella is working · "
         )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_shows_a_delivered_outline_reminder_in_the_chat() -> None:
+    # Stella keeps no reminders, so the one reminder line the window can
+    # show names where it came from.
+    root, window, bridge, _ = make_window()
+    try:
+        window._handle_event(
+            UiEvent("reminder_delivered", "Outline reminder (task): Stretch")
+        )
+        transcript = window._chat.get("1.0", "end")
+        # The delivery line says where the reminder came from, exactly once.
+        assert transcript.count("Outline reminder (task): Stretch") == 1
+        lines = transcript.splitlines()
+        line_no = next(
+            number
+            for number, line in enumerate(lines, start=1)
+            if "Stretch" in line
+        )
+        assert "alert" in window._chat.tag_names(f"{line_no}.0")
     finally:
         bridge.stop()
         root.destroy()
@@ -699,9 +666,51 @@ def test_window_without_voice_keeps_the_mic_button_disabled() -> None:
     try:
         assert str(window._mic_button.cget("state")) == "disabled"
         assert str(window._speak_toggle.cget("state")) == "disabled"
+        assert str(window._mute_toggle.cget("state")) == "disabled"
         window._mic_button.invoke()  # a disabled button must do nothing
         pump(root, 0.2)
         assert window._listening is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_mute_switch_takes_the_microphone_from_the_window() -> None:
+    # The switch is one click on the voice row and the refusal is the
+    # bridge's, so the whole path — checkbox, command, worker, event,
+    # transcript — has to be wired for this to say anything at all.
+    recorder = WindowRecorder()
+    panel = VoicePanel(recorder, None, WindowTranscriber(), None)
+    root, window, bridge, _ = make_window(voice=panel)
+    try:
+        assert str(window._mute_toggle.cget("state")) == "normal"
+        window._mute_toggle.invoke()
+        window._mic_button.invoke()  # a press into a muted microphone
+        deadline = time.monotonic() + 5
+        while "muted" not in window._chat.get("1.0", "end"):
+            if time.monotonic() >= deadline:
+                break
+            root.update()
+            time.sleep(0.02)
+        assert "The microphone is muted" in window._chat.get("1.0", "end")
+        assert recorder.listening is False  # nothing was ever recorded
+        assert window._mic_button.cget("text") == "Listen"
+        # Unmuting is the whole repair: the very next press reaches the
+        # microphone again.
+        window._mute_toggle.invoke()
+        window._mic_button.invoke()
+        deadline = time.monotonic() + 5
+        while not window._listening and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert recorder.listening is True  # the press reached the microphone
+        window._mic_cancel.invoke()  # abandon it: leave nothing recording
+        deadline = time.monotonic() + 5
+        while recorder.listening and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert recorder.listening is False
+        assert recorder.abandoned == 1
     finally:
         bridge.stop()
         root.destroy()
@@ -1196,6 +1205,27 @@ def test_settings_apply_without_a_key_leaves_the_environment_alone(
         root.destroy()
 
 
+def test_the_wake_checkbox_writes_both_spellings_of_one_choice(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Wake is the one capability the owner decides by hand while Stella is
+    # running, and the window shows the saved bool while every consumer
+    # reads the mode: a tick has to move both spellings together.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
+    root, window, bridge, _ = make_window()
+    try:
+        assert window._draft_settings().wake_word_enabled is False
+        assert window._draft_settings().wake_word == "off"
+        window._wake_var.set(True)
+        draft = window._draft_settings()
+        assert draft.wake_word_enabled is True
+        assert draft.wake_word == "on"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_settings_preset_picker_derives_provider_and_preset(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1391,6 +1421,169 @@ def test_nav_rail_switches_sections() -> None:
         assert str(window._nav_buttons["settings"]["style"]) == (
             "NavActive.TButton"
         )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+# ------------------------------------------------------------- slash commands
+
+
+class RecordingBrain(Brain):
+    """Counts turns and remembers what the model was asked."""
+
+    def __init__(self) -> None:
+        self.inputs: list[str] = []
+
+    def decide(self, context: Context, should_cancel=None) -> Decision:
+        del should_cancel
+        self.inputs.append(str(context.user_input))
+        return Decision(kind=DecisionKind.ANSWER, content="recorded")
+
+
+def settle(root: tk.Tk, window: StellaWindow, seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + seconds
+    while window._busy and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.02)
+    pump(root, 0.1)
+
+
+def test_window_status_command_renders_without_a_turn() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/status")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "> /status" in transcript
+        assert "provider:" in transcript
+        assert brain.inputs == []
+        assert window._busy is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_template_expands_into_an_ordinary_turn(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STELLA_PERSONA_DIR", str(tmp_path))
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    (commands / "plan.md").write_text(
+        "Plan this: $ARGUMENTS", encoding="utf-8"
+    )
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/plan the launch")
+        window._send()
+        settle(root, window)
+        assert brain.inputs == ["Plan this: the launch"]
+        transcript = window._chat.get("1.0", "end")
+        assert "> /plan the launch" in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_unknown_command_is_a_local_note(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("STELLA_PERSONA_DIR", str(tmp_path))
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/bogusxyz")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "no /bogusxyz command" in transcript
+        assert brain.inputs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_exit_command_closes_without_a_turn() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    closed: list[bool] = []
+    window._on_close = lambda: closed.append(True)
+    try:
+        window._input.insert("1.0", "/exit")
+        window._send()
+        settle(root, window)
+        assert closed == [True]
+        assert brain.inputs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_trace_command_explains_it_is_terminal_only() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._input.insert("1.0", "/trace on")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "terminal" in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_turns_bypassing_the_send_guard_are_never_commands() -> None:
+    # The voice path posts turns without the typed-input guard in
+    # _send: a spoken "/exit" is a sentence, not a command.
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._start_turn("/exit")
+        settle(root, window)
+        assert brain.inputs == ["/exit"]
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_clear_command_clears_on_the_worker_thread() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "hello")
+        window._send()
+        settle(root, window)
+        assert bridge._application.session.history != []
+        window._input.insert("1.0", "/clear")
+        window._send()
+        deadline = time.monotonic() + 5
+        while "Conversation history cleared" not in window._chat.get(
+            "1.0", "end"
+        ) and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.02)
+        transcript = window._chat.get("1.0", "end")
+        assert "Conversation history cleared" in transcript
+        assert bridge._application.session.history == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_history_command_shows_a_note() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._input.insert("1.0", "/history")
+        window._send()
+        deadline = time.monotonic() + 5
+        while "action records" not in window._chat.get("1.0", "end") and (
+            time.monotonic() < deadline
+        ):
+            root.update()
+            time.sleep(0.02)
+        assert "action records" in window._chat.get("1.0", "end")
     finally:
         bridge.stop()
         root.destroy()

@@ -2,7 +2,8 @@
 
 Stella is a personal assistant for your Linux desktop that runs on **your**
 machine and keeps **your** data. You chat with her like a person: ask
-questions, request file edits, store things to remember, set reminders. She
+questions, request file edits, store things to remember, schedule an alert
+in the notes app you already use. She
 can run entirely offline with a local model.
 
 The rule she never breaks: **nothing that changes your system happens without
@@ -28,8 +29,11 @@ checked that it did.
   embedding model coexists with your chat model, but the first call after
   a long idle can take a few seconds while it reloads.) Off by default,
   and while off the index file is never created.
-- **Remind** — "in 20 minutes, tell me to take the pan off the stove." An
-  open window delivers reminders on its own, even while you say nothing.
+- **Remind** — "in 20 minutes, tell me to take the pan off the stove." Stella
+  has no notifier of her own: she writes that as a task or event carrying a
+  remind time in your connected Outline workspace, and **Outline** is what
+  alerts you. If no workspace is connected she says she cannot schedule it,
+  rather than pretending she did.
 - **Work with files** — read, create, edit files inside her workspace folder.
   Before anything is written, you see a real diff or the exact new content
   and approve or cancel it. Afterwards she re-reads the disk and reports
@@ -37,7 +41,15 @@ checked that it did.
 - **Look things up** — answer questions from file content, check the time,
   fetch a web page for you to read (after asking, with the URL shown).
 - **Talk and listen** — press the mic button, speak; replies can be spoken
-  back. There is no always-on listening and no wake word.
+  back on a local voice. Neither side needs a cloud service: the transcriber
+  and the synthesizer already on the laptop are found automatically and named
+  on screen. Continuous hands-free listening is off by default: the wake
+  word — the *Wake word* box in Settings, whose answer is saved, or
+  `STELLA_WAKE_WORD=on` for a single launch — is the only way Stella ever
+  holds the microphone open while you are not speaking to her. A red dot
+  says whenever it is open, and *Mute mic* puts every ear down for the
+  session; `uv sync --extra wake` and local wake models are what the ear
+  needs to exist at all.
 - **Use your desktop (opt-in)** — with one setting on, Stella can read the
   focused Hyprland window, focus or move windows, and type into the window
   you nominate. Everything else about her is unchanged: the screen-wide
@@ -168,7 +180,7 @@ development, or running several configurations side by side:
 | `STELLA_LLAMA_SERVER_BINARY` | `llama-server` command for the `llama` provider | `llama-server` |
 | `STELLA_LLAMA_SERVER_PORT` | Port for the Stella-owned brain | `8080` |
 | `STELLA_WORKSPACE` | Folder file actions may touch | `~/.local/share/stella/workspace` |
-| `STELLA_MEMORY_DB` / `STELLA_REMINDERS_DB` / `STELLA_HISTORY_DB` | State file locations | under `~/.local/share/stella` |
+| `STELLA_MEMORY_DB` / `STELLA_HISTORY_DB` | State file locations | under `~/.local/share/stella` |
 | `STELLA_PERSONA_DIR` | Persona file location | `~/.config/stella` |
 | `STELLA_TRANSCRIPTS` | Transcript recording on/off (`1`/`0`; overrides the saved setting) | off |
 | `STELLA_TRANSCRIPT_DB` | Transcript file location | `~/.local/share/stella/stella_transcript.db` |
@@ -178,6 +190,15 @@ development, or running several configurations side by side:
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
 | `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
+| `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
+| `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |
+| `STELLA_SPEECH_LOCAL_VOICE` / `STELLA_SPEECH_LOCAL_SPEED` | Voice name and rate asked of a resident speech worker (extra request keys; a worker may ignore them) | unset |
+| `STELLA_TRANSCRIPTION_COMMAND` / `STELLA_TRANSCRIPTION_MODEL` | A local transcriber to run instead of the detected `voxtype` CLI (a `{input}` template, run without a shell) / the OpenAI transcription model when the cloud path is chosen | unset / `whisper-1` |
+| `STELLA_SPEECH_COMMAND` / `STELLA_SPEECH_MODEL` / `STELLA_SPEECH_VOICE` | A local synthesizer (a `{text}` + `{output}` template that writes one audio file) / the OpenAI speech model and voice | unset / `tts-1` / `alloy` |
+| `STELLA_SPEECH_RESIDENT` | Keep one speech process warm between sentences so a local voice answers in milliseconds instead of re-loading its model on every phrase (`VOICE.md`) | off |
+| `STELLA_VOICE_BARGE_IN` / `STELLA_BARGE_SOURCE` / `STELLA_BARGE_THRESHOLD` / `STELLA_VAD_MODEL` | Interrupt Stella by speaking: `auto`/`on`/`off`, the capture source it reads (an echo-cancelled one is what makes it usable), how speech-like a frame must look, and where the small VAD model file is | `auto` / unset / `0.5` / found automatically |
+| `STELLA_WAKE_MODEL` / `STELLA_WAKE_MODEL_DIR` / `STELLA_WAKE_SOURCE` / `STELLA_WAKE_THRESHOLD` | Which openWakeWord classifier answers for the wake ear and where it is looked for, the capture source it reads, and how sure it has to be before it counts as a phrase | `hey_jarvis_v0.1.onnx` / `~/models/openwakeword` / unset / `0.5` |
+| `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`) for this launch only; the *Wake word* box in Settings is what is saved (`wake_word_enabled`), and this variable wins over it either way. Arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |
 
@@ -200,14 +221,37 @@ scheduling choice, not a Stella configuration.
   a recording that is still being transcribed (nothing is sent to Stella),
   and **Cancel** also silences audio that is being spoken. Speech
   produced around a cancel is discarded, never played.
-- The tabs manage **Memories**, **Reminders**, **History** and **Settings**.
+- What Stella says aloud is the reply's words, not its formatting: markdown
+  marks, table pipes and emoji are stripped before any voice engine sees the
+  text, and a link is spoken by its label ("a link" for a bare address)
+  because you cannot open one with your ears. Nothing is paraphrased or
+  summarised on the way.
+- When "Speak replies" is on, a due Outline alert is said as well as shown —
+  one at a time, never over a reply, and never when speech is off.
+- The tabs manage **Memories**, **History** and **Settings**.
+
+### Slash commands
+
+A line that starts with `/` is a command Stella's interface handles
+itself — it never reaches the model, and saying "/exit" out loud is
+still just a sentence. Built in: `/exit`, `/status` (what Stella is
+connected to and where your data lives), `/help`, `/version`,
+`/clear` (forget this session's conversation — stored memories and the
+action trail are untouched), `/history` (the most recent action
+records), and in the terminal `/trace on|off` and `/debug on|off`. You can also write
+your own: a Markdown file named `~/.config/stella/commands/plan.md`
+becomes `/plan`, and whatever you type after the command replaces
+`$ARGUMENTS` in it (or is appended, if the file has no token). An
+expanded template is treated exactly like a message you typed out in
+full — nothing more, nothing less; dangerous actions still ask. An
+unknown `/name` says so and suggests near matches.
 
 ## Where your data lives
 
 All in `~/.local/share/stella` (or `$XDG_DATA_HOME/stella`): the config
 file, your verified API keys (`api_keys.json`, stored so only your user
 can read it, never printed and never part of a backup), your memories,
-your reminders, the action history, and her workspace
+and the action history, and her workspace
 folder — plain files you own. Her persona files are yours too, under
 `~/.config/stella`. The conversation transcript (used only for style
 reflection) is off by default and, when you turn it on, is one bounded
@@ -230,8 +274,14 @@ without touching the live state.
 - Local models are slow and sometimes pick the wrong tool — Stella then
   fails closed to doing nothing rather than guessing. The window shows how
   long each turn took so "slow" never looks like "broken".
-- Reminders are one-shot and only fire while Stella is running; nothing
-  recurring.
+- Stella keeps no reminders of her own. There is no reminder store, no
+  reminder panel and no reminder tool: "remind me to X at 18:00" is an alert
+  written into the notes app you connect, and that app is what rings. Stella
+  does still wake the desktop window on an interval to ask that app what is
+  due — a read that becomes one line of chat, with no tool call and no model
+  turn behind it — and she only does it while the notes app is actually
+  configured. A remind alert there reaches only you, so "remind the team" is
+  something she will ask about rather than fake.
 - File actions are limited to her workspace on purpose. There is no shell
   access and no "control my computer" mode.
 - Voice quality depends on the transcription/speech tools you install.
@@ -251,7 +301,7 @@ without touching the live state.
 - `docs/PERSONA.md` — personality as data: trust tiers, filters, and the
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
-  of scope (plugins, wake words, autonomous agents, cloud accounts…)
+  of scope (plugins, autonomous agents, cloud accounts…)
 - `tests/` — 1400+ tests; every "done" claim in this README is checked by
   one
 

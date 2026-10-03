@@ -1,14 +1,12 @@
 """Minimal synchronous command-line interface for Stella."""
 
 import argparse
-import datetime as dt
 import difflib
 import json
-import os
-import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from stella.app import (
     StellaSession,
@@ -21,8 +19,21 @@ from stella.app import (
 from stella.audit import OUTCOMES, run_audit
 from stella.backup import run_backup, run_restore, run_verify
 from stella.brain import Decision
+from stella.commands import (
+    CommandCall,
+    action_history_lines,
+    expand_template,
+    help_lines,
+    load_template_body,
+    parse_command_line,
+    parse_limit,
+    status_lines,
+    suggest_commands,
+    version_line,
+)
 from stella.config import resolve_settings
 from stella.llm import Message
+from stella.outline_tools import active_reminder_pump
 from stella.persona import (
     ADDONS_FILE_NAME,
     MAX_PERSONA_BYTES,
@@ -45,6 +56,7 @@ from stella.persona import (
     snapshot_persona_state,
     write_persona_text,
 )
+from stella.portable import default_editor, split_command
 from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
@@ -76,6 +88,65 @@ except ImportError:
     pass
 
 
+@dataclass
+class _Flags:
+    """Session-mutable toggles (/trace, /debug) for one CLI run."""
+
+    trace: bool
+    debug: bool
+
+
+def _run_control_command(
+    call: CommandCall,
+    flags: _Flags,
+    *,
+    session: StellaSession | None,
+    stella: Stella | None,
+    settings: StellaSettings | None,
+    output_fn: Callable[[str], None],
+) -> bool:
+    """Handle one built-in command; True when the session should end."""
+
+    if call.name == "exit":
+        output_fn("Goodbye!")
+        return True
+    if call.name in {"trace", "debug"}:
+        value = call.argument.casefold()
+        if value not in {"on", "off"}:
+            output_fn(f"Usage: /{call.name} on|off")
+        else:
+            setattr(flags, call.name, value == "on")
+            output_fn(f"{call.name} {value}.")
+        return False
+    if call.name == "clear":
+        if session is not None:
+            session.history.clear()
+        output_fn(
+            "Conversation history cleared. Stored memories and the"
+            " action trail are untouched."
+        )
+        return False
+    if call.name == "history":
+        limit = parse_limit(call.argument)
+        if limit is None:
+            output_fn("Usage: /history [number of records]")
+        else:
+            for line in action_history_lines(stella, limit):
+                output_fn(line)
+        return False
+    if call.name == "help":
+        for line in help_lines():
+            output_fn(line)
+    elif call.name == "status":
+        for line in status_lines(
+            settings=settings, session=session, stella=stella
+        ):
+            output_fn(line)
+    elif call.name == "version":
+        output_fn(version_line())
+    return False
+
+
 def run_cli(
     stella: Stella,
     input_fn: Callable[[str], str] = input,
@@ -86,12 +157,19 @@ def run_cli(
     status_fn: Callable[[str], None] | None = None,
     persona_proposals: ReflectionStore | None = None,
     session: StellaSession | None = None,
+    settings: StellaSettings | None = None,
 ) -> None:
     """Run one interactive Stella session.
 
     ``session`` should be the application's own session: it is the only
     one carrying the opt-in transcript recorder. Without it, a fresh
     (unrecorded) session is built — the historical behavior.
+    ``settings`` is only read by ``/status``; it is optional so older
+    callers keep working.
+
+    Typed lines starting with ``/`` are slash commands, handled here
+    before the model (see ``stella.commands``); everything else flows
+    through the turn path unchanged.
     """
 
     if isinstance(stella, Stella) and stella.approval_provider is None:
@@ -106,6 +184,7 @@ def run_cli(
     status = status_fn or _print_status
     if session is None:
         session = StellaSession(stella)
+    flags = _Flags(trace=trace, debug=debug)
     while True:
         try:
             user_input = input_fn("You: ")
@@ -122,9 +201,34 @@ def run_cli(
             # no history entry, no thinking indicator.
             continue
 
-        # Real interactions are the only scheduling trigger: due reminders
-        # are delivered through the existing bounded proactivity decision.
-        _deliver_due_reminders(stella, output_fn, trace=trace)
+        call = parse_command_line(user_input)
+        if call is not None:
+            # Commands never reach the Brain; a template's expansion
+            # becomes ordinary input.
+            if call.is_control:
+                if _run_control_command(
+                    call,
+                    flags,
+                    session=session,
+                    stella=stella,
+                    settings=settings,
+                    output_fn=output_fn,
+                ):
+                    return
+                continue
+            body, error = load_template_body(call.name)
+            if error is not None:
+                output_fn(error)
+                suggestions = suggest_commands(call.name)
+                if suggestions:
+                    listed = ", ".join(f"/{name}" for name in suggestions)
+                    output_fn(f"Did you mean {listed}?")
+                continue
+            user_input = expand_template(body, call.argument)
+
+        # Real interactions are the only trigger: due Outline reminders are
+        # delivered through the existing bounded notify-only path.
+        _deliver_due_reminders(stella, output_fn, trace=flags.trace)
         status("Stella is thinking...")
 
         narrating = {"tool_seen": False}
@@ -150,9 +254,9 @@ def run_cli(
             output_fn(outcome.error_message)
             continue
         result = outcome.result
-        if debug:
+        if flags.debug:
             (debug_fn or _print_debug)(format_decision(result.decision))
-        if trace:
+        if flags.trace:
             timeline = format_trace(result)
             if timeline:
                 output_fn("Stella did")
@@ -172,15 +276,18 @@ def _deliver_due_reminders(
     output_fn: Callable[[str], None],
     trace: bool = False,
 ) -> None:
-    """Run the trusted per-interaction due-reminder check and show results."""
+    """Run the trusted due-reminder check and show what was claimed.
+
+    A CLI session that is idle has no window to inform, so the sweep rides
+    the next interaction: anything Outline reports due since the last check
+    reaches the user exactly once.
+    """
 
     if not isinstance(stella, Stella):
-        # Minimal test or embedding stubs may not carry the reminder flow.
+        # Minimal test or embedding stubs may not carry the flow.
         return
     reminder_trace = InteractionTrace(interaction_id="reminder-check")
-    deliveries = stella.check_due_reminders(
-        dt.datetime.now(dt.UTC), trace=reminder_trace
-    )
+    deliveries = stella.check_due_reminders(trace=reminder_trace)
     for delivery in deliveries:
         if delivery.delivered and delivery.message is not None:
             output_fn(f"Stella: {delivery.message}")
@@ -301,25 +408,23 @@ def format_startup(stella: Stella) -> list[str]:
     llm = getattr(getattr(stella, "brain", None), "llm", None)
     base_url = str(getattr(getattr(llm, "client", None), "base_url", "") or "")
     database = getattr(stella.memory, "database_path", None)
-    reminders_database = getattr(
-        getattr(stella, "reminders", None), "database_path", None
-    )
     workspace = None
     for tool in getattr(stella.tools, "_tools", {}).values():
         if hasattr(tool, "workspace"):
             workspace = str(tool.workspace)
             break
+    pump = active_reminder_pump()
     return [
         f"provider:  {type(llm).__name__ if llm is not None else 'unknown'}",
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {database if database is not None else 'in-memory'}",
-        (
-            f"reminders db: {reminders_database}"
-            if reminders_database is not None
-            else "reminders: disabled"
-        ),
         f"workspace: {workspace or 'not configured'}",
+        (
+            "alerts:    Outline reminders"
+            if pump is not None
+            else "alerts:    none (no Outline server)"
+        ),
     ]
 
 
@@ -408,11 +513,7 @@ def open_persona_editor(output_fn: Callable[[str], None] = print) -> int:
     ensure_persona_directory(paths)
     if not paths.persona.exists():
         write_persona_text(paths, PERSONA_SKELETON, source="editor")
-    editor = (
-        os.environ.get("VISUAL", "").strip()
-        or os.environ.get("EDITOR", "").strip()
-        or "vi"
-    )
+    editor = default_editor()
     # The hand-edit itself happens inside $EDITOR, invisible to Stella, so
     # the recoverable copy is taken now: `stella persona revert` rolls back
     # to the persona as it was before this editing session (identical
@@ -427,7 +528,7 @@ def open_persona_editor(output_fn: Callable[[str], None] = print) -> int:
             )
     try:
         subprocess.run(
-            [*shlex.split(editor), str(paths.persona)], check=False
+            [*split_command(editor), str(paths.persona)], check=False
         )
     except OSError:
         output_fn(
@@ -904,7 +1005,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     application = build_application(settings)
     for line in format_startup(application.session.stella):
         print(line)
-    print("Ask Stella anything. Type 'exit' to quit.\n")
+    print("Ask Stella anything. Type /help for commands, 'exit' to quit.\n")
     try:
         run_persona_onboarding(application.session.stella)
         run_cli(
@@ -913,6 +1014,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             trace=getattr(args, "trace", False),
             persona_proposals=application.proposals,
             session=application.session,
+            settings=settings,
         )
     finally:
         application.close()

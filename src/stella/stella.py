@@ -3,7 +3,6 @@
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 
 from stella.audio import (
     NormalizedInput,
@@ -39,16 +38,13 @@ from stella.memory import (
 from stella.mismatch import approval_mismatch_warning
 from stella.outline_tools import active_reminder_pump
 from stella.proactivity import (
-    DelegatedAction,
     DueTaskEvent,
-    DueTaskStatus,
     ProactivityDecisionKind,
     ProactivityDelegation,
     ProactivityResult,
     UserFacingProactivityResult,
 )
 from stella.proactivity import evaluate_due_task_event as evaluate_due_task_event_once
-from stella.reminders import ReminderStore
 from stella.semantic_memory import (
     SemanticMatch,
     SemanticRetriever,
@@ -130,10 +126,11 @@ class StellaStep:
 
 @dataclass(frozen=True)
 class ReminderDelivery:
-    """The bounded user-facing outcome of checking one due reminder.
+    """The bounded user-facing outcome of claiming one due reminder.
 
-    A message is only exposed when the trusted store confirmed the
-    reminder's terminal HANDLED state, so delivery can never repeat.
+    The reminder is Outline's, never Stella's: a message is exposed only
+    for an item this process actually claimed, and the server's claim is
+    itself the terminal state, so one reminder reaches the user once.
     """
 
     reminder_id: int
@@ -155,7 +152,6 @@ class Stella:
         | None = None,
         max_tool_steps: int = 1,
         semantic_retriever: SemanticRetriever | None = None,
-        reminders: ReminderStore | None = None,
     ) -> None:
         if (
             not isinstance(max_tool_steps, int)
@@ -173,7 +169,6 @@ class Stella:
         self.approval_provider = approval_provider
         self.max_tool_steps = max_tool_steps
         self.semantic_retriever = semantic_retriever
-        self.reminders = reminders
         self._handled_proactive_event_ids: dict[str, None] = {}
 
     def process(
@@ -534,17 +529,6 @@ class Stella:
                                 action=receipt.action,
                                 status=receipt.status,
                                 size_bytes=receipt.size_bytes,
-                            )
-                        )
-                    if tool_result.reminder_action is not None:
-                        action = tool_result.reminder_action
-                        trace.record(
-                            ReminderLifecycleEvent(
-                                action=action.action,
-                                reminder_id=action.reminder_id,
-                                content_chars=action.content_chars,
-                                outcome="recorded" if tool_result.success
-                                else "rejected",
                             )
                         )
                     tool_steps += 1
@@ -948,19 +932,26 @@ class Stella:
             self.handoff_due_task_event(event, delegation)
         )
 
-    def _outline_deliveries(
-        self, trace: InteractionTrace
+    def check_due_reminders(
+        self,
+        trace: InteractionTrace | None = None,
     ) -> tuple[ReminderDelivery, ...]:
-        """Deliver Outline reminders this process just claimed.
+        """Deliver the Outline reminders this process just claimed.
 
-        The Outline server fires each reminder exactly once, to the first
-        pump that acknowledges it — so when the web UI is open it usually
-        wins and Stella stays silent, and when it is closed Stella still
-        notifies. No store confirmation applies here: the claim is the
-        server-side terminal state. Titles are untrusted stored data and
-        are framed as such.
+        Stella keeps no reminder store, so the only due items here are
+        Outline's, reached through the same claim funnel its web UI pumps.
+        The server fires each reminder exactly once, to the first pump that
+        acknowledges it: when a browser is open it usually wins and Stella
+        stays silent, and when it is closed the user still hears about it.
+        No store confirmation applies — the claim is the server-side
+        terminal state. Titles are untrusted stored data and are framed as
+        such. This never consults the Brain, LLM, memory, or any tool, and
+        the only external read is the pump, which is armed solely by the
+        trusted startup path that registered the Outline tools.
         """
 
+        if trace is None:
+            trace = InteractionTrace(interaction_id="reminder-check")
         pump = active_reminder_pump()
         if pump is None:
             return ()
@@ -979,90 +970,6 @@ class Stella:
                     kind=ProactivityDecisionKind.INFORM,
                     message=f"Outline reminder ({item.kind}): {item.title}",
                     delivered=True,
-                )
-            )
-        return tuple(deliveries)
-
-    def check_due_reminders(
-        self,
-        now: datetime,
-        trace: InteractionTrace | None = None,
-    ) -> tuple[ReminderDelivery, ...]:
-        """Route each due reminder through the existing proactivity decision.
-
-        Trusted application code, not reminder content, constructs both the
-        event and its narrow notify-only delegation. A delivery message is
-        exposed only after the store confirms the terminal HANDLED state, so
-        one reminder is delivered at most once. This never consults the
-        Brain, LLM, memory, or any tool; the only external read is the
-        Outline reminder pump, which is armed solely by the trusted
-        startup path that registered the Outline tools.
-        """
-
-        if trace is None:
-            trace = InteractionTrace(interaction_id="reminder-check")
-        deliveries: list[ReminderDelivery] = list(self._outline_deliveries(trace))
-        if self.reminders is None:
-            return tuple(deliveries)
-        for reminder in self.reminders.due(now):
-            trace.record(
-                ReminderLifecycleEvent(
-                    action="due",
-                    reminder_id=reminder.id,
-                    content_chars=len(reminder.content),
-                )
-            )
-            event = DueTaskEvent(
-                event_id=f"reminder:{reminder.id}",
-                task_title=reminder.content,
-                status=DueTaskStatus.OPEN,
-                is_due=True,
-            )
-            delegation = ProactivityDelegation(
-                action=DelegatedAction.INFORM_DUE_TASK,
-                task_scope=reminder.content,
-            )
-            result = self.handoff_due_task_event(event, delegation)
-            if result.duplicate_suppressed:
-                trace.record(
-                    ReminderLifecycleEvent(
-                        action="duplicate",
-                        reminder_id=reminder.id,
-                        content_chars=len(reminder.content),
-                    )
-                )
-                deliveries.append(
-                    ReminderDelivery(reminder_id=reminder.id, kind=result.kind)
-                )
-                continue
-            if result.kind is ProactivityDecisionKind.DO_NOTHING:
-                trace.record(
-                    ReminderLifecycleEvent(
-                        action="skipped",
-                        reminder_id=reminder.id,
-                        content_chars=len(reminder.content),
-                        outcome=result.kind.value,
-                    )
-                )
-                deliveries.append(
-                    ReminderDelivery(reminder_id=reminder.id, kind=result.kind)
-                )
-                continue
-            handled = self.reminders.mark_handled(reminder.id)
-            trace.record(
-                ReminderLifecycleEvent(
-                    action="delivered" if handled else "withheld",
-                    reminder_id=reminder.id,
-                    content_chars=len(reminder.content),
-                    outcome=result.kind.value,
-                )
-            )
-            deliveries.append(
-                ReminderDelivery(
-                    reminder_id=reminder.id,
-                    kind=result.kind,
-                    message=result.message if handled else None,
-                    delivered=handled,
                 )
             )
         return tuple(deliveries)

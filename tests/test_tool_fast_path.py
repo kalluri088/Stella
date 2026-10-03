@@ -1,6 +1,7 @@
 """Tests for the targeted tool fast path (decision -> tool -> synthesis)."""
 
 import json
+from pathlib import Path
 
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import Context
@@ -515,10 +516,8 @@ def test_dispatcher_reports_terminal_capabilities() -> None:
 
 
 def test_real_display_tools_declare_themselves_terminal() -> None:
-    from stella.reminders import InMemoryReminderStore
     from stella.tools import (
         DateTimeTool,
-        ReminderListTool,
         SystemInfoTool,
     )
 
@@ -526,12 +525,17 @@ def test_real_display_tools_declare_themselves_terminal() -> None:
         [
             DateTimeTool(),
             SystemInfoTool(),
-            ReminderListTool(InMemoryReminderStore()),
         ]
     )
     assert [dispatcher.is_terminal(name) for name in
-            ("datetime", "system_info", "reminder_list")] == [True] * 3
+            ("datetime", "system_info")] == [True] * 2
     # the default is opt-in: no tool is terminal unless it says so
-    from stella.tools import MemoryListTool
+    from stella.tools import (
+        FileSystemReadTool,
+        MemoryListTool,
+        NetworkReadTool,
+    )
 
     assert MemoryListTool(InMemoryMemory()).terminal is False
+    assert FileSystemReadTool(Path.cwd()).terminal is False
+    assert NetworkReadTool().terminal is False

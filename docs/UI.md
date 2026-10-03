@@ -5,7 +5,7 @@
 `stella.ui` is a small Tkinter window over the same Stella core the CLI uses.
 It is an interface, not a second Stella: every request flows through the shared
 application layer in `stella.app` and then through the existing trusted
-`Stella`, `ToolDispatcher`, `Memory`, and reminder boundaries. The UI holds no
+`Stella`, `ToolDispatcher`, and `Memory` boundaries. The UI holds no
 decision, authorization, or execution logic of its own.
 
 ## Launching
@@ -43,15 +43,15 @@ Tk window (stella.ui)
   -> StellaBridge (stella.app)        # command queue in, event queue out
     -> worker thread "stella-app"     # owns the SQLite connections
       -> StellaApplication / StellaSession (stella.app)
-        -> Stella core (brain, dispatcher, memory, reminders)
+        -> Stella core (brain, dispatcher, memory)
 ```
 
 SQLite connections are bound to the thread that opened them, so the whole
 application is built and used on one daemon worker thread. The UI thread never
 touches `Stella`, tools, memory, or the database directly. It posts commands
-(`post_turn`, `post_memories`, `post_reminder_add`, ...) and a 100 ms poll
-drains `UiEvent` values (`turn`, `memories`, `reminders`, `settings`,
-`reminder_delivered`, `notice`, `error`) back into widgets. All friendly
+(`post_turn`, `post_memories`, `post_forget`, ...) and a 100 ms poll
+drains `UiEvent` values (`turn`, `memories`, `memory_result`, `settings`,
+`notice`, `error`) back into widgets. All friendly
 error text is produced by the bridge; failures never surface as raw
 exceptions.
 
@@ -75,7 +75,7 @@ display, and can never approve a tool or change permissions.
   While a turn runs, the status line counts elapsed seconds
   ("Stella is working · 12 s") so a slow local model reads as slow, not
   broken; once the runtime validates a tool call, the line upgrades to
-  name the capability ("Stella is calling reminder list · 7 s") — the
+  name the capability ("Stella is calling memory list · 7 s") — the
   application's own knowledge, never model text — and a **Cancel**
   button appears beside Send. Cancel stops the
   turn at the next safe point between steps and — since A7 — also
@@ -99,12 +99,14 @@ display, and can never approve a tool or change permissions.
 - Memory: list stored memories, keyword-search them, and forget the selected
   one. The list shows content only; internal database ids never appear and
   forgetting works by visible list position through `MemoryPanel`.
-- Reminders: list pending one-shot reminders with due times, create one from
-  content plus an ISO due time, and cancel by query text — all by executing
-  the same trusted reminder tools the CLI uses. An open window also fires
-  due reminders unprompted: a ticker posts a reminder check onto the
-  worker thread every few seconds, so an idle Stella still informs (the
-  CLI keeps firing on the next interaction by design).
+- No reminder surface. Stella keeps no reminder store, so there is nothing to
+  list, schedule or cancel from the window: a "remind me" is written into the
+  connected Outline workspace and that application owns the alert
+  (`REMINDERS.md`). What the window does keep is the delivery path — an idle
+  ticker asks Outline for the reminders this process can claim, and each claim
+  appears in the chat as an amber alert line. It is a read, not a turn: it
+  cannot reach the Brain, the LLM or any tool, and it is silent when no
+  Outline server is configured.
 - History: a section lists what Stella recently did — capability, time and
   honest outcome, newest first — from the durable action history, so
   earlier sessions are visible too. Entries are metadata only; file
@@ -132,7 +134,11 @@ display, and can never approve a tool or change permissions.
   fails the rebuild honestly and keeps the working session. The semantic
   index duplicates
   every stored memory's text into its own file; while unchecked, that
-  file is never created.
+  file is never created. A separate
+  *Wake word (always-open microphone)* box, also off by default, arms the
+  local detection ear the moment Apply rebuilds and stops that capture
+  when unticked — the privacy contract, the models it needs and the
+  `STELLA_WAKE_WORD` override are in `VOICE.md`.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt
@@ -141,13 +147,16 @@ display, and can never approve a tool or change permissions.
   enter the same conversation path as typed input, and optionally hear the
   final response spoken ("Speak replies", off by default). A voice turn is
   cancellable end to end: **Cancel** beside Listen works while transcribing,
-  and **Cancel** beside Send also silences any spoken audio. See `VOICE.md`
-  for providers, privacy behavior, and controls.
+  and **Cancel** beside Send also silences any spoken audio. The dot beside
+  the controls is red for as long as the microphone is really open —
+  including while a wake-word ear is armed with no button pressed — and
+  **Mute mic** puts every ear down for the session without touching the
+  speakers. See `VOICE.md` for providers, privacy behavior, and controls.
 
 ## Appearance and themes
 
 The window is built around a full-height **navigation rail** (Chat,
-Memories, Reminders, History, Settings) instead of the old side
+Memories, History, Settings) instead of the old side
 notebook, so every panel uses the full window; the active section is
 lifted onto the content surface in the accent color. Chat is a framed
 transcript card that separates roles the way a terminal does — the
@@ -164,12 +173,12 @@ properties served by the app at `127.0.0.1:8741`): dark mode
 grays and teal accent `#2DD4BF`; light mode `#FAFAF9` background,
 white panels, `#E7E5E4` lines and teal `#0D9488`. The user's quote
 band is `#292524` / `#E7E5E4` (Stella's reply carries no band),
-reminders amber `#D97706`. They are defined once as `Theme`
+warnings amber `#D97706`. They are defined once as `Theme`
 dataclasses in `stella.ui` and read by every widget builder through the
 module-level `THEME`.
 The toggle sits at the bottom of the rail and switches live: the ttk
 styles are re-applied (they repaint all styled widgets), the few plain
-Tk widgets (transcript, composer, the three lists, any open approval
+Tk widgets (transcript, composer, the two lists, any open approval
 dialog and its preview box) are recolored explicitly, and nothing is
 rebuilt — a running turn, a recording, or a pending approval is never
 interrupted by a theme change.
@@ -218,7 +227,10 @@ core path and reports that nothing was changed.
   Honest residue: an abandoned cloud transcription or speech request is
   given up without closing its socket (the result is never used), and a
   partial cloud speech file is cleaned up when Stella exits.
-- Voice is one explicit utterance per Listen press with local-first providers;
-  there is no wake word, continuous listening, or streaming recognition.
+- Voice is one explicit utterance per Listen press — or per wake phrase,
+  with local-first providers; the wake word is a way to press the button
+  with your voice, not an open conversation. There is no streaming
+  recognition, and no speaker identification: the ear answers whoever
+  says the phrase.
 - No browser automation, email/calendar, cloud accounts, plugins, or remote
   integrations.

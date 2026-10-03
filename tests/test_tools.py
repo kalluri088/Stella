@@ -9,6 +9,7 @@ import pytest
 
 from stella.history import SQLiteActionHistory
 from stella.tools import (
+    _PREVIEW_READ_BYTES,
     MAX_AUDIT_RECORDS,
     MAX_PREVIEW_LINES,
     ActionReceipt,
@@ -27,6 +28,7 @@ from stella.tools import (
     ToolApproval,
     ToolDispatcher,
     ToolResult,
+    _preview_file_text,
     _ValidatedHTTPSConnection,
 )
 
@@ -1641,6 +1643,42 @@ def test_filesystem_edit_preview_is_honest_about_oversized_files(
         ),
     )
     assert preview.truncated is True
+
+
+def test_preview_file_text_survives_a_multibyte_character_at_the_cap(
+    tmp_path,
+) -> None:
+    # A real UTF-8 text file bigger than the read cap can end on a partial
+    # code point where the byte cap lands. That is a truncation artifact, not
+    # a sign the file is binary: the preview must still be shown.
+    path = tmp_path / "boundary.txt"
+    # Fill right up to one byte before the cap, then start a two-byte "é" so
+    # the cap cuts it in half.
+    path.write_bytes(
+        ("a" * (_PREVIEW_READ_BYTES - 1) + "é" * 8 + "tail").encode(
+            "utf-8"
+        )
+    )
+
+    text, truncated = _preview_file_text(path)
+
+    assert text is not None
+    assert truncated is True
+
+
+def test_preview_file_text_still_rejects_genuine_binary(tmp_path) -> None:
+    # The recovery above must not turn real non-UTF-8 bytes into a preview:
+    # invalid bytes in the middle of the window are not a boundary artifact.
+    path = tmp_path / "binary.bin"
+    data = bytearray(b"x" * (_PREVIEW_READ_BYTES + 64))
+    for offset in range(3):
+        data[_PREVIEW_READ_BYTES // 2 + offset] = 0xFF  # never valid UTF-8
+    path.write_bytes(bytes(data))
+
+    text, truncated = _preview_file_text(path)
+
+    assert text is None
+    assert truncated is False
 
 
 def test_filesystem_edit_preview_reports_identical_content(tmp_path) -> None:

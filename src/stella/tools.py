@@ -175,7 +175,22 @@ def _preview_file_text(resolved: Path) -> tuple[str | None, bool]:
     try:
         text = raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
-        return None, False
+        # A complete read that still fails is genuinely not UTF-8 text, so
+        # there is no preview. But when we *did* truncate, the byte cap can
+        # land in the middle of a multibyte character: dropping up to three
+        # trailing bytes (one partial code point) recovers a preview for a
+        # real text file. If it still will not decode, it is not text after
+        # all and we report nothing, exactly as before.
+        if not truncated:
+            return None, False
+        for cut in range(1, 4):
+            try:
+                text = raw[:-cut].decode("utf-8", errors="strict")
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            return None, False
     return text[:MAX_PREVIEW_CHARS], truncated or len(text) > MAX_PREVIEW_CHARS
 
 

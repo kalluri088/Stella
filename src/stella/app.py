@@ -80,6 +80,7 @@ from stella.semantic_memory import (
     SQLiteSemanticIndex,
     reconcile_semantic_index,
 )
+from stella.shell_tools import build_shell_tools
 from stella.stella import ReminderDelivery, Stella, StellaResult
 from stella.tools import (
     MAX_AUDIT_RECORDS,
@@ -459,6 +460,19 @@ def web_tools_env_override() -> bool | None:
     return _env_toggle("STELLA_WEB")
 
 
+def shell_tools_env_override() -> bool | None:
+    """The STELLA_SHELL_TOOLS override, or None when it says nothing.
+
+    Running a shell command can do anything the owner's own account can, so
+    this is strictly opt-in and defaults off. Unlike the desktop and Outline
+    tools there is no reachability probe — a shell is always present — so the
+    flag alone decides whether the model ever sees ``shell_run`` (stella.
+    shell_tools), and every use still asks for trusted approval.
+    """
+
+    return _env_toggle("STELLA_SHELL_TOOLS")
+
+
 def wake_env_override() -> bool | None:
     """The STELLA_WAKE_WORD override, or None when it says nothing.
 
@@ -576,9 +590,17 @@ class StellaSettings:
     transcripts_enabled: bool = False
     semantic_db: str = field(default_factory=default_semantic_db)
     semantic_memory_enabled: bool = False
-    os_tools_enabled: bool = False
+    # Desktop awareness is on by default: the capability is still doubly
+    # gated (a real windowing adapter must be present, and every single
+    # use asks for trusted approval), so the checkbox decides whether the
+    # tools exist at all, not whether anything happens without asking.
+    os_tools_enabled: bool = True
     outline_tools_enabled: bool = False
     web_tools_enabled: bool = False
+    # Runs arbitrary shell commands in the workspace. Off by default: the
+    # capability is powerful and its only guard is the owner approving each
+    # exact command, so it must never appear unless deliberately switched on.
+    shell_tools_enabled: bool = False
     # The saved half of the wake-word opt-in. ``wake_word`` below stays the
     # mode this launch actually runs, so the two never disagree.
     wake_word_enabled: bool = False
@@ -803,9 +825,10 @@ class StellaSettings:
         transcripts_enabled: bool = False,
         semantic_memory_enabled: bool = False,
         semantic_provider: str = "local-hash",
-        os_tools_enabled: bool = False,
+        os_tools_enabled: bool = True,
         outline_tools_enabled: bool = False,
         web_tools_enabled: bool = False,
+        shell_tools_enabled: bool = False,
         wake_word_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
@@ -816,6 +839,7 @@ class StellaSettings:
         os_override = os_tools_env_override()
         outline_override = outline_tools_env_override()
         web_override = web_tools_env_override()
+        shell_override = shell_tools_env_override()
         wake_override = wake_env_override()
         # One decision with two spellings: the checkbox is what the owner
         # saved, the mode is what this launch runs, and every consumer
@@ -853,6 +877,11 @@ class StellaSettings:
             ),
             web_tools_enabled=(
                 web_tools_enabled if web_override is None else web_override
+            ),
+            shell_tools_enabled=(
+                shell_tools_enabled
+                if shell_override is None
+                else shell_override
             ),
             semantic_provider=(
                 semantic_provider if provider_override is None
@@ -892,6 +921,7 @@ class StellaSettings:
             os_tools_enabled=os_tools_env_override() is True,
             outline_tools_enabled=outline_tools_env_override() is True,
             web_tools_enabled=web_tools_env_override() is True,
+            shell_tools_enabled=shell_tools_env_override() is True,
             wake_word_enabled=wake_env_override() is True,
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
@@ -1121,6 +1151,14 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     if settings.web_tools_enabled:
         for tool in build_web_tools(os.environ):
             tools.register(tool)
+    # The shell capability is the same single gate, but its floor is
+    # DANGEROUS: registration only ever puts the tool in front of the model,
+    # and every dispatch asks the owner to approve the literal command before
+    # it runs (stella.shell_tools). Off by default, so this block is inert
+    # unless the owner turns it on.
+    if settings.shell_tools_enabled:
+        for tool in build_shell_tools(os.environ, workspace=workspace):
+            tools.register(tool)
     stella = Stella(
         brain=LLMBrain(llm, tools, persona=PersonaLoader()),
         llm=llm,
@@ -1336,6 +1374,19 @@ class VoicePanel:
         if self._transcriber is None:
             return None
         return getattr(self._transcriber, "name", None)
+
+    def attach_tap(self, tap: MicTap) -> None:
+        """Route this panel's capture through one shared microphone tap.
+
+        Headless one-shot mode keeps a single capture open and wants the
+        recorder and the silence-watcher to read the same frames; leaving
+        the panel on its own subprocess recorder would open a second
+        handle on the same device. The panel keeps its transcriber,
+        speech provider and player untouched — only ``start_listening``
+        and ``stop_and_transcribe`` change what they read.
+        """
+
+        self._recorder = TapRecorder(tap)
 
     def start_listening(self) -> None:
         if self._recorder is None or self._transcriber is None:

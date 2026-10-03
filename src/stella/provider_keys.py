@@ -37,6 +37,15 @@ MAX_KEY_CHARS = 4096
 # control characters. Anything else is a paste accident at best.
 _KEY_SHAPE = re.compile(r"^[!-~]+$")
 
+# A named secret's key is a lowercase identifier, not free text: it selects
+# which credential a subsystem reads, so it must be stable and unambiguous.
+_SECRET_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+# The web capability's optional search key, stored like a provider key but
+# never one (it is not a model endpoint). The environment variable
+# ``TINYFISH_API_KEY`` still wins over this; see web_tools.
+TINYFISH_SECRET = "tinyfish"
+
 
 @dataclass(frozen=True)
 class ProviderPreset:
@@ -187,38 +196,52 @@ def api_keys_path() -> Path:
     return default_data_dir() / "api_keys.json"
 
 
-def _load_store() -> tuple[dict[str, str], bool]:
-    """The stored keys, and whether the file is present but untrusted.
+def _load_store() -> tuple[dict[str, str], dict[str, str], bool]:
+    """The stored keys, the stored named secrets, and whether the file is
+    present but untrusted.
 
-    A missing store is empty and sound. A store that exists but cannot
-    be parsed is empty *and* suspect: reads stay inert (grant nothing),
-    but a write must refuse rather than merge onto nothing and silently
-    drop every key the unreadable file was holding.
+    A missing store is empty and sound. A store that exists but cannot be
+    parsed is empty *and* suspect: reads stay inert (grant nothing), but a
+    write must refuse rather than merge onto nothing and silently drop
+    everything the unreadable file was holding. A file written before named
+    secrets existed simply carries no ``secrets`` map — that is an empty
+    secrets set, not a suspect file: the ``keys`` half is what must parse.
     """
 
     path = api_keys_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}, False
-    except OSError:
-        return {}, True
-    except ValueError:
-        return {}, True
+        return {}, {}, False
+    except (OSError, ValueError):
+        return {}, {}, True
     if not isinstance(raw, dict):
-        return {}, True
+        return {}, {}, True
     keys = raw.get("keys")
     if not isinstance(keys, dict):
-        return {}, True
-    return {
+        return {}, {}, True
+    clean_keys = {
         preset_id: key
         for preset_id, key in keys.items()
         if isinstance(preset_id, str) and isinstance(key, str)
-    }, False
+    }
+    raw_secrets = raw.get("secrets")
+    clean_secrets: dict[str, str] = {}
+    if isinstance(raw_secrets, dict):
+        clean_secrets = {
+            name: value
+            for name, value in raw_secrets.items()
+            if isinstance(name, str) and isinstance(value, str)
+        }
+    return clean_keys, clean_secrets, False
 
 
 def _read_store() -> dict[str, str]:
     return _load_store()[0]
+
+
+def _read_secrets() -> dict[str, str]:
+    return _load_store()[1]
 
 
 def stored_api_key(preset_id: str | None) -> str | None:
@@ -247,19 +270,23 @@ def effective_api_key(preset_id: str | None) -> str | None:
     return stored_api_key(slot)
 
 
-def _write_store(keys: dict[str, str]) -> None:
+def _write_store(keys: dict[str, str], secrets: dict[str, str]) -> None:
     """Merge-then-atomic-replace: the file is never left half-written,
-    and saving one provider's key cannot clobber another's. The temp
-    name is unique per write, so two instances saving concurrently
-    race on distinct files and the last replace wins whole. Two
-    instances saving the *same* preset are still last-writer-wins,
-    which is honest for a single-user desktop.
+    and saving one provider's key cannot clobber another's or wipe the
+    named secrets that share the file. The temp name is unique per write,
+    so two instances saving concurrently race on distinct files and the
+    last replace wins whole. Two instances saving the *same* entry are
+    still last-writer-wins, which is honest for a single-user desktop.
     """
 
     path = api_keys_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(
-        {"version": STORE_VERSION, "keys": keys},
+        {
+            "version": STORE_VERSION,
+            "keys": keys,
+            "secrets": secrets,
+        },
         indent=2,
         sort_keys=True,
     )
@@ -286,27 +313,72 @@ def save_api_key(preset_id: str, key: str) -> None:
     key = key.strip()
     if not key or len(key) > MAX_KEY_CHARS or not _KEY_SHAPE.match(key):
         raise ValueError("an API key is a single printable token")
-    keys, suspect = _load_store()
+    keys, secrets, suspect = _load_store()
     if suspect:
         raise ValueError(
             "the stored key file could not be read, so nothing was "
             f"overwritten — repair or remove {api_keys_path()} and retry"
         )
     keys[preset_id] = key
-    _write_store(keys)
+    _write_store(keys, secrets)
 
 
 def delete_api_key(preset_id: str) -> None:
-    keys = _read_store()
+    keys, secrets, _suspect = _load_store()
     if keys.pop(preset_id, None) is None:
         return
-    _write_store(keys)
+    _write_store(keys, secrets)
 
 
 def stored_presets() -> tuple[str, ...]:
     """Preset ids that have a stored key — names only, never values."""
 
     return tuple(sorted(_read_store()))
+
+
+def stored_secret(name: str) -> str | None:
+    """The stored value for one named secret, or None. Never raises.
+
+    A named secret is a non-provider credential (a web-tool key, say) that
+    shares this private file with the model keys: same 0600, same atomic
+    replace, same never-returned-in-an-error discipline. It is *not* a
+    provider preset and so never routes through the mismatch gates.
+    """
+
+    if not name:
+        return None
+    return _read_secrets().get(name)
+
+
+def save_secret(name: str, value: str) -> None:
+    """Store one named non-provider secret; the caller verifies its worth."""
+
+    if not name or not _SECRET_NAME.match(name):
+        raise ValueError("a secret name is a lowercase identifier")
+    value = value.strip()
+    if not value or len(value) > MAX_KEY_CHARS or not _KEY_SHAPE.match(value):
+        raise ValueError("a secret is a single printable token")
+    keys, secrets, suspect = _load_store()
+    if suspect:
+        raise ValueError(
+            "the stored key file could not be read, so nothing was "
+            f"overwritten — repair or remove {api_keys_path()} and retry"
+        )
+    secrets[name] = value
+    _write_store(keys, secrets)
+
+
+def delete_secret(name: str) -> None:
+    keys, secrets, _suspect = _load_store()
+    if secrets.pop(name, None) is None:
+        return
+    _write_store(keys, secrets)
+
+
+def stored_secret_names() -> tuple[str, ...]:
+    """Names that have a stored secret — names only, never values."""
+
+    return tuple(sorted(_read_secrets()))
 
 
 def detect_key_provider(key: str) -> str | None:
@@ -373,16 +445,21 @@ def base_url_for(preset_id: str | None) -> str | None:
 __all__ = [
     "MAX_KEY_CHARS",
     "PRESETS",
+    "TINYFISH_SECRET",
     "ProviderPreset",
     "api_keys_path",
     "base_url_for",
     "delete_api_key",
+    "delete_secret",
     "detect_key_provider",
     "effective_api_key",
     "mismatch_hint",
     "redacted_hint",
     "save_api_key",
+    "save_secret",
     "stored_api_key",
     "stored_presets",
+    "stored_secret",
+    "stored_secret_names",
     "tool_dialect_for",
 ]

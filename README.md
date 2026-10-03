@@ -39,11 +39,20 @@ checked that it did.
   and approve or cancel it. Afterwards she re-reads the disk and reports
   whether the change was actually verified.
 - **Look things up** — answer questions from file content, check the time,
-  fetch a web page for you to read (after asking, with the URL shown).
+  fetch a web page for you to read (after asking, with the URL shown). A
+  TinyFish web key, if you use one, is stored in the same private key file as
+  model keys (Settings → the *TinyFish key* box); an exported
+  `TINYFISH_API_KEY` still wins for that launch, and the key never lands in
+  `config.json` or a log.
 - **Talk and listen** — press the mic button, speak; replies can be spoken
   back on a local voice. Neither side needs a cloud service: the transcriber
   and the synthesizer already on the laptop are found automatically and named
-  on screen. Continuous hands-free listening is off by default: the wake
+  on screen. There is also a **no-screen one-shot**: `stella voice` runs a
+  single hands-free turn from your latest settings and exits — ideal behind a
+  keyboard shortcut (it is wired to **Super + D** here). It auto-stops on a
+  short pause, cues listening/working with a chime, and confirms anything risky
+  **out loud, failing closed** on any unclear answer (`docs/HEADLESS_VOICE.md`).
+  Continuous hands-free listening is off by default: the wake
   word — the *Wake word* box in Settings, whose answer is saved, or
   `STELLA_WAKE_WORD=on` for a single launch — is the only way Stella ever
   holds the microphone open while you are not speaking to her. A red dot
@@ -64,13 +73,17 @@ checked that it did.
   `stella reflect` turns your observed friction ("too long", cancelled
   rambles) into at most two style proposals, surfaced as approval
   prompts. Reflection never writes on its own. See `docs/PERSONA.md`.
-- **Opt-in tool families** — three gates, each a Settings checkbox or an
+- **Opt-in tool families** — four gates, each a Settings checkbox or an
   environment variable: Outline (`STELLA_OUTLINE`) lets her create, search
   and update your tasks over Outline's local API; desktop
   (`STELLA_OS_TOOLS`, Hyprland only) lets her read the screen, focus
-  windows and type; web (`STELLA_WEB`) adds search and fetch. Every one
+  windows and type; web (`STELLA_WEB`) adds search and fetch; and shell
+  (`STELLA_SHELL_TOOLS`) lets her **run one command you approve by name**,
+  starting in your workspace, output and time bounded — off by default and
+  asking on every single use (see `docs/SHELL_TOOLS.md`; it is a confined
+  start directory plus your approval, not a filesystem jail). Every one
   of their calls is still an approval prompt.
-  See `docs/WEB.md` and the capability sections of
+  See `docs/WEB.md`, `docs/SHELL_TOOLS.md` and the capability sections of
   `docs/ARCHITECTURE.md`.
 - **Show her work** — a History tab lists what she recently did, kept
   between launches (names and outcomes only, never file contents). The
@@ -127,7 +140,8 @@ uv tool install ./dist/stella-1.4.0-py3-none-any.whl
 ```
 
 This gives you two commands: `stella-ui` (desktop window) and `stella`
-(terminal chat). Above that, three optional extras exist:
+(terminal chat, plus subcommands like `stella voice` for one hands-free turn,
+`stella persona` and `stella reflect`). Above that, three optional extras exist:
 `stella[embed]` adds a CPU MiniLM embedding model you can select for
 semantic recall instead of the default word-shape index;
 `stella[barge-in]` adds the ONNX runtime that lets you interrupt spoken
@@ -188,7 +202,7 @@ development, or running several configurations side by side:
 | `STELLA_SEMANTIC_PROVIDER` | Recall index: `local-hash`, `ollama` or `minilm` (`stella[embed]` extra) | `local-hash` |
 | `STELLA_EMBED_MODEL` | Ollama embedding model name | `nomic-embed-text` |
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
-| `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off |
+| `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` / `STELLA_SHELL_TOOLS` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off (OS tools on) |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 | `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
 | `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |
@@ -209,7 +223,7 @@ scheduling choice, not a Stella configuration.
 
 ## Using the window
 
-- Type your message, press **Ctrl+Enter** (Enter adds a line break).
+- Type your message, press **Enter** to send (**Shift+Enter** adds a line).
 - Approvals show what will really happen — a diff, the new content, or the
   URL — with **Allow** and **Cancel**. Closing the dialog means deny.
 - **Cancel** during a working turn stops it: it also interrupts a provider

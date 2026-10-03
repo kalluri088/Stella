@@ -508,7 +508,9 @@ reached a focus-confirmed window, but the application's reaction is
 unknowable from the compositor. `screen_read` bounds its OCR text
 (`MAX_SCREEN_TEXT_CHARS`) and masks obvious credentials before the model
 sees them, and pixels never persist. Registration is doubly gated — an
-explicit settings flag (`os_tools_enabled`, env override `STELLA_OS_TOOLS`)
+explicit settings flag (`os_tools_enabled`, env override `STELLA_OS_TOOLS`,
+*on by default* so the box starts checked; an explicit unchecked choice or
+`STELLA_OS_TOOLS=0` turns it off)
 *and* a real session signature with `hyprctl`, `grim`,
 `tesseract` and `wtype` on `PATH` — so the model never sees a capability
 that could only fail. Risk levels stay application-owned: reads and focus

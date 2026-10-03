@@ -205,6 +205,15 @@ def action_summary(request: ApprovalRequest) -> str:
     if web is not None:
         return web
 
+    # The shell capability too (stella.shell_tools): its summary leads with
+    # the literal command the owner is approving, so it is tried before the
+    # generic fallback that would otherwise dump the whole argument dict.
+    from stella.shell_tools import shell_tool_summaries
+
+    shell = shell_tool_summaries(request.capability, request.arguments)
+    if shell is not None:
+        return shell
+
     arguments = request.arguments
 
     def quoted(key: str) -> str | None:

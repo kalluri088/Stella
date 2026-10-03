@@ -25,6 +25,9 @@ take a different path and are never command-parsed.
 
 from __future__ import annotations
 
+import os
+import queue
+import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -447,6 +450,27 @@ def _style_listbox(box: tk.Listbox) -> None:
     )
 
 
+_SESSION_TITLE = "Stella (session)"
+_PLAIN_TITLE = "Stella"
+
+
+def _window_title() -> str:
+    """The Tk window title, which doubles as the window manager's hook.
+
+    A person running ``stella-ui`` from their own terminal gets the plain
+    title, so the window opens on whichever workspace is active. An agent
+    that opens a Stella UI as part of its own session work sets
+    ``STELLA_SESSION_WINDOW`` and gets a distinct title the window manager
+    can park on a dedicated workspace, so automated windows never steal
+    the owner's screen. The title is the only signal a window manager sees
+    from Tkinter, so it carries the distinction.
+    """
+    value = os.environ.get("STELLA_SESSION_WINDOW", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return _SESSION_TITLE
+    return _PLAIN_TITLE
+
+
 class StellaWindow:
     """One Tk window driven entirely by posted bridge commands."""
 
@@ -464,7 +488,19 @@ class StellaWindow:
         self._pulse = 0
         self._turn_activity = ""
         self._dialogs: list[tk.Toplevel] = []
-        root.title("Stella")
+        # True between an Apply press and the worker's reply, so the
+        # panel label can turn the generic "Restarting…" into an honest
+        # outcome when the settings or error event arrives.
+        self._apply_pending = False
+        # A stored-key check runs off the main thread (a network probe
+        # must never freeze the window); its result lands here and is
+        # drained by _tick. The token discards a reply for a provider the
+        # user has since switched away from.
+        self._key_check_queue: queue.Queue[tuple[int, str, config.KeyCheck]] = (
+            queue.Queue()
+        )
+        self._key_check_token = 0
+        root.title(_window_title())
         root.geometry("1180x680")
         root.minsize(920, 560)
         root.configure(background=THEME.window)
@@ -593,7 +629,13 @@ class StellaWindow:
             state="disabled",
         )
         self._cancel_button.pack(fill="x", pady=(6, 0))
-        self._input.bind("<Control-Return>", lambda _event: self._send())
+        # Enter sends, Shift+Enter adds a line — the chat-app convention.
+        # Both return "break" so Tk's default Text behaviour (newline on
+        # Enter, nothing on Shift+Enter) does not fire underneath us;
+        # KP_Enter mirrors the numpad key.
+        self._input.bind("<Return>", self._send_on_enter)
+        self._input.bind("<KP_Enter>", self._send_on_enter)
+        self._input.bind("<Shift-Return>", self._newline_on_shift_enter)
         # Terminal-style recall: Up/Down walk the messages this window
         # sent, but only when the cursor sits on the first (Up) or last
         # (Down) line, so multi-line editing keeps normal cursor keys.
@@ -607,7 +649,7 @@ class StellaWindow:
         ttk.Label(
             hint_row,
             text=(
-                "Ctrl+Enter sends · Enter adds a new line "
+                "Enter sends · Shift+Enter adds a new line "
                 "· ↑/↓ recall what you sent"
             ),
             style="CardDim.TLabel",
@@ -874,6 +916,17 @@ class StellaWindow:
             self._run_command(call)
             return
         self._start_turn(user_input)
+
+    def _send_on_enter(self, _event=None) -> str:
+        # Bound to Return/KP_Enter. "break" stops Tk inserting a newline.
+        self._send()
+        return "break"
+
+    def _newline_on_shift_enter(self, _event=None) -> str:
+        # Bound to Shift+Return: insert the line ourselves, then "break"
+        # so the default binding does not add a second one.
+        self._input.insert("insert", "\n")
+        return "break"
 
     def _start_turn(self, text: str) -> None:
         self._busy = True
@@ -1192,6 +1245,7 @@ class StellaWindow:
         for event in self._bridge.poll():
             self._handle_event(event)
         self._drain_approvals()
+        self._drain_key_checks()
         self._render_working_status()
         self._render_mic_hot()
         self._root.after(100, self._tick)
@@ -1243,6 +1297,15 @@ class StellaWindow:
             self._show_history(payload)
         elif kind == "settings":
             self._line(f"(settings) {payload}")
+            if self._apply_pending:
+                # The worker rebuilt the brain with what we asked for:
+                # replace the transient "Restarting…" with the real
+                # outcome instead of leaving it frozen on the panel.
+                self._apply_pending = False
+                self._settings_status.configure(
+                    text="Applied — Stella is running with these settings."
+                )
+                self._update_panel_key_hint()
         elif kind == "notice":
             self._line(f"(persona) {payload}")
         elif kind == "note":
@@ -1260,6 +1323,16 @@ class StellaWindow:
             self._handle_voice_error(str(payload))
         elif kind == "error":
             self._line(f"✗ {payload}", role="error")
+            if self._apply_pending:
+                # The rebuild failed, so nothing changed — say so plainly
+                # rather than leaving "Restarting…" implying success.
+                self._apply_pending = False
+                self._settings_status.configure(
+                    text=(
+                        "Not applied — the restart failed, so Stella is "
+                        "still using the previous settings."
+                    )
+                )
         else:  # pragma: no cover - unknown kinds must not appear
             self._line(
                 f"✗ Stella sent an unexpected update: {kind}", role="error"
@@ -1535,7 +1608,7 @@ class StellaWindow:
         self._provider.set(_preset_label_for_settings(settings))
         self._provider.pack(side="left", padx=6)
         self._provider.bind(
-            "<<ComboboxSelected>>", lambda _event: self._panel_preset_changed()
+            "<<ComboboxSelected>>", lambda _event: self._on_provider_selected()
         )
         self._connection_status = ttk.Label(
             provider_row, text=self._current_state_text(), wraplength=280
@@ -1646,6 +1719,36 @@ class StellaWindow:
             "every use asks first.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        tinyfish_row = ttk.Frame(frame)
+        tinyfish_row.pack(fill="x", padx=6, pady=(2, 0))
+        ttk.Label(tinyfish_row, text="TinyFish key:", width=16).pack(
+            side="left"
+        )
+        self._tinyfish_field = ttk.Entry(
+            tinyfish_row, width=34, show="*"
+        )
+        self._tinyfish_field.pack(side="left", fill="x", expand=True)
+        self._tinyfish_hint = ttk.Label(
+            frame, style="Dim.TLabel", wraplength=340
+        )
+        self._tinyfish_hint.pack(padx=6, anchor="w")
+        self._refresh_tinyfish_hint()
+        self._shell_tools_var = tk.BooleanVar(
+            value=settings.shell_tools_enabled
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Shell commands (run programs in your workspace)",
+            variable=self._shell_tools_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="Adds shell_run: Stella runs one command you approve by "
+            "name, starting in the workspace, output bounded and timed out. "
+            "Off by default; every single use asks first.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)
         ttk.Checkbutton(
             frame,
@@ -1722,6 +1825,126 @@ class StellaWindow:
         else:
             self._panel_key_hint.configure(text="")
 
+    def _on_provider_selected(self) -> None:
+        """The provider the user just picked: ask for a key or check it.
+
+        The panel is re-rendered first (endpoint, stored-key hint), then a
+        key-required provider does one of three things: if no key exists
+        anywhere for it, the field is focused and the hint asks for one;
+        if a key is stored, a non-blocking probe checks it works and the
+        hint reports verified or an error; a provider with no endpoint to
+        probe (a bare custom URL) keeps the plain stored-key hint. This
+        path is wired only to the picker event, never to build time, so
+        opening Settings never touches the network.
+        """
+        self._panel_preset_changed()
+        preset = provider_keys.PRESETS[self._preset_id()]
+        if not preset.key_required:
+            return
+        key = provider_keys.effective_api_key(preset.id)
+        if not key:
+            self._panel_key_hint.configure(
+                text=(
+                    f"{preset.label} needs an API key — type it below, "
+                    "then Apply."
+                )
+            )
+            self._settings_fields["API key"].focus_set()
+            return
+        endpoint = self._key_check_endpoint(preset)
+        if endpoint is None:
+            return
+        self._panel_key_hint.configure(
+            text=(
+                f"Stored key for {preset.label} "
+                f"{provider_keys.redacted_hint(key)} — checking it "
+                "works..."
+            )
+        )
+        self._key_check_token += 1
+        threading.Thread(
+            target=self._run_key_check,
+            args=(self._key_check_token, preset.id, endpoint, key),
+            daemon=True,
+        ).start()
+
+    def _key_check_endpoint(
+        self, preset: provider_keys.ProviderPreset
+    ) -> str | None:
+        """The /models endpoint a stored key can be probed against, or None.
+
+        Only OpenAI-compatible presets have one. A custom slot with no base
+        URL entered yet cannot be verified without a model, so it returns
+        None and the panel simply says the key is stored.
+        """
+        if preset.id == "custom":
+            return (
+                self._settings_fields["OpenAI base URL"].get().strip() or None
+            )
+        if preset.base_url:
+            return preset.base_url
+        if preset.id == "openai":
+            return "https://api.openai.com/v1"
+        return None
+
+    def _run_key_check(
+        self, token: int, preset_id: str, endpoint: str, key: str
+    ) -> None:
+        """Probe a key on a worker thread; the answer is drained by _tick.
+
+        Runs off the Tk main thread so a slow or hung endpoint never
+        freezes the window. The key is used only inside the request and is
+        scrubbed from any text the probe might echo back.
+        """
+        try:
+            check = config.check_api_key(
+                endpoint,
+                key,
+                chat_dialect=(
+                    provider_keys.tool_dialect_for(preset_id) == "chat"
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 - the pump must survive
+            check = config.KeyCheck(
+                "unreachable", config.sanitize(str(error), (key,))
+            )
+        self._key_check_queue.put((token, preset_id, check))
+
+    def _drain_key_checks(self) -> None:
+        """Apply finished key probes, dropping any that are now stale."""
+        while True:
+            try:
+                token, preset_id, check = self._key_check_queue.get_nowait()
+            except queue.Empty:
+                break
+            if token != self._key_check_token or preset_id != self._preset_id():
+                continue
+            self._apply_key_check(preset_id, check)
+
+    def _apply_key_check(self, preset_id: str, check: config.KeyCheck) -> None:
+        preset = provider_keys.PRESETS[preset_id]
+        key = provider_keys.effective_api_key(preset.id)
+        redacted = provider_keys.redacted_hint(key) if key else ""
+        head = f"Stored key for {preset.label} {redacted}".rstrip()
+        if check.state == "verified":
+            text = f"{head} works — ready to use."
+        elif check.state == "rejected":
+            text = (
+                f"{head} was rejected ({check.detail}). Enter a new key "
+                "or pick another provider."
+            )
+        elif check.state == "unreachable":
+            text = (
+                f"{head} — can't reach the provider to verify it right "
+                f"now ({check.detail}); the key may still be fine."
+            )
+        else:
+            text = (
+                f"{head} — this endpoint can't be checked automatically; "
+                "use Test connection with a model."
+            )
+        self._panel_key_hint.configure(text=text)
+
     def _draft_settings(self) -> StellaSettings:
         fields = self._settings_fields
         preset_id = self._preset_id()
@@ -1747,6 +1970,7 @@ class StellaWindow:
             os_tools_enabled=self._os_tools_var.get(),
             outline_tools_enabled=self._outline_tools_var.get(),
             web_tools_enabled=self._web_tools_var.get(),
+            shell_tools_enabled=self._shell_tools_var.get(),
             # The saved choice and the mode this session runs are one
             # decision, so Apply moves both: the checkbox is what the
             # owner wants, and a rebuild arms or stops the ear from it.
@@ -1786,8 +2010,53 @@ class StellaWindow:
         self._update_panel_key_hint()
         return None
 
+    def _refresh_tinyfish_hint(self) -> None:
+        """Show whether a TinyFish web key is stored, redacted like the rest.
+
+        Never prints the value: only the fixed shape the store hands back,
+        so the panel cannot leak a web key the way a model key is guarded.
+        """
+
+        stored = provider_keys.stored_secret(provider_keys.TINYFISH_SECRET)
+        if stored:
+            self._tinyfish_hint.configure(
+                text=(
+                    f"TinyFish key stored "
+                    f"{provider_keys.redacted_hint(stored)} — web tools use "
+                    "it; a TINYFISH_API_KEY in the environment still wins "
+                    "for that launch."
+                )
+            )
+        else:
+            self._tinyfish_hint.configure(
+                text="No TinyFish key — web tools use the keyless fallback."
+            )
+
+    def _store_entered_tinyfish_key(self) -> str | None:
+        """Persist a typed TinyFish key to the private store; None on success.
+
+        A returned string is the refusal the user must see. An empty field
+        is not an error — it leaves any stored key untouched, matching the
+        model-key field where blank means "keep what is there".
+        """
+
+        value = self._tinyfish_field.get().strip()
+        if not value:
+            return None
+        try:
+            provider_keys.save_secret(provider_keys.TINYFISH_SECRET, value)
+        except (ValueError, OSError) as error:
+            return f"That web key cannot be stored: {error}"
+        self._tinyfish_field.delete("0", "end")
+        self._refresh_tinyfish_hint()
+        return None
+
     def _apply_settings(self) -> None:
         refusal = self._store_entered_key()
+        if refusal:
+            self._settings_status.configure(text=refusal)
+            return
+        refusal = self._store_entered_tinyfish_key()
         if refusal:
             self._settings_status.configure(text=refusal)
             return
@@ -1807,6 +2076,7 @@ class StellaWindow:
             )
             return
         applied = self._draft_settings()
+        self._apply_pending = True
         self._settings_status.configure(text="Restarting Stella with these settings...")
         self._bridge.post_apply_settings(applied)
 

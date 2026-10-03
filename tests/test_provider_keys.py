@@ -24,7 +24,11 @@ class TestStore:
         body = json.loads(
             provider_keys.api_keys_path().read_text(encoding="utf-8")
         )
-        assert body == {"version": 1, "keys": {"anthropic": "sk-ant-test-value"}}
+        assert body == {
+            "version": 1,
+            "keys": {"anthropic": "sk-ant-test-value"},
+            "secrets": {},
+        }
 
     def test_store_file_is_private(self):
         provider_keys.save_api_key("openai", "sk-proj-test")
@@ -106,6 +110,87 @@ class TestStore:
         provider_keys.api_keys_path().write_text("corrupt")
         provider_keys.delete_api_key("openai")
         assert provider_keys.api_keys_path().read_text() == "corrupt"
+
+
+class TestNamedSecrets:
+    """A web-tool key shares the private file with model keys, safely."""
+
+    def test_roundtrip_and_store_shape(self):
+        provider_keys.save_secret("tinyfish", "tf_live_abc123")
+        assert provider_keys.stored_secret("tinyfish") == "tf_live_abc123"
+        body = json.loads(
+            provider_keys.api_keys_path().read_text(encoding="utf-8")
+        )
+        assert body == {
+            "version": 1,
+            "keys": {},
+            "secrets": {"tinyfish": "tf_live_abc123"},
+        }
+
+    def test_the_named_tinyfish_slot_constant(self):
+        assert provider_keys.TINYFISH_SECRET == "tinyfish"
+
+    def test_saving_a_secret_preserves_keys_and_vice_versa(self):
+        provider_keys.save_api_key("openai", "sk-proj-key")
+        provider_keys.save_secret("tinyfish", "tf_live_one")
+        provider_keys.save_api_key("groq", "gsk_two")
+        assert provider_keys.stored_api_key("openai") == "sk-proj-key"
+        assert provider_keys.stored_secret("tinyfish") == "tf_live_one"
+        assert provider_keys.stored_presets() == ("groq", "openai")
+        assert provider_keys.stored_secret_names() == ("tinyfish",)
+
+    def test_delete_removes_only_its_secret(self):
+        provider_keys.save_secret("tinyfish", "tf_live_one")
+        provider_keys.save_secret("other_tool", "tok_two")
+        provider_keys.delete_secret("tinyfish")
+        assert provider_keys.stored_secret("tinyfish") is None
+        assert provider_keys.stored_secret("other_tool") == "tok_two"
+
+    def test_names_are_reported_without_values(self):
+        provider_keys.save_secret("tinyfish", "tf_live_secretvalue")
+        assert provider_keys.stored_secret_names() == ("tinyfish",)
+        assert "tf_live_secretvalue" not in repr(
+            provider_keys.stored_secret_names()
+        )
+
+    def test_whitespace_is_stripped_not_rejected(self):
+        provider_keys.save_secret("tinyfish", "  tf_live_pasted\n")
+        assert provider_keys.stored_secret("tinyfish") == "tf_live_pasted"
+
+    @pytest.mark.parametrize("bad_name", ["", "TinyFish", "9lives", "a-b"])
+    def test_rejects_names_that_are_not_identifiers(self, bad_name):
+        with pytest.raises(ValueError):
+            provider_keys.save_secret(bad_name, "tf_live_ok")
+
+    @pytest.mark.parametrize("bad_value", ["", "   ", "two words", "x" * 5000])
+    def test_rejects_values_that_are_not_single_tokens(self, bad_value):
+        with pytest.raises(ValueError):
+            provider_keys.save_secret("tinyfish", bad_value)
+
+    def test_saving_over_an_unreadable_store_is_refused_not_wiped(self):
+        provider_keys.api_keys_path().parent.mkdir(parents=True, exist_ok=True)
+        provider_keys.api_keys_path().write_text("not json at all")
+        with pytest.raises(ValueError):
+            provider_keys.save_secret("tinyfish", "tf_live_new")
+        assert provider_keys.api_keys_path().read_text() == "not json at all"
+
+    def test_an_older_store_without_secrets_reads_empty_then_grows_one(
+        self,
+    ):
+        provider_keys.api_keys_path().parent.mkdir(parents=True, exist_ok=True)
+        provider_keys.api_keys_path().write_text(
+            '{"version": 1, "keys": {"openai": "sk-proj-old"}}'
+        )
+        assert provider_keys.stored_secret("tinyfish") is None
+        assert provider_keys.stored_api_key("openai") == "sk-proj-old"
+        provider_keys.save_secret("tinyfish", "tf_live_added")
+        assert provider_keys.stored_api_key("openai") == "sk-proj-old"
+        assert provider_keys.stored_secret("tinyfish") == "tf_live_added"
+
+    def test_secret_store_file_is_private(self):
+        provider_keys.save_secret("tinyfish", "tf_live_one")
+        mode = stat.S_IMODE(os.stat(provider_keys.api_keys_path()).st_mode)
+        assert mode == 0o600
 
 
 class TestPrecedence:

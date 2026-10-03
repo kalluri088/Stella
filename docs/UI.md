@@ -65,7 +65,8 @@ display, and can never approve a tool or change permissions.
 
 ## What the UI can do
 
-- Conversation: send multi-line messages (Ctrl+Return or Send), see replies,
+- Conversation: send multi-line messages (Enter sends, Shift+Enter adds a
+  line, or use the Send button), see replies,
   honest error lines, and continuous history within the window session.
   Up/Down arrows in the composer recall the messages this window sent,
   newest first, like a terminal: they only fire when the cursor is on
@@ -139,6 +140,18 @@ display, and can never approve a tool or change permissions.
   local detection ear the moment Apply rebuilds and stops that capture
   when unticked — the privacy contract, the models it needs and the
   `STELLA_WAKE_WORD` override are in `VOICE.md`.
+- Capability families: the Settings panel carries one checkbox per opt-in
+  tool family — *Desktop awareness* (on by default, but still doubly gated),
+  *Outline app tools*, *Web capability*, and *Shell commands (run programs in
+  your workspace)* — each mirrored by a `STELLA_OS_TOOLS` / `STELLA_OUTLINE` /
+  `STELLA_WEB` / `STELLA_SHELL_TOOLS` environment override that wins for a
+  single launch in either direction. A checked box only offers the tools; every
+  dangerous call still raises an approval prompt naming the exact target (and,
+  for the shell, the literal command). The web row also has a masked
+  **TinyFish key** box: the value is stored in the same private `0600` key file
+  as model keys, shown only as a redacted hint, and never written to
+  `config.json` — an exported `TINYFISH_API_KEY` still overrides it for that
+  launch. See `WEB.md` and `SHELL_TOOLS.md`.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt

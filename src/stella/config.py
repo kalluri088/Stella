@@ -47,6 +47,7 @@ _CONFIG_FIELDS = (
     "os_tools_enabled",
     "outline_tools_enabled",
     "web_tools_enabled",
+    "shell_tools_enabled",
     "wake_word_enabled",
 )
 
@@ -275,6 +276,73 @@ def _openai_model_names(payload: object) -> tuple[str, ...] | None:
     return tuple(names)
 
 
+@dataclass(frozen=True)
+class KeyCheck:
+    """Outcome of a lightweight "does this stored key authenticate?" probe.
+
+    ``state`` is exactly one of:
+      ``verified``      the endpoint reached and accepted the key;
+      ``rejected``      the endpoint reached but refused the key (401/403);
+      ``unreachable``   the endpoint could not be reached — this says
+                        nothing about whether the key is valid;
+      ``inconclusive``  reached, but this endpoint offers no way to judge a
+                        key without running a completion.
+    ``detail`` is bounded, safe text for the user and never carries the key.
+    """
+
+    state: str
+    detail: str
+
+
+def check_api_key(
+    base_url: str,
+    api_key: str,
+    timeout: float = PROBE_TIMEOUT_SECONDS,
+    *,
+    chat_dialect: bool = False,
+) -> KeyCheck:
+    """Authenticate a stored key against an OpenAI-compatible /models list.
+
+    A plain GET /models with the Bearer key proves the endpoint accepts the
+    key without running any completion, so it is cheap enough to fire when
+    the user picks a provider. The three-way result keeps "the key is
+    wrong" distinct from "the network is down" so the UI never shows an
+    alarming error for a transient blip. The key is used only in the
+    request header and is never returned or logged.
+
+    For a chat-completions endpoint (``chat_dialect``) the model list is
+    not a reliable place to judge a key: many routers guard or simply do
+    not serve /models while accepting the same key on chat. So a 401/403
+    there is reported as inconclusive — "use Test connection with a
+    model", which does authenticate through chat — rather than a scary
+    "key rejected" that is really just the router protecting its list.
+    """
+    if not base_url or not api_key:
+        return KeyCheck("inconclusive", "no endpoint or key to check")
+    trimmed = base_url.rstrip("/")
+    url = f"{trimmed}/models"
+    request = urllib.request.Request(url, method="GET")
+    request.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            pass
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            if chat_dialect:
+                return KeyCheck(
+                    "inconclusive",
+                    "this endpoint guards its model list; check the key "
+                    "with Test connection",
+                )
+            return KeyCheck("rejected", f"HTTP {error.code}")
+        if error.code == 404:
+            return KeyCheck("inconclusive", "no model list at this endpoint")
+        return KeyCheck("unreachable", f"HTTP {error.code}")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return KeyCheck("unreachable", "the endpoint is not reachable")
+    return KeyCheck("verified", "the endpoint accepted the key")
+
+
 def _model_names(payload: object) -> tuple[str, ...] | None:
     """Validate the tags payload shape; None means malformed."""
 
@@ -417,7 +485,19 @@ def _test_openai_connection(
     except Exception as error:  # noqa: BLE001 - bounded, sanitized below
         status = getattr(error, "status_code", None)
         missing_models = status == 404 or "NotFound" in type(error).__name__
-        if missing_models and provider_keys.tool_dialect_for(preset) == "chat":
+        refused_models = status in (401, 403)
+        chat_dialect = provider_keys.tool_dialect_for(preset) == "chat"
+        # A chat-dialect router (FreeLLMAPI and friends) may guard or not
+        # even serve /models while its chat endpoint happily takes the
+        # same key. So both "no model list here" (404) and "model list
+        # refused" (401/403) fall through to a single-token chat probe —
+        # which is what actually authenticates the key for that endpoint.
+        # A genuinely bad key still fails the probe, and that 401 is what
+        # we report, so the probe cannot turn a real rejection into a
+        # pass. Only chat-dialect presets do this; a responses-dialect
+        # OpenAI serving no /models is a real problem to report, not to
+        # probe around.
+        if chat_dialect and (missing_models or refused_models):
             # Some OpenAI-compatible providers do not serve /models; a
             # single-token chat probe authenticates them without a real
             # completion. Only for chat-dialect presets — OpenAI itself
@@ -507,8 +587,9 @@ def resolve_settings() -> StellaSettings | None:
         transcripts_enabled=raw.get("transcripts_enabled") is True,
         semantic_memory_enabled=raw.get("semantic_memory_enabled") is True,
         semantic_provider=raw.get("semantic_provider", "local-hash"),
-        os_tools_enabled=raw.get("os_tools_enabled") is True,
+        os_tools_enabled=raw.get("os_tools_enabled", True) is True,
         outline_tools_enabled=raw.get("outline_tools_enabled") is True,
         web_tools_enabled=raw.get("web_tools_enabled") is True,
+        shell_tools_enabled=raw.get("shell_tools_enabled") is True,
         wake_word_enabled=raw.get("wake_word_enabled") is True,
     )

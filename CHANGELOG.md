@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+### Run a command for you: the `shell_run` capability
+
+- **Stella can now run one shell command, and it is the most heavily fenced
+  tool she has.** A new `shell_run` capability runs a single command through
+  the platform shell inside the Stella workspace and returns its combined
+  output and exit status — the assistant's `Bash`/`sandbox` equivalent. It is
+  **off by default** (`shell_tools_enabled`, mirrored by `STELLA_SHELL_TOOLS`),
+  and its floor is `RiskLevel.DANGEROUS`, so the dispatcher asks the owner to
+  approve the **literal command** before anything runs — every single use. Four
+  fences back it up: a confined starting directory, closed stdin (never waits
+  on a terminal), a 64 KB output cap read without buffering the excess, and a
+  120 s wall-clock timeout that takes the **whole process group** down
+  (`SIGINT→SIGTERM→SIGKILL`), using the existing `stella.childproc`
+  parent-death guarantee so a killed command cannot outlive Stella.
+- **"Sandbox" is stated honestly, not oversold.** This is a confined start
+  directory plus a human who approves the exact command — *not* kernel
+  isolation. A command runs as you and can still reach anything your own
+  account can; `docs/SHELL_TOOLS.md` says so plainly and points at
+  container/VM isolation for anyone who wants a real jail. Captured output is
+  wrapped in the same `<<<UNTRUSTED_WEB_CONTENT>>>` markers as web fetches and
+  defanged against marker forgery, so a build log is data, never a new
+  instruction back to the runtime.
+- **A Settings checkbox and a drift-guard, like every other family.** The
+  capability is wired across all six touchpoints (override, field, `from_saved`
+  / `from_environment`, persisted config, checkbox), which
+  `tests/test_settings_wiring.py` now enforces for `shell_tools_enabled` too.
+  Only the on/off bool is ever written to `config.json` — a command string is
+  never persisted, printed, or spoken. `tests/test_shell_tools.py` proves every
+  decision through an injected fake runner and then runs the real bounded reader
+  against a few tiny, workspace-confined commands to prove the byte cap and the
+  group-kill actually fire.
+- **The standard agent-tool list, mapped rather than padded.** `docs/SHELL_TOOLS.md`
+  records how the requested set maps to Stella today (Read/Write/Edit/Glob/Grep/
+  WebFetch/WebSearch/DeliverArtifacts were already covered by existing tools; the
+  workspace is the outbox). `ImageGen` and `ImageSearch` are **intentionally not
+  added** — both need a paid API key and send prompts off the machine, and Stella
+  does not ship a model- or network-dependent behavior it has not validated live.
+
+### Say it once, hands-free: `stella voice` and a private web key
+
+- **`stella voice` — one hands-free turn for a keyboard shortcut.** A new
+  no-screen mode runs a single voice turn from your most-recent saved settings,
+  then exits; nothing stays resident between presses. A chime says *listening*,
+  a local VAD silence-watcher (~800 ms) ends the capture so you never press a
+  second button, a second chime says *working*, the turn goes through the
+  **identical** `run_turn` path as typed input, and the answer is spoken.
+  Anything risky is confirmed **out loud and fails closed**: only a clear "yes"
+  approves, while "no", a garbled answer, or silence deny. It speaks a bounded
+  summary — never raw arguments, so a big file body is not read to the room.
+  Missing peripherals are honest, distinct exit codes, never a silent success
+  (`docs/HEADLESS_VOICE.md`). Behind a shortcut, `Super + D` is wired in
+  `~/.config/hypr/bindings.lua` to launch it through the project's `uv`
+  environment.
+- **A TinyFish web key can live in Settings now.** Web tools previously read the
+  key only from `TINYFISH_API_KEY`; you can also type it into the Settings web
+  row, where it is stored in the same private `0600` atomic key file as model
+  keys (a new named-secret store in `stella.provider_keys`), shown only as a
+  redacted hint, and excluded from backup. **The environment still wins for a
+  launch**, and the key never reaches `config.json`, a log, or a notice. The
+  private file now carries a `secrets` map beside the model keys, each
+  preserving the other on every write, and an older key file with no `secrets`
+  reads back cleanly. `tests/test_provider_keys.py` and `tests/test_config.py`
+  cover the round-trip, the redaction, the env-overrides-store precedence, and
+  that a stored key stays out of the saved configuration.
+
+### Settings panel: honest outcomes, a fairer key check, friendlier defaults
+
+- **The after-Apply label now reflects what really happened.** The panel
+  label used to sit frozen on "Restarting Stella with these settings…"
+  forever, because the worker's success and error events only wrote to the
+  chat transcript and never touched the label. Applying now tracks a
+  pending rebuild: when the settings event lands the label turns to
+  "Applied — Stella is running with these settings.", and if the rebuild
+  fails the label honestly says the restart failed and the previous
+  settings still stand. An unrelated error while no apply is pending never
+  overwrites the panel.
+- **A valid FreeLLMAPI (or similar chat router) key is no longer a false
+  "connection failed".** Chat-dialect endpoints often guard or omit
+  `/models` while accepting the same key on `chat/completions`, but the
+  connection test only fell through to a one-token chat probe on a `404`.
+  It now probes chat for a chat-dialect preset on `404` *or* `401/403`, so
+  a router whose model list refuses is judged by the endpoint that actually
+  answers — and a genuinely bad key still fails the probe, which is what
+  gets reported. The picker's stored-key hint matches: a chat-dialect
+  `401/403` reads as "can't be checked automatically, use Test connection"
+  instead of an alarming "key rejected". OpenAI's responses dialect is
+  unchanged and still never probes chat.
+- **Desktop awareness starts checked.** The opt-in checkbox is on by
+  default for a fresh setup, and a config written before the flag existed
+  is treated as on. The capability stays doubly gated — a real windowing
+  adapter must be present and every single use still asks for trusted
+  approval — so the default only decides whether the tools are offered at
+  all. An explicit unchecked choice, or `STELLA_OS_TOOLS=0`, still wins.
+- **Enter sends, Shift+Enter adds a line.** The composer follows the
+  chat-app convention (numpad Enter included) instead of Ctrl+Enter; the
+  hint text and docs moved with it.
+
 ### A silent speech artifact stops being a spoken turn
 
 - **`ResidentSpeechProvider` now checks what the worker actually wrote.**

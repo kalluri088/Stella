@@ -11,7 +11,9 @@ with a demonstrated fallback.
 
 Backends, selected per call (report 22's swappable-backend condition):
 
-* with ``TINYFISH_API_KEY`` in the environment: the TinyFish search and
+* with a TinyFish key — ``TINYFISH_API_KEY`` in the environment, which
+  wins, or the key typed into Settings (stored privately, never in
+  ``config.json``): the TinyFish search and
   fetch endpoints (limits 500 searches/hour and 1,000 fetch-URLs/day;
   the free tier is a commercial decision from May-2026, not a law);
 * keyless: ``web_search`` falls back to DuckDuckGo via the optional
@@ -50,6 +52,7 @@ from html.parser import HTMLParser
 from typing import ClassVar
 from urllib.parse import SplitResult, urlencode, urlsplit
 
+from stella import provider_keys
 from stella.tools import (
     ActionPreview,
     ApprovalRequest,
@@ -60,6 +63,22 @@ from stella.tools import (
     _ValidatedHTTPSConnection,
     neutralize_content_markers,
 )
+
+
+def resolve_tinyfish_key(env: Mapping[str, str]) -> str | None:
+    """The TinyFish search key to use, or None for the keyless path.
+
+    Precedence mirrors the model keys and the documented env contract:
+    ``TINYFISH_API_KEY`` in the environment wins, then the private stored
+    secret a user typed into Settings, then nothing (the honest keyless
+    fallback). The value is never returned in an error, a preview or a log.
+    """
+
+    return (
+        env.get("TINYFISH_API_KEY")
+        or provider_keys.stored_secret(provider_keys.TINYFISH_SECRET)
+        or None
+    )
 
 SEARCH_ENDPOINT = "https://api.search.tinyfish.ai"
 FETCH_ENDPOINT = "https://api.fetch.tinyfish.ai"
@@ -693,7 +712,7 @@ def build_web_tools(
     """
 
     client = WebClient(
-        api_key=env.get("TINYFISH_API_KEY") or None,
+        api_key=resolve_tinyfish_key(env),
         budget=budget or WebBudget(),
     )
     if transport is not None:
@@ -716,7 +735,7 @@ def web_tool_summaries(
     if capability not in {"web_search", "web_fetch"}:
         return None
     if key_present is None:
-        key_present = bool(os.environ.get("TINYFISH_API_KEY"))
+        key_present = resolve_tinyfish_key(os.environ) is not None
     subject = (
         arguments.get("query") if capability == "web_search" else arguments.get("url")
     )

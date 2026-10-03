@@ -13,9 +13,13 @@ auto-run: the model proposes, the user authorizes (rules 3 and 10).
 
 Each tool answers its own backend question per call:
 
-- With `TINYFISH_API_KEY` set, search goes to `api.search.tinyfish.ai`
-  and fetch is performed server-side by `api.fetch.tinyfish.ai` (the
-  provider does its own SSRF guarding and returns clean markdown). The
+- With a TinyFish key available — an exported `TINYFISH_API_KEY`, or one
+  stored in the private `0600` key file from the Settings web row (the
+  environment still wins for that launch) — search goes to
+  `api.search.tinyfish.ai` and fetch is performed server-side by
+  `api.fetch.tinyfish.ai` (the provider does its own SSRF guarding and
+  returns clean markdown, and sees the key and the query as it must — the
+  key itself never lands in `config.json`, a log, or an approval card). The
   free tier is a commercial decision — a third party sees the query —
   and the approval card says so.
 - Without a key, search falls back to the optional `ddgs` package

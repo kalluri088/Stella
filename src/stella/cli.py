@@ -32,6 +32,7 @@ from stella.commands import (
     version_line,
 )
 from stella.config import resolve_settings
+from stella.headless_voice import run_headless_voice
 from stella.llm import Message
 from stella.outline_tools import active_reminder_pump
 from stella.persona import (
@@ -906,6 +907,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             "proposals for the next session (never writes anything)"
         ),
     )
+    commands.add_parser(
+        "voice",
+        help=(
+            "one hands-free turn for a keyboard shortcut: listens once, "
+            "answers aloud, asks out loud before anything risky, and "
+            "exits (needs voice input and speech enabled in Settings)"
+        ),
+    )
     audit_parser = commands.add_parser(
         "audit",
         help=(
@@ -993,6 +1002,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(open_persona_editor())
     if args.command == "reflect":
         raise SystemExit(run_persona_reflection())
+    if args.command == "voice":
+        # Resolves its own settings and needs no interactive terminal, so
+        # it runs before the chat path's configuration gate.
+        raise SystemExit(run_headless_voice())
     settings = resolve_settings()
     if settings is None:
         print(

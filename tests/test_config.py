@@ -94,6 +94,9 @@ def test_configuration_stores_only_non_secret_fields():
         "os_tools_enabled",
         "outline_tools_enabled",
         "web_tools_enabled",
+        # The shell capability, like every other saved family: one plain
+        # bool. The command string is never persisted here.
+        "shell_tools_enabled",
         # The wake-word checkbox, like every other saved capability: one
         # plain bool, no path and no key.
         "wake_word_enabled",
@@ -561,3 +564,17 @@ def test_environment_toggle_overrides_the_saved_os_tools_choice(monkeypatch):
         provider="ollama", model="m", os_tools_enabled=True
     )
     assert settings.os_tools_enabled is False
+
+
+def test_desktop_awareness_is_on_by_default():
+    # "Desktop awareness should be by default checked." A fresh setup and
+    # a bare settings object both start on; an explicit False still wins.
+    assert StellaSettings(model="m").os_tools_enabled is True
+    assert (
+        StellaSettings.from_saved(provider="ollama", model="m").os_tools_enabled
+        is True
+    )
+    off = StellaSettings.from_saved(
+        provider="ollama", model="m", os_tools_enabled=False
+    )
+    assert off.os_tools_enabled is False

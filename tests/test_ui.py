@@ -1302,6 +1302,176 @@ def test_settings_apply_refuses_a_keyless_switch_before_rebuild(
         root.destroy()
 
 
+def test_apply_status_turns_dynamic_when_the_worker_reports_back() -> None:
+    # The panel label must follow the real outcome instead of sitting
+    # frozen on "Restarting…" once the rebuild lands — success or failure.
+    root, window, bridge, _ = make_window()
+    try:
+        window._apply_pending = True
+        window._handle_event(UiEvent("settings", "provider=openai"))
+        assert window._apply_pending is False
+        assert "Applied" in window._settings_status.cget("text")
+
+        # A failure while an apply is in flight says so honestly...
+        window._apply_pending = True
+        window._handle_event(UiEvent("error", "boom"))
+        assert window._apply_pending is False
+        assert "Not applied" in window._settings_status.cget("text")
+
+        # ...but an unrelated error never overwrites the panel.
+        window._settings_status.configure(text="keep me")
+        window._handle_event(UiEvent("error", "unrelated"))
+        assert window._settings_status.cget("text") == "keep me"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_enter_sends_and_shift_enter_adds_a_line() -> None:
+    # Chat convention: Return sends, Shift+Return inserts a newline. Both
+    # return "break" so Tk's default Text behaviour does not double up.
+    root, window, bridge, _ = make_window()
+    try:
+        sent: list[bool] = []
+        window._send = lambda: sent.append(True)  # type: ignore[assignment]
+        assert window._send_on_enter() == "break"
+        assert sent == [True]
+        window._input.delete("1.0", "end")
+        window._input.insert("1.0", "one")
+        window._input.mark_set("insert", "end-1c")
+        assert window._newline_on_shift_enter() == "break"
+        assert window._input.get("1.0", "end").strip() == "one"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_composer_return_and_shift_return_are_bound() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        assert window._input.bind("<Return>")
+        assert window._input.bind("<Shift-Return>")
+        assert window._input.bind("<KP_Enter>")
+        # The old Ctrl+Enter send is gone.
+        assert not window._input.bind("<Control-Return>")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_title_follows_the_session_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A person's terminal launch and an agent's session launch share the
+    # generic Tk class, so the title is the only window-manager hook. The
+    # marker must flip it, and be absent by default.
+    monkeypatch.delenv("STELLA_SESSION_WINDOW", raising=False)
+    assert stella_ui._window_title() == "Stella"
+    monkeypatch.setenv("STELLA_SESSION_WINDOW", "1")
+    assert stella_ui._window_title() == "Stella (session)"
+
+
+def test_picker_offers_a_verified_key_endpoint() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        assert window._key_check_endpoint(
+            provider_keys.PRESETS["anthropic"]
+        ) == provider_keys.PRESETS["anthropic"].base_url
+        window._provider.set(provider_keys.PRESETS["openai"].label)
+        assert window._key_check_endpoint(
+            provider_keys.PRESETS["openai"]
+        ) == "https://api.openai.com/v1"
+        # Local presets have nothing to probe; a bare custom URL cannot be
+        # checked without a model either.
+        assert (
+            window._key_check_endpoint(provider_keys.PRESETS["ollama"])
+            is None
+        )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_selecting_a_keyless_provider_asks_for_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Picking a provider that has no key anywhere must prompt and focus
+    # the field — and must not open a probe for a key that does not exist.
+    monkeypatch.setattr(
+        provider_keys, "effective_api_key", lambda *a, **k: None
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        window._on_provider_selected()
+        assert "needs an API key" in window._panel_key_hint.cget("text")
+        assert window._key_check_queue.empty()
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_a_verified_stored_key_is_reported_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        monkeypatch.setattr(
+            stella_config,
+            "check_api_key",
+            lambda *a, **k: stella_config.KeyCheck("verified", "ok"),
+        )
+        # Drive the worker body directly (no thread, no network): it must
+        # hand the result to the queue the pump drains, then the hint
+        # turns to "ready".
+        window._key_check_token = 7
+        window._run_key_check(
+            7, "anthropic", "https://api.anthropic.com/v1", "sk-ant-stored"
+        )
+        assert not window._key_check_queue.empty()
+        window._drain_key_checks()
+        assert "ready to use" in window._panel_key_hint.cget("text")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_a_rejected_stored_key_shows_an_error() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        window._key_check_token = 9
+        window._key_check_queue.put(
+            (9, "anthropic", stella_config.KeyCheck("rejected", "HTTP 401"))
+        )
+        window._drain_key_checks()
+        hint = window._panel_key_hint.cget("text")
+        assert "rejected" in hint and "Enter a new key" in hint
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_a_stale_key_check_is_dropped() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        window._provider.set(provider_keys.PRESETS["anthropic"].label)
+        # A reply for an older selection (token mismatch) must not touch
+        # the hint the user is now looking at.
+        window._panel_key_hint.configure(text="SENTINEL")
+        window._key_check_token = 20
+        window._key_check_queue.put(
+            (19, "anthropic", stella_config.KeyCheck("verified", "ok"))
+        )
+        window._drain_key_checks()
+        assert window._panel_key_hint.cget("text") == "SENTINEL"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 class EchoToolBrain(Brain):
     """Dispatches the safe echo capability once, then answers."""
 

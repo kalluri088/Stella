@@ -19,7 +19,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from platformdirs import user_data_dir
@@ -29,6 +29,7 @@ from stella.audio import TranscriptionProvider
 from stella.audio_output import (
     SpeechOutput,
     SpeechProvider,
+    StreamingSentenceSplitter,
     sentence_chunks,
 )
 from stella.barge_in import BargeInListener, SileroVad, capture_command
@@ -276,6 +277,7 @@ class StellaSession:
         should_cancel: Callable[[], bool] | None = None,
         on_activity: Callable[[str], None] | None = None,
         spoken: bool = False,
+        on_response_delta: Callable[[str], None] | None = None,
     ) -> TurnOutcome:
         started = time.monotonic()
 
@@ -311,6 +313,13 @@ class StellaSession:
                 options["should_cancel"] = should_cancel
             if on_activity is not None:
                 options["on_activity"] = on_activity
+            if on_response_delta is not None:
+                # A streamed reply's words reach this callback before they
+                # reach the finished response, and nothing but the audio
+                # pipeline ever consumes them: history, audit, trace and
+                # memory writes still derive from the one ``response``
+                # string Stella built after the stream ended.
+                options["on_response_delta"] = on_response_delta
             # Keywords appear only when set: applications (and embedding
             # test stubs) that understand neither still get process(context).
             result = self.stella.process(context, **options)
@@ -1933,6 +1942,278 @@ class ReminderTicker:
 _END_OF_SPEECH = "\x00stella-end-of-speech"
 
 
+class _ChunkedSpeechPipeline:
+    """Speak one reply's sentences as they are handed over.
+
+    Two producers share it: the whole-reply path feeds every finished
+    sentence before returning, and a streamed reply feeds each sentence
+    the moment :class:`StreamingSentenceSplitter` releases it — so a long
+    spoken answer starts on its first sentence rather than waiting for
+    the last. Either way the first successful synthesis is the lazy
+    begin: it retires narration, stops any still-playing audio, takes
+    the one-at-a-time player, suspends the wake ear, arms barge-in and
+    starts the consumer thread. A pipeline that never gets a chunk to
+    synthesize never claims the speaker, so a filler phrase is never
+    silenced for a reply that does not arrive.
+
+    The producer runs on the caller's thread (the ``stella-app`` worker
+    that is already the chunked-speech producer today); the consumer is
+    one background thread that plays and disposes each artifact in
+    order. The interrupt event ("Stop speaking", a cancel, shutdown, or
+    a newer reply) drains the queue unsaid; the decision and its text
+    are never touched. Once the interrupt is raised the producer stops
+    synthesizing too, so nobody pays for words the user has already
+    refused to hear.
+    """
+
+    def __init__(self, bridge: StellaBridge, panel: VoicePanel) -> None:
+        self._bridge = bridge
+        self._panel = panel
+        self._interrupt = threading.Event()
+        self._outbox: queue.Queue[str] = queue.Queue(maxsize=3)
+        self._started = False
+        # Two one-way flags: ``_silenced`` stops any further emit, and
+        # ``_ended`` makes the sentinel a once-only event. A pipeline
+        # that has reported a synthesis failure must still send the
+        # sentinel so its consumer exits, and a pipeline that was never
+        # started must not send one so nothing is waiting on it.
+        self._silenced = False
+        self._ended = False
+        # A new reply retires any previous chunked consumer before this
+        # one can contend for the one-at-a-time player. There is never
+        # a previous producer to retire: it is this very thread.
+        bridge._interrupt_speech()
+        bridge._speech_interrupt = self._interrupt
+
+    def _stopped(self) -> bool:
+        return self._bridge._should_cancel() or self._interrupt.is_set()
+
+    def emit(self, text: str) -> bool:
+        """Render one sentence and hand it to the consumer.
+
+        Returns ``False`` once the pipeline has been silenced, cancelled
+        or has reported a synthesis failure: the caller must stop feeding
+        it, because nothing further will ever reach a speaker.
+        """
+
+        if self._silenced or self._stopped():
+            return False
+        bridge = self._bridge
+        panel = self._panel
+        try:
+            path = panel.synthesize_phrase(text, self._stopped)
+        except ProviderRequestCancelled:
+            # Cancelled mid-synthesis: silence is the requested outcome.
+            self._silenced = True
+            return False
+        except VoiceError as error:
+            # Sentences already heard stay heard; the text response
+            # remains fully available either way.
+            bridge._emit("voice_error", str(error))
+            self._silenced = True
+            return False
+        except Exception as error:  # noqa: BLE001 - friendly text, never a trace
+            detail = " ".join(str(error).split()) or type(error).__name__
+            bridge._emit(
+                "voice_error",
+                f"Stella could not prepare speech ({detail[:120]}). "
+                "The text response is still available.",
+            )
+            self._silenced = True
+            return False
+        if self._stopped():
+            # Discard the tail: nothing of a cancelled reply reaches
+            # a speaker.
+            panel.dispose_artifact(path)
+            self._silenced = True
+            return False
+        if not self._started:
+            self._begin()
+        self._outbox.put(path)
+        return True
+
+    def _begin(self) -> None:
+        """Claim the one-at-a-time player for this reply.
+
+        Runs on the first successful synthesis and only then: an
+        interrupted or empty reply never suspends the wake ear, never
+        fires the speaking state and never arms barge-in — no audio
+        subsystem is put on notice for sound that was not made. The
+        joins keep the previous threads' "idle" events ordered before
+        this reply's "speaking" state.
+        """
+
+        bridge = self._bridge
+        panel = self._panel
+        # The answer is now the narration: work filler must not follow
+        # the reply onto the speakers (phrases already audible finish).
+        bridge._flush_narration()
+        # A new reply may interrupt still-playing audio; that cancels only
+        # playback, never any Stella decision.
+        panel.cancel_playback()
+        if bridge._playback is not None:
+            bridge._playback.join(timeout=2)
+        if bridge._speech_consumer is not None:
+            bridge._speech_consumer.join(timeout=2)
+        bridge._speaking = True
+        bridge._suspend_wake()
+        bridge._emit("voice_state", "speaking")
+        bridge._begin_barge_in()
+        consumer = threading.Thread(
+            target=self._consume, name="stella-speech-playback", daemon=True
+        )
+        bridge._speech_consumer = consumer
+        consumer.start()
+        self._started = True
+
+    def _consume(self) -> None:
+        bridge = self._bridge
+        panel = self._panel
+        while True:
+            item = self._outbox.get()
+            if item == _END_OF_SPEECH:
+                break
+            if self._interrupt.is_set():
+                panel.dispose_artifact(item)
+                continue
+            try:
+                panel.play(item)
+            except VoiceError as error:
+                # One honest report, then the rest goes unsaid: a
+                # failing player will not recover mid-reply.
+                bridge._emit("voice_error", str(error))
+                self._interrupt.set()
+            except BaseException as error:  # noqa: BLE001 - report, never crash
+                detail = " ".join(str(error).split()) or type(error).__name__
+                bridge._emit(
+                    "voice_error",
+                    f"Stella could not play the response ({detail[:120]}).",
+                )
+                self._interrupt.set()
+            finally:
+                panel.dispose_artifact(item)
+        bridge._end_barge_in()
+        bridge._speaking = False
+        bridge._emit("voice_state", "idle")
+        bridge._resume_wake()
+
+    def finish(self) -> None:
+        """End this reply's speech. Safe to call more than once.
+
+        A pipeline that ever claimed the speaker must always be
+        finished, even after a synthesis failure: the consumer exits
+        only on the sentinel, so without it the last artifact sits in
+        the queue forever and the wake ear stays suspended. A pipeline
+        that never started has nothing to tell.
+        """
+
+        if self._ended:
+            return
+        self._ended = True
+        if self._started:
+            self._outbox.put(_END_OF_SPEECH)
+
+
+class _ReplySpeechStreamer:
+    """Own one reply's speech for the duration of a streaming turn.
+
+    The delta callback is a sink: :class:`StreamingSentenceSplitter`
+    releases whole sentences as text arrives, each one goes straight to
+    the shared chunked-speech pipeline, and the model's own generation
+    continues into the socket buffer while the worker is busy rendering
+    the sentence it just finished. The reply's tail — anything the
+    stream never saw, above all the memory-write note the runtime
+    appends after :meth:`LLMClient.stream_chat` returns — is fed
+    through the same splitter before it is flushed, so a streamed reply
+    is spoken exactly as today's whole-file reply was.
+
+    A streamed turn is only "handled" once a delta actually arrives:
+    the terminal-tool fast path and the clients that decline streaming
+    never fire the callback, and the ordinary whole-reply path then
+    speaks the finished response as it always has.
+    """
+
+    def __init__(self, bridge: StellaBridge, panel: VoicePanel) -> None:
+        self._bridge = bridge
+        self._panel = panel
+        self._splitter = StreamingSentenceSplitter()
+        self._seen: list[str] = []
+        self._pipeline: _ChunkedSpeechPipeline | None = None
+        self._failed = False
+        self._silenced = threading.Event()
+
+    @property
+    def heard(self) -> bool:
+        """True as soon as any text actually arrived on the callback."""
+
+        return bool(self._seen)
+
+    def silence(self) -> None:
+        """Refuse every further streamed sentence for this reply.
+
+        Callable from any thread — "Stop speaking" is a UI press while
+        the worker is busy rendering. A reply that has not yet handed
+        anything to synthesis still obeys it: no artifact is ever
+        produced for words the user has already refused to hear.
+        """
+
+        self._silenced.set()
+
+    def on_delta(self, piece: str) -> None:
+        if (
+            self._failed
+            or self._silenced.is_set()
+            or self._bridge._should_cancel()
+        ):
+            return
+        self._seen.append(piece)
+        for chunk in self._splitter.feed(piece):
+            if not self._emit(chunk):
+                return
+
+    def settle(self, full_response: str | None) -> bool:
+        """Finish this reply's speech; True when this streamer owned it."""
+
+        if not self.heard:
+            # Nothing ever arrived: the whole-reply path is still the
+            # right owner of this turn's speech.
+            return False
+        pipeline = self._pipeline
+        try:
+            if self._failed:
+                return True
+            if self._silenced.is_set() or self._bridge._should_cancel():
+                # A silent turn is silence beyond whatever has already
+                # reached a speaker: no further synthesis is paid for.
+                return True
+            tail = ""
+            if full_response is not None:
+                seen = "".join(self._seen)
+                if full_response.startswith(seen):
+                    tail = full_response[len(seen) :]
+            if tail:
+                for chunk in self._splitter.feed(tail):
+                    if not self._emit(chunk):
+                        break
+            for chunk in self._splitter.flush():
+                if not self._emit(chunk):
+                    break
+            return True
+        finally:
+            if pipeline is not None:
+                pipeline.finish()
+
+    def _emit(self, chunk: str) -> bool:
+        if self._pipeline is None:
+            self._pipeline = _ChunkedSpeechPipeline(
+                self._bridge, self._panel
+            )
+        if not self._pipeline.emit(chunk):
+            self._failed = True
+            return False
+        return True
+
+
 class StellaBridge:
     """Serialise all UI requests onto one worker thread that owns Stella.
 
@@ -1992,6 +2273,10 @@ class StellaBridge:
         self._playback: threading.Thread | None = None
         self._speech_interrupt: threading.Event | None = None
         self._speech_consumer: threading.Thread | None = None
+        # The in-flight turn's speech owner, if any: a streamed reply
+        # hands its sentences to this streamer as they finish, and the
+        # ordinary whole-reply path runs when no delta ever arrived.
+        self._reply_streamer: _ReplySpeechStreamer | None = None
         self._commands: queue.Queue[Callable[[], None] | None] = queue.Queue()
         self._turn_cancel = threading.Event()
         # D3 narration: one non-blocking slot plus a per-turn retire event.
@@ -2421,6 +2706,14 @@ class StellaBridge:
             if spoken:
                 self._narrate(kind, dead)
 
+        # A streamed reply's speech begins on its first finished
+        # sentence, so the callback must be installed before the model
+        # starts writing. Eligibility is exactly what :meth:`_speak_after`
+        # already checks: a reply that would be spoken aloud today is
+        # the only one worth streaming synthesis for, and a turn that
+        # ends in a fast path or a declining client simply never fires
+        # the callback and falls back to the whole-reply path unchanged.
+        streamer = self._begin_reply_stream_speech()
         # A spoken turn gains two things and only two things: the core
         # sees the audio modality (briefer, speakable answers) and the
         # activity observer (filler the application itself authored). A
@@ -2431,6 +2724,7 @@ class StellaBridge:
             should_cancel=self._should_cancel,
             on_activity=observe,
             spoken=spoken,
+            on_response_delta=(streamer.on_delta if streamer else None),
         )
         self._emit("turn", outcome)
         # The History panel tracks what the turn actually did without
@@ -2438,6 +2732,28 @@ class StellaBridge:
         # capability change nothing and emit nothing.
         self._emit_history_if_new()
         return outcome
+
+    def _begin_reply_stream_speech(self) -> _ReplySpeechStreamer | None:
+        """Own the in-flight turn's speech if it may be heard live.
+
+        The streamer is stored on the bridge because the worker thread
+        owns one turn at a time, and :meth:`_speak_after` needs to see
+        whether any of it was already spoken by the time the response
+        lands. Returns ``None`` for a turn that will never be spoken
+        aloud, in which case the callback is never installed at all.
+        """
+
+        panel = self._voice
+        if (
+            panel is None
+            or not panel.speech_enabled
+            or not panel.output_available
+        ):
+            self._reply_streamer = None
+            return None
+        streamer = _ReplySpeechStreamer(self, panel)
+        self._reply_streamer = streamer
+        return streamer
 
     def status_snapshot(self) -> tuple[object | None, object | None, object | None]:
         """(settings, session, stella) for ``/status`` rendering.
@@ -2820,15 +3136,32 @@ class StellaBridge:
         For a chunked reply this silences the whole reply — the sound
         playing now and the sentences only queued — because "stop
         speaking" was never a request to pause until the next sentence.
+        For a *streaming* reply that has not reached the speaker yet,
+        the same rule reaches the streamer too: the text keeps arriving
+        into history, but the words the user just refused are never
+        synthesized for nothing.
         """
 
         self._flush_narration()
         self._interrupt_speech()
+        streamer = self._reply_streamer
+        if streamer is not None:
+            streamer.silence()
         if self._voice is not None:
             self._voice.cancel_playback()
 
     def _speak_after(self, outcome: TurnOutcome) -> None:
+        streamer = self._reply_streamer
+        self._reply_streamer = None
         panel = self._voice
+        # The streamed producer owns this reply's speech whenever any
+        # text actually arrived; the ordinary whole-reply path below is
+        # what a turn that never streamed (a fast path, a client that
+        # declined) still needs. Either way the text response is
+        # finished before this method runs: streaming only changes when
+        # the sound starts.
+        if streamer is not None and streamer.settle(outcome.response):
+            return
         if (
             panel is None
             or not panel.speech_enabled
@@ -2849,7 +3182,7 @@ class StellaBridge:
             # A9: the first sentence should be speaking while the rest
             # is still being synthesized; whole-file speech made the
             # user wait for every character before hearing any.
-            self._speak_chunks(panel, outcome.result, chunks)
+            self._speak_chunks(panel, chunks)
             return
         try:
             path = panel.synthesize(outcome.result, self._should_cancel)
@@ -2909,139 +3242,25 @@ class StellaBridge:
         self._playback.start()
 
     def _speak_chunks(
-        self, panel: VoicePanel, result: StellaResult, chunks: Iterable[str]
+        self, panel: VoicePanel, chunks: Iterable[str]
     ) -> None:
         """Speak one multi-sentence reply chunk by chunk.
 
-        The worker thread stays the producer: it consumes ``chunks`` one
-        sentence at a time — chunk k+1 renders while chunk k plays,
-        because local speech is faster than real time — while a consumer
-        thread plays and disposes each artifact in order. ``chunks`` is an
-        iterable, not a list, so the whole-reply path hands over finished
-        sentences and a streamed reply can hand them over as they become
-        ready; the consumer's work is identical either way. An interrupt
-        event ("Stop speaking", a cancel, shutdown, or a newer reply)
-        drains the queue unsaid; the decision and its text are never
-        touched.
+        The whole-reply path hands :class:`_ChunkedSpeechPipeline` every
+        finished sentence in order; a streamed reply hands it each
+        sentence the moment it becomes ready. The pipeline itself is the
+        single place that plays one artifact at a time, drains the queue
+        on "Stop speaking", and disposes every artifact it never spoke,
+        so both paths get exactly the same interruption behaviour.
         """
 
-        # Retire any previous chunked consumer before this reply can
-        # contend for the one-at-a-time player. There is never a
-        # previous producer to retire: it is this very thread.
-        self._interrupt_speech()
-        interrupt = threading.Event()
-        self._speech_interrupt = interrupt
-
-        def stopped() -> bool:
-            return self._should_cancel() or interrupt.is_set()
-
-        outbox: queue.Queue[str] = queue.Queue(maxsize=3)
-
-        def consume() -> None:
-            while True:
-                item = outbox.get()
-                if item == _END_OF_SPEECH:
-                    break
-                if interrupt.is_set():
-                    panel.dispose_artifact(item)
-                    continue
-                try:
-                    panel.play(item)
-                except VoiceError as error:
-                    # One honest report, then the rest goes unsaid: a
-                    # failing player will not recover mid-reply.
-                    self._emit("voice_error", str(error))
-                    interrupt.set()
-                except BaseException as error:  # noqa: BLE001 - report, never crash
-                    detail = " ".join(str(error).split()) or type(error).__name__
-                    self._emit(
-                        "voice_error",
-                        f"Stella could not play the response ({detail[:120]}).",
-                    )
-                    interrupt.set()
-                finally:
-                    panel.dispose_artifact(item)
-            self._end_barge_in()
-            self._speaking = False
-            self._emit("voice_state", "idle")
-            self._resume_wake()
-
-        source = iter(chunks)
-        first_text = next(source, None)
-        if first_text is None:
-            return
+        pipeline = _ChunkedSpeechPipeline(self, panel)
         try:
-            first = panel.synthesize(
-                replace(result, response=first_text), stopped
-            )
-        except ProviderRequestCancelled:
-            # Cancelled mid-synthesis: silence is the requested outcome.
-            return
-        except VoiceError as error:
-            self._emit("voice_error", str(error))
-            return
-        except Exception as error:  # noqa: BLE001 - friendly text, never a trace
-            detail = " ".join(str(error).split()) or type(error).__name__
-            self._emit(
-                "voice_error",
-                f"Stella could not prepare speech ({detail[:120]}). "
-                "The text response is still available.",
-            )
-            return
-        if stopped():
-            # Discard the tail: nothing of a cancelled reply reaches
-            # a speaker.
-            panel.dispose_artifact(first)
-            return
-        # A new reply may interrupt still-playing audio; that cancels only
-        # playback, never any Stella decision. The joins keep the old
-        # threads' "idle" events ordered before the new "speaking" state.
-        panel.cancel_playback()
-        if self._playback is not None:
-            self._playback.join(timeout=2)
-        if self._speech_consumer is not None:
-            self._speech_consumer.join(timeout=2)
-        self._speaking = True
-        self._suspend_wake()
-        self._emit("voice_state", "speaking")
-        self._begin_barge_in()
-        outbox.put(first)
-        self._speech_consumer = threading.Thread(
-            target=consume, name="stella-speech-playback", daemon=True
-        )
-        self._speech_consumer.start()
-        try:
-            for chunk in source:
-                if stopped():
+            for chunk in chunks:
+                if not pipeline.emit(chunk):
                     break
-                try:
-                    path = panel.synthesize(
-                        replace(result, response=chunk), stopped
-                    )
-                except ProviderRequestCancelled:
-                    break
-                except VoiceError as error:
-                    # Sentences already heard stay heard; the text
-                    # response remains fully available either way.
-                    self._emit("voice_error", str(error))
-                    break
-                except Exception as error:  # noqa: BLE001 - friendly text
-                    detail = " ".join(str(error).split()) or type(error).__name__
-                    self._emit(
-                        "voice_error",
-                        f"Stella could not prepare speech ({detail[:120]}). "
-                        "The text response is still available.",
-                    )
-                    break
-                if stopped():
-                    panel.dispose_artifact(path)
-                    break
-                outbox.put(path)
         finally:
-            # The consumer exits only on this sentinel, so every
-            # synthesized artifact is either played and disposed or
-            # drained and disposed.
-            outbox.put(_END_OF_SPEECH)
+            pipeline.finish()
 
     def post_memories(self, query: str | None = None) -> None:
         def handle() -> None:

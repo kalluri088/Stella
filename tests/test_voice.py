@@ -28,6 +28,7 @@ from stella.app import (
     StellaSettings,
     TurnOutcome,
     VoicePanel,
+    _ReplySpeechStreamer,
     build_voice,
     outcome_status,
 )
@@ -325,8 +326,9 @@ class NarratingStella:
         context: Context,
         should_cancel=None,
         on_activity=None,
+        on_response_delta=None,
     ) -> StellaResult:
-        del should_cancel
+        del should_cancel, on_response_delta
         self.contexts.append(context)
         if on_activity is not None:
             on_activity("thinking")
@@ -1902,6 +1904,426 @@ def test_a_new_reply_retires_the_previous_reply_queue() -> None:
     # the second "speaking"), and only its first sentence was ever heard.
     assert states == ["speaking", "idle", "speaking", "idle"]
     assert len(player.played) == 3
+    assert os.listdir(speech.directory) == []
+    bridge.stop()
+
+
+# ---------------------------------------------------- streaming speech
+#
+# The parity claims the streaming answer path owes every one of today's
+# chunked-speech rules. A streamed reply synthesizes inside the model
+# call, not after it; "Stop speaking" mid-stream silences the rest of
+# the reply without stealing the text; Cancel still discards the turn
+# whole; a client whose ``stream_chat`` declines falls back to the
+# ordinary path unchanged; and the runtime-appended memory note (which
+# arrives after the stream) still reaches audio through the same
+# splitter.
+
+
+class RecordingStreamLLM(SpyLLM):
+    """A client that streams, and can be probed mid-call.
+
+    The optional streaming contract (:meth:`LLMClient.stream_chat`) is
+    what a native Ollama connection now satisfies; this fake implements
+    the same shape so the tests never need a socket. The callback fires
+    on the caller's thread — that is the worker that is already the
+    synth producer — so by the time ``after_delta`` runs, every chunk
+    the splitter released has already been handed to synthesis. That
+    ordering is what the tests read out of ``speech.spoken``.
+    """
+
+    def __init__(
+        self,
+        pieces: list[str],
+        after_delta=None,
+        response: str | None = None,
+        abort_on_cancel: bool = False,
+    ) -> None:
+        super().__init__()
+        self.pieces = pieces
+        self.after_delta = after_delta
+        self._response = response
+        self.abort_on_cancel = abort_on_cancel
+        self.stream_calls = 0
+        self.chat_calls = 0
+
+    def stream_chat(
+        self,
+        messages,
+        on_delta,
+        should_cancel=None,
+    ) -> str:
+        del messages
+        self.stream_calls += 1
+        joined: list[str] = []
+        for piece in self.pieces:
+            if self.abort_on_cancel and should_cancel is not None and should_cancel():
+                raise ProviderRequestCancelled("cancelled")
+            on_delta(piece)
+            joined.append(piece)
+            if self.after_delta is not None:
+                self.after_delta("".join(joined))
+        text = "".join(joined)
+        return text if self._response is None else self._response
+
+    def chat(self, messages, should_cancel=None) -> str:
+        del messages, should_cancel
+        # A client that can stream is never consulted twice: the
+        # answer call is the stream, so a chat() here would be the
+        # fallback path firing after a stream that already succeeded.
+        self.chat_calls += 1
+        raise AssertionError(
+            "a client that can stream must not also be asked to chat()"
+        )
+
+
+class VoiceClockTool(Tool):
+    """Terminal-tool stand-in: its output is the reply, verbatim."""
+
+    name = "clock"
+    description = "Returns the time as user-facing text."
+    terminal = True
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        return True
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        del arguments
+        return ToolResult(
+            success=True,
+            output="It is exactly noon. Time for lunch now.",
+        )
+
+
+def make_streaming_stella(
+    decisions: list[Decision],
+    llm: LLMClient,
+    tools: list[Tool] | None = None,
+) -> Stella:
+    """A Stella whose answer turns go through ``synthesise``, not the
+    verbatim fast path, so the streaming callback is what owns the reply.
+    """
+
+    return Stella(
+        ScriptedBrain(decisions),
+        llm,
+        ToolDispatcher(tools if tools is not None else [EchoTool()]),
+        InMemoryMemory(),
+    )
+
+
+# Text fed in two pieces so the splitter releases the first sentence
+# inside ``stream_chat`` — a piece boundary mid-reply is the whole
+# feature, not a detail.
+_STREAM_PIECES = [
+    "First sentence here. Second sentence here. Third",
+    " one is here too.",
+]
+
+
+def test_a_streamed_reply_synthesizes_before_the_model_call_returns() -> None:
+    """The reason the streaming answer path exists at all."""
+
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    heard_mid_call: list[int] = []
+
+    def after_delta(text_so_far: str) -> None:
+        # Called after each on_delta has been fed. The pipeline runs
+        # inline on this same thread, so ``speech.spoken`` already grew:
+        # that is the whole claim of "before the model call returns".
+        heard_mid_call.append(len(speech.spoken))
+        del text_so_far
+
+    bridge = make_voice_bridge(
+        make_streaming_stella(
+            [Decision(kind=DecisionKind.ANSWER)],
+            RecordingStreamLLM(_STREAM_PIECES, after_delta=after_delta),
+        ),
+        panel,
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    # One sentence already rendered after the first delta; a second
+    # after the second — while the model call was still open.
+    assert heard_mid_call == [1, 2]
+    # Once the model finished, every sentence is heard in order, no
+    # more and no less than the whole-reply chunking would have made.
+    assert speech.spoken == _CHUNKS
+    assert len(player.played) == 3
+    assert len(set(player.played)) == 3
+    assert all(not os.path.exists(path) for path in player.played)
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == _CHUNKED_REPLY
+    assert not any(event.kind == "voice_error" for event in events)
+    bridge.stop()
+
+
+def test_a_streamed_reply_announces_speaking_before_the_turn_lands() -> None:
+    """Ordering follows from the inline producer: the same worker
+    thread queues ``voice_state "speaking"`` while the answer call is
+    still open, so it precedes the ``turn`` event that reports the
+    finished response. The whole-reply path keeps its old order (turn
+    before speaking) and that is asserted by the fast-path tests, not
+    this one.
+    """
+
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_streaming_stella(
+            [Decision(kind=DecisionKind.ANSWER)],
+            RecordingStreamLLM(_STREAM_PIECES),
+        ),
+        panel,
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    marks = [
+        (event.kind, event.payload if event.kind == "voice_state" else None)
+        for event in events
+        if event.kind in ("voice_state", "turn")
+    ]
+    # speaking → turn → idle, in that order.
+    assert marks[0] == ("voice_state", "speaking")
+    assert marks[1] == ("turn", None)
+    assert marks[2] == ("voice_state", "idle")
+    bridge.stop()
+
+
+def test_stop_speaking_mid_stream_silences_the_rest_of_the_reply() -> None:
+    """The promise 'Stop speaking' made for a chunked reply is still
+    made for a streamed one — plus one new rule the streaming path
+    needs: once the user has refused the rest, no further synthesis
+    is paid for. The text response keeps arriving, which the typed
+    turn has always promised."""
+
+    hold = threading.Event()
+    speech = FakeSpeech()
+    player = FakePlayer(hold=hold)
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    state: dict[str, object] = {"bridge": None, "armed": True}
+
+    def after_delta(text_so_far: str) -> None:
+        del text_so_far
+        if not state["armed"]:
+            return
+        state["armed"] = False
+        bridge = state["bridge"]
+        assert bridge is not None
+        # Wait for the consumer to have taken the first artifact
+        # (the hold means play has not returned yet, so its path is
+        # already in ``played``). Then press Stop speaking while the
+        # answer is still streaming, and release the hold so the
+        # consumer can retire the interrupted queue.
+        deadline = time.monotonic() + 5
+        while len(player.played) < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(player.played) == 1
+        bridge.stop_playback()
+        hold.set()
+
+    bridge = make_voice_bridge(
+        make_streaming_stella(
+            [Decision(kind=DecisionKind.ANSWER)],
+            RecordingStreamLLM(_STREAM_PIECES, after_delta=after_delta),
+        ),
+        panel,
+    )
+    state["bridge"] = bridge
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    # Only the sentence already audible was ever synthesized; the
+    # refused ones are not paid for.
+    assert speech.spoken == [_CHUNKS[0]]
+    # The one artifact the user had already begun to hear finished
+    # playing; the rest never reached a speaker.
+    assert len(player.played) == 1
+    # The reply that produced the sound is untouched by stopping it.
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == _CHUNKED_REPLY
+    assert not turn.cancelled
+    assert not turn.interrupted
+    assert not any(event.kind == "voice_error" for event in events)
+    assert os.listdir(speech.directory) == []
+    bridge.stop()
+
+
+def test_cancel_mid_stream_discards_the_turn_whole() -> None:
+    """Cancel is already documented as discarding the turn whole, and
+    the streaming client's ``should_cancel`` is the new safe point. A
+    streamed turn that is cancelled between sentences lands exactly
+    like a cancelled chunked turn — no further audio, an error-free
+    idle, and no response reported."""
+
+    hold = threading.Event()
+    speech = FakeSpeech()
+    player = FakePlayer(hold=hold)
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    state: dict[str, object] = {"bridge": None, "armed": True}
+
+    def after_delta(text_so_far: str) -> None:
+        del text_so_far
+        if not state["armed"]:
+            return
+        state["armed"] = False
+        bridge = state["bridge"]
+        assert bridge is not None
+        # The user heard the first sentence begin, then pressed
+        # Cancel. The next delta must not synthesize, and the whole
+        # turn must be discarded.
+        deadline = time.monotonic() + 5
+        while len(player.played) < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        bridge.cancel_current_turn()
+        hold.set()
+
+    llm = RecordingStreamLLM(
+        _STREAM_PIECES,
+        after_delta=after_delta,
+        abort_on_cancel=True,
+    )
+    bridge = make_voice_bridge(
+        make_streaming_stella([Decision(kind=DecisionKind.ANSWER)], llm),
+        panel,
+    )
+    state["bridge"] = bridge
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    # One sentence landed before the cancel; the rest is never even
+    # synthesized (the second delta raises ProviderRequestCancelled
+    # inside the client).
+    assert speech.spoken == [_CHUNKS[0]]
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.cancelled
+    assert turn.response is None
+    assert not any(event.kind == "voice_error" for event in events)
+    assert os.listdir(speech.directory) == []
+    bridge.stop()
+
+
+def test_a_declining_client_falls_back_to_the_whole_reply_path() -> None:
+    """:meth:`LLMClient.stream_chat` default is ``None`` — "I did not
+    answer, the caller must". Every non-native client inherits that
+    default; the turn still runs and today's whole-reply chunked path
+    speaks the finished response unchanged."""
+
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    # SpyLLM does not override stream_chat, so the base default
+    # applies; it returns "the action completed" from ``chat``, one
+    # chunk on the ordinary whole-reply path.
+    bridge = make_voice_bridge(
+        make_streaming_stella(
+            [Decision(kind=DecisionKind.ANSWER)],
+            SpyLLM(),
+        ),
+        panel,
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    assert speech.spoken == ["the action completed"]
+    assert len(player.played) == 1
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == "the action completed"
+    assert not any(event.kind == "voice_error" for event in events)
+    bridge.stop()
+
+
+def test_the_terminal_tool_fast_path_never_fires_the_delta_callback() -> None:
+    """The terminal-tool fast path renders its tool's output verbatim
+    and makes no answer call, so the streamed producer is never
+    created and the whole-reply path is what still speaks the reply.
+    This is the plan's rule that no streamed turn is a fast-path turn,
+    tested explicitly."""
+
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    llm = RecordingStreamLLM(_STREAM_PIECES)
+    bridge = make_voice_bridge(
+        make_streaming_stella(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="clock",
+                    arguments={},
+                    tool_final=True,
+                ),
+            ],
+            llm,
+            tools=[VoiceClockTool()],
+        ),
+        panel,
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    # The fast path never entered ``synthesise``, so the streamed
+    # callback was never consulted once.
+    assert llm.stream_calls == 0
+    assert llm.chat_calls == 0
+    # Both tool sentences still reach the speaker through today's
+    # chunked whole-reply path.
+    assert speech.spoken == ["It is exactly noon.", "Time for lunch now."]
+    turn = next(event.payload for event in events if event.kind == "turn")
+    assert turn.response == "It is exactly noon. Time for lunch now."
+    bridge.stop()
+
+
+def test_a_runtime_note_beyond_the_stream_still_reaches_speech() -> None:
+    """``_with_memory_note`` appends its one-line suffix after the
+    model call has returned, so the note is never in the deltas. The
+    streamed path must not drop it: :meth:`settle` feeds the tail
+    beyond the streamed text through the same splitter before flushing,
+    and the note reaches audio as one more sentence — exactly as the
+    whole-reply chunked path already did.
+    """
+
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    # No turn is posted for this one: the claim is about the streamer
+    # and its tail, and building the bridge is enough to give the
+    # streamer a real panel, a real bridge, and a real worker context.
+    bridge = make_voice_bridge(make_chunked_stella([]), panel)
+    streamer = _ReplySpeechStreamer(bridge, panel)
+    note = " I remembered that."
+    for piece in _STREAM_PIECES:
+        streamer.on_delta(piece)
+    # What Stella will report as the response — the streamed text plus
+    # the runtime's own note, which no delta ever carried.
+    full_response = _CHUNKED_REPLY + note
+
+    assert streamer.settle(full_response) is True
+    events = wait_for_voice_state(bridge, "idle")
+
+    # Every streamed chunk was heard, and the note reached the
+    # speakers as one more sentence.
+    assert speech.spoken == _CHUNKS + ["I remembered that."]
+    assert len(player.played) == 4
+    assert not any(event.kind == "voice_error" for event in events)
     assert os.listdir(speech.directory) == []
     bridge.stop()
 

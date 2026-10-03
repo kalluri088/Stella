@@ -544,6 +544,43 @@ def test_speech_command_writes_a_playable_artifact() -> None:
     assert not os.path.exists(artifact.reference)
 
 
+def test_speech_text_containing_an_output_token_is_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The {output} path is substituted into the command template. If the
+    # *text* to be spoken happens to contain the literal string "{output}",
+    # a naive two-pass replace would inject the wav path into what the model
+    # said. Substitution is one pass, so the token in the text stays verbatim.
+    captured: dict[str, list[str]] = {}
+
+    class _FakeProc:
+        def __init__(self, out_path: str) -> None:
+            self._out = out_path
+            self.returncode = 0
+
+        def communicate(self, timeout: float | None = None):
+            with open(self._out, "wb"):
+                pass  # the file just needs to exist
+            return (None, None)
+
+        def kill(self) -> None:
+            pass
+
+    def fake_popen(argv: list[str], **_kwargs: object) -> _FakeProc:
+        captured["argv"] = list(argv)
+        return _FakeProc(argv[1])  # argv = [prog, path, text]
+
+    monkeypatch.setattr("stella.voice.guarded_popen", fake_popen)
+    provider = CommandSpeechProvider(["prog", "{output}", "{text}"], timeout=5)
+    try:
+        provider.speak(SpeechOutput(text='say {output} now'))
+        argv = captured["argv"]
+        assert argv[2] == "say {output} now"  # text passed through untouched
+        assert argv[1].endswith(".wav")  # the output slot did get the path
+    finally:
+        provider.dispose()
+
+
 def test_speech_command_artifacts_never_collide_with_older_ones() -> None:
     # Chunked speech renders several sentences while earlier ones are
     # still queued or playing; every call must own a fresh file.

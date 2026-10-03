@@ -16,6 +16,7 @@ import array
 import json
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -672,11 +673,19 @@ class OpenAITranscriptionProvider(TranscriptionProvider):
         return text if isinstance(text, str) else ""
 
 
+# The two speech-template placeholders, matched together so a single
+# re.sub pass fills both without ever rescanning what it just substituted.
+_SPEECH_TOKEN = re.compile(r"\{(text|output)\}")
+
+
 class CommandSpeechProvider(SpeechProvider):
     """Renders text with a local command (espeak-ng, piper, ...).
 
     ``template`` replaces ``"{text}"`` and ``"{output}"``; the command must
-    write a playable file to ``{output}``.
+    write a playable file to ``{output}``. The two tokens are substituted in
+    one left-to-right pass, so a ``{output}`` that appears inside the *text*
+    being spoken is read aloud as the literal word rather than becoming the
+    file path (and vice versa).
     """
 
     def __init__(self, template: list[str], timeout: float = 60.0) -> None:
@@ -713,8 +722,9 @@ class CommandSpeechProvider(SpeechProvider):
         path = os.path.join(
             self._directory, f"reply-{self._counter}-{os.getpid()}.wav"
         )
+        replacements = {"text": bounded, "output": path}
         argv = [
-            part.replace("{text}", bounded).replace("{output}", path)
+            _SPEECH_TOKEN.sub(lambda match: replacements[match.group(1)], part)
             for part in self._template
         ]
         try:

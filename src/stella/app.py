@@ -106,6 +106,7 @@ from stella.tools import (
     WorkspaceListTool,
     WorkspaceSearchTool,
 )
+from stella.turntrace import mark
 from stella.voice import (
     CommandSpeechProvider,
     CommandTranscriptionProvider,
@@ -280,6 +281,12 @@ class StellaSession:
         on_response_delta: Callable[[str], None] | None = None,
     ) -> TurnOutcome:
         started = time.monotonic()
+        # A diagnostic that is not turned on does one dict lookup per
+        # stage and returns; nothing about a live turn changes. The
+        # benchmark in ``tests/test_voice_stream_bench.py`` is what
+        # reads these marks; every other consumer leaves the
+        # environment unset and never sees a line.
+        mark("turn_start")
 
         def timed(**fields: object) -> TurnOutcome:
             return TurnOutcome(
@@ -323,11 +330,16 @@ class StellaSession:
             # Keywords appear only when set: applications (and embedding
             # test stubs) that understand neither still get process(context).
             result = self.stella.process(context, **options)
+            # ``answer_done`` is the moment the response text exists;
+            # every later stage is either audio work or bookkeeping.
+            mark("answer_done")
         except KeyboardInterrupt:
             self._record_turn(user_input, cancelled=True)
+            mark("turn_end")
             return timed(interrupted=True)
         except Exception as error:  # noqa: BLE001 - keep the session alive
             detail = " ".join(str(error).split()) or type(error).__name__
+            mark("turn_end")
             return timed(
                 error_message=(
                     f"Stella could not finish that request "
@@ -340,12 +352,14 @@ class StellaSession:
             # the conversation history, so the next turn never "remembers"
             # an answer that was never given.
             self._record_turn(user_input, cancelled=True)
+            mark("turn_end")
             return timed(result=result, cancelled=True)
         response = display_response(result)
         self.history.append(Message(role="user", content=user_input))
         if response is not None:
             self.history.append(Message(role="assistant", content=response))
         self._record_turn(user_input, response=response)
+        mark("turn_end")
         return timed(result=result, response=response)
 
     def _record_turn(
@@ -1979,6 +1993,12 @@ class _ChunkedSpeechPipeline:
         # started must not send one so nothing is waiting on it.
         self._silenced = False
         self._ended = False
+        # The diagnostic's two one-shot flags on the pipeline side:
+        # ``first_artifact`` marks the moment a rendered file exists,
+        # and ``first_play`` marks the consumer taking it. A pipeline
+        # that never reaches either never fires either.
+        self._marked_first_artifact = False
+        self._marked_first_play = False
         # A new reply retires any previous chunked consumer before this
         # one can contend for the one-at-a-time player. There is never
         # a previous producer to retire: it is this very thread.
@@ -2027,6 +2047,9 @@ class _ChunkedSpeechPipeline:
             panel.dispose_artifact(path)
             self._silenced = True
             return False
+        if not self._marked_first_artifact:
+            self._marked_first_artifact = True
+            mark("first_artifact")
         if not self._started:
             self._begin()
         self._outbox.put(path)
@@ -2077,6 +2100,9 @@ class _ChunkedSpeechPipeline:
                 panel.dispose_artifact(item)
                 continue
             try:
+                if not self._marked_first_play:
+                    self._marked_first_play = True
+                    mark("first_play")
                 panel.play(item)
             except VoiceError as error:
                 # One honest report, then the rest goes unsaid: a
@@ -2141,6 +2167,12 @@ class _ReplySpeechStreamer:
         self._pipeline: _ChunkedSpeechPipeline | None = None
         self._failed = False
         self._silenced = threading.Event()
+        # Two one-shot flags so the diagnostic reports a stage the
+        # first time it happens and never again: the same callback
+        # fires on every delta and every ready sentence, and a trace
+        # file that grows a line per token is not the point.
+        self._marked_first_token = False
+        self._marked_first_sentence = False
 
     @property
     def heard(self) -> bool:
@@ -2166,6 +2198,9 @@ class _ReplySpeechStreamer:
             or self._bridge._should_cancel()
         ):
             return
+        if piece and not self._marked_first_token:
+            self._marked_first_token = True
+            mark("first_answer_token")
         self._seen.append(piece)
         for chunk in self._splitter.feed(piece):
             if not self._emit(chunk):
@@ -2204,6 +2239,9 @@ class _ReplySpeechStreamer:
                 pipeline.finish()
 
     def _emit(self, chunk: str) -> bool:
+        if not self._marked_first_sentence:
+            self._marked_first_sentence = True
+            mark("first_sentence_ready")
         if self._pipeline is None:
             self._pipeline = _ChunkedSpeechPipeline(
                 self._bridge, self._panel
@@ -2703,6 +2741,12 @@ class StellaBridge:
             # display-only and independent of spoken filler.
             if kind.startswith("calling:"):
                 self._emit("activity", kind)
+            # "answering" is the last activity that runs after
+            # ``brain.decide`` and before the answer call: a decision
+            # this late has already been authorized, so the mark
+            # measures decision latency, not streaming latency.
+            if kind == "answering":
+                mark("decision_done")
             if spoken:
                 self._narrate(kind, dead)
 

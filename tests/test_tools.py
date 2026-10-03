@@ -1,6 +1,8 @@
 import datetime as dt
+import http.client
 import json
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1362,6 +1364,31 @@ def test_network_read_rejects_redirect_and_oversized_response(monkeypatch) -> No
     assert NetworkReadTool().execute({"url": "https://example.com/"}) == ToolResult(
         success=False,
         output="Network response too large.",
+        action_receipt=ActionReceipt("fetch", "failed"),
+    )
+
+
+def test_network_read_shapes_a_malformed_http_response(monkeypatch) -> None:
+    # A server that speaks garbage makes getresponse raise an http.client
+    # protocol error (not an OSError); network_read must still return the
+    # honest failure and receipt instead of letting it reach the dispatcher.
+    def _raise(*_args, **_kwargs):
+        raise http.client.BadStatusLine("garbage")
+
+    monkeypatch.setattr(
+        "stella.tools.NetworkReadTool._resolve_public_addresses",
+        classmethod(lambda cls, hostname: ("93.184.216.34",)),
+    )
+    monkeypatch.setattr(
+        "stella.tools._ValidatedHTTPSConnection",
+        lambda hostname, address, timeout: SimpleNamespace(
+            sock=None, request=lambda *a, **k: None, getresponse=_raise, close=lambda: None
+        ),
+    )
+
+    assert NetworkReadTool().execute({"url": "https://example.com/"}) == ToolResult(
+        success=False,
+        output="Network request failed.",
         action_receipt=ActionReceipt("fetch", "failed"),
     )
 

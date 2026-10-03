@@ -2536,7 +2536,7 @@ class NetworkReadTool(Tool):
                 ),
                 action_receipt=ActionReceipt("fetch", "verified", len(body)),
             )
-        except (OSError, RuntimeError, TimeoutError):
+        except (OSError, RuntimeError, TimeoutError, http.client.HTTPException):
             return ToolResult(
                 success=False,
                 output="Network request failed.",

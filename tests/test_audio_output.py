@@ -6,6 +6,7 @@ from stella.audio_output import (
     SpeechArtifact,
     SpeechOutput,
     SpeechProvider,
+    StreamingSentenceSplitter,
     sentence_chunks,
 )
 from stella.brain import Brain, Decision, DecisionKind
@@ -160,3 +161,84 @@ def test_chunks_conserve_the_reply_modulo_whitespace_and_stay_bounded() -> (
 
     assert " ".join(chunks).split() == text.split()
     assert all(len(chunk) <= MAX_SPEECH_TEXT_CHARS for chunk in chunks)
+
+
+# ------------------------------------------------- streaming sentence split
+
+
+STREAM_TEXTS = [
+    "Here is the plan. It has two steps! Want me to run them?",
+    (
+        "Call Dr. Rao about the 3.5 build. The U.S. reply is final. "
+        "Nothing else remains."
+    ),
+    "Hi. Let me check the rest of this for you.",
+    "First paragraph line.\nWrapped line here.\n\nSecond paragraph text.",
+    "A single sentence reply that has no other boundary inside it at all",
+    "We saw exactly 5. Nothing more happened after that.",
+    "Short. Then a much longer second sentence finally clears the floor.",
+]
+
+
+def _streamed(text: str, size: int) -> list[str]:
+    splitter = StreamingSentenceSplitter()
+    released: list[str] = []
+    for start in range(0, len(text), size):
+        released += splitter.feed(text[start : start + size])
+    released += splitter.flush()
+    return released
+
+
+@pytest.mark.parametrize("text", STREAM_TEXTS)
+@pytest.mark.parametrize("size", [1, 2, 3, 5, 7, 13, 64, 4096])
+def test_streaming_splitter_reproduces_whole_text_chunking(
+    text: str, size: int
+) -> None:
+    # However finely the reply is fed in, the sentences handed back over
+    # the life of one reply are exactly what one whole-text pass yields.
+    assert _streamed(text, size) == sentence_chunks(text)
+
+
+def test_a_finished_first_sentence_is_released_while_the_second_arrives() -> (
+    None
+):
+    splitter = StreamingSentenceSplitter()
+
+    assert splitter.feed("Here is the first sentence. ") == []
+    # The second sentence's boundary pushes the first out of tail
+    # position, so it is now safe to speak while the tail still grows.
+    assert splitter.feed("Here is the second one now.") == [
+        "Here is the first sentence."
+    ]
+    assert splitter.flush() == ["Here is the second one now."]
+
+
+def test_a_lone_sentence_is_held_until_the_reply_ends() -> None:
+    # With no second chunk to displace it, the tail cannot be known final
+    # early; it is released only by flush, still whole.
+    splitter = StreamingSentenceSplitter()
+
+    assert splitter.feed("Just one complete thought here.") == []
+    assert splitter.flush() == ["Just one complete thought here."]
+
+
+def test_an_abbreviation_never_forces_an_early_release() -> None:
+    # "Dr." must not be mistaken for a sentence end: feeding up to it
+    # releases nothing, and completing the reply yields exactly what one
+    # whole-text pass yields.
+    splitter = StreamingSentenceSplitter()
+    text = "Call Dr. Rao now. Then the real next sentence lands here."
+    head = "Call Dr."
+
+    assert splitter.feed(head) == []
+    released = splitter.feed(text[len(head) :])
+    released += splitter.flush()
+
+    assert released == sentence_chunks(text)
+
+
+def test_empty_deltas_change_nothing() -> None:
+    splitter = StreamingSentenceSplitter()
+
+    assert splitter.feed("") == []
+    assert splitter.flush() == []

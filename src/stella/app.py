@@ -18,7 +18,7 @@ import random
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -2909,17 +2909,20 @@ class StellaBridge:
         self._playback.start()
 
     def _speak_chunks(
-        self, panel: VoicePanel, result: StellaResult, chunks: list[str]
+        self, panel: VoicePanel, result: StellaResult, chunks: Iterable[str]
     ) -> None:
         """Speak one multi-sentence reply chunk by chunk.
 
-        The worker thread stays the producer: it synthesizes one
+        The worker thread stays the producer: it consumes ``chunks`` one
         sentence at a time — chunk k+1 renders while chunk k plays,
-        because local speech is faster than real time — while a
-        consumer thread plays and disposes each artifact in order. An
-        interrupt event ("Stop speaking", a cancel, shutdown, or a
-        newer reply) drains the queue unsaid; the decision and its text
-        are never touched.
+        because local speech is faster than real time — while a consumer
+        thread plays and disposes each artifact in order. ``chunks`` is an
+        iterable, not a list, so the whole-reply path hands over finished
+        sentences and a streamed reply can hand them over as they become
+        ready; the consumer's work is identical either way. An interrupt
+        event ("Stop speaking", a cancel, shutdown, or a newer reply)
+        drains the queue unsaid; the decision and its text are never
+        touched.
         """
 
         # Retire any previous chunked consumer before this reply can
@@ -2963,9 +2966,13 @@ class StellaBridge:
             self._emit("voice_state", "idle")
             self._resume_wake()
 
+        source = iter(chunks)
+        first_text = next(source, None)
+        if first_text is None:
+            return
         try:
             first = panel.synthesize(
-                replace(result, response=chunks[0]), stopped
+                replace(result, response=first_text), stopped
             )
         except ProviderRequestCancelled:
             # Cancelled mid-synthesis: silence is the requested outcome.
@@ -3004,7 +3011,7 @@ class StellaBridge:
         )
         self._speech_consumer.start()
         try:
-            for chunk in chunks[1:]:
+            for chunk in source:
                 if stopped():
                     break
                 try:

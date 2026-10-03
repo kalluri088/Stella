@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### A silent speech artifact stops being a spoken turn
+
+- **`ResidentSpeechProvider` now checks what the worker actually wrote.**
+  A worker that reports `ok` but produces a zero-byte body, a bare RIFF
+  header, a sub-10 ms file, or a full-length file of samples below
+  audibility used to slip through with "the file exists at the path we
+  chose", play as nothing, and leave the UI dotting `speaking` while the
+  user waited for a voice that never came. The output side now gets the
+  same shape and silence check the input side already applies to a
+  recording (`stella/childproc.py::recording_finalized_ok`): the artifact
+  is opened with `wave`, its peak sample scanned, and any of unreadable,
+  too short, or silent raises `VoiceError`. `app.py`'s D2 degradation rule
+  already handles that case — the text reply stands and no false
+  "speaking" state is set — so the fix is honest failure, not new UI.
+- **PCM s16 mono gets a clean onset.** For the one shape Kokoro actually
+  produces, the artifact is additionally trimmed of leading and trailing
+  silence (25 ms pad before the first loud sample, 15 ms after the last)
+  and given linear edge fades (15 ms in, 10 ms out). Stereo, 24-bit,
+  and any compressed variant is validated and passed through unchanged —
+  this is a correctness fix, not a rewriting service — and the trim is
+  skipped when it would leave less than 50 ms of anything. Measured cost
+  is ~3 ms per synthesized chunk on the producer thread, well inside the
+  existing synth-while-play overlap.
+- **The trust model did not move.** Nothing about the ANSWER fast path,
+  `sentence_chunks`, `VOICE_STYLE_NOTE`, or the resident worker's
+  line-JSON protocol changed. `_speak_chunks` and its 3-deep queue are
+  untouched. The one-at-a-time player rule and the barge-in arming
+  discipline are the same as before this fix.
+- `uv run pytest tests/test_voice.py` → 122 passed (nine new cases in a
+  `resident speech artifact checks` section, and the resident-worker
+  fakes updated to emit a real short PCM s16 mono WAV in place of the
+  `b"RIFF"` bytes they wrote when nothing was checking); `uv run pytest
+  tests/test_app.py tests/test_audio_output.py` → 95 passed; `uv run
+  ruff check .` clean; `git diff --check` clean. `docs/VOICE.md` records
+  the new shape rule and the trim/fade window.
+
 ### Stella answers to her name, and says when the microphone is open
 
 - **A wake word whose entire authority is one button press.** `stella/wake.py`

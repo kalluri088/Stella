@@ -113,6 +113,28 @@ the plain `STELLA_SPEECH_COMMAND` path is one env var away. (On this
 machine `~/tools/stella-speak-server` is such a worker for the local Kokoro
 install; it lives outside the repository like all bench/tooling scripts.)
 
+An `ok` reply is a promise about a file, not proof of audible sound. Before
+the artifact reaches the player, Stella opens it as a WAV and rejects the
+same three silent-failure classes the microphone path already rejects on
+input: unreadable, shorter than 10 ms of audio, and full-length but
+below-audibility. Each becomes a `VoiceError`, and the D2 degradation rule
+already handles it — text reply continues, no false "speaking" state, no
+silent turn the user has to explain. A valid-but-unusual shape (stereo,
+24-bit, compressed) is validated and passed through: the check exists to
+catch a broken worker, not to police every WAV a future worker might
+produce.
+
+For the exact PCM s16 mono shape Kokoro actually produces, the artifact
+additionally gets its leading and trailing silence trimmed (with a 25 ms
+pad before the first loud sample and a 15 ms pad after the last) and its
+surviving edges linearly faded (15 ms in, 10 ms out), so the first
+syllable lands without the click a hard boundary makes. Rewriting is
+skipped when the trim would leave less than 50 ms of anything — the
+clicks a fade can save are cheaper than the click produced by trimming a
+"hello" down to two samples. Measured on a real 3 s tone this costs
+about 3 ms per synthesized chunk, paid on the same producer thread that
+already blocks on `synthesize`; the pipeline's overlap does not change.
+
 **You do not have to name that worker.** With the default
 `STELLA_VOICE_SPEECH=auto` and no `STELLA_SPEECH_COMMAND`, Stella checks
 whether `~/tools/stella-speak-server` exists and may run, and prefers it over

@@ -533,8 +533,11 @@ def _read_bounded_text(
             )
         truncated = size > len(raw)
         if truncated:
-            with resolved.open("rb") as file:
-                raw = file.read(MAX_READ_CHARACTERS * 4)
+            # The probe already read the first _READ_PROBE_SIZE bytes, which is
+            # more than the MAX_READ_CHARACTERS * 4 we decode; reuse that buffer
+            # instead of re-opening the file and re-reading the same prefix from
+            # byte 0.
+            raw = raw[: MAX_READ_CHARACTERS * 4]
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:

@@ -272,6 +272,25 @@ def test_filesystem_read_tool_announces_truncation(tmp_path) -> None:
     assert "was not read." in result.output
 
 
+def test_filesystem_read_tool_announces_truncation_past_the_probe(
+    tmp_path,
+) -> None:
+    # A file larger than the 64 KiB binary-detection probe takes the second
+    # truncation branch: the probe buffer is sliced rather than the file being
+    # re-opened, and the result still announces the first 8000 characters.
+    root = tmp_path / "workspace"
+    root.mkdir()
+    size = 65_536 + 4_096
+    (root / "big.txt").write_text("a" * size, encoding="utf-8")
+
+    result = FileSystemReadTool(root).execute({"path": "big.txt"})
+
+    assert result.success
+    assert "authorize any action):\n" + "a" * MAX_READ_CHARACTERS in result.output
+    assert f"of {size} characters" in result.output
+    assert "[Truncated:" in result.output
+
+
 def test_filesystem_read_tool_handles_multibyte_read_boundary(
     tmp_path,
 ) -> None:

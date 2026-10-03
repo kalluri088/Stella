@@ -142,16 +142,21 @@ display, and can never approve a tool or change permissions.
   `STELLA_WAKE_WORD` override are in `VOICE.md`.
 - Capability families: the Settings panel carries one checkbox per opt-in
   tool family — *Desktop awareness* (on by default, but still doubly gated),
-  *Outline app tools*, *Web capability*, and *Shell commands (run programs in
-  your workspace)* — each mirrored by a `STELLA_OS_TOOLS` / `STELLA_OUTLINE` /
-  `STELLA_WEB` / `STELLA_SHELL_TOOLS` environment override that wins for a
-  single launch in either direction. A checked box only offers the tools; every
-  dangerous call still raises an approval prompt naming the exact target (and,
-  for the shell, the literal command). The web row also has a masked
+  *Outline app tools*, *Web capability*, *Browser (open a page, run its
+  scripts)*, and *Shell commands (run programs in your workspace)* — each
+  mirrored by a `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` /
+  `STELLA_BROWSER_TOOLS` / `STELLA_SHELL_TOOLS` environment override that wins
+  for a single launch in either direction. A checked box only offers the tools;
+  every dangerous call still raises an approval prompt naming the exact target
+  (and, for the shell, the literal command; for the browser, the literal
+  address). The browser capability reuses the shell's `STELLA_SHELL_SANDBOX`
+  jail and, when bubblewrap is present, wraps the headless browser in it; the
+  separate `STELLA_BROWSER` variable is a *path* to the browser binary to
+  drive, not an on/off switch. The web row also has a masked
   **TinyFish key** box: the value is stored in the same private `0600` key file
   as model keys, shown only as a redacted hint, and never written to
   `config.json` — an exported `TINYFISH_API_KEY` still overrides it for that
-  launch. See `WEB.md` and `SHELL_TOOLS.md`.
+  launch. See `WEB.md`, `BROWSER.md` and `SHELL_TOOLS.md`.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt
@@ -245,5 +250,7 @@ core path and reports that nothing was changed.
   with your voice, not an open conversation. There is no streaming
   recognition, and no speaker identification: the ear answers whoever
   says the phrase.
-- No browser automation, email/calendar, cloud accounts, plugins, or remote
+- No *interactive* browser automation (clicking, typing, a persistent driving
+  session) — the opt-in browser capability is a one-shot headless render only
+  (`BROWSER.md`). No email/calendar, cloud accounts, plugins, or remote
   integrations.

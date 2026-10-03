@@ -73,22 +73,26 @@ checked that it did.
   `stella reflect` turns your observed friction ("too long", cancelled
   rambles) into at most two style proposals, surfaced as approval
   prompts. Reflection never writes on its own. See `docs/PERSONA.md`.
-- **Opt-in tool families** — four gates, each a Settings checkbox or an
+- **Opt-in tool families** — five gates, each a Settings checkbox or an
   environment variable: Outline (`STELLA_OUTLINE`) lets her create, search
   and update your tasks over Outline's local API; desktop
   (`STELLA_OS_TOOLS`, Hyprland only) lets her read the screen, focus
-  windows and type; web (`STELLA_WEB`) adds search and fetch; and shell
-  (`STELLA_SHELL_TOOLS`) lets her **run one command you approve by name**,
-  starting in your workspace, output and time bounded — off by default and
-  asking on every single use (see `docs/SHELL_TOOLS.md`). When **bubblewrap**
-  is present the command runs inside a real filesystem jail — your whole
-  tree read-only except the workspace and a private scratch, your home and
-  privileged groups hidden — switched off only with `STELLA_SHELL_SANDBOX=0`;
-  without bubblewrap it falls back honestly to a confined start directory plus
-  your approval, and says so. Every one of their calls is still an approval
-  prompt.
-  See `docs/WEB.md`, `docs/SHELL_TOOLS.md` and the capability sections of
-  `docs/ARCHITECTURE.md`.
+  windows and type; web (`STELLA_WEB`) adds search and fetch; browser
+  (`STELLA_BROWSER_TOOLS`) opens one page in a headless browser and reads
+  its rendered text or saves a screenshot, running the page's JavaScript
+  (see `docs/BROWSER.md`); and shell (`STELLA_SHELL_TOOLS`) lets her **run
+  one command you approve by name**, starting in your workspace, output and
+  time bounded — off by default and asking on every single use (see
+  `docs/SHELL_TOOLS.md`). When **bubblewrap** is present the command runs
+  inside a real filesystem jail — your whole tree read-only except the
+  workspace and a private scratch, your home and privileged groups hidden —
+  switched off only with `STELLA_SHELL_SANDBOX=0`; without bubblewrap it
+  falls back honestly to a confined start directory plus your approval, and
+  says so. The same jail wraps the browser when bubblewrap is present;
+  otherwise Chromium keeps its own sandbox plus a throwaway profile. Every
+  one of their calls is still an approval prompt.
+  See `docs/WEB.md`, `docs/BROWSER.md`, `docs/SHELL_TOOLS.md` and the
+  capability sections of `docs/ARCHITECTURE.md`.
 - **Show her work** — a History tab lists what she recently did, kept
   between launches (names and outcomes only, never file contents). The
   terminal prints the same durable trail with `stella audit` —
@@ -206,8 +210,9 @@ development, or running several configurations side by side:
 | `STELLA_SEMANTIC_PROVIDER` | Recall index: `local-hash`, `ollama` or `minilm` (`stella[embed]` extra) | `local-hash` |
 | `STELLA_EMBED_MODEL` | Ollama embedding model name | `nomic-embed-text` |
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
-| `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` / `STELLA_SHELL_TOOLS` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off (OS tools on) |
-| `STELLA_SHELL_SANDBOX` | Run `shell_run` inside the bubblewrap filesystem jail when bubblewrap is installed (`1`/`0`; `0` drops to workspace-confinement only) | on |
+| `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` / `STELLA_SHELL_TOOLS` / `STELLA_BROWSER_TOOLS` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off (OS tools on) |
+| `STELLA_SHELL_SANDBOX` | Run `shell_run` and the headless browser inside the bubblewrap filesystem jail when bubblewrap is installed (`1`/`0`; `0` drops to workspace-confinement / Chromium's own sandbox only) | on |
+| `STELLA_BROWSER` | Path to the Chromium-family binary the browser tool drives; unset means probe `PATH` for one | unset (auto-probe) |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |
 | `STELLA_TRANSCRIPTION_ENGINE` | Engine name handed to the detected `voxtype` STT CLI (an engine, not a model size) | `whisper` |
 | `STELLA_TRANSCRIPTION_TIMEOUT` | Seconds a cloud transcription request may take before it is abandoned (`0`–`600`) | `30` |

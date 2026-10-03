@@ -58,6 +58,7 @@ __all__ = [
     "Sandbox",
     "SandboxLimits",
     "build_sandbox_argv",
+    "build_sandbox_exec_argv",
     "sandbox_available",
     "sandbox_requested",
 ]
@@ -142,25 +143,20 @@ def sandbox_available(env: Mapping[str, str] | None = None) -> bool:
     return _userns_enabled()
 
 
-def build_sandbox_argv(
-    command: str,
-    *,
+def _jail_preamble(
     workspace: str,
-    network: bool = True,
-    home: str = SANDBOX_HOME,
-    limits: SandboxLimits | None = None,
+    network: bool,
+    home: str,
 ) -> list[str]:
-    """Assemble the ``bwrap`` argv that runs ``command`` inside the jail.
+    """The shared ``bwrap`` argument list up to and including the ``--``.
 
-    The user's command string is never pasted into the wrapper script: it is
-    carried as a trailing positional argument and re-execed with
-    ``/bin/sh -c "$1" sh``, so a command containing quotes, ``$`` or ``;``
-    cannot break out of the wrapper or run as the wrapper. The returned argv
-    is complete and self-contained — the caller spawns it directly.
+    Whole-filesystem read-only, home masked to a tmpfs with a private writable
+    scratch, the workspace re-bound read-write after the mask (so a workspace
+    that lives under ``/home`` survives), privilege-dropping namespaces and a
+    cleared environment. Both the shell-command and the direct-argv builders
+    share this so the two fences can never drift apart.
     """
 
-    caps = limits or SandboxLimits()
-    workspace = str(workspace)
     argv: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -207,6 +203,28 @@ def build_sandbox_argv(
         "C.UTF-8",
         "--",
     ]
+    return argv
+
+
+def build_sandbox_argv(
+    command: str,
+    *,
+    workspace: str,
+    network: bool = True,
+    home: str = SANDBOX_HOME,
+    limits: SandboxLimits | None = None,
+) -> list[str]:
+    """Assemble the ``bwrap`` argv that runs ``command`` inside the jail.
+
+    The user's command string is never pasted into the wrapper script: it is
+    carried as a trailing positional argument and re-execed with
+    ``/bin/sh -c "$1" sh``, so a command containing quotes, ``$`` or ``;``
+    cannot break out of the wrapper or run as the wrapper. The returned argv
+    is complete and self-contained — the caller spawns it directly.
+    """
+
+    caps = limits or SandboxLimits()
+    argv = _jail_preamble(str(workspace), network, home)
     wrapper = (
         f"ulimit -S -t {caps.cpu_seconds} 2>/dev/null; "
         f"ulimit -S -u {caps.nproc} 2>/dev/null; "
@@ -215,6 +233,39 @@ def build_sandbox_argv(
     )
     argv += ["/bin/sh", "-c", wrapper, "sh", command]
     return argv
+
+
+def build_sandbox_exec_argv(
+    argv: list[str],
+    *,
+    workspace: str,
+    network: bool = True,
+    home: str = SANDBOX_HOME,
+    limits: SandboxLimits | None = None,
+) -> list[str]:
+    """Assemble the ``bwrap`` argv that runs a **direct program argv** in the jail.
+
+    The browser tool has an argv list (a browser binary plus its flags and a
+    validated URL), not a shell string, so there is nothing for shell
+    metacharacters to break out of — the argv is exec'd positionally through
+    ``exec "$@"``. ``limits`` defaults to ``None`` (no ``ulimit``): a renderer
+    legitimately spawns many short-lived threads, and a CPU/process cap tuned
+    for a shell could starve it; the tool's own wall-clock timeout is the bound
+    instead. Pass a :class:`SandboxLimits` to apply the safety nets anyway.
+    """
+
+    jail = _jail_preamble(str(workspace), network, home)
+    if limits is None:
+        # No shell needed: hand the argv straight to bwrap after the "--".
+        return [*jail, *[str(part) for part in argv]]
+    caps = limits
+    wrapper = (
+        f"ulimit -S -t {caps.cpu_seconds} 2>/dev/null; "
+        f"ulimit -S -u {caps.nproc} 2>/dev/null; "
+        f"ulimit -S -f {caps.fsize_blocks} 2>/dev/null; "
+        'exec "$@"'
+    )
+    return [*jail, "/bin/sh", "-c", wrapper, "sh", *[str(part) for part in argv]]
 
 
 @dataclass(frozen=True)
@@ -232,4 +283,20 @@ class Sandbox:
     ) -> list[str]:
         return build_sandbox_argv(
             command, workspace=workspace, network=network, home=self.home, limits=self.limits
+        )
+
+    def argv_exec_for(
+        self,
+        argv: list[str],
+        *,
+        workspace: str,
+        network: bool = True,
+        limits: SandboxLimits | None = None,
+    ) -> list[str]:
+        return build_sandbox_exec_argv(
+            argv,
+            workspace=workspace,
+            network=network,
+            home=self.home,
+            limits=limits,
         )

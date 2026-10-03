@@ -33,6 +33,7 @@ from stella.audio_output import (
 )
 from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
+from stella.browser_tools import build_browser_tools
 from stella.childproc import sweep_orphaned_children
 from stella.commands import action_history_lines
 from stella.context import (
@@ -473,6 +474,26 @@ def shell_tools_env_override() -> bool | None:
     return _env_toggle("STELLA_SHELL_TOOLS")
 
 
+def browser_tools_env_override() -> bool | None:
+    """The STELLA_BROWSER_TOOLS override, or None when it says nothing.
+
+    A headless browser makes a real network request and runs a stranger's
+    JavaScript, so this is the widest surface Stella can open and is strictly
+    opt-in, defaulting off. Like the shell tools there is no reachability probe
+    that gates registration — a missing browser binary is answered honestly at
+    call time ("browser is off", ``stella.browser_tools``) — so the flag alone
+    decides whether the model ever sees the browser capabilities, and every use
+    still asks for trusted approval of the exact address.
+
+    This is deliberately a different variable from ``STELLA_BROWSER``, which
+    points the browser tool at a specific binary path. Overloading one name for
+    both "which browser" and "is the capability on" would let a path such as
+    ``/usr/bin/chromium`` silently enable or disable the whole capability.
+    """
+
+    return _env_toggle("STELLA_BROWSER_TOOLS")
+
+
 def wake_env_override() -> bool | None:
     """The STELLA_WAKE_WORD override, or None when it says nothing.
 
@@ -601,6 +622,11 @@ class StellaSettings:
     # capability is powerful and its only guard is the owner approving each
     # exact command, so it must never appear unless deliberately switched on.
     shell_tools_enabled: bool = False
+    # Opens real web pages in a headless browser (runs their JavaScript). Off
+    # by default: a full browser is the largest egress + code-execution surface
+    # Stella has, so it appears only when deliberately switched on, and every
+    # use still asks the owner to approve the exact address.
+    browser_tools_enabled: bool = False
     # The saved half of the wake-word opt-in. ``wake_word`` below stays the
     # mode this launch actually runs, so the two never disagree.
     wake_word_enabled: bool = False
@@ -829,6 +855,7 @@ class StellaSettings:
         outline_tools_enabled: bool = False,
         web_tools_enabled: bool = False,
         shell_tools_enabled: bool = False,
+        browser_tools_enabled: bool = False,
         wake_word_enabled: bool = False,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
@@ -840,6 +867,7 @@ class StellaSettings:
         outline_override = outline_tools_env_override()
         web_override = web_tools_env_override()
         shell_override = shell_tools_env_override()
+        browser_override = browser_tools_env_override()
         wake_override = wake_env_override()
         # One decision with two spellings: the checkbox is what the owner
         # saved, the mode is what this launch runs, and every consumer
@@ -883,6 +911,11 @@ class StellaSettings:
                 if shell_override is None
                 else shell_override
             ),
+            browser_tools_enabled=(
+                browser_tools_enabled
+                if browser_override is None
+                else browser_override
+            ),
             semantic_provider=(
                 semantic_provider if provider_override is None
                 else provider_override
@@ -922,6 +955,7 @@ class StellaSettings:
             outline_tools_enabled=outline_tools_env_override() is True,
             web_tools_enabled=web_tools_env_override() is True,
             shell_tools_enabled=shell_tools_env_override() is True,
+            browser_tools_enabled=browser_tools_env_override() is True,
             wake_word_enabled=wake_env_override() is True,
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
@@ -1158,6 +1192,16 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # unless the owner turns it on.
     if settings.shell_tools_enabled:
         for tool in build_shell_tools(os.environ, workspace=workspace):
+            tools.register(tool)
+    # The browser capability is the same single gate, and its floor is
+    # DANGEROUS too: registration only ever puts the tools in front of the
+    # model, and every dispatch asks the owner to approve the exact address
+    # before a page is opened (stella.browser_tools). A missing browser binary
+    # is answered honestly at call time, so like the web tools there is nothing
+    # to probe here. Off by default, so this block is inert unless the owner
+    # turns it on.
+    if settings.browser_tools_enabled:
+        for tool in build_browser_tools(os.environ, workspace=workspace):
             tools.register(tool)
     stella = Stella(
         brain=LLMBrain(llm, tools, persona=PersonaLoader()),

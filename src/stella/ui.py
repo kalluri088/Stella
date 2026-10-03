@@ -1751,6 +1751,25 @@ class StellaWindow:
             "says so. Off by default; every single use asks first.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        self._browser_tools_var = tk.BooleanVar(
+            value=settings.browser_tools_enabled
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Browser (open a page, run its scripts)",
+            variable=self._browser_tools_var,
+        ).pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="Adds browser_read and browser_screenshot: Stella opens one "
+            "address you approve in a headless browser on this machine, runs "
+            "its JavaScript, and returns the rendered text or a saved PNG. A "
+            "real request leaves to that site; local/private addresses are "
+            "blocked and a throwaway profile is used (never your logins). Off "
+            "by default; every single use asks first.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)
         ttk.Checkbutton(
             frame,
@@ -1973,6 +1992,7 @@ class StellaWindow:
             outline_tools_enabled=self._outline_tools_var.get(),
             web_tools_enabled=self._web_tools_var.get(),
             shell_tools_enabled=self._shell_tools_var.get(),
+            browser_tools_enabled=self._browser_tools_var.get(),
             # The saved choice and the mode this session runs are one
             # decision, so Apply moves both: the checkbox is what the
             # owner wants, and a rebuild arms or stops the ear from it.

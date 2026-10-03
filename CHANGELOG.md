@@ -98,6 +98,48 @@
   cover the round-trip, the redaction, the env-overrides-store precedence, and
   that a stored key stays out of the saved configuration.
 
+### Stella can open a real web page: the headless browser capability
+
+- **Two capabilities that run a page's JavaScript.** `web_fetch` never executes
+  scripts, so a page drawn by JavaScript comes back nearly empty. Behind a new
+  opt-in gate (`STELLA_BROWSER_TOOLS`, a Settings checkbox, off by default) Stella
+  can now drive an **already-installed** Chromium-family browser headlessly:
+  `browser_read` loads one https URL, lets it render, and returns the visible
+  DOM text as untrusted data; `browser_screenshot` loads one URL and writes a
+  bounded PNG into the workspace, reporting the path. **No dependency added and
+  nothing downloaded** — it only runs a browser the machine already has
+  (probed on `PATH`, or pointed at with `STELLA_BROWSER`), and answers a
+  structured "browser is off" when there is none.
+- **Fenced for the largest attack surface Stella can touch.** It is `DANGEROUS`,
+  so every single use stops for you to approve the literal address, and four
+  runtime fences hold regardless: only a vetted **public https** URL is opened
+  (the `web_fetch` scheme/credentials checks, plus localhost/`.local`/`.internal`
+  refusals and a DNS resolve that rejects any non-global answer); Chromium is
+  started with `--host-resolver-rules` mapping loopback, RFC1918, link-local,
+  CGNAT, `.local`/`.internal` and the cloud-metadata name to `~NOTFOUND`, closing
+  the DNS-rebinding redirect a one-time resolve cannot; a **throwaway profile and
+  isolated `HOME`** mean the page never rides your real logins or history; and the
+  same bubblewrap jail that guards `shell_run` wraps the browser when present
+  (`--no-sandbox` only *inside* the jail, so outside it Chromium keeps its own
+  sandbox). Renders are wall-clock bounded, the whole process group is taken down
+  on timeout via the parent-death guarantee, DOM bytes and screenshot size are
+  capped, and rendered text is wrapped and defanged exactly like fetched content.
+- **Honest about what the jail does not mean.** It shrinks the blast radius of
+  loading a hostile page; it is not a promise against a browser zero-day — which
+  is why the capability is off by default and asks every time. `docs/BROWSER.md`
+  says so, and records what is deliberately **not** done: no interactive
+  click/type automation, no analysis of screenshot pixels. A `STELLA_BROWSER`
+  path is never read as the on/off toggle — the capability switch is the distinct
+  `STELLA_BROWSER_TOOLS`.
+- **Proven without a browser, and one render against the real thing.**
+  `tests/test_browser_tools.py` drives every decision through injected
+  `find`/`render` seams (URL and DNS refusals, the three jail states and their
+  warnings, `--no-sandbox`-only-in-jail and the bwrap wrap, the host-resolver
+  rules, the throwaway profile, timeout/truncation/over-cap shaping, marker-forgery
+  defang, the "browser is off" result, config round-trip and env override both
+  ways) and, where a browser is installed, runs one bounded local-file render
+  through the real renderer to prove the byte cap and clean teardown.
+
 ### Settings panel: honest outcomes, a fairer key check, friendlier defaults
 
 - **The after-Apply label now reflects what really happened.** The panel

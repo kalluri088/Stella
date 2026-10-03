@@ -97,6 +97,9 @@ def test_configuration_stores_only_non_secret_fields():
         # The shell capability, like every other saved family: one plain
         # bool. The command string is never persisted here.
         "shell_tools_enabled",
+        # The browser capability likewise: one plain bool. No URL and no
+        # screenshot path ever reach config.json.
+        "browser_tools_enabled",
         # The wake-word checkbox, like every other saved capability: one
         # plain bool, no path and no key.
         "wake_word_enabled",

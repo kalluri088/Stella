@@ -37,6 +37,7 @@ OVERRIDE_FIELDS = {
     "outline_tools_env_override": "outline_tools_enabled",
     "web_tools_env_override": "web_tools_enabled",
     "shell_tools_env_override": "shell_tools_enabled",
+    "browser_tools_env_override": "browser_tools_enabled",
     "wake_env_override": "wake_word_enabled",
 }
 
@@ -48,6 +49,7 @@ UI_VARS = {
     "outline_tools_enabled": "self._outline_tools_var",
     "web_tools_enabled": "self._web_tools_var",
     "shell_tools_enabled": "self._shell_tools_var",
+    "browser_tools_enabled": "self._browser_tools_var",
     "wake_word_enabled": "self._wake_var",
 }
 

@@ -214,6 +214,15 @@ def action_summary(request: ApprovalRequest) -> str:
     if shell is not None:
         return shell
 
+    # The browser capabilities too (stella.browser_tools): their summary names
+    # the exact address and that a real request leaves this machine, so it is
+    # tried before the generic argument-dump fallback as well.
+    from stella.browser_tools import browser_tool_summaries
+
+    browser = browser_tool_summaries(request.capability, request.arguments)
+    if browser is not None:
+        return browser
+
     arguments = request.arguments
 
     def quoted(key: str) -> str | None:

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Stella stops narrating its own architecture
+
+- **The "Observe → Understand → Decide → Act → Remember → Adapt" monologue is
+  gone.** A stored memory that happened to describe Stella's own core loop
+  started surfacing verbatim in replies ("…checks off the 'Remember' phase of
+  our Observe → Understand → Decide → Act → Remember → Adapt loop"), which
+  reads as a system explaining itself, not a person talking. The stable core
+  system prompt now carries an explicit rule: never name or explain Stella's
+  internal design in a response — the loop, runtime "phases", decision kinds,
+  capability/tool names, JSON, or memory mechanics — and if a memory describes
+  that design, act on the request rather than echoing it back. It lives in the
+  core prompt, not the persona, because persona is replaceable and this
+  invariant is not (rule 12: personality emerges from behavior).
+- **Honesty about the fix.** This is model-behavior guidance; a unit test only
+  proves the instruction is present in the prompt, not that every model obeys
+  it. Confirming the monologue is actually gone needs a real-model turn.
+
 ### Run a command for you: the `shell_run` capability
 
 - **Stella can now run one shell command, and it is the most heavily fenced

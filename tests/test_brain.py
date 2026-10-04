@@ -799,3 +799,12 @@ def test_llm_brain_rejects_recovered_payload_failing_validation() -> None:
     )
 
     assert decision == Decision(DecisionKind.DO_NOTHING)
+
+
+def test_system_prompt_forbids_narrating_stellas_own_machinery() -> None:
+    # A stored memory describing Stella's loop must not turn into Stella
+    # explaining its architecture to the user. The prohibition lives in the
+    # stable core prompt (persona is replaceable; this invariant is not).
+    prompt = LLMBrain(ResponseLLM("{}"))._system_prompt()
+    assert "Never narrate Stella's own machinery" in prompt
+    assert "observe/understand/decide/act/remember/adapt loop" in prompt

@@ -701,8 +701,9 @@ note at the end of this file record what landed and what still stands.*
 
 ## Deferred designs and their non-negotiable constraints
 
-Two reviewed-but-unbuilt designs whose constraints must survive if either is
-ever picked up (extracted from the archived streaming and fast-path reviews):
+Three reviewed-but-unbuilt designs whose constraints must survive if any is
+ever picked up (the streaming and fast-path reviews were archived; the
+agentic-work review kept its own document):
 
 - **Response streaming** — stream only final response text, never Brain
   decisions, memory writes, capability validation, approvals, tool execution,
@@ -742,6 +743,19 @@ ever picked up (extracted from the archived streaming and fast-path reviews):
   synthesis saves nothing). It must never bypass dispatcher, risk, approval,
   audit, or step limits, never turn natural-language text into filesystem
   paths or write arguments, and never become a second hidden decision system.
+- **More agentic work (multi-tool requests)** — reviewed 2026-10-04 and
+  recorded in `docs/AGENTIC_TASKS.md`: the four real ceilings are the
+  two-step bound, one tool call per decision, nothing surviving the turn
+  and one approval per dangerous action, each drawn deliberately from
+  measurement. Of the techniques reviewed, only a raised `max_tool_steps`
+  (as a knob, after measuring which step requests actually die on) and
+  reading the existing `ActionReceipt` before a retry are candidates;
+  batched plan-ahead calls, plan-level approval, critic passes and
+  sub-agents are rejected here. Cross-turn tasks are not a new engine: the
+  doctrine's answer is an Outline item that the existing reminder tick
+  already notices. The "autonomous agent loop" boundary in *Explicitly out
+  of scope* below is unchanged, and a stored plan must inform rather than
+  act.
 
 ## Packaging and release
 

@@ -716,7 +716,9 @@ The following are outside the current system (things that have shipped are
 described in the architecture above, not here):
 
 - Unbounded LLM-based planning or decision-making — the tool loop is bounded
-  by `max_tool_steps` and the limit result is deterministic
+  by `max_tool_steps` and the limit result is deterministic (what the bound
+  costs a multi-tool request, and which techniques were reviewed and rejected
+  for closing that gap, is recorded in `AGENTIC_TASKS.md`)
 - Summarization, compaction, or learned context compression; retrieval is
   bounded and observable, not silently rewriting history
 - Automatic memory capture or memory writes without an explicit Brain request

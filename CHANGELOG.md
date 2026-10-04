@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Research: what actually limits more agentic work
+
+- **What changed.** Documentation only — `docs/AGENTIC_TASKS.md`, pointed to
+  from the out-of-scope list in `docs/ARCHITECTURE.md` and the deferred-designs
+  list in `docs/ROADMAP.md`. It records the four ceilings a multi-tool request
+  really hits (a two-step bound per turn, one tool call per decision, nothing
+  surviving the turn, one approval per dangerous action), why each was drawn
+  there, and a ranked verdict on the techniques that claim to lift them.
+- **Why.** The owner asked what it would take for Stella to handle genuinely
+  agentic requests — "read this, fix that, update the page, tell me what
+  changed" — which is four dispatches against a two-dispatch loop. The answer
+  needed to be about this codebase and this machine rather than a framework
+  tour, so every claim is tied to a file:line and every verdict to a measured
+  constraint: a 4B brain at 28/30 strict decisions, a prompt that is
+  prefill-dominated, `num_ctx=8192` with clipping already observed as a
+  failure mode.
+- **Verdict.** Two candidates survive: raising `max_tool_steps` as a knob once
+  a measurement shows which step requests actually die on, and reading the
+  existing `ActionReceipt` before proposing a retry. Batched plan-ahead tool
+  calls, plan-level approval, critic passes and sub-agent decomposition are
+  rejected here, the first partly because `ROADMAP.md` forbids partial
+  structured JSON from ever triggering an action. A task that outlives a turn
+  needs no new store: rule 16 already makes Outline the capability surface and
+  the reminder tick already notices a due item — and it should inform, not act.
+- **Security.** No behavior changed, so nothing widened. The report states
+  explicitly that the unbounded-planning and autonomous-agent-loop boundaries
+  stand, and that letting a stored plan dispatch dangerous tools without the
+  owner present would break rule 10 and needs a proven spoken-approval path
+  before it is even discussed.
+- **Proof.** None needed — no code, and therefore no tests. Citations were
+  checked against the working tree at this commit.
+
 ### Slash commands: what a template is for, what is connected, what was dropped
 
 - **What changed.** `/help` now lists each prompt template on its own line

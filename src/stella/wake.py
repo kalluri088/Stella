@@ -12,10 +12,11 @@ voiced/not-voiced decision and one score in, one boolean out.
 The spotter is a hand-ported slice of the openWakeWord pipeline
 (Apache-2.0, https://github.com/dscripka/openWakeWord): the
 melspectrogram → speech-embedding → keyword-classifier chain, executed
-as three small ONNX files under onnxruntime — deliberately NOT the pip
-``openwakeword`` package, whose ``tflite-runtime`` dependency has no
-wheel for this Python and whose streaming state machine is the only
-part worth keeping. This mirrors the Silero VAD precedent in
+as two shared ONNX models plus one phrase classifier per wake word the
+user picked (or every classifier found in the model directory), all
+under onnxruntime — deliberately NOT the pip ``openwakeword`` package,
+whose ``tflite-runtime`` dependency has no wheel for this Python and
+whose streaming state machine is the only part worth keeping. This mirrors the Silero VAD precedent in
 ``barge_in.py``: the models are data the user places on disk, and the
 repo stays a pure-Python package with one optional extra.
 
@@ -32,6 +33,7 @@ the ear silently), and push-to-talk, text and speech all keep working.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 from collections import deque
@@ -56,6 +58,9 @@ __all__ = [
     "WakeSpotter",
     "WakeUtteranceEar",
     "default_wake_model_dir",
+    "default_wake_models",
+    "phrase_model_filename",
+    "wake_model_label",
 ]
 
 # One capture frame is 512 samples (32 ms), matching barge-in's reader.
@@ -90,9 +95,58 @@ def default_wake_model_dir() -> str:
     )
 
 
-#: The name that works out of the box; a trained "hey stella" (or any
-#: openWakeWord-format classifier) is one STELLA_WAKE_MODEL away.
+#: The fallback classifier when a model directory holds nothing to
+#: detect. Any openWakeWord-format classifier — including a trained
+#: "hey stella" — works by name, absolute path or auto-detection.
 DEFAULT_WAKE_MODEL = "hey_jarvis_v0.1.onnx"
+
+#: The two pipeline models shared by every wake word in the directory.
+SHARED_WAKE_MODELS = ("melspectrogram.onnx", "embedding_model.onnx")
+
+
+def wake_model_label(name: str) -> str:
+    """File name as a phrase: 'hey_jarvis_v0.1.onnx' → 'hey jarvis'."""
+
+    stem = name.removesuffix(".onnx")
+    stem = re.sub(r"_v\d+(?:\.\d+)*$", "", stem)
+    return stem.replace("_", " ").strip()
+
+
+def default_wake_models(model_dir: str) -> tuple[str, ...]:
+    """Every wake-word classifier detected in ``model_dir``.
+
+    Detection is a plain directory listing: the shared pipeline models
+    are excluded and the rest are the phrase classifiers the user
+    placed there. An unreadable or empty directory falls back to the
+    name that works out of the box, so a missing install still reports
+    one friendly line naming the files that were not found.
+    """
+
+    try:
+        entries = os.listdir(model_dir)
+    except OSError:
+        return (DEFAULT_WAKE_MODEL,)
+    found = sorted(
+        name
+        for name in entries
+        if name.endswith(".onnx") and name not in SHARED_WAKE_MODELS
+    )
+    return tuple(found) if found else (DEFAULT_WAKE_MODEL,)
+
+
+def phrase_model_filename(phrase: str) -> str | None:
+    """Map a spoken phrase to the file convention, or None if unusable.
+
+    "Hey Stella" → "hey_stella.onnx". Phrases are display labels only:
+    a custom word needs a trained classifier file of this name in the
+    model directory (docs/VOICE.md), and nothing here ever downloads
+    or trains one automatically.
+    """
+
+    slug = re.sub(r"[^a-z0-9]+", "_", phrase.strip().lower()).strip("_")
+    if not slug or len(slug) > 60:
+        return None
+    return f"{slug}.onnx"
 
 
 class WakeSpotter:
@@ -111,20 +165,27 @@ class WakeSpotter:
         self,
         *,
         model_dir: str | None = None,
-        model_name: str | None = None,
+        model_names: Sequence[str] | None = None,
         threshold: float = WAKE_THRESHOLD,
     ) -> None:
         directory = model_dir if model_dir is not None else default_wake_model_dir()
-        classifier = model_name or DEFAULT_WAKE_MODEL
-        if not os.path.isabs(classifier):
-            classifier = os.path.join(directory, classifier)
-        melspec_path = os.path.join(directory, "melspectrogram.onnx")
-        embedding_path = os.path.join(directory, "embedding_model.onnx")
-        for path, label in (
+        names = tuple(name for name in (model_names or ()) if name)
+        if not names:
+            names = default_wake_models(directory)
+        classifiers = [
+            name if os.path.isabs(name) else os.path.join(directory, name)
+            for name in names
+        ]
+        melspec_path = os.path.join(directory, SHARED_WAKE_MODELS[0])
+        embedding_path = os.path.join(directory, SHARED_WAKE_MODELS[1])
+        checks = [
             (melspec_path, "melspectrogram"),
             (embedding_path, "embedding"),
-            (classifier, "wake word classifier"),
-        ):
+        ]
+        checks.extend(
+            (path, "wake word classifier") for path in classifiers
+        )
+        for path, label in checks:
             if not os.path.isfile(path):
                 raise VoiceError(
                     f"Wake word found no {label} model at {path}. "
@@ -164,17 +225,23 @@ class WakeSpotter:
         self._np = np
         self._melspec = session(melspec_path)
         self._embedding = session(embedding_path)
-        self._classifier = session(classifier)
         self._melspec_input = self._melspec.get_inputs()[0].name
         self._embedding_input = self._embedding.get_inputs()[0].name
-        self._classifier_input = self._classifier.get_inputs()[0].name
-        wanted = self._classifier.get_inputs()[0].shape
-        if not isinstance(wanted[1], int) or wanted[1] < 1:
-            raise VoiceError(
-                f"Wake word classifier {classifier} has an unknown "
-                "feature-frame count; expected a fixed (1, N, 96) input."
+        self._classifiers: list[
+            tuple[ort.InferenceSession, str, int]
+        ] = []
+        for path in classifiers:
+            loaded = session(path)
+            wanted = loaded.get_inputs()[0].shape
+            if not isinstance(wanted[1], int) or wanted[1] < 1:
+                raise VoiceError(
+                    f"Wake word classifier {path} has an unknown "
+                    "feature-frame count; expected a fixed (1, N, 96) "
+                    "input."
+                )
+            self._classifiers.append(
+                (loaded, loaded.get_inputs()[0].name, wanted[1])
             )
-        self._feature_frames = wanted[1]
         self.threshold = threshold
         self._raw = deque(maxlen=RAW_BUFFER_SECONDS * SAMPLE_RATE)
         self._mel = np.ones((MEL_WINDOW, 32), dtype=np.float32)
@@ -235,17 +302,16 @@ class WakeSpotter:
             self._features = self._features[-FEATURE_BUFFER_MAX:, :]
         self._accumulated = 0
 
-        if self._features.shape[0] < self._feature_frames:
-            return False
-        batch = self._features[-self._feature_frames :, :][None, :].astype(
-            np.float32
-        )
-        probability = float(
-            self._classifier.run(None, {self._classifier_input: batch})[0][0][0]
-        )
-        if probability >= self.threshold:
-            self._fired = True
-            return True
+        for classifier, input_name, frames in self._classifiers:
+            if self._features.shape[0] < frames:
+                continue
+            batch = self._features[-frames :, :][None, :].astype(np.float32)
+            probability = float(
+                classifier.run(None, {input_name: batch})[0][0][0]
+            )
+            if probability >= self.threshold:
+                self._fired = True
+                return True
         return False
 
     def _stream_melspectrogram(self, n_samples: int) -> None:
@@ -337,9 +403,9 @@ class WakeListener:
     Unlike the barge-in ear (bracketed by one speaking episode), this
     ear is armed whenever Stella is idle and suspended by the
     application whenever she listens or speaks. After firing it latches
-    until the next :meth:`start`, so one "hey jarvis" is at most one
-    wake however long the phrase echoes. A faulting detector retires
-    the ear permanently without touching anything else.
+    until the next :meth:`start`, so one utterance of the wake phrase
+    is at most one wake however long it echoes. A faulting detector
+    retires the ear permanently without touching anything else.
     """
 
     def __init__(

@@ -124,7 +124,6 @@ from stella.voice import (
     voxtype_transcript,
 )
 from stella.wake import (
-    DEFAULT_WAKE_MODEL,
     WakeEndpoint,
     WakeListener,
     WakeSpotter,
@@ -650,7 +649,14 @@ class StellaSettings:
     barge_source: str | None = None
     barge_threshold: float = 0.5
     wake_word: str = "off"
-    wake_model: str = DEFAULT_WAKE_MODEL
+    # Classifier files to arm, relative to ``wake_model_dir`` (or
+    # absolute). Empty means: every openWakeWord classifier found in
+    # that directory — detection, not download, per the voice doctrine.
+    wake_models: tuple[str, ...] = ()
+    # Display label for the chosen phrase ("Hey Stella"); it names no
+    # model and grants nothing. A custom word only works once a
+    # trained classifier of that name is on disk (docs/VOICE.md).
+    wake_phrase: str = ""
     wake_model_dir: str = field(default_factory=default_wake_model_dir)
     wake_source: str | None = None
     wake_threshold: float = 0.5
@@ -817,9 +823,14 @@ class StellaSettings:
             "barge_source": os.environ.get("STELLA_BARGE_SOURCE") or None,
             "barge_threshold": barge_threshold,
             "wake_word": wake_mode,
-            "wake_model": (
-                os.environ.get("STELLA_WAKE_MODEL") or DEFAULT_WAKE_MODEL
+            "wake_models": tuple(
+                part.strip()
+                for part in os.environ.get(
+                    "STELLA_WAKE_MODELS", ""
+                ).split(",")
+                if part.strip()
             ),
+            "wake_phrase": os.environ.get("STELLA_WAKE_PHRASE", ""),
             "wake_model_dir": (
                 os.environ.get("STELLA_WAKE_MODEL_DIR")
                 or default_wake_model_dir()
@@ -863,6 +874,13 @@ class StellaSettings:
         # Wake word now defaults on for the desktop UI (opt-out stays the
         # single Settings checkbox plus STELLA_WAKE_WORD=off for one run).
         wake_word_enabled: bool = True,
+        # Chosen classifiers and the display phrase, as saved in
+        # config.json. STELLA_WAKE_MODELS/STELLA_WAKE_PHRASE still win
+        # for a single launch; an empty choice means "detect every
+        # classifier in the model directory", which is the same outcome
+        # as setting nothing at all.
+        wake_models: tuple[str, ...] = (),
+        wake_phrase: str = "",
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -885,6 +903,12 @@ class StellaSettings:
         )
         environment = cls._environment_fields()
         environment["wake_word"] = "on" if wake_enabled else "off"
+        environment["wake_models"] = (
+            environment["wake_models"] or tuple(wake_models)
+        )
+        environment["wake_phrase"] = (
+            environment["wake_phrase"] or wake_phrase
+        )
         return cls(
             provider=provider,
             preset=preset,
@@ -1732,7 +1756,7 @@ def build_wake(
         return None
     spotter = WakeSpotter(
         model_dir=settings.wake_model_dir,
-        model_name=settings.wake_model,
+        model_names=settings.wake_models,
         threshold=settings.wake_threshold,
     )
     return WakeListener(

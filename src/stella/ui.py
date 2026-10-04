@@ -59,6 +59,15 @@ from stella.commands import (
 )
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 from stella.tools import ActionPreview, ApprovalRequest, action_summary
+from stella.wake import (
+    default_wake_models,
+    phrase_model_filename,
+    wake_model_label,
+)
+
+#: The wake-phrase dropdown entry that arms every classifier found in
+#: the model directory (empty ``wake_models`` — detection, not a list).
+_WAKE_EVERYTHING = "everything detected on this machine"
 
 # Display labels for the semantic embedding choice; the menu is the only
 # writer of the variable, and the reverse map carries the selection back.
@@ -1915,12 +1924,30 @@ class StellaWindow:
             text="Wake word (always-open microphone)",
             variable=self._wake_var,
         ).pack(padx=6, pady=(4, 0), anchor="w")
-        ttk.Label(
-            frame,
-            style="Dim.TLabel",
-            text="Say your wake phrase; nothing is recorded until it fires.",
-            wraplength=340,
-        ).pack(padx=6, anchor="w")
+        self._wake_choices_map = self._wake_choices(settings)
+        self._wake_choice_var = tk.StringVar(
+            value=self._initial_wake_choice(settings)
+        )
+        wake_row = ttk.Frame(frame)
+        wake_row.pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Combobox(
+            wake_row,
+            textvariable=self._wake_choice_var,
+            values=[_WAKE_EVERYTHING, *self._wake_choices_map],
+            state="readonly",
+            width=22,
+        ).pack(side="left")
+        self._wake_phrase_var = tk.StringVar(value=settings.wake_phrase)
+        ttk.Entry(wake_row, textvariable=self._wake_phrase_var, width=14).pack(
+            side="left", padx=(6, 0)
+        )
+        self._wake_hint = ttk.Label(
+            frame, style="Dim.TLabel", wraplength=340
+        )
+        self._wake_hint.pack(padx=6, anchor="w")
+        self._wake_choice_var.trace_add("write", self._refresh_wake_hint)
+        self._wake_phrase_var.trace_add("write", self._refresh_wake_hint)
+        self._refresh_wake_hint()
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -2138,6 +2165,7 @@ class StellaWindow:
         fields = self._settings_fields
         preset_id = self._preset_id()
         provider = _provider_for_preset(preset_id)
+        wake_models, wake_phrase = self._wake_selection()
         # Replace over the panel's settings so voice fields that the panel
         # does not show (modes, models, commands) survive an Apply click.
         return replace(
@@ -2166,6 +2194,8 @@ class StellaWindow:
             # owner wants, and a rebuild arms or stops the ear from it.
             wake_word_enabled=self._wake_var.get(),
             wake_word="on" if self._wake_var.get() else "off",
+            wake_models=wake_models,
+            wake_phrase=wake_phrase,
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],
@@ -2241,12 +2271,78 @@ class StellaWindow:
         self._refresh_tinyfish_hint()
         return None
 
+    def _wake_choices(self, settings: StellaSettings) -> dict[str, str]:
+        """Detected classifier labels mapped to their file names."""
+
+        choices: dict[str, str] = {}
+        for name in default_wake_models(settings.wake_model_dir):
+            label = wake_model_label(name) or name
+            choices[label if label not in choices else name] = name
+        return choices
+
+    def _initial_wake_choice(self, settings: StellaSettings) -> str:
+        for label, name in self._wake_choices_map.items():
+            if name in settings.wake_models:
+                return label
+        return _WAKE_EVERYTHING
+
+    def _wake_selection(self) -> tuple[tuple[str, ...], str]:
+        """(classifiers, phrase) the wake row currently spells out.
+
+        A typed phrase wins over the dropdown, matching a detected
+        classifier by label when it can. An unknown phrase maps to the
+        openWakeWord file convention and reports at startup if its
+        classifier is not on disk yet — nothing here downloads or
+        trains a model, ever.
+        """
+
+        phrase = self._wake_phrase_var.get().strip()
+        if phrase:
+            for label, name in self._wake_choices_map.items():
+                if phrase.casefold() == label.casefold():
+                    return (name,), phrase
+            filename = phrase_model_filename(phrase)
+            return ((), phrase) if filename is None else ((filename,), phrase)
+        choice = self._wake_choice_var.get()
+        for label, name in self._wake_choices_map.items():
+            if choice == label:
+                return (name,), label
+        return (), ""
+
+    def _wake_refusal(self) -> str | None:
+        phrase = self._wake_phrase_var.get().strip()
+        if phrase and phrase_model_filename(phrase) is None:
+            return (
+                "A wake phrase needs letters or numbers, up to 60 "
+                "characters — nothing was applied."
+            )
+        return None
+
+    def _refresh_wake_hint(self, *_: object) -> None:
+        models, phrase = self._wake_selection()
+        heard = phrase or (wake_model_label(models[0]) if models else "")
+        if heard:
+            text = (
+                f'Say "{heard}" to start listening; nothing is recorded '
+                "until it fires."
+            )
+        else:
+            text = (
+                "Say any wake phrase detected on this machine; nothing "
+                "is recorded until one fires."
+            )
+        self._wake_hint.configure(text=text)
+
     def _apply_settings(self) -> None:
         refusal = self._store_entered_key()
         if refusal:
             self._settings_status.configure(text=refusal)
             return
         refusal = self._store_entered_tinyfish_key()
+        if refusal:
+            self._settings_status.configure(text=refusal)
+            return
+        refusal = self._wake_refusal()
         if refusal:
             self._settings_status.configure(text=refusal)
             return

@@ -341,8 +341,9 @@ different echo-cancelled source.
 
 ## What the always-open ear costs
 
-With wake on, three small ONNX classifiers run over every frame the shared
-capture delivers, in addition to the one `pw-record` child that
+With wake on, the shared melspectrogram and embedding models plus one
+classifier per chosen phrase run over every frame the shared capture
+delivers, in addition to the one `pw-record` child that
 push-to-talk starts anyway. The work is continuous rather than bursty, and
 it is the price of the opt-in: openWakeWord's own guidance puts a
 classifier of this size at a small fraction of one laptop core, which is
@@ -351,6 +352,34 @@ duty-cycling it. That figure is upstream's, not a measurement taken here —
 Stella has never timed her own idle cost on this machine. Barge-in is the
 louder neighbour: it is armed only while Stella is speaking, and its
 voice-activity model runs on that window alone.
+
+Setup (all of it optional; nothing is downloaded or trained for you):
+
+```bash
+uv sync --extra wake                # adds onnxruntime only
+mkdir -p ~/models/openwakeword && cd ~/models/openwakeword
+# The two shared pipeline models every classifier needs:
+for f in melspectrogram.onnx embedding_model.onnx; do
+  curl -LO "https://huggingface.co/dscripka/openWakeWord/resolve/main/models/$f"
+done
+# Then at least one phrase classifier from the same release —
+# e.g. hey_jarvis_v0.1.onnx or alexa_v0.1.onnx.
+```
+
+Every `.onnx` file placed there that is not one of the shared two is a
+wake word Stella can hear: the Settings *Wake word* row lists them, or
+chooses "everything detected on this machine" to arm all of them at once
+(any one crossing the threshold is exactly one Listen press). A custom
+phrase like "hey stella" is not a setting that downloads anything —
+openWakeWord's own training step produces a classifier for it, and the
+file it writes at `~/models/openwakeword/hey_stella.onnx` is what the
+phrase field in Settings looks for. Until such a file exists, choosing a
+custom phrase reports one friendly line at startup and every other voice
+path keeps working. Environment: `STELLA_WAKE_MODELS` (comma-separated
+list of classifier files; unset means detect everything in the
+directory), `STELLA_WAKE_PHRASE` (display label),
+`STELLA_WAKE_MODEL_DIR`, `STELLA_WAKE_SOURCE` and
+`STELLA_WAKE_THRESHOLD`.
 
 ## UI states
 
@@ -380,6 +409,11 @@ the device — so it goes dark the moment the microphone is released.
   until it fires, and gains no authority of its own. Off by default, and
   the tick is saved for later launches; the environment variable decides
   one launch in either direction without rewriting the saved answer.
+  The *Wake word* row under that tick chooses which classifiers answer:
+  the dropdown lists what was detected in `~/models/openwakeword` (see
+  setup above), and a typed phrase arms the classifier file it names —
+  after the owner has placed or trained it there, never by a download
+  or a training run of Stella's own.
   Apply arms or stops the ear in the running session, so there is no
   restart to wait for and never a second capture for the same microphone.
   The ear is suspended whenever Stella is speaking, narrating, already

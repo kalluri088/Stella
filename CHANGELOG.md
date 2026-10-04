@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Wake word: your phrase, all of them at once, and honest detection
+
+- **What changed.** The wake ear is no longer hard-wired to one
+  classifier name. `WakeSpotter` now arms a *list* of openWakeWord
+  classifiers — every `.onnx` phrase classifier detected in
+  `~/models/openwakeword` by default — and any one of them crossing the
+  threshold is exactly one wake. Settings gained a wake-phrase row: a
+  dropdown of the classifiers actually found on this machine, "arm
+  everything detected" (the default), and a phrase field that maps a
+  typed word like "hey stella" to openWakeWord's file convention and
+  saves it (`wake_models` + `wake_phrase`, now persisted in
+  config.json). Environment: `STELLA_WAKE_MODELS` (comma-list) replaces
+  the old single `STELLA_WAKE_MODEL`. `docs/VOICE.md` finally has the
+  setup section the error messages always pointed at — the two shared
+  pipeline models, one-line download, and the rule that a custom phrase
+  needs a classifier the *owner* trained or placed there: Stella never
+  downloads or trains anything on its own.
+- **Why.** The owner asked for a wake word that answers to their words,
+  not to "hey jarvis" alone — and with both classifiers already sitting
+  on disk, detection means the ear works the moment the box is ticked.
+- **Security.** Nothing about the ear's authority changed: a wake is
+  still exactly a Listen press through the same approval path, frames
+  feed only local scoring, and the display phrase grants nothing. The
+  picker writes only validated file names into the saved config, and
+  malformed saved lists are dropped on read rather than trusted.
+- **Proof.** `tests/test_wake.py` (57): detection skips the shared
+  pair, labels read like phrases, the phrase→file mapping rejects junk,
+  every armed classifier is loaded and a hit on any one fires exactly
+  once (fake ONNX sessions over real array math), the comma-split
+  environment list beats the saved choice, and the missing-model
+  friendly line survives. `tests/test_ui.py` (72): the picker arms the
+  chosen classifier, typed phrases win, an unusable phrase is refused
+  at Apply. Drift guard and config round-trip updated
+  (`tests/test_settings_wiring.py` + `tests/test_config.py`, 109).
+
 ### Agent Stella windows actually reach workspace 6 now
 
 - **What changed.** The Hyprland rule that is supposed to park

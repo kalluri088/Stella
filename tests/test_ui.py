@@ -1336,6 +1336,51 @@ def test_settings_apply_survives_a_disk_error_during_key_storage(
         root.destroy()
 
 
+def test_the_wake_picker_names_the_phrase_and_the_classifier(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The dropdown lists what detection actually found; choosing one
+    # arms exactly that classifier, and "everything" arms the empty
+    # choice that means detect-all. A typed phrase wins over the
+    # dropdown and maps to openWakeWord's file convention even before
+    # its classifier exists on disk — nothing here trains or downloads.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    for name in ("melspectrogram.onnx", "embedding_model.onnx"):
+        (models_dir / name).write_bytes(b"shared")
+    (models_dir / "hey_stella_v0.1.onnx").write_bytes(b"classifier")
+    settings = StellaSettings(
+        model="test", wake_model_dir=str(models_dir)
+    )
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        assert window._wake_choices_map == {
+            "hey stella": "hey_stella_v0.1.onnx"
+        }
+        assert window._wake_choice_var.get() == stella_ui._WAKE_EVERYTHING
+        assert window._draft_settings().wake_models == ()
+        window._wake_choice_var.set("hey stella")
+        draft = window._draft_settings()
+        assert draft.wake_models == ("hey_stella_v0.1.onnx",)
+        assert draft.wake_phrase == "hey stella"
+        window._wake_phrase_var.set("Hey Rum")
+        draft = window._draft_settings()
+        assert draft.wake_models == ("hey_rum.onnx",)
+        assert draft.wake_phrase == "Hey Rum"
+        assert 'Say "Hey Rum"' in window._wake_hint.cget("text")
+        window._wake_phrase_var.set("!!!")
+        assert window._wake_refusal() is not None
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._apply_settings()
+        assert captured == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_settings_apply_without_a_key_leaves_the_environment_alone(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

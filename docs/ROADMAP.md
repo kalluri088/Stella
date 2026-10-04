@@ -632,7 +632,12 @@ inside that session, not before); D5 waits behind the voice work.
   says when it is really open and a mute switch that puts every ear down
   for the session. What the reversal did *not* buy: continuous
   transcription, speaker identification, or any cloud speech hop. See
-  `docs/VOICE.md`.
+  `docs/VOICE.md`. **Follow-up (owner request, 2026-10).** The phrase is
+  the owner's now, not "hey jarvis": the ear arms every openWakeWord
+  classifier detected in `~/models/openwakeword` (or exactly the ones
+  Settings picks), any hit is still exactly one Listen press, and a
+  custom "hey X" means a classifier the owner trained or placed there —
+  Stella never downloads or trains anything herself.
 
 Explicitly **not** adopted from this input: the always-listening
 hands-free loop as a background recorder, KV-cache save/restore between

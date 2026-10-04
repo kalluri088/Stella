@@ -51,6 +51,8 @@ _CONFIG_FIELDS = (
     "shell_tools_enabled",
     "browser_tools_enabled",
     "wake_word_enabled",
+    "wake_models",
+    "wake_phrase",
 )
 
 
@@ -645,6 +647,20 @@ def resolve_settings() -> StellaSettings | None:
         return value.strip() if isinstance(value, str) and value.strip() else None
 
     preset = raw.get("preset")
+    # Classifier choices survive the JSON round-trip as a list of names;
+    # anything malformed is dropped rather than trusted, and an empty
+    # result means "detect every classifier on disk".
+    raw_wake_models = raw.get("wake_models", ())
+    wake_models = (
+        tuple(
+            name.strip()
+            for name in raw_wake_models
+            if isinstance(name, str) and name.strip()
+        )
+        if isinstance(raw_wake_models, (list, tuple))
+        else ()
+    )
+    raw_wake_phrase = raw.get("wake_phrase")
     return StellaSettings.from_saved(
         provider=raw["provider"],
         preset=preset if isinstance(preset, str) else None,
@@ -675,4 +691,8 @@ def resolve_settings() -> StellaSettings | None:
         # that predates the key resolves to ON. An explicit
         # ``"wake_word_enabled": false`` (the unticked opt-out) still wins.
         wake_word_enabled=raw.get("wake_word_enabled", True) is not False,
+        wake_models=wake_models,
+        wake_phrase=(
+            raw_wake_phrase if isinstance(raw_wake_phrase, str) else ""
+        ),
     )

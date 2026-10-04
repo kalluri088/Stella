@@ -19,7 +19,6 @@ import time
 import pytest
 
 from stella.app import (
-    DEFAULT_WAKE_MODEL,
     StellaApplication,
     StellaBridge,
     StellaSession,
@@ -36,11 +35,15 @@ from stella.mic_tap import MicTap
 from stella.tools import ApprovalRequest
 from stella.voice import TapRecorder, VoiceError
 from stella.wake import (
+    DEFAULT_WAKE_MODEL,
     FRAME_BYTES,
     WakeEndpoint,
     WakeListener,
     WakeSpotter,
     WakeUtteranceEar,
+    default_wake_models,
+    phrase_model_filename,
+    wake_model_label,
 )
 
 # ----------------------------------------------------------------- endpoint
@@ -363,6 +366,123 @@ def test_a_real_spotter_never_wakes_on_digital_silence() -> None:
         assert spotter.feed(b"\x00" * FRAME_BYTES) is False
 
 
+def test_detection_finds_every_classifier_and_skips_the_shared_pair(
+    tmp_path,
+) -> None:
+    for name in ("melspectrogram.onnx", "embedding_model.onnx"):
+        (tmp_path / name).write_bytes(b"shared")
+    (tmp_path / "hey_stella.onnx").write_bytes(b"classifier")
+    (tmp_path / "alexa_v0.1.onnx").write_bytes(b"classifier")
+    assert default_wake_models(str(tmp_path)) == (
+        "alexa_v0.1.onnx",
+        "hey_stella.onnx",
+    )
+
+
+def test_detection_falls_back_when_there_is_nothing_to_detect(tmp_path) -> None:
+    assert default_wake_models(str(tmp_path)) == (DEFAULT_WAKE_MODEL,)
+    absent = tmp_path / "not-a-directory"
+    assert default_wake_models(str(absent)) == (DEFAULT_WAKE_MODEL,)
+
+
+def test_classifier_labels_read_like_the_phrases_they_answer() -> None:
+    assert wake_model_label("hey_jarvis_v0.1.onnx") == "hey jarvis"
+    assert wake_model_label("hey_stella.onnx") == "hey stella"
+    assert wake_model_label("alexa_v0.1.onnx") == "alexa"
+
+
+def test_a_phrase_maps_to_the_openwakeword_file_convention() -> None:
+    assert phrase_model_filename("Hey Stella") == "hey_stella.onnx"
+    assert phrase_model_filename("  hey, stella! ") == "hey_stella.onnx"
+    assert phrase_model_filename("") is None
+    assert phrase_model_filename("!!!") is None
+    assert phrase_model_filename("x" * 61) is None
+
+
+def test_a_named_classifier_is_checked_before_anything_loads(tmp_path) -> None:
+    for name in ("melspectrogram.onnx", "embedding_model.onnx"):
+        (tmp_path / name).write_bytes(b"shared")
+    with pytest.raises(VoiceError, match="no wake word classifier model"):
+        WakeSpotter(
+            model_dir=str(tmp_path),
+            model_names=["hey_jarvis.onnx", "hey_stella.onnx"],
+        )
+    with pytest.raises(VoiceError, match="hey_stella.onnx"):
+        WakeSpotter(model_dir=str(tmp_path), model_names=["hey_stella.onnx"])
+
+
+def test_every_armed_classifier_answers_and_any_hit_wakes(
+    tmp_path, monkeypatch
+) -> None:
+    # Fake ONNX sessions with real array math: two classifiers armed at
+    # once, one that never crosses and one that does. The wake is one
+    # boolean and exactly one shot, whichever classifier earned it.
+    import types
+
+    numpy = pytest.importorskip("numpy")
+    paths = {}
+    for name in ("melspectrogram.onnx", "embedding_model.onnx"):
+        (tmp_path / name).write_bytes(b"shared")
+    for name, score in (("hey_a.onnx", 0.2), ("hey_b.onnx", 0.9)):
+        paths[str(tmp_path / name)] = score
+        (tmp_path / name).write_bytes(b"classifier")
+    loaded: list[str] = []
+
+    class FakeInput:
+        def __init__(self, name, shape):
+            self.name = name
+            self.shape = shape
+
+    class FakeSession:
+        def __init__(self, path, **_kwargs):
+            path = str(path)
+            loaded.append(path)
+            self.name = "in"
+            self.kind = (
+                "mel"
+                if "melspectrogram" in path
+                else "embed"
+                if "embedding" in path
+                else "classifier"
+            )
+            self.score = paths.get(path, 0.0)
+
+        def get_inputs(self):
+            shape = [1, 1, 96] if self.kind == "classifier" else [None]
+            return [FakeInput(self.name, shape)]
+
+        def run(self, _requested, feed):
+            if self.kind == "mel":
+                rows = max(int(feed[self.name].shape[1] // 160), 1)
+                return [numpy.zeros((1, rows, 32))]
+            if self.kind == "embed":
+                return [numpy.zeros((1, 96))]
+            return [[[self.score]]]
+
+    fake = types.ModuleType("onnxruntime")
+
+    class SessionOptions:  # the spotter only sets attributes on it
+        pass
+
+    fake.SessionOptions = SessionOptions
+    fake.InferenceSession = FakeSession
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    spotter = WakeSpotter(model_dir=str(tmp_path))
+    assert sorted(loaded) == sorted(
+        [
+            str(tmp_path / "melspectrogram.onnx"),
+            str(tmp_path / "embedding_model.onnx"),
+            str(tmp_path / "hey_a.onnx"),
+            str(tmp_path / "hey_b.onnx"),
+        ]
+    )
+    silence = b"\x00" * FRAME_BYTES
+    assert spotter.feed(silence) is False  # 512 samples: no chunk yet
+    assert spotter.feed(silence) is False  # 1024: still none
+    assert spotter.feed(silence) is True  # 1536: hey_b crosses
+    assert spotter.feed(silence) is False  # the one-shot latch holds
+
+
 # ---------------------------------------------------------------- vad ear
 
 
@@ -384,8 +504,9 @@ def clear_wake_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "STELLA_WAKE_WORD",
         "STELLA_WAKE_SOURCE",
         "STELLA_WAKE_THRESHOLD",
-        "STELLA_WAKE_MODEL",
         "STELLA_WAKE_MODEL_DIR",
+        "STELLA_WAKE_MODELS",
+        "STELLA_WAKE_PHRASE",
         "STELLA_VAD_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -399,8 +520,37 @@ def test_wake_defaults_are_off_and_conservative(
     assert fields["wake_word"] == "off"
     assert fields["wake_source"] is None
     assert fields["wake_threshold"] == 0.5
-    assert fields["wake_model"] == DEFAULT_WAKE_MODEL
+    # No choice means detect: every classifier found in the directory,
+    # which falls back to the out-of-the-box name when it holds none.
+    assert fields["wake_models"] == ()
+    assert fields["wake_phrase"] == ""
     assert fields["wake_model_dir"] == default_wake_model_dir()
+
+
+def test_wake_model_lists_split_on_commas_and_phrases_stay_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_wake_env(monkeypatch)
+    monkeypatch.setenv("STELLA_WAKE_MODELS", "hey_stella.onnx, , a.onnx,")
+    monkeypatch.setenv("STELLA_WAKE_PHRASE", "hey stella")
+    fields = StellaSettings._environment_fields()
+    assert fields["wake_models"] == ("hey_stella.onnx", "a.onnx")
+    assert fields["wake_phrase"] == "hey stella"
+
+
+def test_an_environment_wake_list_beats_the_saved_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_wake_env(monkeypatch)
+    monkeypatch.setenv("STELLA_WAKE_MODELS", "from_env.onnx")
+    settings = StellaSettings.from_saved(
+        provider="ollama",
+        model="m",
+        wake_models=("saved.onnx",),
+        wake_phrase="saved phrase",
+    )
+    assert settings.wake_models == ("from_env.onnx",)
+    assert settings.wake_phrase == "saved phrase"
 
 
 def test_invalid_wake_settings_exit_at_configuration(

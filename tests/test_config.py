@@ -103,10 +103,29 @@ def test_configuration_stores_only_non_secret_fields():
         # The wake-word checkbox, like every other saved capability: one
         # plain bool, no path and no key.
         "wake_word_enabled",
+        # The wake-word choices: classifier file names as detected on the
+        # owner's disk and a display phrase. No audio, no path content.
+        "wake_models",
+        "wake_phrase",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):
         assert secret_word not in text
+
+
+def test_saved_wake_choices_roundtrip():
+    settings = StellaSettings.from_saved(
+        provider="ollama",
+        model="m",
+        wake_models=("hey_stella.onnx",),
+        wake_phrase="hey stella",
+    )
+    assert settings.wake_models == ("hey_stella.onnx",)
+    config.save_configuration(settings)
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.wake_models == ("hey_stella.onnx",)
+    assert resolved.wake_phrase == "hey stella"
 
 
 def test_configuration_file_is_private():

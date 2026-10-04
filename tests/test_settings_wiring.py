@@ -143,15 +143,46 @@ PLAIN_CONFIG_FIELDS = (
     "openai_base_url",
 )
 
+# Saved wake-choice fields whose environment values arrive through
+# _environment_fields() (shared by from_environment and from_saved), so
+# they have no literal ``field=`` line in from_environment. They still
+# get the persist/read-back/passthrough checks below.
+ENV_DICT_CONFIG_FIELDS = ("wake_models", "wake_phrase")
+
 
 def test_config_fields_are_exactly_the_tables() -> None:
-    assert set(config_module._CONFIG_FIELDS) == set(PLAIN_CONFIG_FIELDS) | set(
-        OVERRIDE_FIELDS.values()
+    assert set(config_module._CONFIG_FIELDS) == (
+        set(PLAIN_CONFIG_FIELDS)
+        | set(OVERRIDE_FIELDS.values())
+        | set(ENV_DICT_CONFIG_FIELDS)
     ), (
         "a saved-configuration field appeared or vanished; every one is "
-        "either a capability opt-in (OVERRIDE_FIELDS) or a plain field "
+        "either a capability opt-in (OVERRIDE_FIELDS), an environment-dict "
+        "wake choice (ENV_DICT_CONFIG_FIELDS) or a plain field "
         "(PLAIN_CONFIG_FIELDS)"
     )
+
+
+@pytest.mark.parametrize("field", sorted(ENV_DICT_CONFIG_FIELDS))
+def test_wake_choice_field_is_wired_end_to_end(field: str) -> None:
+    assert field in _settings_fields(), f"{field} is not a StellaSettings field"
+    assert field in config_module._CONFIG_FIELDS, f"{field} never reaches config.json"
+    # from_saved takes the saved value as a parameter and merges it over
+    # the environment only when the environment left the choice empty.
+    body = inspect.getsource(StellaSettings.from_saved)
+    assert f"{field}:" in body, f"{field} is not a from_saved parameter"
+    assert (
+        f'environment["{field}"]' in body
+    ), f"{field} is not merged into the built settings"
+    assert (
+        f'"{field}"' in inspect.getsource(StellaSettings._environment_fields)
+    ), f"{field} is not supplied from the environment"
+    assert (
+        f'raw.get("{field}"' in inspect.getsource(config_module.resolve_settings)
+    ), f"{field} is not read back from config.json"
+    assert (
+        f"{field}=wake_" in UI_SOURCE or f"{field}=self._wake" in UI_SOURCE
+    ), f"{field}: the settings panel never writes it into the saved settings"
 
 
 @pytest.mark.parametrize("field", sorted(PLAIN_CONFIG_FIELDS))

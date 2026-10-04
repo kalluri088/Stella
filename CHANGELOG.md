@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Resident voice: press once, talk naturally
+
+- **What changed.** `stella voice` gained three words. `--serve` is a
+  resident process that arms the *saved* wake ear (`serve_settings`
+  honours the wake choice and still forces shell and browser off), and
+  runs wake-or-button → conversation → back-to-the-ear: after each
+  spoken reply the ears re-open for the follow-up with no re-press, and
+  the session ends on silence, a whole-utterance "stop"/"never mind"/
+  "that's it", or the key again. `--toggle` is the shortcut's new
+  command: no server means start one detached and press again; a server
+  means open a conversation or close the live one. The two talk through
+  one word over a private `0600` unix socket under `XDG_RUNTIME_DIR`
+  (`stella-voice-<uid>.sock`), and `--stop` shuts the server down. New
+  exit code 5: a live socket belongs to another server, and a second
+  `--serve` exits instead of hijacking the microphone. The one-shot
+  command is untouched, byte for byte.
+- **Why.** The owner's complaint was that Super+D demanded a fresh press
+  per sentence: "I will press super + d and have a conversation and when
+  I want to stop I press super + d again." It is also the fix for "wake
+  word doesn't work for shit": wake arming lived only inside the desktop
+  app, while the shortcut ran the wake-forced-off one-shot.
+- **Security.** The control socket carries only `toggle` and `stop` —
+  no payload, no transcripts, nothing that a spoken approval would not
+  already gate; its handler moves events and never touches voice, tools,
+  or the model. A wake remains exactly a Listen press. The always-open
+  spotter is suspended while Stella speaks (she never wakes on her own
+  voice) and still shares the one `MicTap`. Approvals in conversation are
+  the same fail-closed spoken ones, unchanged. A detached server logs
+  only honest VoiceError/configuration lines, to a file beside the
+  socket — never keys, never transcripts.
+- **Proof.** `tests/test_headless_voice.py` (57): the loop chains turns
+  across two sessions and re-arms the ear between them, spoken stop
+  closes without a turn, silence closes without saying anything, a turn
+  error is spoken and the conversation survives, only whole dismissals
+  dismiss, the handler answers only `toggle`/`stop`/`unknown` (a shell
+  command sent through it is `unknown`), the socket round-trips one
+  word at 0600, a stale file is cleared but a live socket is refused,
+  and `--toggle` starts a missing server exactly once. One tap stays
+  one tap through the resident build. `tests/test_cli.py` (77): the four
+  voice dispatches and argparse's refusal of two words at once.
+  `tests/test_wake.py` + `tests/test_settings_wiring.py` (113) green.
+
 ### Wake word: your phrase, all of them at once, and honest detection
 
 - **What changed.** The wake ear is no longer hard-wired to one

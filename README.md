@@ -47,11 +47,15 @@ checked that it did.
 - **Talk and listen** — press the mic button, speak; replies can be spoken
   back on a local voice. Neither side needs a cloud service: the transcriber
   and the synthesizer already on the laptop are found automatically and named
-  on screen. There is also a **no-screen one-shot**: `stella voice` runs a
+  on screen. There is also a **no-screen mode**: `stella voice` runs a
   single hands-free turn from your latest settings and exits — ideal behind a
   keyboard shortcut (it is wired to **Super + D** here). It auto-stops on a
   short pause, cues listening/working with a chime, and confirms anything risky
   **out loud, failing closed** on any unclear answer (`docs/HEADLESS_VOICE.md`).
+  For a natural back-and-forth, `stella voice --serve` stays resident and
+  arms the saved wake ear, and `stella voice --toggle` (the shortcut's new
+  word) opens a conversation — turn after turn with no re-press — ending on
+  silence, a spoken "stop", or the key again; `--stop` shuts the server down.
   Continuous hands-free listening is off by default: the wake
   word — the *Wake word* box in Settings, whose answer is saved, or
   `STELLA_WAKE_WORD=on` for a single launch — is the only way Stella ever
@@ -223,6 +227,7 @@ development, or running several configurations side by side:
 | `STELLA_VOICE_BARGE_IN` / `STELLA_BARGE_SOURCE` / `STELLA_BARGE_THRESHOLD` / `STELLA_VAD_MODEL` | Interrupt Stella by speaking: `auto`/`on`/`off`, the capture source it reads (an echo-cancelled one is what makes it usable), how speech-like a frame must look, and where the small VAD model file is | `auto` / unset / `0.5` / found automatically |
 | `STELLA_WAKE_MODELS` / `STELLA_WAKE_PHRASE` / `STELLA_WAKE_MODEL_DIR` / `STELLA_WAKE_SOURCE` / `STELLA_WAKE_THRESHOLD` | Comma-list of which openWakeWord classifiers answer for the wake ear (unset: detect every classifier in the directory), the display phrase, where files are looked for, the capture source it reads, and how sure it has to be before it counts as a phrase | detect all / unset / `~/models/openwakeword` / unset / `0.5` |
 | `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`) for this launch only; the *Wake word* box in Settings is what is saved (`wake_word_enabled`), and this variable wins over it either way. Arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
+| `STELLA_VOICE_SOCKET` | Where `stella voice --toggle` finds the resident conversation server's one-word control socket. A test seam; normally untouched. | `$XDG_RUNTIME_DIR/stella-voice-<uid>.sock` |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |
 

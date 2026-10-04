@@ -33,7 +33,12 @@ from stella.commands import (
     version_line,
 )
 from stella.config import resolve_settings, startup_key_health_report
-from stella.headless_voice import run_headless_voice
+from stella.headless_voice import (
+    run_headless_voice,
+    run_voice_server,
+    run_voice_stop,
+    run_voice_toggle,
+)
 from stella.llm import Message
 from stella.outline_tools import active_reminder_pump
 from stella.persona import (
@@ -929,13 +934,32 @@ def main(argv: Sequence[str] | None = None) -> None:
             "proposals for the next session (never writes anything)"
         ),
     )
-    commands.add_parser(
+    voice_parser = commands.add_parser(
         "voice",
         help=(
-            "one hands-free turn for a keyboard shortcut: listens once, "
-            "answers aloud, asks out loud before anything risky, and "
-            "exits (needs voice input and speech enabled in Settings)"
+            "hands-free voice for the keyboard shortcut: one turn by "
+            "default, or a resident conversation with --serve/--toggle "
+            "(needs voice input and speech enabled in Settings)"
         ),
+    )
+    voice_mode = voice_parser.add_mutually_exclusive_group()
+    voice_mode.add_argument(
+        "--serve",
+        action="store_true",
+        help="stay resident: the wake word or --toggle opens conversations",
+    )
+    voice_mode.add_argument(
+        "--toggle",
+        action="store_true",
+        help=(
+            "the shortcut's word: start the server if none is up, then "
+            "open — or close — one conversation"
+        ),
+    )
+    voice_mode.add_argument(
+        "--stop",
+        action="store_true",
+        help="shut the resident voice server down",
     )
     audit_parser = commands.add_parser(
         "audit",
@@ -1027,6 +1051,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "voice":
         # Resolves its own settings and needs no interactive terminal, so
         # it runs before the chat path's configuration gate.
+        if args.serve:
+            raise SystemExit(run_voice_server())
+        if args.toggle:
+            raise SystemExit(run_voice_toggle())
+        if args.stop:
+            raise SystemExit(run_voice_stop())
         raise SystemExit(run_headless_voice())
     settings = resolve_settings()
     if settings is None:
@@ -1054,3 +1084,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
     finally:
         application.close()
+
+
+if __name__ == "__main__":
+    # ``--toggle`` starts the resident server with
+    # ``python -m stella.cli voice --serve``; this guard is what makes
+    # that spawn work without depending on the console script being on
+    # the launcher's PATH.
+    main()

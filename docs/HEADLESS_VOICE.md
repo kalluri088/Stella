@@ -1,8 +1,12 @@
-# `stella voice` — one hands-free turn for a keyboard shortcut
+# `stella voice` — hands-free voice for a keyboard shortcut
 
-A no-screen voice mode. You press a key, Stella runs **one** turn from your
-most-recently-saved settings — speak in, speak out, and the actual work in
-between — then the process exits. Nothing stays resident between presses.
+A no-screen voice mode in two shapes. The plain command runs **one** turn:
+press, speak, answer, exit — nothing stays resident. `--serve` is the resident
+shape: the saved wake ear stays armed, and a wake phrase or a `--toggle` opens
+a **conversation** — turn after turn with no button between them — until
+silence, a spoken stop, or the key again. Both shapes run from the
+most-recently-saved `config.json` (`resolve_settings`), the same settings the
+desktop app uses.
 
 ## The flow
 
@@ -36,29 +40,62 @@ file body is not read to the room — then listens for your answer.
 Approvals fail closed: if in doubt, nothing dangerous happens. You can also
 interrupt a turn; cancellation is honoured exactly as in the desktop app.
 
+## Natural conversation: `--serve` and `--toggle`
+
+`stella voice --serve` builds the same application with the **saved wake
+choice honoured** — that continuous ear is exactly what the owner asked for.
+Shell and browser stay forced off (a spoken approval must not smuggle them
+in), and desktop window control is not a setting at all, so "open Chromium
+in workspace 1" still answers out loud. The loop:
+
+1. **Arm the wake ear.** Saying the chosen phrase rings the opening bell —
+   the ear's only power, the same as one Listen press.
+2. **Open a conversation:** chime, capture, run the turn, speak the answer —
+   then re-open the ears for the follow-up automatically. No button between
+   turns; that is the whole point.
+3. **End on silence**, on a spoken "stop" / "never mind" / "that's it", or
+   on the shortcut again — and return to the idle ear. The always-open
+   spotter is suspended while Stella talks (she must never wake on her own
+   voice) and re-armed when she is idle.
+
+`stella voice --toggle` is what the keyboard shortcut runs (Super+D). With
+no server up it starts one detached and then presses the same word; with a
+server up it opens a conversation, or closes the live one. The two talk
+through one word over a private unix socket (`0600`, under
+`XDG_RUNTIME_DIR`, named `stella-voice-<uid>.sock`): the protocol carries
+only `toggle` and `stop` — a doorbell, never a control channel. A server
+that started and failed writes its honest reason to `.log` beside the
+socket, so a dead key is diagnosable.
+
+`stella voice --stop` shuts the resident server down; a foreground
+`--serve` also exits on Ctrl-C.
+
 ## Honest failure, distinct exit codes
 
 A missing peripheral is never a silent success.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | ran a turn, or honestly heard nothing ("I didn't catch that.") |
+| `0` | ran a turn (or conversation), or honestly heard nothing ("I didn't catch that.") |
 | `2` | no saved configuration yet — set Stella up once in the app first |
 | `3` | configured, but voice input or speech output isn't available |
-| `4` | build/VAD failure (e.g. the local silence-detection model is missing) |
+| `4` | build/VAD failure (e.g. the local silence-detection model is missing), or a resident server that never came up |
+| `5` | `--serve` only: a live control socket already belongs to another server — it exits instead of hijacking the microphone |
 
 If you get `3`, enable voice input and "Speak replies" once in the desktop
 Settings, then the key will work.
 
 ## Constraints it respects
 
-- **One microphone handle.** It opens a single `MicTap` shared by the recorder
-  and the silence-watcher and releases it, so a hotkey press never double-opens
-  the device that the desktop app may already be using.
-- **Nothing secret is spoken or printed.** No key, and no transcript, is echoed
-  to the terminal; command/file bodies are never read aloud.
-- **No new dependency.** It is pure orchestration over the existing voice, wake
-  and tool primitives.
+- **One microphone handle.** It opens a single `MicTap` shared by the
+  recorder and the silence-watcher — and, in the resident shape, by the
+  wake listener too — so a hotkey press never double-opens the device
+  that the desktop app may already be using.
+- **Nothing secret is spoken or printed.** No key, and no transcript, is
+  echoed to the terminal; command/file bodies are never read aloud. The
+  control socket carries no payload beyond `toggle` and `stop`.
+- **No new dependency.** It is pure orchestration over the existing voice,
+  wake and tool primitives.
 
 ## Validation
 
@@ -66,7 +103,13 @@ Settings, then the key will work.
 exit codes when there is no voice, a heard request runs exactly one spoken turn
 and disposes its artifact, the silence endpoint ends a capture, a dead mic
 degrades to "didn't catch that", the approver approves only a clear "yes" and
-denies no/garbage/silence, and the file-write body is never read aloud.
+denies no/garbage/silence, and the file-write body is never read aloud. The
+resident shape adds its own proofs: the loop chains turns with no re-press and
+re-arms the ear between sessions, the spotter is suspended while Stella
+speaks, only a whole-utterance dismissal closes a conversation, the control
+handler moves events and nothing else, the socket answers one word and is
+0600, a second server exits rather than hijacking, and `--toggle` starts a
+missing server exactly once.
 
 ## See also
 

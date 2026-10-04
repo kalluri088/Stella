@@ -837,6 +837,41 @@ def test_cli_main_uses_saved_configuration_without_environment(
     assert seen[0].model == "saved-cli-model"
 
 
+def test_cli_voice_dispatches_the_one_shot_and_resident_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The shortcut's whole contract lives in this dispatch: plain voice
+    # stays the one-shot turn, and the three resident words each reach
+    # their own entry point — nothing here touches settings or a model.
+    from stella import cli
+
+    monkeypatch.setattr(cli, "run_headless_voice", lambda: 10)
+    monkeypatch.setattr(cli, "run_voice_server", lambda: 11)
+    monkeypatch.setattr(cli, "run_voice_toggle", lambda: 12)
+    monkeypatch.setattr(cli, "run_voice_stop", lambda: 13)
+    for argv, expected in (
+        (["voice"], 10),
+        (["voice", "--serve"], 11),
+        (["voice", "--toggle"], 12),
+        (["voice", "--stop"], 13),
+    ):
+        with pytest.raises(SystemExit) as raised:
+            cli.main(argv)
+        assert raised.value.code == expected
+
+
+def test_cli_voice_refuses_two_resident_words_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stella import cli
+
+    monkeypatch.setattr(cli, "run_voice_server", lambda: 0)
+    monkeypatch.setattr(cli, "run_voice_toggle", lambda: 0)
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["voice", "--serve", "--toggle"])
+    assert raised.value.code == 2  # argparse's own rejection
+
+
 # ---------------------------------------------------------------------------
 # Persona CLI: presets, editor, and first-run onboarding (all paths are
 # forced into tmp_path via STELLA_PERSONA_DIR; nothing here may touch the

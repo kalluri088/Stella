@@ -2305,3 +2305,14 @@ def test_voice_style_note_only_joins_spoken_synthesis() -> None:
         isinstance(message, Message) and message.content == note
         for message in typed_messages
     )
+
+
+def test_voice_style_note_asks_for_a_spoken_overview() -> None:
+    # A spoken answer is heard once and cannot be skimmed, so the note the
+    # voice path adds must compress into an overview instead of reading out
+    # every detail the written answer would carry.
+    note = VOICE_STYLE_NOTE
+    assert "read aloud" in note
+    assert "compress whatever else matters into" in note
+    assert "Drop the detail that only works on a" in note
+    assert "No lists, no code, no markdown" in note

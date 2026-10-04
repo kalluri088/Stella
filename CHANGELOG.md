@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Decision prompt: shorter memories, sized answers, a persona that shows
+
+- **What changed.** Three additions to the stable core prompt and to the
+  one application-authored voice note. (1) *Compact capture*: a
+  `memory_write` is now specified as one short third-person sentence —
+  roughly fifteen words — that keeps every durable detail and drops the
+  wording around it, with verbatim retention reserved for the cases where
+  the wording *is* the fact (a name, a quote, an exact number or URL), plus
+  a worked example of a rambling request stored as one line. (2) *A length
+  contract*: "lead with the answer, then stop" — the result in the first
+  sentence, a yes/no question in one or two sentences, a written
+  explanation allowed a short paragraph, no restating the question and no
+  closing offer to help; and explicitly not a bare fragment that forces the
+  user to ask again. `VOICE_STYLE_NOTE` got the same shape for speech:
+  result first, everything else compressed into an overview, three spoken
+  sentences only when the answer genuinely has three parts, and none of the
+  detail that only works on a screen. (3) *Persona out loud*: the prompt now
+  instructs Stella to write every user-facing sentence in the loaded
+  persona's voice and treats stock filler as a lapse in it, restating in the
+  same breath that the persona grants no authority.
+- **Why.** The owner named all three: "if I type remember it literally
+  copies the entire thing I type in third person. It should be more compact
+  and practical"; "it shouldn't talk too much or too less while using voice
+  or even text (in text there can be a little bigger text but when speaking
+  it should compress and give overview)"; and "improve the persona to be more
+  aggressive (meaning using more of it's persona)" — presets already carry a
+  strong voice that the model was ignoring.
+- **Security.** Nothing moved in the authority path. Memory compaction is a
+  prompt contract only: the runtime still stores exactly the string the
+  proposal carries and never rewrites user text, and `memory_write` remains
+  a proposal behind the same approval boundary. The persona instruction is
+  phrasing-only by construction — `PERSONA_INVARIANT` is untouched and the
+  new lines repeat that the persona changes no capability, risk, approval or
+  honest reporting. Voice remains one fixed application-authored note that
+  the model cannot author or edit.
+- **Proof.** `tests/test_brain.py` pins the compact-capture rule and its
+  example, the length contract, and the persona instruction with its
+  no-authority clause; `tests/test_stella.py` pins the spoken-overview note.
+  130 passed in `test_brain.py` + `test_stella.py`, 54 in `test_persona.py`;
+  `ruff check` clean on both source files; `git diff --check` clean.
+
 ### Resident voice: press once, talk naturally
 
 - **What changed.** `stella voice` gained three words. `--serve` is a

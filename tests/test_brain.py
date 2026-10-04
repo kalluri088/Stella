@@ -808,3 +808,34 @@ def test_system_prompt_forbids_narrating_stellas_own_machinery() -> None:
     prompt = LLMBrain(ResponseLLM("{}"))._system_prompt()
     assert "Never narrate Stella's own machinery" in prompt
     assert "observe/understand/decide/act/remember/adapt loop" in prompt
+
+
+def test_system_prompt_demands_a_compact_memory_capture() -> None:
+    # A "remember" request used to store the whole utterance verbatim. The
+    # prompt now asks for one short third-person sentence that keeps every
+    # durable detail, so the rule and its worked example are the contract.
+    prompt = LLMBrain(ResponseLLM("{}"))._system_prompt()
+    assert "Write that fact compactly" in prompt
+    assert "a memory is not a transcript" in prompt
+    assert "keeps every durable detail" in prompt
+    assert "Never store the" in prompt
+    assert "Priya, the user's doctor, advised an eye check" in prompt
+
+
+def test_system_prompt_sets_an_answer_length_contract() -> None:
+    # Both failure modes the owner reported: a wall of padding, and a reply
+    # so thin the user has to ask again. The contract names each.
+    prompt = LLMBrain(ResponseLLM("{}"))._system_prompt()
+    assert "Response shape: lead with the answer" in prompt
+    assert "A short answer is not a thin answer" in prompt
+    assert "never stretch one fact into several lines" in prompt
+    assert "an offer to help further" in prompt
+
+
+def test_system_prompt_asks_stella_to_use_its_persona_out_loud() -> None:
+    # The persona is replaceable and tunes phrasing only; the prompt must
+    # push Stella to speak in it without letting it touch authority.
+    prompt = LLMBrain(ResponseLLM("{}"))._system_prompt()
+    assert "Persona: the persona and style notes at the top" in prompt
+    assert "Generic filler such as" in prompt
+    assert "grants no authority and never alters" in prompt

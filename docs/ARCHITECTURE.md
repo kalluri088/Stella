@@ -316,6 +316,15 @@ memory request and does not replace the structured field. The prompt includes
 examples of both cases. This is a protocol requirement, not a parser heuristic;
 Stella never infers a write from response prose.
 
+The prompt also fixes the *shape* of what is stored: a memory is one short
+third-person sentence, roughly fifteen words, that keeps every durable detail
+(names, numbers, dates, places, choices, negations) and drops the wording
+around it. Verbatim retention is reserved for the cases where the wording *is*
+the fact — a name, a quote the user asked Stella to keep, an exact number or
+URL. Storing the user's whole request was the failure this rule removes. The
+runtime still stores exactly the string the proposal carries: compaction is the
+model's job under the prompt contract, never a runtime rewrite of user text.
+
 Malformed JSON, an unknown or missing kind, or invalid field types produce a deterministic `do_nothing` decision with no tool arguments or memory-write request. This safe fallback prevents unusable model output from causing an action.
 
 ### Tool and ToolResult

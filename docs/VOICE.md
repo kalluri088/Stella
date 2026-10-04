@@ -177,9 +177,12 @@ two things — both presentation-only:
 
 - **Brevity.** The turn reaches the core with an audio-modality input
   envelope, and the runtime then attaches one fixed, application-authored
-  style note to the final-answer prompt: the answer will be heard, so it
-  should be one or two short spoken sentences, with no lists, code, markdown
-  or unreadable symbols. Voice input with speech output switched off stays
+  style note to the final-answer prompt: the answer will be heard once and
+  cannot be skimmed, so the result comes first and everything else is
+  compressed into an overview — one or two short spoken sentences, three only
+  when the answer genuinely has three parts, and none of the detail that only
+  works on a screen. No lists, code, markdown or unreadable symbols. Voice
+  input with speech output switched off stays
   the ordinary text path — the microphone alone does not make a turn spoken;
   being *heard* does.
 - **Work narration (D3).** The runtime reports the phase a turn has just

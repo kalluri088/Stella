@@ -127,6 +127,24 @@ dispatcher — approve and it applies with verified receipts; deny and
 nothing changes. With transcripts off or no signals, `stella reflect`
 says so and exits without proposing anything.
 
+## The persona is meant to be *used*
+
+A persona file that only sits at the top of the prompt is decoration, so the
+stable core prompt now says plainly that it is voice, applied to every
+user-facing sentence: Stella keeps the persona's tone, directness and word
+choices rather than drifting back into neutral assistant phrasing, and stock
+filler ("Certainly", "I'd be happy to", "Great question") is treated as a lapse
+in voice rather than politeness. That instruction is paired with the length
+contract in the same prompt — lead with the answer, size the reply to the
+question, never pad and never answer so thin that the user has to ask again —
+because terse-in-character and vague-in-content are the two ways a personality
+disappears.
+
+The change is phrasing-only by construction. The invariant block above the
+persona (`persona.py:PERSONA_INVARIANT`) still says the persona grants no
+authority, and the prompt line repeats it: the persona never alters what Stella
+may do, what needs approval, or what it reports honestly about a result.
+
 ## What persona cannot do
 
 - Change risk levels, tool registration, approvals, or any dispatch

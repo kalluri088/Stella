@@ -84,9 +84,12 @@ MEMORY_MUTATION_ACTIONS = frozenset({"write", "update", "delete"})
 # authored note is the only style influence the voice path adds; the
 # model never authors narration text.
 VOICE_STYLE_NOTE = (
-    "The user asked by voice and will hear this answer read aloud. "
-    "Say it in one or two short spoken sentences: no lists, no code, "
-    "no markdown, no symbols that cannot be read aloud."
+    "The user asked by voice and will hear this answer read aloud. Give the "
+    "result in the first sentence, then compress whatever else matters into "
+    "an overview: one or two short spoken sentences, three only when the "
+    "answer genuinely has three parts. Drop the detail that only works on a "
+    "screen. No lists, no code, no markdown, no symbols that cannot be read "
+    "aloud."
 )
 
 

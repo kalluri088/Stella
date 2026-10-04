@@ -371,8 +371,30 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
 
 class TestShellFlagPersists:
-    def test_default_is_off(self):
+    def test_bare_dataclass_default_is_off(self):
+        # The hand-built / environment fallback stays OFF so a STELLA_MODEL or
+        # headless run gains shell_run only on request; the desktop/saved
+        # default is separately ON (see test_saved_and_desktop_default_is_on).
         assert StellaSettings().shell_tools_enabled is False
+
+    def test_saved_and_desktop_default_is_on(self, isolated_data_dir, monkeypatch):
+        monkeypatch.delenv("STELLA_SHELL_TOOLS", raising=False)
+        # from_saved's default arms the tool for a fresh setup...
+        assert (
+            StellaSettings.from_saved(provider="ollama", model="m").shell_tools_enabled
+            is True
+        )
+        # ...and a config written before the key existed resolves ON, while an
+        # explicit false (the unticked opt-out) still resolves OFF.
+        config_module.config_path().parent.mkdir(parents=True, exist_ok=True)
+        config_module.config_path().write_text(
+            json.dumps({"provider": "ollama", "model": "m"}), encoding="utf-8"
+        )
+        assert config_module.resolve_settings().shell_tools_enabled is True
+        config_module.save_configuration(
+            StellaSettings(provider="ollama", model="m", shell_tools_enabled=False)
+        )
+        assert config_module.resolve_settings().shell_tools_enabled is False
 
     def test_saved_true_survives_and_no_command_is_persisted(self, isolated_data_dir):
         settings = StellaSettings(provider="ollama", model="m", shell_tools_enabled=True)

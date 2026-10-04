@@ -618,14 +618,14 @@ class StellaSettings:
     os_tools_enabled: bool = True
     outline_tools_enabled: bool = False
     web_tools_enabled: bool = False
-    # Runs arbitrary shell commands in the workspace. Off by default: the
-    # capability is powerful and its only guard is the owner approving each
-    # exact command, so it must never appear unless deliberately switched on.
+    # Shell + browser are *offered* by default in the desktop/saved config
+    # (see from_saved), but this bare default stays the conservative OFF
+    # fallback for from_environment and any hand-built settings, so the
+    # headless and STELLA_MODEL paths never gain them unless switched on.
+    # Either way nothing runs without approval: every shell command and every
+    # page address is confirmed by the owner, and the browser is https-only
+    # with local/private targets blocked inside the same bubblewrap jail.
     shell_tools_enabled: bool = False
-    # Opens real web pages in a headless browser (runs their JavaScript). Off
-    # by default: a full browser is the largest egress + code-execution surface
-    # Stella has, so it appears only when deliberately switched on, and every
-    # use still asks the owner to approve the exact address.
     browser_tools_enabled: bool = False
     # The saved half of the wake-word opt-in. ``wake_word`` below stays the
     # mode this launch actually runs, so the two never disagree.
@@ -854,8 +854,12 @@ class StellaSettings:
         os_tools_enabled: bool = True,
         outline_tools_enabled: bool = False,
         web_tools_enabled: bool = False,
-        shell_tools_enabled: bool = False,
-        browser_tools_enabled: bool = False,
+        # Shell and browser now default ON for the desktop UI: a saved config
+        # that predates these keys resolves to on (see resolve_settings), and a
+        # brand-new SetupDialog that omits these args starts on too. Opt out
+        # with the single Settings checkbox; every use still asks approval.
+        shell_tools_enabled: bool = True,
+        browser_tools_enabled: bool = True,
         # Wake word now defaults on for the desktop UI (opt-out stays the
         # single Settings checkbox plus STELLA_WAKE_WORD=off for one run).
         wake_word_enabled: bool = True,
@@ -961,6 +965,10 @@ class StellaSettings:
             os_tools_enabled=os_tools_env_override() is not False,
             outline_tools_enabled=outline_tools_env_override() is True,
             web_tools_enabled=web_tools_env_override() is True,
+            # Unlike the saved/desktop default, the pure-environment path keeps
+            # shell and browser env-gated OFF (opt in with STELLA_SHELL_TOOLS=1
+            # / STELLA_BROWSER_TOOLS=1): the owner chose "desktop/config only,"
+            # so a STELLA_MODEL or headless run gains nothing new by default.
             shell_tools_enabled=shell_tools_env_override() is True,
             browser_tools_enabled=browser_tools_env_override() is True,
             wake_word_enabled=wake_env_override() is True,

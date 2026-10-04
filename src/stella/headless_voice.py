@@ -112,19 +112,28 @@ _VOICE_SETUP_NEEDED = (
 
 
 def headless_settings(settings):
-    """Force wake-word off for the one-shot ``stella voice`` path.
+    """Force the continuous-ear and the risky tools off for one-shot voice.
 
-    Wake now defaults ON in the saved config so the desktop UI listens for
-    the name. ``stella voice`` has no continuous wake loop — it records a
-    single utterance per press — so arming the spotter would only load an
-    unused ONNX model and open the microphone wider than this command ever
-    needs. Its own silence endpointer (``build_wake_ear``) is independent
-    of the wake mode, so hands-free cut-off is unaffected. This keeps the
-    voice shortcut byte-for-byte the behaviour it had before the default
-    flip, per the owner's "stella voice stays as-is" scope.
+    Wake, shell and browser now default ON in the saved config so the desktop
+    UI offers them. ``stella voice`` is a single utterance per press with no
+    continuous wake loop and — per the owner's "headless stays off" scope —
+    must not silently gain an always-open spotter, a shell, or a browser. Each
+    of those would only be reachable through a spoken approval this shortcut
+    was never designed to host. So the headless wrapper disarms all three no
+    matter what was saved, and leaves every other field intact (a pure
+    override, not a mutation). The voice shortcut's own silence endpointer
+    (``build_wake_ear``) is independent of the wake mode, so hands-free
+    cut-off is unaffected — the command stays byte-for-byte what it was before
+    these defaults flipped.
     """
 
-    return dataclasses.replace(settings, wake_word="off", wake_word_enabled=False)
+    return dataclasses.replace(
+        settings,
+        wake_word="off",
+        wake_word_enabled=False,
+        shell_tools_enabled=False,
+        browser_tools_enabled=False,
+    )
 
 
 def run_headless_voice() -> int:

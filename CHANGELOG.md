@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Browser and shell are offered by default in the desktop app
+
+- **Ticked from the start.** `browser_tools_enabled` and `shell_tools_enabled`
+  now default **ON** for the saved/desktop configuration — `from_saved`'s
+  default and `resolve_settings` both read a config that predates these keys as
+  on, so a fresh setup and any older config begin with the *Browser* and *Shell
+  commands* checkboxes already ticked. Untick either one (Apply) or pass
+  `STELLA_BROWSER_TOOLS=off` / `STELLA_SHELL_TOOLS=off` to opt back out.
+- **Desktop/config only, as chosen.** The bare `StellaSettings` default and the
+  pure-environment (`STELLA_MODEL`) path stay **OFF**, and `stella voice`
+  (`headless_settings()`) now forces both off alongside the wake spotter — so a
+  headless or scripted run gains nothing new by default. The separate TINYFISH
+  **web-search** tool was intentionally left off-by-default (the ask was the
+  browser, not search).
+- **Safety is unchanged — this only offers the tools.** Registration is never
+  authorization (rule 10): every shell command still stops for approval naming
+  the **literal command**, and every page still asks to approve the **literal
+  address**. The browser stays https-only with local/private targets blocked
+  inside the same bubblewrap jail as the shell; without bubblewrap the shell
+  still falls back honestly to a confined start directory plus your approval.
+  The model-proposes / runtime-authorizes split is untouched.
+
 ### Stored API keys are health-checked at launch — quietly
 
 - **Every saved key now gets one cheap probe when Stella starts**, the same

@@ -19,11 +19,16 @@ which are easier to approve because they name one file each.
 
 ## The four fences
 
-1. **Off until you switch it on.** `shell_tools_enabled` defaults to **False**.
-   While off the model never sees the capability — it is not registered, so
-   `DO_NOTHING` is the only shell-shaped answer it can give. Turn it on with
-   the *Shell commands* checkbox in Settings, or for one launch with
-   `STELLA_SHELL_TOOLS=on` (env wins over the saved box, in both directions).
+1. **On in the desktop app; off for headless unless you turn it on.**
+   `shell_tools_enabled` defaults to **on** for the saved/desktop configuration,
+   so the *Shell commands* checkbox in Settings starts ticked; the bare and
+   environment (`STELLA_MODEL`, `stella voice`) paths keep it **off**, and while
+   off the model never sees the capability — it is not registered, so
+   `DO_NOTHING` is the only shell-shaped answer it can give. Turn it back off
+   with the checkbox (saved) or for one launch with `STELLA_SHELL_TOOLS=off`;
+   arm a headless run with `STELLA_SHELL_TOOLS=on` (env wins over the saved box,
+   in both directions). Offering the tool never runs anything — fence 2 still
+   asks for the literal command every single time.
 2. **Every single use asks.** The capability's floor is
    `RiskLevel.DANGEROUS`, which is what makes the dispatcher stop and request a
    trusted approval before anything runs. You see the **literal command** and a
@@ -111,10 +116,13 @@ unavailable.
 
 ## How to enable it
 
-Settings → the *Shell commands (run programs in your workspace)* checkbox →
-Apply. Or one launch: `STELLA_SHELL_TOOLS=on stella`. Either way each command
-still asks. If you would rather not keep it enabled, `STELLA_SHELL_TOOLS=off`
-forces it off for that launch no matter what the box says.
+It is **already on in the desktop app** — the *Shell commands (run programs in
+your workspace)* checkbox in Settings starts ticked. A `STELLA_MODEL` or
+`stella voice` (headless) run keeps it off; arm one for a single launch with
+`STELLA_SHELL_TOOLS=on stella`. Either way each command still asks. To switch
+the desktop default back off, untick the box (persisted), or use
+`STELLA_SHELL_TOOLS=off`, which forces it off for that launch no matter what the
+box says.
 
 The bubblewrap jail is **on whenever the shell capability is on and `bwrap` is
 present** — the safe default. To run confined-only even when bwrap is available,

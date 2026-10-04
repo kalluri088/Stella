@@ -664,8 +664,13 @@ def resolve_settings() -> StellaSettings | None:
         os_tools_enabled=raw.get("os_tools_enabled", True) is True,
         outline_tools_enabled=raw.get("outline_tools_enabled") is True,
         web_tools_enabled=raw.get("web_tools_enabled") is True,
-        shell_tools_enabled=raw.get("shell_tools_enabled") is True,
-        browser_tools_enabled=raw.get("browser_tools_enabled") is True,
+        # Shell and browser now default ON for the desktop UI: a saved config
+        # that predates these keys resolves to on. An explicit
+        # ``"shell_tools_enabled": false`` / ``"browser_tools_enabled": false``
+        # (the unticked opt-out) still wins. This feeds the desktop window and
+        # ``stella voice``, which forces them back off in headless_settings().
+        shell_tools_enabled=raw.get("shell_tools_enabled", True) is True,
+        browser_tools_enabled=raw.get("browser_tools_enabled", True) is True,
         # Wake word is now on by default for the desktop UI: a saved config
         # that predates the key resolves to ON. An explicit
         # ``"wake_word_enabled": false`` (the unticked opt-out) still wins.

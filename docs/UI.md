@@ -150,15 +150,19 @@ display, and can never approve a tool or change permissions.
   index duplicates
   every stored memory's text into its own file; while unchecked, that
   file is never created. A separate
-  *Wake word (always-open microphone)* box, also off by default, arms the
+  *Wake word (always-open microphone)* box, **now on by default**, arms the
   local detection ear the moment Apply rebuilds and stops that capture
   when unticked — the privacy contract, the models it needs and the
   `STELLA_WAKE_WORD` override are in `VOICE.md`.
 - Capability families: the Settings panel carries one checkbox per opt-in
-  tool family — *Desktop awareness* (on by default, but still doubly gated),
-  *Outline app tools*, *Web capability*, *Browser (open a page, run its
-  scripts)*, and *Shell commands (run programs in your workspace)* — each
-  mirrored by a `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` /
+  tool family — *Desktop awareness*, *Browser (open a page, run its
+  scripts)*, and *Shell commands (run programs in your workspace)* are **on by
+  default** in the desktop app (desktop awareness is still doubly gated, and the
+  browser and shell are approval-gated on every single use); *Outline app
+  tools* and *Web capability* stay off until ticked. The default-on browser and
+  shell apply to the saved/desktop path only — a `STELLA_MODEL` or headless
+  (`stella voice`) run keeps them off unless turned on. Each box is mirrored by a
+  `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` /
   `STELLA_BROWSER_TOOLS` / `STELLA_SHELL_TOOLS` environment override that wins
   for a single launch in either direction. A checked box only offers the tools;
   every dangerous call still raises an approval prompt naming the exact target

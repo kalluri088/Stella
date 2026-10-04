@@ -27,9 +27,13 @@ do when no backend is present.
 
 ## The fences
 
-1. **Off until you switch it on.** `browser_tools_enabled` defaults to **False**.
-   While off the model never sees the capability — it is not registered. Turn it
-   on with the *Browser* checkbox in Settings, or for one launch with
+1. **On in the desktop app; off for headless unless you turn it on.**
+   `browser_tools_enabled` defaults to **on** for the saved/desktop configuration,
+   so the *Browser* checkbox in Settings starts ticked; the bare and
+   environment (`STELLA_MODEL`, `stella voice`) paths keep it **off** until you
+   opt in. While off the model never sees the capability — it is not registered.
+   Turn it back off with the *Browser* checkbox (saved) or for one launch with
+   `STELLA_BROWSER_TOOLS=off`; turn a headless run on with
    `STELLA_BROWSER_TOOLS=on` (the environment wins over the saved box in both
    directions). Note this is deliberately a **different** variable from
    `STELLA_BROWSER`, which names the browser *binary*: a path like
@@ -71,7 +75,8 @@ do when no backend is present.
 
 This shrinks the blast radius of loading a hostile page; it is **not** a promise
 against a Chromium zero-day. The page still loads over the network, and a full
-browser is a big program. That is exactly why the capability is off by default
+browser is a big program. That is exactly why the capability is offered only in
+the desktop app by default (off for the `STELLA_MODEL` and `stella voice` paths)
 and asks on every use, and why your approval of the literal address is the
 authority — the fences only decide the damage *given* a load happens. For hard
 isolation, run Stella itself in a container or VM.

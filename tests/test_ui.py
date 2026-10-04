@@ -1373,6 +1373,42 @@ def test_the_wake_checkbox_writes_both_spellings_of_one_choice(
         root.destroy()
 
 
+def test_startup_key_sweep_stays_silent_unless_a_key_is_bad(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The window opens quietly; the background key sweep prints nothing when
+    # every stored key is healthy and surfaces exactly one transcript line
+    # when a key is rejected. The report itself is stubbed here — this proves
+    # the thread -> queue -> _tick wiring and the "only on a connection error"
+    # rule, not the probe logic (covered in test_config.py).
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    root, window, bridge, _ = make_window()
+    try:
+        def settle() -> str:
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                root.update()
+                time.sleep(0.02)
+            return window._chat.get("1.0", "end")
+
+        monkeypatch.setattr(
+            stella_config, "startup_key_health_report", lambda **_k: []
+        )
+        window.start_key_health_sweep()
+        assert "Key check:" not in settle()
+
+        monkeypatch.setattr(
+            stella_config,
+            "startup_key_health_report",
+            lambda **_k: ["Key check: OpenAI …wxyz was rejected (HTTP 401)."],
+        )
+        window.start_key_health_sweep()
+        assert "was rejected (HTTP 401)" in settle()
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_settings_preset_picker_derives_provider_and_preset(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

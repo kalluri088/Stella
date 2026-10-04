@@ -674,3 +674,80 @@ def test_a_legacy_config_without_the_wake_key_resolves_on(monkeypatch):
     assert resolved is not None
     assert resolved.wake_word_enabled is False
     assert resolved.wake_word == "off"
+
+
+# ------------------------------------------------- startup key-health sweep
+
+
+def test_startup_key_health_report_shows_only_connection_errors(monkeypatch):
+    # A healthy key is silent; only a rejected or unreachable endpoint is
+    # turned into a line — and the raw key never appears, only the redacted
+    # last-four hint the panel would show.
+    sentinel = "sk-SENTINELSECRETVALUE-99"
+    monkeypatch.setattr(provider_keys, "stored_presets", lambda: ("openai",))
+    monkeypatch.setattr(provider_keys, "effective_api_key", lambda pid: sentinel)
+
+    def _fake(_endpoint, _key, _timeout=None, **_kw):
+        return config.KeyCheck(state, "HTTP 401")
+
+    for state, expect in (
+        ("rejected", True),
+        ("unreachable", True),
+        ("verified", False),
+        ("inconclusive", False),
+    ):
+        monkeypatch.setattr(config, "check_api_key", _fake)
+        lines = config.startup_key_health_report()
+        if expect:
+            assert len(lines) == 1
+            assert "OpenAI" in lines[0]
+            assert sentinel not in lines[0]
+        else:
+            assert lines == []
+
+
+def test_startup_key_health_report_skips_unprobeable_presets(monkeypatch):
+    # custom (no endpoint until a URL is known) and the local servers take
+    # nothing to probe; a preset with no stored key is skipped too. None of
+    # them may even reach the network.
+    calls: list[str] = []
+
+    def _fake(endpoint, _key, _timeout=None, **_kw):
+        calls.append(endpoint)
+        return config.KeyCheck("rejected", "HTTP 401")
+
+    monkeypatch.setattr(config, "check_api_key", _fake)
+    monkeypatch.setattr(provider_keys, "effective_api_key", lambda pid: "sk-x")
+    monkeypatch.setattr(
+        provider_keys, "stored_presets", lambda: ("custom", "ollama")
+    )
+    assert config.startup_key_health_report() == []
+    assert calls == []
+
+    monkeypatch.setattr(provider_keys, "stored_presets", lambda: ("openai",))
+    monkeypatch.setattr(provider_keys, "effective_api_key", lambda pid: None)
+    assert config.startup_key_health_report() == []
+    assert calls == []
+
+
+def test_startup_key_health_report_does_not_false_reject_anthropic(monkeypatch):
+    # A Bearer /models call against Anthropic 401s a perfectly good key
+    # (it authenticates with x-api-key). The sweep probes it as a chat
+    # dialect, so check_api_key returns inconclusive and the launch stays
+    # silent — the OpenAI preset, by contrast, is probed as responses.
+    seen: dict[str, bool] = {}
+
+    def _fake(_endpoint, _key, _timeout=None, *, chat_dialect=False):
+        seen["chat_dialect"] = chat_dialect
+        return config.KeyCheck("inconclusive", "this endpoint guards its list")
+
+    monkeypatch.setattr(config, "check_api_key", _fake)
+    monkeypatch.setattr(provider_keys, "effective_api_key", lambda pid: "sk-ant-x")
+
+    monkeypatch.setattr(provider_keys, "stored_presets", lambda: ("anthropic",))
+    assert config.startup_key_health_report() == []
+    assert seen["chat_dialect"] is True
+
+    monkeypatch.setattr(provider_keys, "stored_presets", lambda: ("openai",))
+    assert config.startup_key_health_report() == []
+    assert seen["chat_dialect"] is False

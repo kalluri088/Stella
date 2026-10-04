@@ -359,6 +359,64 @@ def check_api_key(
     return KeyCheck("verified", "the endpoint accepted the key")
 
 
+def startup_key_health_report(
+    timeout: float = PROBE_TIMEOUT_SECONDS,
+) -> list[str]:
+    """Check every stored key once at launch and return only the problems.
+
+    The OpenAI-compatible endpoints (FreeLLMAPI and friends) are probed the
+    same way the Settings panel probes them: a cheap ``GET /models`` with the
+    Bearer key, no completion. A healthy key is silent — nothing comes back —
+    because the ask was "check all the keys, but only show a connection
+    error." Only a ``rejected`` or ``unreachable`` endpoint produces a short,
+    safe line. The key is used solely to build the request and is never
+    returned or logged; the only fragment that may appear is
+    ``redacted_hint``'s last four characters, exactly as the panel shows it.
+
+    Three categories are deliberately left unprobed, because a wrong answer
+    there would nag on a valid key every launch:
+      * a preset with no endpoint to reach (the custom slot before a base URL
+        is known, and the local Ollama/llama.cpp servers, which take no key);
+      * a preset that has no stored key at all;
+      * an endpoint that cannot be judged from its model list — ``check_api_key``
+        reports those as ``inconclusive``. That covers a Bearer call against
+        Anthropic, whose real API authenticates with ``x-api-key``, so a naive
+        probe would 401 a perfectly good key.
+    """
+
+    lines: list[str] = []
+    for preset_id in provider_keys.stored_presets():
+        preset = provider_keys.PRESETS.get(preset_id)
+        if preset is None:
+            continue
+        endpoint = preset.base_url or (
+            "https://api.openai.com/v1" if preset.id == "openai" else None
+        )
+        if endpoint is None:
+            continue
+        key = provider_keys.effective_api_key(preset.id)
+        if not key:
+            continue
+        check = check_api_key(
+            endpoint,
+            key,
+            timeout,
+            chat_dialect=provider_keys.tool_dialect_for(preset.id) == "chat",
+        )
+        redacted = provider_keys.redacted_hint(key)
+        if check.state == "rejected":
+            lines.append(
+                f"Key check: {preset.label} {redacted} was rejected "
+                f"({check.detail}). Enter a new key or pick another provider."
+            )
+        elif check.state == "unreachable":
+            lines.append(
+                f"Key check: {preset.label} {redacted} couldn't be reached "
+                f"to verify ({check.detail}). The key may still be fine."
+            )
+    return lines
+
+
 def _model_names(payload: object) -> tuple[str, ...] | None:
     """Validate the tags payload shape; None means malformed."""
 

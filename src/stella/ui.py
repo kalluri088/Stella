@@ -512,6 +512,10 @@ class StellaWindow:
             queue.Queue()
         )
         self._key_check_token = 0
+        # The startup key sweep runs once, off-thread, and posts only real
+        # connection/key errors here for _tick to print. A healthy key adds
+        # nothing, so the window opens silently in the common case.
+        self._startup_health_queue: queue.Queue[str] = queue.Queue()
         root.title(_window_title())
         root.geometry("1180x680")
         root.minsize(920, 560)
@@ -1366,6 +1370,7 @@ class StellaWindow:
             self._handle_event(event)
         self._drain_approvals()
         self._drain_key_checks()
+        self._drain_startup_health()
         self._render_working_status()
         self._render_mic_hot()
         self._root.after(100, self._tick)
@@ -2086,6 +2091,38 @@ class StellaWindow:
             )
         self._panel_key_hint.configure(text=text)
 
+    def start_key_health_sweep(self) -> None:
+        """Check every stored key once at launch, quietly and off-thread.
+
+        Fired from ``main`` for a window that already had a saved
+        configuration — never on first-run setup, which would nag the owner
+        the instant after they typed their keys. Each stored key gets the
+        same cheap ``GET /models`` probe the Settings panel uses, but with no
+        panel to show it in: a healthy key is silent and only a connection or
+        key error reaches the transcript (as an ordinary error line). It runs
+        on a daemon thread so a slow or hung endpoint never freezes the
+        window, and the results drain through ``_tick`` like the panel's own
+        checks. The key itself is never printed — only the redacted hint.
+        """
+
+        def sweep() -> None:
+            try:
+                messages = config.startup_key_health_report()
+            except Exception:  # noqa: BLE001 - a broken sweep stays silent
+                return
+            for message in messages:
+                self._startup_health_queue.put(message)
+
+        threading.Thread(target=sweep, daemon=True).start()
+
+    def _drain_startup_health(self) -> None:
+        while True:
+            try:
+                message = self._startup_health_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._line(message, role="error")
+
     def _draft_settings(self) -> StellaSettings:
         fields = self._settings_fields
         preset_id = self._preset_id()
@@ -2621,6 +2658,7 @@ def main() -> None:
 
     apply_theme(load_theme_choice())
     settings = config.resolve_settings()
+    first_run = settings is None
     if settings is None:
         root = tk.Tk()
         root.withdraw()
@@ -2631,7 +2669,11 @@ def main() -> None:
         root.destroy()
     bridge = StellaBridge(lambda: build_application(settings))
     root = tk.Tk()
-    StellaWindow(root, bridge, settings)
+    window = StellaWindow(root, bridge, settings)
+    # A returning owner's keys are checked in the background; a first run
+    # just left the setup dialog, so it is not nagged a second later.
+    if not first_run:
+        window.start_key_health_sweep()
     try:
         root.mainloop()
     finally:

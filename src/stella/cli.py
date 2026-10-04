@@ -5,6 +5,7 @@ import difflib
 import json
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -31,7 +32,7 @@ from stella.commands import (
     suggest_commands,
     version_line,
 )
-from stella.config import resolve_settings
+from stella.config import resolve_settings, startup_key_health_report
 from stella.headless_voice import run_headless_voice
 from stella.llm import Message
 from stella.outline_tools import active_reminder_pump
@@ -837,6 +838,27 @@ def run_persona_reflection(output_fn: Callable[[str], None] = print) -> int:
         application.close()
 
 
+def _start_key_health_sweep() -> None:
+    """Check every stored key once in the background; warn on stderr only.
+
+    The interactive CLI's mirror of the desktop sweep: a healthy key is
+    silent and only a connection or key error prints. It runs on a daemon
+    thread so a slow or hung endpoint never delays the prompt, and it writes
+    to stderr so a scripted stdout stays clean. The key is never printed —
+    only ``redacted_hint``'s last four characters. A first run (nothing
+    stored) simply finds nothing and says nothing.
+    """
+
+    def sweep() -> None:
+        try:
+            for message in startup_key_health_report():
+                print(message, file=sys.stderr, flush=True)
+        except Exception:  # noqa: BLE001 - a broken sweep stays silent
+            return
+
+    threading.Thread(target=sweep, daemon=True).start()
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Dispatch the stella command: chat by default, persona subcommands."""
 
@@ -1015,6 +1037,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+    _start_key_health_sweep()
     application = build_application(settings)
     for line in format_startup(application.session.stella):
         print(line)

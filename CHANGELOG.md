@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Stored API keys are health-checked at launch — quietly
+
+- **Every saved key now gets one cheap probe when Stella starts**, the same
+  way FreeLLMAPI and the other OpenAI-compatible endpoints are checked when
+  you pick a provider in Settings: a single `GET /models` with the Bearer
+  key, no completion. A brand-new `config.startup_key_health_report()` walks
+  the stored presets and returns **only the problems** — nothing is returned
+  for a key that verifies.
+- **Silent unless something is wrong.** The desktop window opens as it always
+  did; a background daemon thread runs the sweep and the *only* thing that can
+  reach the transcript is a connection or key error, printed once as an error
+  line ("… was rejected" / "… couldn't be reached"). The interactive `stella`
+  CLI mirrors it on **stderr**, so a scripted stdout stays clean. Nothing ever
+  announces that the check ran or that a key is healthy.
+- **Never a nag on a good key.** A first run (no stored config) is skipped
+  outright, and `stella voice` (one-shot) is never swept. Presets with no
+  endpoint to reach — the custom slot before a URL is known, and the local
+  Ollama/llama.cpp servers — are not probed, and neither is a preset with no
+  stored key. A Bearer call against **Anthropic** (whose real API uses
+  `x-api-key`, not Bearer) is probed as a chat dialect, so it comes back
+  *inconclusive* and stays silent instead of false-rejecting a valid key.
+- **The key is never shown.** A reported line carries only the provider label
+  and `redacted_hint`'s last four characters, never the key itself. No new
+  dependencies, writes, or authority: the model still proposes and the runtime
+  still authorizes; this only *reads* the existing key store and *reports*
+  reachability.
+
 ### Wake word now starts ON in the desktop app
 
 - **Say the name without opening Settings first.** The wake-word checkbox is

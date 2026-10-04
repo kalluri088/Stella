@@ -1550,6 +1550,25 @@ def test_window_title_follows_the_session_marker(
     assert stella_ui._window_title() == "Stella (session)"
 
 
+def test_dialog_titles_carry_the_session_marker_for_the_window_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The Hyprland rule parks agent windows on workspace 6 by title
+    # (full-match regex ^Stella \(session\).*). Dialogs are separate
+    # top-levels, so their titles must carry the same marker or they pop
+    # onto the owner's active workspace and steal the screen anyway.
+    monkeypatch.delenv("STELLA_SESSION_WINDOW", raising=False)
+    assert stella_ui._approval_dialog_title() == "Stella needs approval"
+    assert stella_ui._welcome_dialog_title() == "Welcome to Stella"
+    monkeypatch.setenv("STELLA_SESSION_WINDOW", "1")
+    assert stella_ui._approval_dialog_title().startswith(
+        stella_ui._SESSION_TITLE
+    )
+    assert stella_ui._welcome_dialog_title().startswith(
+        stella_ui._SESSION_TITLE
+    )
+
+
 def test_picker_offers_a_verified_key_endpoint() -> None:
     root, window, bridge, _ = make_window()
     try:

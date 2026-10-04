@@ -483,6 +483,34 @@ def _window_title() -> str:
     return _PLAIN_TITLE
 
 
+def _is_session_window() -> bool:
+    """True when this process was launched as an agent session window.
+
+    Dialogs carry the same title prefix so the workspace-6 window rule —
+    which matches ``^Stella \\(session\\).*`` — parks them too; a dialog
+    popping onto the owner's active workspace is exactly the steal the
+    rule exists to prevent.
+    """
+
+    return _window_title() == _SESSION_TITLE
+
+
+def _approval_dialog_title() -> str:
+    return (
+        "Stella (session) needs approval"
+        if _is_session_window()
+        else "Stella needs approval"
+    )
+
+
+def _welcome_dialog_title() -> str:
+    return (
+        "Stella (session) welcome"
+        if _is_session_window()
+        else "Welcome to Stella"
+    )
+
+
 class StellaWindow:
     """One Tk window driven entirely by posted bridge commands."""
 
@@ -1480,7 +1508,7 @@ class StellaWindow:
         preview: ActionPreview | None = None,
     ) -> None:
         dialog = tk.Toplevel(self._root)
-        dialog.title("Stella needs approval")
+        dialog.title(_approval_dialog_title())
         dialog.resizable(False, False)
         dialog.configure(background=THEME.surface)
 
@@ -1769,8 +1797,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Stores conversation text locally; 'stella reflect' turns "
-            "it into style proposals you approve.",
+            text="Local chat text; 'stella reflect' proposes edits.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._semantic_var = tk.BooleanVar(
@@ -1797,8 +1824,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Indexes memories by embedding so related phrasings match "
-            "as weaker hints, never as understanding.",
+            text="Embedding hints match related phrasings; never proof.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._os_tools_var = tk.BooleanVar(
@@ -1812,8 +1838,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Adds screen_read, window_focus, key_send on Hyprland; "
-            "every use asks first and names the window.",
+            text="Screen, focus, typing and window control; asks each use.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._outline_tools_var = tk.BooleanVar(
@@ -1827,8 +1852,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Adds outline_search/create/update/bulk over Outline's "
-            "local API; writes need approval.",
+            text="Outline notes search, create, update; writes ask first.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._web_tools_var = tk.BooleanVar(value=settings.web_tools_enabled)
@@ -1840,8 +1864,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Adds web_search and web_fetch (TinyFish or keyless ddgs); "
-            "every use asks first.",
+            text="Web search and page fetch; every use asks first.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         tinyfish_row = ttk.Frame(frame)
@@ -1869,11 +1892,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Adds shell_run: Stella runs one command you approve by "
-            "name, output bounded and timed out. When bubblewrap is present "
-            "the command runs in a filesystem jail (host read-only, your home "
-            "hidden); without it it is confined to the workspace only and "
-            "says so. Off by default; every single use asks first.",
+            text="One approved command per use, jailed to your workspace.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._browser_tools_var = tk.BooleanVar(
@@ -1887,12 +1906,7 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Adds browser_read and browser_screenshot: Stella opens one "
-            "address you approve in a headless browser on this machine, runs "
-            "its JavaScript, and returns the rendered text or a saved PNG. A "
-            "real request leaves to that site; local/private addresses are "
-            "blocked and a throwaway profile is used (never your logins). Off "
-            "by default; every single use asks first.",
+            text="One approved page in a throwaway browser; never your logins.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._wake_var = tk.BooleanVar(value=settings.wake_word_enabled)
@@ -1904,16 +1918,13 @@ class StellaWindow:
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Say \"hey Jarvis\" to start listening; the mic stays open "
-            "for a local detector that records nothing until the phrase fires.",
+            text="Say your wake phrase; nothing is recorded until it fires.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="The API key is verified once, then kept in a private file "
-            "inside Stella's data directory; an exported OPENAI_API_KEY "
-            "overrides it for that launch.",
+            text="Keys are verified once and kept in a private file.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         actions = ttk.Frame(frame)
@@ -2386,7 +2397,7 @@ class SetupDialog:
         self._parent = parent
         self._tested_draft: tuple[object, ...] | None = None
         dialog = tk.Toplevel(parent)
-        dialog.title("Welcome to Stella")
+        dialog.title(_welcome_dialog_title())
         dialog.resizable(False, False)
         dialog.configure(background=THEME.surface)
         _configure_styles(parent)

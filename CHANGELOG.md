@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Agent Stella windows actually reach workspace 6 now
+
+- **What changed.** The Hyprland rule that is supposed to park
+  agent-launched Stella windows on workspace 6 had never matched: title
+  matchers are *full-match regexes*, and the bare
+  `initial_title = "Stella (session)"` reads `(session)` as a capture
+  group, not literal parentheses. Fixed in
+  `~/.config/hypr/hyprland.lua` to `^Stella \\(session\\).*`, and
+  `ui.py` now titles the approval and welcome dialogs with the same
+  session marker (`_approval_dialog_title`, `_welcome_dialog_title`) so
+  those separate top-levels get parked too. AGENTS.md gained the standing
+  **Laptop discipline** rules (workspace 6 only, 1–2 test files per run,
+  `free -m` around model loads) so they survive every session.
+- **Why.** Session windows were opening on the owner's active workspace —
+  the exact steal the rule exists to prevent — because a dead rule plus
+  un-titled dialogs left no window-manager hook behind.
+- **Proof.** Live probes on the owner's session: before the fix, a
+  "Stella (session)" window landed on the active workspace 3; after it,
+  the main window and both dialog title kinds land on workspace 6
+  *silently* with the owner's focus untouched. `tests/test_ui.py` pins
+  the title contract (71 passed, single file, under timeout).
+
 ### Stella can open, close and move windows on your desktop
 
 - **What changed.** The desktop package registers a fourth tool,

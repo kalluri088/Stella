@@ -41,6 +41,17 @@ practical; add or modify focused tests; update docs for meaningful changes.
 Avoid giant all-context prompts — one concrete task with constraints and a
 validation list per change.
 
+**Laptop discipline (owner rule, stated repeatedly).** This machine is the
+owner's daily driver, not a test rig.
+
+* Stella GUI instances and Stella test windows open on **Hyprland
+  workspace 6 only** — never in the owner's active workspace.
+* Run pytest in batches of **one or two files**, each under `timeout`,
+  bracketed by `free -m`. Never run the whole suite or parallel jobs in one
+  command, even when it "looks cheap".
+* Before launching anything that loads models (voice, OCR, embeddings),
+  check `free -m` first and stop instead of adding load when it is tight.
+
 **Definition of done** for a meaningful change: implementation → tests →
 security/invariant review → documentation → validation. At minimum:
 

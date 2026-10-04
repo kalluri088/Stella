@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Desktop awareness: already built, now consistent across every launch path
+
+- **What it actually is.** "Desktop awareness" is not a stub and is not a
+  no-op — `src/stella/desktop/` ships three real, approval-gated capabilities
+  (`screen_read` via grim→tesseract OCR, `window_focus`, `key_send`), and it
+  has been **ticked ON by default** in the desktop UI the whole time. Nothing
+  needed to be implemented to satisfy "tick it by default"; it already was.
+- **Parity for the pure-environment path.** The saved/desktop configuration
+  defaulted desktop awareness on, but a run configured entirely through the
+  environment (`from_environment`) left it off unless `STELLA_OS_TOOLS` was
+  set. That default is now **on to match**, and it stays doubly safe: the
+  tools only appear when a real windowing adapter is found (a headless box
+  with no compositor gets none), and every single use still asks for trusted
+  approval. `STELLA_OS_TOOLS=0` still turns it off for one run.
+- **Docs corrected.** `ARCHITECTURE.md` and `ROADMAP.md` still named the
+  retired `src/stella/os_tools.py`; they now point at the `src/stella/desktop/`
+  package and state backend status honestly: Hyprland measured and working,
+  sway/X11 written-but-unverified, KDE/GNOME/Wayland-screencopy still stubs.
+
 ### Large pastes collapse to a colored chip
 
 - **Pasting a wall of text no longer wrecks the composer or the transcript.**

@@ -951,7 +951,12 @@ class StellaSettings:
             ),
             transcripts_enabled=transcripts_env_override() is True,
             semantic_memory_enabled=semantic_env_override() is True,
-            os_tools_enabled=os_tools_env_override() is True,
+            # Desktop awareness is the one capability family that defaults ON
+            # in both the saved and the pure-environment path: it stays
+            # double-gated (a real windowing adapter must be found, and every
+            # use needs approval), so a headless box simply gets no tools. An
+            # explicit STELLA_OS_TOOLS=0 still turns it off.
+            os_tools_enabled=os_tools_env_override() is not False,
             outline_tools_enabled=outline_tools_env_override() is True,
             web_tools_enabled=web_tools_env_override() is True,
             shell_tools_enabled=shell_tools_env_override() is True,

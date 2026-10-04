@@ -344,8 +344,10 @@ working and helping me, even if not the fastest."
   pre-decision router remains separate and sketch-only.
 - **B6. Desktop awareness tools — done.** Compendium item 6, built on
   reports 03/11/13 but corrected where the live 0.56.2/Omarchy machine
-  disagreed with them (`src/stella/os_tools.py`). Three capabilities,
-  all opt-in *and* environment-gated (a real Hyprland signature plus
+  disagreed with them (`src/stella/desktop/`). Three capabilities,
+  default-on *and* environment-gated (a real session adapter — Hyprland is
+  measured; sway/X11 written-but-unverified; KDE/GNOME/Wayland-screencopy are
+  still stubs — plus
   `hyprctl`/`grim`/`tesseract`/`wtype` on `PATH`), so the model never
   sees a tool that could only fail:
   `screen_read` (grim → `tesseract --psm 6`, bounded 6 000-char OCR

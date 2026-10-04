@@ -617,3 +617,16 @@ def test_desktop_awareness_is_on_by_default():
         provider="ollama", model="m", os_tools_enabled=False
     )
     assert off.os_tools_enabled is False
+
+
+def test_desktop_awareness_is_on_by_default_in_the_environment_path(
+    monkeypatch,
+):
+    # Parity with the saved/desktop path: a pure-environment run also
+    # starts desktop awareness ON (still double-gated at build time), and
+    # an explicit STELLA_OS_TOOLS=0 turns it off.
+    monkeypatch.setenv("STELLA_MODEL", "m")
+    monkeypatch.delenv("STELLA_OS_TOOLS", raising=False)
+    assert StellaSettings.from_environment().os_tools_enabled is True
+    monkeypatch.setenv("STELLA_OS_TOOLS", "0")
+    assert StellaSettings.from_environment().os_tools_enabled is False

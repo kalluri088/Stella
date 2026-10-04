@@ -489,14 +489,21 @@ content is information only (rules 3, 6, 10).
 
 ### Desktop tools
 
-`stella.os_tools` adds three opt-in capabilities for a Hyprland session:
+`stella.desktop` (the `src/stella/desktop/` package — formerly a single
+`os_tools.py`) adds three capabilities behind the `os_tools_enabled` flag:
 `screen_read` (grim capture piped to local `tesseract --psm` OCR),
-`window_focus`, and `key_send` (wtype into a focus-verified window). The
-module encodes the report-03/11/13 surface rules — and, where the live
+`window_focus`, and `key_send` (wtype into a focus-verified window). A small
+backend registry probes for a session in order (Hyprland → sway → KDE → GNOME
+→ X11/EWMH → Wayland screencopy) and returns these three tools only when a
+complete adapter is found; otherwise the model sees nothing. The package
+encodes the report-03/11/13 surface rules — and, where the live
 0.56.2/Omarchy build disagreed with them, the measured truth instead: the
 instance flag is `-i` (not `-r`), focus dispatches through the compositor's
 Lua API (`hl.dispatch(hl.dsp.focus{window=…})` via `hyprctl eval`), and
-grim takes `X,Y WxH` written to stdout with a trailing `-`.
+grim takes `X,Y WxH` written to stdout with a trailing `-`. Backend status:
+Hyprland is fully implemented and measured on this machine; sway and
+X11/EWMH are written but unverified on a live session; KDE, GNOME and the
+Wayland screencopy adapter are still stubs (`probe` returns `None`).
 
 Two invariants hold the trust model. No decision reads a subprocess return
 code: reads require parseable JSON of the expected shape (the compositor
@@ -744,7 +751,7 @@ described in the architecture above, not here):
 │       ├── ollama_client.py   # local Ollama client
 │       ├── ollama_embedding.py # Ollama /api/embed provider
 │       ├── openai_client.py   # OpenAI-compatible client
-│       ├── os_tools.py        # opt-in Hyprland screen/focus/type tools
+│       ├── desktop/           # screen/focus/type tools pkg (was os_tools.py)
 │       ├── outline_tools.py   # opt-in Outline app search/create/update tools
 │       ├── persona.py         # style files, edit snapshot history, reflection
 │       ├── proactivity.py     # due-task surface during interaction

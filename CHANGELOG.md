@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Large pastes collapse to a colored chip
+
+- **Pasting a wall of text no longer wrecks the composer or the transcript.**
+  A paste of **4+ lines or 400+ characters** folds into a single violet chip —
+  `[pasted 12 lines · 3,400 chars]` — in the three-line input box, and the same
+  chip (a dedicated `pasted` color tag shared between the composer and the
+  chat) renders in the transcript instead of the raw blob. Smaller pastes are
+  inserted verbatim, exactly as before.
+- **The chip is a label, never a data-loss shortcut.** The full pasted text is
+  held in a per-window registry and re-expanded at the moment the message is
+  posted, so **Stella and any slash-command template receive the complete text
+  byte-for-byte** — the model proposes on the real input, the display is only
+  cosmetic. Recalling a sent message (Up/Down) re-applies the chip so a
+  re-send still expands to the whole paste. The chip is plain editable text
+  (not atomic, not click-to-expand): deleting part of it breaks that one
+  chip's match and the leftover is sent literally, a deliberate Tk trade-off
+  over non-editable widgets. No new writes to config, logs, or argv; the
+  registry lives and dies with the window.
+
 ### Stella stops narrating its own architecture
 
 - **The "Observe → Understand → Decide → Act → Remember → Adapt" monologue is

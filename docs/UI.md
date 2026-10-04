@@ -73,6 +73,20 @@ display, and can never approve a tool or change permissions.
   the first (Up) or last (Down) line, so multi-line editing keeps
   normal cursor keys, and pressing Down past the newest entry restores
   the draft the recall started from.
+  A large paste collapses to a colored chip in the composer —
+  `[pasted 12 lines · 3,400 chars]` — so a wall of text (a log, a file,
+  a stack trace) never blows up the three-line input box or the
+  transcript. A paste becomes a chip at **4 or more lines, or 400 or
+  more characters**; anything smaller is inserted verbatim. The chip is
+  a display label only (not click-to-expand) and is purely decorative:
+  the **full pasted text is kept in the window and sent to Stella
+  unchanged** when the message is posted, and it is what slash-command
+  templates and the model actually see. The transcript renders the same
+  chip (its own violet tag, shared with the composer) rather than the
+  raw blob, and recalling a sent message re-applies the chip so re-sending
+  still expands to the complete text. Deleting part of a chip breaks that
+  one chip's match and the leftover is sent literally — the chips are
+  plain editable text, a deliberate Tk trade-off over non-atomic widgets.
   While a turn runs, the status line counts elapsed seconds
   ("Stella is working · 12 s") so a slow local model reads as slow, not
   broken; once the runtime validates a tool call, the line upgrades to

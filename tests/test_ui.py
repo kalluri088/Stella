@@ -240,6 +240,149 @@ def test_input_recall_walks_sent_messages_like_a_terminal() -> None:
         root.destroy()
 
 
+def _paste(root: tk.Tk, window: StellaWindow, text: str) -> None:
+    """Load the clipboard and run the paste handler deterministically.
+
+    We drive ``_on_paste`` directly (rather than ``event_generate``) so the
+    test does not depend on a window-manager clipboard handshake; the
+    handler itself reads ``CLIPBOARD`` the same way Ctrl+V would.
+    """
+    window._input.clipboard_clear()
+    window._input.clipboard_append(text)
+    root.update()
+    window._input.mark_set("insert", "end")
+    assert window._on_paste() == "break"
+
+
+def test_large_paste_collapses_to_a_colored_chip() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        raw = "first\nsecond\nthird\nfourth\nfifth\nsixth"
+        _paste(root, window, raw)
+        token = f"[pasted 6 lines · {len(raw)} chars]"
+        # The box shows the chip, never the six raw lines.
+        assert window._input.get("1.0", "end").strip() == token
+        # The chip carries its own color tag.
+        assert "pasted" in window._input.tag_names("1.0")
+        # The real text is kept, intact, for send-time expansion.
+        assert window._pasted[token] == raw
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_small_paste_inserts_verbatim() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        raw = "one\ntwo"  # 2 lines, well under 400 chars
+        _paste(root, window, raw)
+        assert window._input.get("1.0", "end").strip() == raw
+        assert "pasted" not in window._input.tag_names("1.0")
+        assert window._pasted == {}
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_paste_collapse_threshold_boundaries() -> None:
+    is_large = StellaWindow._is_large_paste
+    # Exactly four lines trips the line rule.
+    assert is_large("a\nb\nc\nd")
+    # Three short lines trip neither rule.
+    assert not is_large("a\nb\nc")
+    # Three lines but 400+ chars trips the char rule.
+    assert is_large(("x" * 139 + "\n") * 2 + "x" * 120)
+    # A single very long line trips the char rule too.
+    assert is_large("y" * 400)
+    # Just under both thresholds stays raw.
+    assert not is_large("z" * 399)
+
+
+def test_collapsed_paste_sends_the_full_text() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        raw = "Traceback line 1\nline 2 of the log\nline 3 more detail\nline 4 end"
+        _paste(root, window, raw)
+        token = f"[pasted 4 lines · {len(raw)} chars]"
+        window._send()
+        settle(root, window)
+        # The model received the real multi-line text, not the chip.
+        assert brain.inputs == [raw]
+        transcript = window._chat.get("1.0", "end")
+        assert token in transcript
+        assert raw not in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_command_parser_sees_expanded_paste(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, window, bridge, _ = make_window()
+    seen: list[str] = []
+
+    def fake_parse(text: str):
+        seen.append(text)
+        # Return nothing (None): the send falls through to a normal turn.
+
+    monkeypatch.setattr(stella_ui, "parse_command_line", fake_parse)
+    try:
+        raw = "alpha\nbeta\ngamma\ndelta"
+        _paste(root, window, raw)
+        window._send()
+        settle(root, window)
+        # parse_command_line is handed the expanded text, exactly as the
+        # model is — a slash command's argument is never the raw chip.
+        assert seen == [raw]
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_recall_reapplies_the_chip_and_resends_full_text() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        raw = "one\ntwo\nthree\nfour"
+        _paste(root, window, raw)
+        token = f"[pasted 4 lines · {len(raw)} chars]"
+        window._send()
+        settle(root, window)
+        # Up recalls the chip form (not the wall of text) and re-colors it.
+        assert window._recall(-1) == "break"
+        assert window._input.get("1.0", "end").strip() == token
+        assert "pasted" in window._input.tag_names("1.0")
+        # Sending the recalled chip re-expands through the registry.
+        window._send()
+        settle(root, window)
+        assert brain.inputs == [raw, raw]
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_same_size_pastes_get_unique_tokens() -> None:
+    root, window, bridge, _ = make_window()
+    try:
+        blob_a = "aaaa\nbbbb\ncccc\ndddd"
+        blob_b = "eeee\nffff\ngggg\nhhhh"  # identical line and char count
+        assert len(blob_a) == len(blob_b)
+        _paste(root, window, blob_a)
+        _paste(root, window, blob_b)
+        assert len(window._pasted) == 2
+        tokens = list(window._pasted)
+        assert tokens[0] != tokens[1]
+        # Each chip expands back to its own text, in reading order.
+        assert window._expand_pastes(tokens[0] + " " + tokens[1]) == (
+            blob_a + " " + blob_b
+        )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_transcript_separates_roles_in_the_widget_tree() -> None:
     # The palette file guards the colors; this guards that the window
     # actually paints them: the user's message renders as a "> "

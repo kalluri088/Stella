@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import threading
 import time
 import tkinter as tk
@@ -103,6 +104,10 @@ class Theme:
     # of the brand accent: accent == ok in every palette, and a marker
     # derived from brand fields would read as just another teal widget.
     user_head: str
+    # The collapsed-paste chip ("[pasted 12 lines · 3,400 chars]"). Its own
+    # color so a folded blob reads as a distinct object, not body text; a
+    # violet that collides with no brand or status color in either palette.
+    pasted: str
 
 
 _DARK_THEME = Theme(
@@ -124,6 +129,7 @@ _DARK_THEME = Theme(
     warning="#d97706",
     user_quote="#292524",
     user_head="#e7e5e4",
+    pasted="#a78bfa",
 )
 
 _LIGHT_THEME = Theme(
@@ -148,6 +154,7 @@ _LIGHT_THEME = Theme(
     # (#f5f5f4) of the old two-band design washed out against #ffffff.
     user_quote="#e7e5e4",
     user_head="#1c1917",
+    pasted="#7c3aed",
 )
 
 THEMES: dict[str, Theme] = {"dark": _DARK_THEME, "light": _LIGHT_THEME}
@@ -155,6 +162,11 @@ DEFAULT_THEME = "dark"
 
 # Frame characters for the working-status spinner (100 ms tick).
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# A paste this big collapses to a colored chip in the composer and the
+# transcript; the full text is still sent to Stella unchanged.
+_PASTE_COLLAPSE_LINES = 4
+_PASTE_COLLAPSE_CHARS = 400
 
 THEME = _DARK_THEME
 _theme_name = DEFAULT_THEME
@@ -644,6 +656,14 @@ class StellaWindow:
         self._history_draft = ""
         self._input.bind("<Up>", lambda _event: self._recall(-1))
         self._input.bind("<Down>", lambda _event: self._recall(1))
+        # A large paste collapses to a colored chip so the 3-line box and
+        # the transcript stay readable; the real text is kept here and
+        # re-expanded only at send. The registry lives for the window's
+        # life so history recall can re-expand too.
+        self._pasted: dict[str, str] = {}
+        self._paste_seq = 0
+        self._input.tag_configure("pasted", foreground=THEME.pasted)
+        self._input.bind("<<Paste>>", self._on_paste)
         hint_row = ttk.Frame(composer, style="Card.TFrame")
         hint_row.pack(fill="x", padx=10, pady=(0, 6))
         ttk.Label(
@@ -850,6 +870,9 @@ class StellaWindow:
             spacing3=0,
         )
         chat.tag_configure("gap", background=THEME.window)
+        # The collapsed-paste chip's color, shared with the composer tag so
+        # a folded blob reads identically in the box and the transcript.
+        chat.tag_configure("pasted", foreground=THEME.pasted)
 
     def _line(self, text: str, role: str = "note") -> None:
         chat = self._chat
@@ -869,7 +892,7 @@ class StellaWindow:
                 # would otherwise be a 40-pixel stripe).
                 for line in (body, *rest):
                     chat.insert("end", "> ", ("quote", "head-user"))
-                    chat.insert("end", line, ("quote", "body-user"))
+                    self._insert_user_line(chat, line)
                     chat.insert("end", "\n", ("quote",))
             else:
                 # Stella's reply carries no label and no band: it starts
@@ -899,23 +922,27 @@ class StellaWindow:
                 text="Finish or cancel the recording first."
             )
             return
-        user_input = self._input.get("1.0", "end").strip()
-        if not user_input or self._busy:
+        # The composer holds the chip form; the model must see the real
+        # text. `display` is what the transcript and recall show, `text`
+        # is the exact payload sent — a collapsed paste loses nothing.
+        display = self._input.get("1.0", "end").strip()
+        if not display or self._busy:
             return
+        text = self._expand_pastes(display)
         self._input.delete("1.0", "end")
-        if not self._sent_history or self._sent_history[-1] != user_input:
-            self._sent_history.append(user_input)
+        if not self._sent_history or self._sent_history[-1] != display:
+            self._sent_history.append(display)
         self._history_pos = None
         self._history_draft = ""
-        self._line(f"You: {user_input}", role="user")
-        call = parse_command_line(user_input)
+        self._line(f"You: {display}", role="user")
+        call = parse_command_line(text)
         if call is not None:
             # A typed command is handled here, on the view side of the
             # bridge: it never reaches the model and never posts a turn
             # unless a template expands into one below.
             self._run_command(call)
             return
-        self._start_turn(user_input)
+        self._start_turn(text)
 
     def _send_on_enter(self, _event=None) -> str:
         # Bound to Return/KP_Enter. "break" stops Tk inserting a newline.
@@ -927,6 +954,96 @@ class StellaWindow:
         # so the default binding does not add a second one.
         self._input.insert("insert", "\n")
         return "break"
+
+    # -------------------------------------------------------- paste collapse
+
+    @staticmethod
+    def _is_large_paste(text: str) -> bool:
+        return (
+            text.count("\n") + 1 >= _PASTE_COLLAPSE_LINES
+            or len(text) >= _PASTE_COLLAPSE_CHARS
+        )
+
+    def _mint_paste_token(self, text: str) -> str:
+        """A readable, unique chip label whose payload is kept separately."""
+
+        lines = text.count("\n") + 1
+        chars = len(text)
+        base = f"[pasted {lines} lines · {chars} chars]"
+        token = base
+        existing = self._pasted.get(token)
+        while existing is not None and existing != text:
+            # Same dimensions, different blob: disambiguate so each chip
+            # expands back to its own pasted text.
+            self._paste_seq += 1
+            token = f"{base[:-1]} · {self._paste_seq}]"
+            existing = self._pasted.get(token)
+        return token
+
+    def _on_paste(self, _event=None) -> str:
+        # Intercept Ctrl+V / menu paste. A large blob becomes a colored chip
+        # with its real text stashed for send-time expansion; anything the
+        # clipboard cannot supply falls through to Tk's default paste.
+        try:
+            text = self._input.selection_get(selection="CLIPBOARD")
+        except tk.TclError:
+            return ""
+        if self._input.tag_ranges("sel"):
+            self._input.delete("sel.first", "sel.last")
+        if self._is_large_paste(text):
+            token = self._mint_paste_token(text)
+            self._pasted[token] = text
+            self._input.insert("insert", token, "pasted")
+        else:
+            self._input.insert("insert", text)
+        return "break"
+
+    def _paste_pattern(self) -> re.Pattern[str] | None:
+        """A capturing regex over every known chip token, or None."""
+
+        if not self._pasted:
+            return None
+        return re.compile(
+            "(" + "|".join(re.escape(token) for token in self._pasted) + ")"
+        )
+
+    def _expand_pastes(self, display: str) -> str:
+        """Replace every chip token with the text it stands for, in one pass."""
+
+        pattern = self._paste_pattern()
+        if pattern is None:
+            return display
+        return pattern.sub(lambda match: self._pasted[match.group(0)], display)
+
+    def _insert_user_line(self, chat: tk.Text, line: str) -> None:
+        # Paint one user transcript line: a collapsed-paste chip keeps its
+        # own color while the rest stays body text. The chip is display
+        # only — the full text was already expanded for the model at send.
+        pattern = self._paste_pattern()
+        if pattern is None:
+            chat.insert("end", line, ("quote", "body-user"))
+            return
+        for piece in pattern.split(line):
+            if not piece:
+                continue
+            tag = "pasted" if piece in self._pasted else "body-user"
+            chat.insert("end", piece, ("quote", tag))
+
+    def _tag_pasted_tokens(self, widget: tk.Text) -> None:
+        """Color any chip tokens already present in a Text widget."""
+
+        if not self._pasted:
+            return
+        content = widget.get("1.0", "end-1c")
+        for token in self._pasted:
+            start = content.find(token)
+            while start != -1:
+                widget.tag_add(
+                    "pasted",
+                    f"1.0+{start}c",
+                    f"1.0+{start + len(token)}c",
+                )
+                start = content.find(token, start + len(token))
 
     def _start_turn(self, text: str) -> None:
         self._busy = True
@@ -1019,6 +1136,9 @@ class StellaWindow:
         self._input.delete("1.0", "end")
         if text:
             self._input.insert("1.0", text)
+            # A recalled message keeps its chips colored; the stored text is
+            # the display form, so sending re-expands through the registry.
+            self._tag_pasted_tokens(self._input)
         self._input.mark_set("insert", "end-1c")
         return "break"
 

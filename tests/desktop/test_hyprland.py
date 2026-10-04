@@ -370,3 +370,202 @@ def test_ids_must_look_like_hyprland_window_ids() -> None:
     assert WINDOW_ID_RE.match("0x1234ABCD")
     assert not WINDOW_ID_RE.match("0x1234abcd; dispatch exec x")
     assert not WINDOW_ID_RE.match("foot")
+
+
+# ------------------------------------------- window management (Phase A)
+
+NEW = {
+    "address": "0xabc0ffee",
+    "class": "chromium",
+    "title": "New Tab",
+    "pid": 900,
+    "workspace": {"id": 1},
+}
+
+
+def make_manager(responders):
+    """Hyprland on the fake runner with the settle sleep removed."""
+
+    runner = FakeRunner(**responders)
+    hyprland = Hyprland(
+        SIGNATURE,
+        wayland_display="wayland-1",
+        xdg_runtime_dir="/run/user/1000",
+        runner=runner,
+        sleep=lambda _seconds: None,
+    )
+    return hyprland, runner
+
+
+def dispatch_responder(state):
+    """Callable responder: ``eval`` chunks answer ok; reads use ``state``.
+
+    ``state`` is a mutable dict the test flips to model the effect of the
+    dispatch between the first and later ``clients`` reads.
+    """
+
+    def answer(argv, _stdin=None):
+        if "eval" in argv:
+            state.setdefault("evals", []).append(argv[-1])
+            return state.get("eval_process", FakeProcess(0, b"ok\n", b""))
+        return json_process(state["clients"]())
+
+    return answer
+
+
+def test_close_uses_lua_window_close_and_verifies_absence() -> None:
+    seen = {"n": 0}
+
+    def clients():
+        seen["n"] += 1
+        return CLIENTS if seen["n"] == 1 else CLIENTS[:1]
+
+    state = {"clients": clients}
+    hyprland, _ = make_manager({"hyprctl": dispatch_responder(state)})
+    assert hyprland.close("0xfeedface") is True
+    chunk = state["evals"][0]
+    assert "hl.dsp.window.close{window=w}" in chunk
+    assert "0xfeedface" in chunk  # the exact, validated id
+    assert "ipairs(hl.get_windows())" in chunk  # resolved, never interpolated raw
+
+
+def test_close_reports_unverified_while_the_window_survives() -> None:
+    state = {"clients": lambda: CLIENTS}
+    hyprland, runner = make_manager({"hyprctl": dispatch_responder(state)})
+    assert hyprland.close("0xfeedface") is False
+    clients_calls = [argv for argv in runner.argvs() if "clients" in argv]
+    assert len(clients_calls) == 4  # a bounded ladder, then it stops asking
+
+
+def test_close_raises_when_the_compositor_visibly_refuses() -> None:
+    from stella.desktop.capabilities import DesktopUnavailable
+
+    state = {"clients": lambda: CLIENTS, "eval_process": FakeProcess(7, b"error: nope", b"")}
+    hyprland, _ = make_manager({"hyprctl": dispatch_responder(state)})
+    with pytest.raises(DesktopUnavailable):
+        hyprland.close("0xfeedface")
+
+
+@pytest.mark.parametrize("window_id", ["0x1234abcd; dispatch exec x", "foot"])
+def test_manager_rejects_foreign_id_shapes_without_spawning(window_id) -> None:
+    from stella.desktop.capabilities import DesktopUnavailable
+
+    state = {"clients": lambda: CLIENTS}
+    hyprland, runner = make_manager({"hyprctl": dispatch_responder(state)})
+    with pytest.raises(DesktopUnavailable):
+        hyprland.close(window_id)
+    with pytest.raises(DesktopUnavailable):
+        hyprland.move(window_id, 3)
+    assert runner.calls == []
+
+
+def test_move_uses_the_silent_workspace_form_and_verifies_the_destination() -> None:
+    moved = dict(CLIENTS[1])
+    moved["workspace"] = {"id": 3}
+
+    seen = {"n": 0}
+
+    def clients():
+        seen["n"] += 1
+        return CLIENTS if seen["n"] == 1 else [CLIENTS[0], moved]
+
+    state = {"clients": clients}
+    hyprland, _ = make_manager({"hyprctl": dispatch_responder(state)})
+    assert hyprland.move("0xfeedface", 3) is True
+    chunk = state["evals"][0]
+    assert "hl.dsp.window.move{window=w,workspace='3',follow=false}" in chunk
+    assert "0xfeedface" in chunk
+
+
+def test_move_refuses_out_of_range_workspaces_without_spawning() -> None:
+    from stella.desktop.capabilities import DesktopUnavailable
+
+    state = {"clients": lambda: CLIENTS}
+    hyprland, runner = make_manager({"hyprctl": dispatch_responder(state)})
+    with pytest.raises(DesktopUnavailable):
+        hyprland.move("0xfeedface", 0)
+    with pytest.raises(DesktopUnavailable):
+        hyprland.move("0xfeedface", 1001)
+    assert runner.calls == []
+
+
+def test_launch_sends_exec_cmd_then_confirms_a_new_window() -> None:
+    seen = {"n": 0}
+
+    def clients():
+        seen["n"] += 1
+        return CLIENTS if seen["n"] == 1 else [*CLIENTS, NEW]
+
+    state = {"clients": clients}
+    hyprland, _ = make_manager({"hyprctl": dispatch_responder(state)})
+    assert hyprland.launch("chromium") is True
+    assert state["evals"][0] == "hl.exec_cmd('chromium')"
+
+
+def test_launch_with_a_workspace_moves_only_the_new_window() -> None:
+    seen = {"n": 0}
+
+    def clients():
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return CLIENTS
+        if seen["n"] == 2:
+            return [*CLIENTS, NEW]
+        on_three = dict(NEW)
+        on_three["workspace"] = {"id": 3}
+        return [*CLIENTS, on_three]
+
+    state = {"clients": clients}
+    hyprland, _ = make_manager({"hyprctl": dispatch_responder(state)})
+    assert hyprland.launch("chromium", workspace=3) is True
+    assert any("hl.exec_cmd" in chunk for chunk in state["evals"])
+    move_chunk = next(chunk for chunk in state["evals"] if "window.move" in chunk)
+    assert "0xabc0ffee" in move_chunk  # the NEW window moved…
+    assert "0xfeedface" not in move_chunk  # …not a pre-existing one
+
+
+def test_launch_is_unverified_when_no_window_ever_appears() -> None:
+    state = {"clients": lambda: CLIENTS}
+    hyprland, runner = make_manager({"hyprctl": dispatch_responder(state)})
+    assert hyprland.launch("slowapp --flag") is False
+    clients_calls = [argv for argv in runner.argvs() if "clients" in argv]
+    assert len(clients_calls) == 7  # one baseline read plus a bounded ladder
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["chromium; rm -rf /", "x && y", "a`b", "a$b", "a'b", 'a"b', "a\\b", "a|b", "a>b"],
+)
+def test_launch_refuses_anything_with_shell_or_lua_meaning(command) -> None:
+    from stella.desktop.capabilities import DesktopUnavailable
+
+    state = {"clients": lambda: CLIENTS}
+    hyprland, runner = make_manager({"hyprctl": dispatch_responder(state)})
+    with pytest.raises(DesktopUnavailable):
+        hyprland.launch(command)
+    assert runner.calls == []
+
+
+def test_manager_without_a_signature_raises_instead_of_touching_anything() -> None:
+    from stella.desktop.capabilities import DesktopUnavailable
+
+    runner = FakeRunner()
+    hyprland = Hyprland(None, runner=runner, sleep=lambda _seconds: None)
+    with pytest.raises(DesktopUnavailable):
+        hyprland.close("0x1234abcd")
+    with pytest.raises(DesktopUnavailable):
+        hyprland.move("0x1234abcd", 3)
+    with pytest.raises(DesktopUnavailable):
+        hyprland.launch("chromium")
+    assert runner.calls == []
+
+
+def test_probe_offers_a_window_manager_only_where_one_works() -> None:
+    env = {
+        "HYPRLAND_INSTANCE_SIGNATURE": SIGNATURE,
+        "WAYLAND_DISPLAY": "wayland-1",
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+    }
+    desktop = probe(env, FakeRunner(), which=lambda _name: "/usr/bin/fake")
+    assert desktop is not None
+    assert desktop.manager is not None  # Hyprland vouches for launch/close/move

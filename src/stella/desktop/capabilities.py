@@ -1,6 +1,6 @@
 """The desktop seam: the data and the protocols, and no OS code at all.
 
-Everything an adapter implements, and everything the three tools in
+Everything an adapter implements, and everything the tools in
 ``stella.desktop.tools`` may rely on, lives here. The rules below are the
 invariants the Hyprland measurements forced (research reports 03, 11,
 13); an adapter that breaks one of them is broken, however tidy its code:
@@ -28,6 +28,7 @@ adapter validates it against its own compositor before use.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -43,6 +44,28 @@ MAX_SCREEN_TEXT_CHARS = 6_000
 
 MAX_KEY_TEXT_CHARS = 2_000
 """One bounded typing action."""
+
+MAX_LAUNCH_COMMAND_CHARS = 200
+"""A launch is a program and its plain arguments, never a script."""
+
+# A launched program is a plain path-or-name plus plain arguments:
+# letters, digits, and the punctuation real desktop entries use. No
+# quotes, backslashes, semicolons, pipes, redirection or globs — the
+# command string is interpolated into compositor scripting and handed to
+# the compositor's own executor, so anything with shell or Lua meaning
+# must never get that far. Validated once here so the tool and every
+# adapter check against the same fence.
+LAUNCH_COMMAND_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+ -]{0,199}$")
+
+
+def launch_command_usable(value: object) -> bool:
+    """The one launcher validation, mirrored nowhere else by accident."""
+
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_LAUNCH_COMMAND_CHARS
+        and LAUNCH_COMMAND_RE.fullmatch(value) is not None
+    )
 
 OCR_WINDOW = "window"
 OCR_SCREEN = "screen"
@@ -184,6 +207,39 @@ class KeySender(Protocol):
         """
 
 
+class WindowManager(Protocol):
+    """Launches, closes and relocates windows — the mutating half (Phase A).
+
+    Same evidence contract as :class:`WindowActivator`: a method returns
+    True only when the backend **re-queried** the compositor and observed
+    the outcome. ``False`` means "the desktop accepted the request but the
+    effect could not be confirmed" (a launch still spinning up, a re-query
+    that raced) — genuinely different from a raised
+    :class:`DesktopUnavailable`, which means the desktop *refused or could
+    not run* the request at all. The tools map the three states onto the
+    receipt honestly; a stub adapter on a desktop that cannot manage
+    windows simply provides no ``manager`` at all.
+
+    ``command`` is a pre-validated single program (the tool bounds its
+    charset; no shell metacharacters ever reach here) and ``workspace`` is
+    a small positive integer id, never free text.
+    """
+
+    def launch(self, command: str, workspace: int | None = None) -> bool:
+        """Start a program, optionally landing its window on ``workspace``.
+
+        Verification is a client-list diff: a window that appeared after
+        the dispatch counts as the launched one. With a workspace, the
+        new window is moved there and the move re-verified.
+        """
+
+    def close(self, window_id: str) -> bool:
+        """Close one window by opaque id; True only once it is absent."""
+
+    def move(self, window_id: str, workspace: int) -> bool:
+        """Send one window to a workspace silently (no focus follow)."""
+
+
 class Recognizer(Protocol):
     """Turns PNG bytes into text, locally."""
 
@@ -220,6 +276,13 @@ class Desktop:
     keys: KeySender
     recognizer: Recognizer
     session_note: str
+    manager: WindowManager | None = None
+    """Present only when this desktop can launch/close/move windows.
+
+    A ``None`` manager is not a broken adapter — it is an honest "this
+    desktop cannot manage windows", and the tool says exactly that rather
+    than offering an action that could only fail.
+    """
 
 
 def window_id_usable(value: object) -> bool:

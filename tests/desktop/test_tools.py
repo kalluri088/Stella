@@ -1,4 +1,4 @@
-"""The three desktop tools and the registry, against the seam contract.
+"""The desktop tools and the registry, against the seam contract.
 
 Everything here is written against :class:`stella.desktop.capabilities.
 Desktop` with Python fakes — no subprocess, no compositor, no display.
@@ -33,6 +33,7 @@ from stella.desktop.capabilities import (
 )
 from stella.desktop.registry import _CANDIDATES, select_desktop
 from stella.desktop.tools import (
+    DesktopControlTool,
     KeySendTool,
     ScreenReadTool,
     WindowFocusTool,
@@ -151,6 +152,46 @@ class FakeRecognizer:
         return self.text
 
 
+class FakeManager:
+    """A window manager whose every answer the test scripts directly."""
+
+    def __init__(
+        self,
+        recorder: Recorder,
+        *,
+        launch_to: bool = True,
+        close_to: bool = True,
+        move_to: bool = True,
+        raise_to: str | None = None,
+    ) -> None:
+        self.recorder = recorder
+        self.launch_to = launch_to
+        self.close_to = close_to
+        self.move_to = move_to
+        self.raise_to = raise_to
+        self.calls: list[tuple] = []
+
+    def _guard(self, name: str, *args) -> None:
+        self.recorder.events.append(f"manage:{name}")
+        self.calls.append((name, *args))
+        if self.raise_to is not None:
+            from stella.desktop.capabilities import DesktopUnavailable
+
+            raise DesktopUnavailable(self.raise_to)
+
+    def launch(self, command: str, workspace=None) -> bool:
+        self._guard("launch", command, workspace)
+        return self.launch_to
+
+    def close(self, window_id: str) -> bool:
+        self._guard("close", window_id)
+        return self.close_to
+
+    def move(self, window_id: str, workspace: int) -> bool:
+        self._guard("move", window_id, workspace)
+        return self.move_to
+
+
 def make_desktop(
     *,
     active: Window | None = FOOT,
@@ -160,6 +201,7 @@ def make_desktop(
     send_fail: str | None = None,
     ocr_text: str = "visible words",
     ocr_fail: str | None = None,
+    manager: object | None = None,
 ) -> tuple[Desktop, Recorder]:
     recorder = Recorder()
     reader = FakeReader(recorder, active=active, windows=windows)
@@ -174,6 +216,7 @@ def make_desktop(
             keys=FakeKeys(recorder, fail=send_fail),
             recognizer=FakeRecognizer(recorder, text=ocr_text, fail=ocr_fail),
             session_note=NOTE,
+            manager=manager,  # type: ignore[arg-type]
         ),
         recorder,
     )
@@ -210,6 +253,7 @@ def test_registration_needs_the_session_and_every_binary() -> None:
         "screen_read",
         "window_focus",
         "key_send",
+        "desktop_control",
     ]
     assert (
         build_desktop_tools(env, which=lambda n: None if n == "grim" else "/x") == []
@@ -639,3 +683,175 @@ def test_key_send_preview_refuses_an_unknown_target_early() -> None:
     )
     assert preview is not None
     assert "refused at execution" in " ".join(preview.detail_lines)
+
+
+# ------------------------------------------------------------- desktop_control
+
+
+def control_tool(**manager_kw) -> tuple[DesktopControlTool, FakeManager, Recorder]:
+    recorder = Recorder()
+    manager = FakeManager(recorder, **manager_kw)
+    desktop = make_desktop(windows=default_windows(), manager=manager)[0]
+    return DesktopControlTool(desktop, which=lambda name: f"/usr/bin/{name}"), manager, recorder
+
+
+def test_control_joins_only_when_a_window_manager_exists() -> None:
+    without, _ = make_desktop(windows=default_windows())
+    assert [tool.name for tool in tools_for(without)] == [
+        "screen_read",
+        "window_focus",
+        "key_send",
+    ]
+    recorder = Recorder()
+    with_manager = make_desktop(
+        windows=default_windows(), manager=FakeManager(recorder)
+    )[0]
+    assert [tool.name for tool in tools_for(with_manager)][-1] == "desktop_control"
+
+
+def test_every_desktop_control_use_costs_an_approval() -> None:
+    tool, _, _ = control_tool()
+    assert tool.risk_level is RiskLevel.DANGEROUS
+
+
+@pytest.mark.parametrize(
+    ("arguments", "valid"),
+    [
+        ({"target": "app", "action": "launch", "name": "chromium"}, True),
+        ({"target": "app", "action": "launch", "name": "foot --title t"}, True),
+        ({"target": "app", "action": "close", "id": "0xfeedface"}, False),
+        ({"target": "app", "action": "launch"}, False),
+        ({"target": "app", "action": "launch", "name": "chromium; rm -rf /"}, False),
+        ({"target": "app", "action": "launch", "name": "$(curl evil)"}, False),
+        ({"target": "app", "action": "launch", "name": "ghostapp"}, False),  # not on PATH
+        ({"target": "app", "action": "launch", "name": "chromium", "id": "0x1"}, False),
+        ({"target": "window", "action": "close", "id": "0xfeedface"}, True),
+        ({"target": "window", "action": "move", "id": "0xfeedface", "workspace": 3}, True),
+        ({"target": "window", "action": "move", "id": "0xfeedface"}, False),  # no workspace
+        ({"target": "window", "action": "move", "id": "0xfeedface", "workspace": True}, False),
+        ({"target": "window", "action": "move", "id": "0xfeedface", "workspace": 0}, False),
+        ({"target": "window", "action": "focus", "id": "0xfeedface"}, True),
+        ({"target": "window", "action": "focus", "id": "0xfeedface", "workspace": 2}, False),
+        ({"target": "window", "action": "launch", "id": "0xfeedface"}, False),
+        ({"target": "window", "action": "close"}, False),
+        ({"target": "elsewhere", "action": "close", "id": "0xfeedface"}, False),
+    ],
+)
+def test_desktop_control_argument_contract(arguments, valid) -> None:
+    tool, _, _ = control_tool()
+    tool._which = lambda name: None if name == "ghostapp" else f"/usr/bin/{name}"
+    assert tool.validate_arguments(arguments) is valid
+
+
+def test_a_launch_the_desktop_confirms_returns_a_verified_receipt() -> None:
+    tool, manager, recorder = control_tool()
+    result = tool.execute({"target": "app", "action": "launch", "name": "chromium"})
+    assert result.success and result.action_receipt.status == "verified"
+    assert result.action_receipt.action == "launch chromium"
+    assert manager.calls == [("launch", "chromium", None)]
+    assert recorder.events == ["manage:launch"]
+
+
+def test_a_launch_that_lands_on_a_workspace_passes_it_through() -> None:
+    tool, manager, _ = control_tool()
+    result = tool.execute(
+        {"target": "app", "action": "launch", "name": "chromium", "workspace": 1}
+    )
+    assert result.success
+    assert manager.calls == [("launch", "chromium", 1)]
+
+
+def test_an_unconfirmed_launch_is_unverified_not_a_false_success() -> None:
+    tool, _, _ = control_tool(launch_to=False)
+    result = tool.execute({"target": "app", "action": "launch", "name": "chromium"})
+    assert not result.success and result.action_receipt.status == "unverified"
+    assert "no new window appeared" in result.output
+
+
+def test_a_refused_act_is_a_failed_receipt() -> None:
+    tool, _, _ = control_tool(raise_to="Hyprland rejected the request.")
+    result = tool.execute({"target": "window", "action": "close", "id": "0xfeedface"})
+    assert not result.success and result.action_receipt.status == "failed"
+    assert "rejected" in result.output
+
+
+def test_close_checks_the_live_list_before_acting() -> None:
+    tool, manager, _ = control_tool()
+    result = tool.execute({"target": "window", "action": "close", "id": "0x999999"})
+    assert not result.success and result.action_receipt.status == "missing"
+    assert manager.calls == []  # never dispatched at a window that is not there
+    result = tool.execute({"target": "window", "action": "close", "id": "0xfeedface"})
+    assert result.success and result.action_receipt.status == "verified"
+    assert manager.calls == [("close", "0xfeedface")]
+
+
+def test_move_requires_and_carries_the_workspace() -> None:
+    tool, manager, _ = control_tool()
+    result = tool.execute(
+        {"target": "window", "action": "move", "id": "0xfeedface", "workspace": 4}
+    )
+    assert result.success and result.action_receipt.status == "verified"
+    assert manager.calls == [("move", "0xfeedface", 4)]
+
+
+def test_focus_through_control_is_the_same_verified_path() -> None:
+    tool, manager, _ = control_tool()
+    result = tool.execute({"target": "window", "action": "focus", "id": "0xfeedface"})
+    assert result.success and "confirmed" in result.output
+    assert manager.calls == []  # focus is the activator's, not the manager's
+
+
+def test_a_desktop_without_a_manager_refuses_every_control_act() -> None:
+    desktop, _ = make_desktop(windows=default_windows())
+    tool = DesktopControlTool(desktop, which=lambda name: "/usr/bin/x")
+    assert tool.validate_arguments(
+        {"target": "app", "action": "launch", "name": "chromium"}
+    )
+    result = tool.execute({"target": "app", "action": "launch", "name": "chromium"})
+    assert not result.success and "cannot manage windows" in result.output
+
+
+def test_control_preview_names_the_literal_program_or_window() -> None:
+    tool, _, _ = control_tool()
+    preview = tool.preview(
+        ApprovalRequest(
+            "desktop_control",
+            {"target": "app", "action": "launch", "name": "chromium", "workspace": 1},
+        )
+    )
+    assert preview is not None
+    joined = " ".join(preview.detail_lines)
+    assert "chromium" in joined and "workspace 1" in joined and NOTE in joined
+    preview = tool.preview(
+        ApprovalRequest(
+            "desktop_control",
+            {"target": "window", "action": "close", "id": "0xfeedface"},
+        )
+    )
+    assert preview is not None
+    joined = " ".join(preview.detail_lines)
+    assert "firefox" in joined and "0xfeedface" in joined and "not undoable" in joined
+
+
+def test_control_preview_announces_a_refusal_for_an_unknown_window() -> None:
+    tool, _, _ = control_tool()
+    preview = tool.preview(
+        ApprovalRequest(
+            "desktop_control",
+            {"target": "window", "action": "move", "id": "0x999999", "workspace": 2},
+        )
+    )
+    assert preview is not None
+    assert "refused at execution" in " ".join(preview.detail_lines)
+
+
+def test_action_summary_names_the_desktop_control_target() -> None:
+    assert "chromium" in action_summary(
+        ApprovalRequest(
+            "desktop_control",
+            {"target": "app", "action": "launch", "name": "chromium", "workspace": 1},
+        )
+    )
+    assert "0xfeedface" in action_summary(
+        ApprovalRequest("desktop_control", {"target": "window", "action": "close", "id": "0xfeedface"})
+    )

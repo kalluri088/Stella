@@ -13,6 +13,7 @@ import json
 
 from stella.desktop.capabilities import (
     MAX_KEY_TEXT_CHARS,
+    launch_command_usable,
     window_id_usable,
 )
 
@@ -22,6 +23,35 @@ def desktop_tool_summaries(
 ) -> str | None:
     """The summary for one desktop request, or None if it isn't one."""
 
+    if capability == "desktop_control":
+        target = arguments.get("target")
+        action = arguments.get("action")
+        workspace = arguments.get("workspace")
+        if target == "app" and action == "launch":
+            name = arguments.get("name")
+            if launch_command_usable(name):
+                landing = (
+                    f" into workspace {workspace}"
+                    if isinstance(workspace, int)
+                    and not isinstance(workspace, bool)
+                    else ""
+                )
+                return f"launch {json.dumps(str(name))}{landing} as a desktop app"
+        elif target == "window" and action in {"close", "focus", "move"}:
+            window_id = arguments.get("id")
+            if window_id_usable(window_id):
+                if action == "move" and isinstance(workspace, int):
+                    return (
+                        f"move the desktop window with id "
+                        f"{json.dumps(str(window_id))} to workspace "
+                        f"{workspace}"
+                    )
+                return (
+                    f"{action} the desktop window with id "
+                    f"{json.dumps(str(window_id))}"
+                    + (" (closing is not undoable)" if action == "close" else "")
+                )
+        return None
     if capability == "screen_read":
         scope = arguments.get("scope")
         if scope == "active_window":

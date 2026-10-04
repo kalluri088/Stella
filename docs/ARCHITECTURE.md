@@ -490,11 +490,22 @@ content is information only (rules 3, 6, 10).
 ### Desktop tools
 
 `stella.desktop` (the `src/stella/desktop/` package — formerly a single
-`os_tools.py`) adds three capabilities behind the `os_tools_enabled` flag:
+`os_tools.py`) adds four capabilities behind the `os_tools_enabled` flag:
 `screen_read` (grim capture piped to local `tesseract --psm` OCR),
-`window_focus`, and `key_send` (wtype into a focus-verified window). A small
+`window_focus`, `key_send` (wtype into a focus-verified window), and
+`desktop_control` — one approval-gated tool whose *arguments* carry the app
+and window surface the owner asked for: `target=app action=launch` (with an
+optional workspace), and `target=window` with `action=close|move|focus`.
+It never grows new verbs (rule 16), and it is offered only when the probed
+adapter actually provides a window manager: on Hyprland, launches go through
+`hl.exec_cmd`, closes and moves through the same verified Lua dispatch path
+as focus, and each act is confirmed by a re-query — a launch is verified
+when a *new* window appears (and is then moved silently if a workspace was
+named), a close when the id is gone, a move when the client's workspace
+matches. A backend that cannot manage windows simply does not register the
+tool. A small
 backend registry probes for a session in order (Hyprland → sway → KDE → GNOME
-→ X11/EWMH → Wayland screencopy) and returns these three tools only when a
+→ X11/EWMH → Wayland screencopy) and returns these tools only when a
 complete adapter is found; otherwise the model sees nothing. The package
 encodes the report-03/11/13 surface rules — and, where the live
 0.56.2/Omarchy build disagreed with them, the measured truth instead: the
@@ -502,8 +513,10 @@ instance flag is `-i` (not `-r`), focus dispatches through the compositor's
 Lua API (`hl.dispatch(hl.dsp.focus{window=…})` via `hyprctl eval`), and
 grim takes `X,Y WxH` written to stdout with a trailing `-`. Backend status:
 Hyprland is fully implemented and measured on this machine; sway and
-X11/EWMH are written but unverified on a live session; KDE, GNOME and the
-Wayland screencopy adapter are still stubs (`probe` returns `None`).
+X11/EWMH are written but unverified on a live session and do not vouch for
+window management, so on those desktops `desktop_control` is simply not
+offered; KDE, GNOME and the Wayland screencopy adapter are still stubs
+(`probe` returns `None`).
 
 Two invariants hold the trust model. No decision reads a subprocess return
 code: reads require parseable JSON of the expected shape (the compositor
@@ -521,9 +534,11 @@ explicit settings flag (`os_tools_enabled`, env override `STELLA_OS_TOOLS`,
 *and* a real session signature with `hyprctl`, `grim`,
 `tesseract` and `wtype` on `PATH` — so the model never sees a capability
 that could only fail. Risk levels stay application-owned: reads and focus
-are `SENSITIVE`, typing is `DANGEROUS`, all three route through the existing
-exact-argument approval dialog, whose preview names the concrete window
-(class, title, pid, address) and shows the literal text.
+are `SENSITIVE`, typing and window management are `DANGEROUS`, and all four
+route through the existing
+exact-argument approval dialog, whose preview names the concrete target —
+the window (class, title, pid, address) or the literal launcher command and
+workspace — and shows the literal text.
 
 ### CLI and shared application layer
 

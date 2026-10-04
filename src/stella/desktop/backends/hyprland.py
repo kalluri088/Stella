@@ -45,14 +45,17 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from collections.abc import Callable, Mapping, Sequence
 
 from stella.desktop.capabilities import (
     CaptureUnavailable,
     Desktop,
+    DesktopUnavailable,
     Region,
     SendUnavailable,
     Window,
+    launch_command_usable,
 )
 from stella.desktop.ocr import TesseractRecognizer
 from stella.desktop.runner import (
@@ -72,6 +75,8 @@ Lua chunk, so a value that is not plain hex must never reach it.
 HYPRCTL_TIMEOUT_SECONDS = 5.0
 CAPTURE_TIMEOUT_SECONDS = 10.0
 KEYSEND_TIMEOUT_SECONDS = 15.0
+SETTLE_SECONDS = 0.4
+"""Gap between re-queries while waiting for a dispatched act to land."""
 
 NO_SESSION_MESSAGE = (
     "No Hyprland session signature is set, so there is no desktop to "
@@ -135,7 +140,7 @@ def _window(payload: object) -> Window | None:
 
 
 class Hyprland:
-    """One Hyprland session, as reader, activator, capturer and typist."""
+    """One Hyprland session: reader, activator, capturer, typist, manager."""
 
     def __init__(
         self,
@@ -147,6 +152,8 @@ class Hyprland:
         hyprctl: str = "hyprctl",
         grim: str = "grim",
         wtype: str = "wtype",
+        sleep: Callable[[float], None] = time.sleep,
+        settle_seconds: float = SETTLE_SECONDS,
     ) -> None:
         self.signature = signature
         self.wayland_display = wayland_display
@@ -155,6 +162,8 @@ class Hyprland:
         self.hyprctl = hyprctl
         self.grim = grim
         self.wtype = wtype
+        self._sleep = sleep
+        self._settle_seconds = settle_seconds
 
     def required_binaries(self) -> tuple[str, ...]:
         return (self.hyprctl, self.grim, self.wtype)
@@ -263,13 +272,123 @@ class Hyprland:
         # window object by its address and focuses it through that API.
         # The answer of the dispatch itself is ignored on purpose: the
         # re-query below is the only proof that counts.
-        self._eval(
-            "for _,w in ipairs(hl.get_windows()) do "
-            f"if w.address=='{window_id}' then "
-            "hl.dispatch(hl.dsp.focus({window=w})) end end"
+        self._dispatch_accepted(
+            self._eval(
+                "for _,w in ipairs(hl.get_windows()) do "
+                f"if w.address=='{window_id}' then "
+                "hl.dispatch(hl.dsp.focus({window=w})) end end"
+            )
         )
         active = self.active_window()
         return active is not None and active.id == window_id
+
+    # ------------------------------------------------------ window mgmt
+
+    def _dispatch_accepted(self, result: Completed) -> None:
+        """Raise unless the compositor visibly accepted the chunk.
+
+        Report 03 measured that real dispatch errors arrive as rc 7 with
+        the text on **stdout**; ``ok`` on rc 0 means accepted, not done —
+        only the re-query after it proves anything.
+        """
+
+        text = result.stdout.decode("utf-8", errors="replace").casefold()
+        if result.returncode != 0 or "error:" in text:
+            raise DesktopUnavailable(
+                "Hyprland rejected the request. " + error_detail(result, label="Said")
+            )
+
+    def _validated_window(self, window_id: str) -> str:
+        if self.signature is None:
+            raise DesktopUnavailable(NO_SESSION_MESSAGE)
+        if WINDOW_ID_RE.match(window_id) is None:
+            raise DesktopUnavailable("That is not a usable Hyprland window id.")
+        return window_id
+
+    def _windows_or_empty(self) -> list[Window]:
+        windows = self.windows()
+        return [] if windows is None else windows
+
+    def _dispatch_window(self, window_id: str, body: str) -> Completed:
+        # Resolve the live window object by address (the proven focus
+        # form) and hand it to the dispatcher chunk in ``body``.
+        return self._eval(
+            "for _,w in ipairs(hl.get_windows()) do "
+            f"if w.address=='{window_id}' then {body} end end"
+        )
+
+    def close(self, window_id: str) -> bool:
+        self._validated_window(window_id)
+        self._dispatch_accepted(
+            self._dispatch_window(window_id, "hl.dispatch(hl.dsp.window.close{window=w})")
+        )
+        # A close is verified by absence; give the compositor a moment and
+        # re-query. Still present is False ("unverified"), never a fake ok.
+        return self._wait_for(
+            lambda: all(w.id != window_id for w in self._windows_or_empty())
+        )
+
+    def move(self, window_id: str, workspace: int) -> bool:
+        self._validated_window(window_id)
+        if not 1 <= workspace <= 1000:
+            raise DesktopUnavailable("The workspace number is out of range.")
+        self._dispatch_accepted(
+            self._dispatch_window(
+                window_id,
+                "hl.dispatch(hl.dsp.window.move{window=w,"
+                + f"workspace='{workspace}'"
+                + ",follow=false})",
+            )
+        )
+        return self._wait_for(
+            lambda: any(
+                w.id == window_id and w.workspace == str(workspace)
+                for w in self._windows_or_empty()
+            )
+        )
+
+    def launch(self, command: str, workspace: int | None = None) -> bool:
+        if self.signature is None:
+            raise DesktopUnavailable(NO_SESSION_MESSAGE)
+        # ``hl.exec_cmd`` is the top-level Lua launcher verified live on
+        # this 0.56.2 session (the dsp.exec_cmd member does not exist
+        # here; classic string dispatch is rejected). The command reaches
+        # a Lua single-quoted string, so it must already be metacharacter-
+        # free — the shared fence is re-checked here rather than trusted
+        # from above, and quotes/backslashes are refused even though the
+        # shared charset already excludes them.
+        if "'" in command or "\\" in command or not launch_command_usable(command):
+            raise DesktopUnavailable("The program name is not a safe single command.")
+        before = {window.id for window in self._windows_or_empty()}
+        self._dispatch_accepted(self._eval(f"hl.exec_cmd('{command}')"))
+        appeared = self._wait_for_new_window(before)
+        if appeared is None:
+            return False
+        if workspace is None:
+            return True
+        return self.move(appeared.id, workspace)
+
+    def _settle(self) -> None:
+        self._sleep(self._settle_seconds)
+
+    def _wait_for(self, settled: Callable[[], bool], *, probes: int = 3) -> bool:
+        for _ in range(probes):
+            if settled():
+                return True
+            self._settle()
+        return settled()
+
+    def _wait_for_new_window(self, before: set[str]) -> Window | None:
+        for _ in range(6):
+            fresh = [
+                window
+                for window in self._windows_or_empty()
+                if window.id not in before
+            ]
+            if fresh:
+                return fresh[0]
+            self._settle()
+        return None
 
     # --------------------------------------------------------- external
 
@@ -350,6 +469,7 @@ def probe(
         capture=hyprland,
         keys=hyprland,
         recognizer=recognizer,
+        manager=hyprland,
         # The approval dialog prints this: which exact compositor session
         # is about to be read or typed into (report 03 rule 4).
         session_note=f"Hyprland session {hyprland.signature}",

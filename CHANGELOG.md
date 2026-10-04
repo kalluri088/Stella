@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Stella can open, close and move windows on your desktop
+
+- **What changed.** The desktop package registers a fourth tool,
+  `desktop_control`, when the probed adapter can actually manage windows.
+  One tool, arguments doing the growing (rule 16):
+  `target=app, action=launch, name="chromium", workspace=1` starts Chromium
+  *and lands it on workspace 1*; `target=window` with
+  `action=close|move|focus` acts on an exact window id. On Hyprland all of
+  it is the same verified Lua path that focus already used — `hl.exec_cmd`,
+  `hl.dsp.window.close`, `hl.dsp.window.move{…,follow=false}` — each act
+  confirmed by a fresh compositor re-query: a launch is verified only when a
+  genuinely *new* window appears, a close when the id is gone, a move when
+  the client reports the destination workspace.
+- **Why.** The owner asked Stella to "open chromium in workspace 1" and
+  nothing happened: `shell_run` runs inside a bubblewrap jail with no route
+  to the compositor, and the unjailed desktop adapter could only read and
+  focus. App and window control is now a first-class desktop capability.
+- **Approval and trust model unchanged.** Every use is `DANGEROUS` and
+  stops at the approval dialog naming the literal launcher command or the
+  concrete window (class, title, pid, id, workspace); the launcher name must
+  match a strict charset *and* resolve on `PATH` (or be an executable
+  absolute path) before anything is spawned, and shell metacharacters are
+  refused without a spawn. "Accepted but unconfirmed" is reported as
+  *unverified*, never as success. Backends that cannot vouch for management
+  (sway, X11/EWMH, the stubs) simply do not offer the tool — registration
+  still requires a complete adapter (rule 5, invariant: a tool that can only
+  fail never reaches the model).
+- **Proof.** The Hyprland call shapes were verified live on the owner's
+  0.56.2 session (spawn a disposable window, move it silently, close it,
+  re-query after each). `tests/desktop/test_hyprland.py` (12 new argv/chunk
+  and verification tests) and `tests/desktop/test_tools.py` (the control
+  tool's argument contract, receipts, previews and manager-less refusal)
+  pass, and every desktop suite is green.
+
 ### The jail now masks `/run` — session sockets are unreachable
 
 - **What changed.** The bubblewrap jail (`stella.sandbox`) gained one more

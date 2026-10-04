@@ -1,4 +1,4 @@
-"""The three desktop tools, written against :class:`Desktop` and nothing else.
+"""The desktop tools, written against :class:`Desktop` and nothing else.
 
 No rule in this module mentions a compositor command, a binary or an id
 shape — those belong to the adapters. What stays here is the safety model
@@ -15,14 +15,20 @@ the reports forced, and it is the same whatever desktop is underneath:
 * Every failure keeps the ``None``-versus-``[]`` distinction: an unusable
   answer is reported as "the desktop did not answer", never as "no windows
   are open", because the second would refuse a real target in silence.
-* Exactly three tools (AGENTS.md rule 16): capabilities grow inside
-  argument values, never as new verbs.
+* Capabilities grow inside argument values, never as new verbs: the three
+  original tools plus ``desktop_control`` — one verb-tool carrying
+  launch/close/focus/move as argument values, added as a deliberate,
+  owner-requested fourth surface (AGENTS.md rules 13/16) because opening
+  and moving applications is what the owner asked for daily and no
+  argument of the first three could honestly grow into it.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import os
+import shutil
+from collections.abc import Callable, Mapping
 
 from stella.desktop.capabilities import (
     MAX_KEY_TEXT_CHARS,
@@ -31,10 +37,12 @@ from stella.desktop.capabilities import (
     OCR_WINDOW,
     CaptureUnavailable,
     Desktop,
+    DesktopUnavailable,
     RecognizeUnavailable,
     Region,
     SendUnavailable,
     Window,
+    launch_command_usable,
     window_id_usable,
 )
 from stella.desktop.masking import mask_secrets
@@ -70,6 +78,49 @@ def _find(windows: list[Window], window_id: str) -> Window | None:
 
 def _describe(window: Window) -> str:
     return f"{window.class_name} {window.title!r}"
+
+
+def _focus_result(desktop: Desktop, window_id: str) -> ToolResult:
+    """One focus: resolve against the live list, act, believe the re-query.
+
+    Shared by ``window_focus`` and ``desktop_control``'s focus action so
+    the two paths can never drift apart on the safety contract.
+    """
+
+    action = f"focus window {window_id}"
+    windows = desktop.reader.windows()
+    if windows is None:
+        return ToolResult(
+            success=False,
+            action_receipt=ActionReceipt(action, "failed"),
+            output=_NO_WINDOW_LIST,
+        )
+    target = _find(windows, window_id)
+    if target is None:
+        return ToolResult(
+            success=False,
+            action_receipt=ActionReceipt(action, "missing"),
+            output=f"No open window has id {window_id}.",
+        )
+    if not desktop.activator.activate(window_id):
+        active = desktop.reader.active_window()
+        where = _describe(active) if active else "unknown"
+        return ToolResult(
+            success=False,
+            action_receipt=ActionReceipt(action, "unverified"),
+            output=(
+                f"The focus of {_describe(target)} could not be "
+                f"confirmed; the focused window is {where}."
+            ),
+        )
+    return ToolResult(
+        success=True,
+        output=(
+            f"Focused {_describe(target)} (id {window_id}, pid "
+            f"{target.pid}); the desktop confirmed it."
+        ),
+        action_receipt=ActionReceipt(action, "verified"),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -285,41 +336,7 @@ class WindowFocusTool(Tool):
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output=_INVALID_ARGUMENTS)
-        window_id = str(arguments["id"])
-        receipt_action = f"focus window {window_id}"
-        windows = self._desktop.reader.windows()
-        if windows is None:
-            return ToolResult(
-                success=False,
-                action_receipt=ActionReceipt(receipt_action, "failed"),
-                output=_NO_WINDOW_LIST,
-            )
-        target = _find(windows, window_id)
-        if target is None:
-            return ToolResult(
-                success=False,
-                action_receipt=ActionReceipt(receipt_action, "missing"),
-                output=f"No open window has id {window_id}.",
-            )
-        if not self._desktop.activator.activate(window_id):
-            active = self._desktop.reader.active_window()
-            where = _describe(active) if active else "unknown"
-            return ToolResult(
-                success=False,
-                action_receipt=ActionReceipt(receipt_action, "unverified"),
-                output=(
-                    f"The focus of {_describe(target)} could not be "
-                    f"confirmed; the focused window is {where}."
-                ),
-            )
-        return ToolResult(
-            success=True,
-            output=(
-                f"Focused {_describe(target)} (id {window_id}, pid "
-                f"{target.pid}); the desktop confirmed it."
-            ),
-            action_receipt=ActionReceipt(receipt_action, "verified"),
-        )
+        return _focus_result(self._desktop, str(arguments["id"]))
 
 
 # --------------------------------------------------------------------------
@@ -493,17 +510,284 @@ class KeySendTool(Tool):
         )
 
 
-def tools_for(desktop: Desktop) -> list[Tool]:
-    """Exactly the three tools, always together (rule 6)."""
+_CONTROL_TARGETS = ("app", "window")
+_CONTROL_ACTIONS = ("launch", "close", "focus", "move")
+_MAX_WORKSPACE = 1000
 
-    return [
+
+def _workspace_value(value: object, *, required: bool) -> int | None | bool:
+    """Shared workspace validation: None absent, False invalid, int valid."""
+
+    if value is None:
+        return None if not required else False
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    if not 1 <= value <= _MAX_WORKSPACE:
+        return False
+    return value
+
+
+def _launcher_resolvable(command: str, which: Callable[[str], str | None]) -> bool:
+    """Whether the program a launch proposes actually exists.
+
+    The first word of a validated command must be a real binary: an
+    absolute path we can execute, or a plain name found through PATH.
+    This is a capability fact, not a permission — an unresolvable name
+    could only ever produce a silent non-launch.
+    """
+
+    first = command.split(maxsplit=1)[0]
+    if first.startswith("/"):
+        return os.access(first, os.X_OK)
+    return which(first) is not None
+
+
+class DesktopControlTool(Tool):
+    """Launch, close, focus or move apps and windows — always approved."""
+
+    def __init__(
+        self, desktop: Desktop, which: Callable[[str], str | None] = shutil.which
+    ) -> None:
+        self._desktop = desktop
+        self._which = which
+
+    @property
+    def name(self) -> str:
+        return "desktop_control"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Controls desktop applications and windows: target=app with "
+            "action=launch starts one program (name: a plain command like "
+            "'chromium'; optional workspace: an int puts its window on "
+            "that workspace). target=window with action=close|focus|move "
+            "acts on one window by its exact id (move also needs "
+            "workspace). Every use needs trusted approval naming the "
+            "literal program or window; acting succeeds only when the "
+            "desktop confirms the result afterwards."
+        )
+
+    @property
+    def argument_schema(self) -> dict[str, object]:
+        return {
+            "target": "app|window",
+            "action": "launch (app) | close|focus|move (window)",
+            "name": "program command for target=app (plain, no shell "
+            "characters, spaces allowed for arguments)",
+            "id": "exact window id for target=window",
+            "workspace": "optional for launch, required for move: positive "
+            "workspace number",
+        }
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.DANGEROUS
+
+    def validate_arguments(self, arguments: dict[str, object]) -> bool:
+        if (
+            not isinstance(arguments, dict)
+            or set(arguments) - {"target", "action", "name", "id", "workspace"}
+        ):
+            return False
+        target = arguments.get("target")
+        action = arguments.get("action")
+        if target not in _CONTROL_TARGETS or action not in _CONTROL_ACTIONS:
+            return False
+        workspace = _workspace_value(arguments.get("workspace"), required=False)
+        if workspace is False:
+            return False
+        if target == "app":
+            return (
+                action == "launch"
+                and "id" not in arguments
+                and launch_command_usable(arguments.get("name"))
+                and _launcher_resolvable(str(arguments.get("name", "")), self._which)
+            )
+        if action == "launch" or "name" in arguments:
+            return False
+        if not window_id_usable(arguments.get("id")):
+            return False
+        if action == "move":
+            return _workspace_value(arguments.get("workspace"), required=True) is not False
+        return workspace is None
+
+    def preview(self, request: ApprovalRequest) -> ActionPreview | None:
+        arguments = dict(request.arguments)
+        if not self.validate_arguments(arguments):
+            return None
+        session = _session_line(self._desktop)
+        lines = [session]
+        workspace = arguments.get("workspace")
+        if arguments["target"] == "app":
+            name = str(arguments["name"])
+            landing = (
+                f" and move its window to workspace {workspace}"
+                if workspace is not None
+                else ""
+            )
+            lines += [
+                f"will launch: {name}{landing}",
+                (
+                    "the program starts as if you launched it yourself; "
+                    "closing or killing it later is the same approved act."
+                ),
+            ]
+            return ActionPreview(detail_lines=tuple(lines))
+        window_id = str(arguments["id"])
+        action = str(arguments["action"])
+        windows = self._desktop.reader.windows()
+        target = _find(windows, window_id) if windows is not None else None
+        if target is None:
+            note = (
+                "the desktop did not answer with a usable window list"
+                if windows is None
+                else f"window id {window_id} is not an open window right now"
+            )
+            return ActionPreview(
+                detail_lines=(session, f"{note}; this will be refused at execution.")
+            )
+        described = (
+            f"{target.class_name} {json.dumps(target.title)} "
+            f"(pid {target.pid}, window id {target.id}, "
+            f"workspace {target.workspace})"
+        )
+        if action == "close":
+            lines.append(f"will close: {described}")
+            lines.append("closing is not undoable from the desktop; unsaved "
+                         "work in that window goes with it.")
+        elif action == "move":
+            lines.append(f"will move: {described}")
+            lines.append(f"destination workspace: {workspace} (silent — "
+                         "your focus will not be stolen).")
+        else:
+            lines.append(f"will focus: {described}")
+        return ActionPreview(detail_lines=tuple(lines))
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        if not self.validate_arguments(arguments):
+            return ToolResult(success=False, output=_INVALID_ARGUMENTS)
+        manager = self._desktop.manager
+        if manager is None:
+            return ToolResult(
+                success=False,
+                output=(
+                    "This desktop cannot manage windows, so nothing was "
+                    "launched, closed, focused or moved."
+                ),
+            )
+        target = str(arguments["target"])
+        action = str(arguments["action"])
+        if target == "app":
+            return self._run(
+                f"launch {arguments['name']}",
+                lambda: bool(
+                    manager.launch(
+                        str(arguments["name"]),
+                        arguments.get("workspace"),
+                    )
+                ),
+                accepted=(
+                    "Hyprland accepted the launch, but no new window "
+                    "appeared in time — the program may still be starting "
+                    "or may have failed to open a window."
+                ),
+                done=lambda: "The desktop confirmed a new window appeared.",
+            )
+        window_id = str(arguments["id"])
+        if action == "focus":
+            return _focus_result(self._desktop, window_id)
+        windows = self._desktop.reader.windows()
+        if windows is None:
+            return ToolResult(
+                success=False,
+                action_receipt=ActionReceipt(f"{action} window {window_id}", "failed"),
+                output=_NO_WINDOW_LIST,
+            )
+        found = _find(windows, window_id)
+        if found is None:
+            return ToolResult(
+                success=False,
+                action_receipt=ActionReceipt(f"{action} window {window_id}", "missing"),
+                output=f"No open window has id {window_id}.",
+            )
+        if action == "close":
+            return self._run(
+                f"close window {window_id}",
+                lambda: bool(manager.close(window_id)),
+                accepted=(
+                    f"The close of {_describe(found)} could not be "
+                    "confirmed; the window may still be open."
+                ),
+                done=lambda: f"Closed {_describe(found)}; the desktop confirmed it.",
+            )
+        workspace = int(arguments["workspace"])
+        return self._run(
+            f"move window {window_id} to workspace {workspace}",
+            lambda: bool(manager.move(window_id, workspace)),
+            accepted=(
+                f"The move of {_describe(found)} to workspace {workspace} "
+                "could not be confirmed; check before retrying."
+            ),
+            done=lambda: (
+                f"Moved {_describe(found)} to workspace {workspace}; the "
+                "desktop confirmed it."
+            ),
+        )
+
+    def _run(
+        self,
+        action: str,
+        act: Callable[[], bool],
+        *,
+        accepted: str,
+        done: Callable[[], str],
+    ) -> ToolResult:
+        """One managed act: DesktopUnavailable is failure, False is unverified."""
+
+        try:
+            verified = act()
+        except DesktopUnavailable as failure:
+            return ToolResult(
+                success=False,
+                action_receipt=ActionReceipt(action, "failed"),
+                output=str(failure),
+            )
+        if verified:
+            return ToolResult(
+                success=True,
+                output=done(),
+                action_receipt=ActionReceipt(action, "verified"),
+            )
+        return ToolResult(
+            success=False,
+            action_receipt=ActionReceipt(action, "unverified"),
+            output=accepted,
+        )
+
+
+def tools_for(
+    desktop: Desktop, which: Callable[[str], str | None] = shutil.which
+) -> list[Tool]:
+    """The desktop tools for one desktop, always together (rule 6).
+
+    ``desktop_control`` joins only when the adapter proved it can manage
+    windows: a desktop without a manager is not offered an action that
+    could only fail (invariant 5).
+    """
+
+    tools: list[Tool] = [
         ScreenReadTool(desktop),
         WindowFocusTool(desktop),
         KeySendTool(desktop),
     ]
+    if desktop.manager is not None:
+        tools.append(DesktopControlTool(desktop, which))
+    return tools
 
 
 __all__ = [
+    "DesktopControlTool",
     "KeySendTool",
     "ScreenReadTool",
     "WindowFocusTool",

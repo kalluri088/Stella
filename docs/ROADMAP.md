@@ -371,6 +371,18 @@ working and helping me, even if not the fastest."
   foot process wrote the typed probe to disk, then screen_read OCR'd it
   back with tesseract mis-reading `O` as `0`), active-window OCR
   ~0.42 s, full-screen OCR 6.90 s.
+  **Follow-up (owner request).** A fourth tool, `desktop_control`, grew
+  the app/window surface inside its arguments:
+  `target=app action=launch` (optional `workspace`), and
+  `target=window action=close|move|focus`. Every use is `DANGEROUS` and
+  the approval names the literal launcher command or concrete window;
+  the launcher must pass a strict charset *and* resolve on `PATH`
+  before anything spawns. On Hyprland each act is confirmed by a
+  compositor re-query — launch verified by a genuinely *new* window,
+  close by the id's absence, move by the reported workspace — so
+  "open chromium in workspace 1" now lands it there and proves it. The
+  tool is registered only when the probed adapter vouches for window
+  management, so sway/X11 simply never offer it (rule 5).
 - **B7. Voice barge-in — built; the live double-talk acceptance remains.**
   Compendium item 7 (report 08) measured the two prerequisites on this
   box and they pass: PipeWire's WebRTC `module-echo-cancel` cancels

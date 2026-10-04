@@ -29,6 +29,23 @@ decision corpus, and 6 passes per case before it can ship.
   `qwen3:4b` — deleting the reasoning channel is a downgrade, not a
   speedup.
 
+## Token accounting (`/usage`)
+
+Every provider client can carry one `UsageRecorder` (`stella.llm`), and
+`build_application` attaches exactly one per session. Each *completed*
+request tallies the counts the provider itself reported: Ollama's native
+`/api/chat` `prompt_eval_count` / `eval_count`, and the OpenAI-shaped
+`usage` block on every other path (compatibility endpoint, llama-server,
+OpenAI, the chat-dialect presets, the Responses API). `/usage` prints the
+call count, tokens in and out, and the largest single prompt this session
+sent — that last number is the one to watch against `num_ctx=8192`, since
+a clipped prompt was measured as a real failure mode here (report 15).
+
+The rules that keep the numbers honest: nothing is persisted, nothing is
+estimated, a cancelled or failed request records nothing, and a provider
+that reports no counts still counts the call and then says so out loud on
+`/usage` instead of showing a quiet zero.
+
 ## Tier-0 pre-router (experimental, NOT shipped)
 
 Cactus Needle 3 (121M) with a LoRA trained on the 49-turn routing

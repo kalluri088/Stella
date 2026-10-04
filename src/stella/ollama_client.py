@@ -13,6 +13,8 @@ from stella.llm import (
     MessageInput,
     ProviderRequestCancelled,
     ToolUseMode,
+    UsageRecorder,
+    openai_usage_counts,
     run_cancellable,
 )
 from stella.openai_client import OpenAILLMClient
@@ -56,6 +58,7 @@ class OllamaLLMClient(OpenAILLMClient):
         answer_max_output_tokens: int | None = None,
         decision_max_output_tokens: int | None = None,
         think: bool | None = None,
+        usage: UsageRecorder | None = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -63,6 +66,7 @@ class OllamaLLMClient(OpenAILLMClient):
             api_key=api_key,
             answer_max_output_tokens=answer_max_output_tokens,
             decision_max_output_tokens=decision_max_output_tokens,
+            usage=usage,
         )
         self.native = native
         self.num_ctx = num_ctx
@@ -125,6 +129,7 @@ class OllamaLLMClient(OpenAILLMClient):
             lambda: self.client.chat.completions.create(**request),
             should_cancel,
         )
+        self._note_usage(*openai_usage_counts(response))
         message = response.choices[0].message
         content = getattr(message, "content", None)
         return LLMResponse(
@@ -206,6 +211,11 @@ class OllamaLLMClient(OpenAILLMClient):
             payload = json.loads(response.read().decode("utf-8"))
         finally:
             connection.close()
+        # The native endpoint reports its own token accounting; these are
+        # the counts the earlier prompt-context measurement was done with.
+        self._note_usage(
+            payload.get("prompt_eval_count"), payload.get("eval_count")
+        )
         message = payload.get("message")
         return message if isinstance(message, dict) else {}
 

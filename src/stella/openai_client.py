@@ -15,6 +15,8 @@ from stella.llm import (
     Message,
     MessageInput,
     ToolUseMode,
+    UsageRecorder,
+    openai_usage_counts,
     run_cancellable,
 )
 
@@ -46,6 +48,7 @@ class OpenAILLMClient(LLMClient):
         tool_dialect: str = "responses",
         answer_max_output_tokens: int | None = None,
         decision_max_output_tokens: int | None = None,
+        usage: UsageRecorder | None = None,
     ) -> None:
         if tool_dialect not in self.TOOL_DIALECTS:
             raise ValueError("tool_dialect must be 'responses' or 'chat'")
@@ -53,6 +56,7 @@ class OpenAILLMClient(LLMClient):
         self.tool_dialect = tool_dialect
         self.answer_max_output_tokens = answer_max_output_tokens
         self.decision_max_output_tokens = decision_max_output_tokens
+        self.usage = usage
         self.client = OpenAI(
             api_key=api_key if api_key is not None else os.environ["OPENAI_API_KEY"],
             base_url=base_url,
@@ -73,6 +77,7 @@ class OpenAILLMClient(LLMClient):
             lambda: self.client.chat.completions.create(**request),
             should_cancel,
         )
+        self._note_usage(*openai_usage_counts(response))
         return response.choices[0].message.content or ""
 
     def chat_with_tools(
@@ -102,6 +107,7 @@ class OpenAILLMClient(LLMClient):
             lambda: self.client.responses.create(**request),
             should_cancel,
         )
+        self._note_usage(*openai_usage_counts(response))
         calls = tuple(
             self._responses_tool_call(item)
             for item in (getattr(response, "output", None) or [])
@@ -133,6 +139,7 @@ class OpenAILLMClient(LLMClient):
             lambda: self.client.chat.completions.create(**request),
             should_cancel,
         )
+        self._note_usage(*openai_usage_counts(response))
         message = response.choices[0].message
         calls = tuple(
             self._chat_tool_call(call)

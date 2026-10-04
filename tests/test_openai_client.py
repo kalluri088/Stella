@@ -10,6 +10,7 @@ from stella.llm import (
     Message,
     ProviderRequestCancelled,
     ToolUseMode,
+    UsageRecorder,
 )
 from stella.openai_client import OpenAILLMClient
 
@@ -363,3 +364,63 @@ def test_chat_dialect_sends_the_decision_budget_as_max_tokens(
     calls = openai.return_value.chat.completions.create.call_args_list
     assert calls[0].kwargs["max_tokens"] == 4096
     assert "max_tokens" not in calls[1].kwargs
+
+
+def test_openai_client_records_the_counts_it_was_handed(monkeypatch) -> None:
+    # /usage is only honest if the client actually tallies what the SDK
+    # returned, on every call kind, instead of dropping the usage block.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    usage = UsageRecorder()
+    response = MagicMock()
+    response.choices[0].message.content = "hello"
+    response.usage = SimpleNamespace(prompt_tokens=120, completion_tokens=30)
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value = response
+        client = OpenAILLMClient(model="test-model", usage=usage)
+        client.chat([Message(role="user", content="hi")])
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 1
+    assert (snapshot.prompt_tokens, snapshot.completion_tokens) == (120, 30)
+
+
+def test_openai_client_records_usage_on_both_tool_dialects(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    usage = UsageRecorder()
+
+    responses = MagicMock()
+    responses.output_text = None
+    responses.output = []
+    responses.usage = SimpleNamespace(prompt_tokens=11, completion_tokens=2)
+    chat = MagicMock()
+    chat.choices[0].message.content = None
+    chat.choices[0].message.tool_calls = None
+    chat.usage = SimpleNamespace(prompt_tokens=7, completion_tokens=4)
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.responses.create.return_value = responses
+        openai.return_value.chat.completions.create.return_value = chat
+        OpenAILLMClient(model="m", usage=usage).chat_with_tools([], [])
+        OpenAILLMClient(
+            model="m", tool_dialect="chat", usage=usage
+        ).chat_with_tools([], [])
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 2
+    assert snapshot.prompt_tokens == 18
+    assert snapshot.completion_tokens == 6
+
+
+def test_openai_client_without_a_recorder_reports_nothing(monkeypatch) -> None:
+    # The default stays exactly the old behavior: no recorder attached
+    # means no tallying, and no attribute for a caller to trip over.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    response = MagicMock()
+    response.choices[0].message.content = "hello"
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value = response
+        client = OpenAILLMClient(model="test-model")
+        assert client.usage is None
+        assert client.chat([Message(role="user", content="hi")]) == "hello"

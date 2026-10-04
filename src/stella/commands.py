@@ -6,7 +6,8 @@ before ``StellaSession.run_turn()`` and never reaches the Brain as a
 proposal to interpret. Two tiers exist:
 
 * **Control commands** (``exit``, ``trace``, ``debug``, ``status``,
-  ``help``, ``version``) are built-in, local, and deterministic. They
+  ``help``, ``version``, ``clear``, ``history``, ``usage``) are built-in,
+  local, and deterministic. They
   change what the *terminal* shows or ends; they grant no authority.
 * **Prompt templates** are user-owned Markdown files in
   ``~/.config/stella/commands/<name>.md``. ``/name args`` expands the
@@ -43,7 +44,17 @@ MAX_COMMAND_BYTES = 8_192
 ARGUMENTS_TOKEN = "$ARGUMENTS"
 
 CONTROL_NAMES = frozenset(
-    {"exit", "trace", "debug", "status", "help", "version", "clear", "history"}
+    {
+        "exit",
+        "trace",
+        "debug",
+        "status",
+        "help",
+        "version",
+        "clear",
+        "history",
+        "usage",
+    }
 )
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -173,6 +184,7 @@ def help_lines(directory: Path | None = None) -> list[str]:
         "  /debug on|off     show or hide raw model decisions (terminal)",
         "  /clear            forget this session's conversation (memories stay)",
         "  /history [n]      the most recent action records (default 10)",
+        "  /usage            token counts this session's model calls used",
     ]
     templates = available_template_names(base)
     if templates:
@@ -223,6 +235,38 @@ def action_history_lines(stella: object | None, limit: int = 10) -> list[str]:
     if not entries:
         return ["No action records yet (the trail is bounded and local)."]
     return [format_line(entry) for entry in entries]
+
+
+def usage_lines(stella: object | None) -> list[str]:
+    """Render ``/usage``: what this session's model calls have cost.
+
+    The numbers are the provider's own counts, tallied since launch and
+    never estimated. A provider that reports nothing is said so plainly,
+    because a quiet zero reads like "this session was cheap" when the
+    truth is "this provider does not tell us".
+    """
+
+    llm = getattr(getattr(stella, "brain", None), "llm", None)
+    usage = getattr(llm, "usage", None)
+    if usage is None or not callable(getattr(usage, "snapshot", None)):
+        return ["This session's model reports no token counts."]
+    snapshot = usage.snapshot()
+    if snapshot.requests == 0:
+        return ["No model calls yet this session."]
+    lines = [
+        f"model calls:  {snapshot.requests}",
+        (
+            f"tokens:       {snapshot.prompt_tokens:,} in · "
+            f"{snapshot.completion_tokens:,} out"
+        ),
+        f"largest prompt: {snapshot.largest_prompt:,} tokens",
+    ]
+    if not snapshot.prompt_tokens and not snapshot.completion_tokens:
+        lines.append(
+            "(this provider reported no token counts, so those totals are "
+            "zero rather than measured)"
+        )
+    return lines
 
 
 def status_lines(

@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +13,7 @@ from stella.cli import (
     run_cli,
 )
 from stella.context import Context
-from stella.llm import LLMClient
+from stella.llm import LLMClient, UsageRecorder
 from stella.memory import InMemoryMemory
 from stella.persona import TranscriptRecorder
 from stella.stella import Stella, StellaResult
@@ -1521,3 +1522,38 @@ def test_cli_history_rejects_a_bad_count() -> None:
     run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
 
     assert any(line.startswith("Usage: /history") for line in outputs)
+
+
+def _recorder_with(prompt_tokens: int, completion_tokens: int) -> UsageRecorder:
+    """A recorder holding exactly one reported request, for /usage tests."""
+
+    usage = UsageRecorder()
+    usage.record(prompt_tokens, completion_tokens)
+    return usage
+
+
+def test_cli_usage_reports_counts_without_a_turn() -> None:
+    stella = RecordingStella()
+    stella.brain = SimpleNamespace(
+        llm=SimpleNamespace(usage=_recorder_with(2_100, 64))
+    )
+    outputs: list[str] = []
+    inputs = iter(["/usage", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert stella.contexts == []
+    text = "\n".join(outputs)
+    assert "model calls:  1" in text
+    assert "2,100 in · 64 out" in text
+
+
+def test_cli_usage_is_honest_when_nothing_was_reported() -> None:
+    stella = RecordingStella()
+    outputs: list[str] = []
+    inputs = iter(["/usage", "/exit"])
+
+    run_cli(stella, input_fn=lambda _: next(inputs), output_fn=outputs.append)
+
+    assert stella.contexts == []
+    assert any("no token counts" in line for line in outputs)

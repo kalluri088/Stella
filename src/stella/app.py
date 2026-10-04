@@ -56,6 +56,7 @@ from stella.llm import (
     CancelCheck,
     Message,
     ProviderRequestCancelled,
+    UsageRecorder,
     run_cancellable,
 )
 from stella.memory import Memory, MemoryItem, SQLiteMemory
@@ -1095,6 +1096,10 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # once everything else exists, so a failure anywhere below can never
     # leave a server running.
     brain_server: LlamaBrainServer | None = None
+    # One token tally for this session, handed to whichever client the
+    # provider is: /usage reads the counts the provider itself reported,
+    # and nothing is stored or estimated.
+    usage = UsageRecorder()
     if settings.provider == "ollama":
         # The compatibility endpoint ignores per-request options on Ollama
         # 0.33.x; native /api/chat is the only way to apply num_ctx. It must
@@ -1111,6 +1116,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             decision_max_output_tokens=settings.decision_max_tokens,
             answer_max_output_tokens=settings.answer_max_tokens,
             think=settings.ollama_think,
+            usage=usage,
         )
     elif settings.provider == "openai":
         key = provider_keys.effective_api_key(settings.preset)
@@ -1130,6 +1136,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             tool_dialect=provider_keys.tool_dialect_for(settings.preset),
             decision_max_output_tokens=settings.decision_max_tokens,
             answer_max_output_tokens=settings.answer_max_tokens,
+            usage=usage,
         )
     elif settings.provider == "llama":
         brain_server = LlamaBrainServer(
@@ -1145,6 +1152,7 @@ def build_application(settings: StellaSettings) -> StellaApplication:
             base_url=brain_server.base_url,
             decision_max_output_tokens=settings.decision_max_tokens,
             answer_max_output_tokens=settings.answer_max_tokens,
+            usage=usage,
         )
     else:
         raise SystemExit(

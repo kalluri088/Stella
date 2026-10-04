@@ -267,7 +267,9 @@ still just a sentence. Built in: `/exit`, `/status` (what Stella is
 connected to and where your data lives), `/help`, `/version`,
 `/clear` (forget this session's conversation — stored memories and the
 action trail are untouched), `/history` (the most recent action
-records), and in the terminal `/trace on|off` and `/debug on|off`. You can also write
+records), `/usage` (the token counts your provider reported for this
+session — its own numbers, never an estimate, and it says so when a
+provider reports none), and in the terminal `/trace on|off` and `/debug on|off`. You can also write
 your own: a Markdown file named `~/.config/stella/commands/plan.md`
 becomes `/plan`, and whatever you type after the command replaces
 `$ARGUMENTS` in it (or is appended, if the file has no token). An

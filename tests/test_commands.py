@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from stella.commands import (
     ARGUMENTS_TOKEN,
@@ -17,8 +18,10 @@ from stella.commands import (
     parse_limit,
     status_lines,
     suggest_commands,
+    usage_lines,
     version_line,
 )
+from stella.llm import UsageRecorder
 
 
 def write_template(directory: Path, name: str, body: str) -> Path:
@@ -211,3 +214,62 @@ def test_action_history_lines_renders_entries() -> None:
     lines = action_history_lines(stella)
     assert len(lines) == 1
     assert "audit_probe" in lines[0]
+
+
+# --- /usage ---------------------------------------------------------------
+
+
+def _stella_with_usage(usage: object) -> object:
+    """A stella-shaped stub: brain.llm is where the client's recorder lives."""
+
+    return SimpleNamespace(brain=SimpleNamespace(llm=SimpleNamespace(usage=usage)))
+
+
+def test_usage_is_a_control_command() -> None:
+    call = parse_command_line("/usage")
+    assert call is not None
+    assert call.is_control is True
+
+
+def test_usage_is_listed_in_help() -> None:
+    text = "\n".join(help_lines(directory=Path("/nonexistent")))
+    assert "/usage" in text
+
+
+def test_usage_says_so_when_the_session_reports_nothing() -> None:
+    assert usage_lines(None) == [
+        "This session's model reports no token counts."
+    ]
+    assert usage_lines(_stella_with_usage(None)) == [
+        "This session's model reports no token counts."
+    ]
+
+
+def test_usage_before_the_first_model_call() -> None:
+    lines = usage_lines(_stella_with_usage(UsageRecorder()))
+    assert lines == ["No model calls yet this session."]
+
+
+def test_usage_renders_the_providers_own_counts() -> None:
+    usage = UsageRecorder()
+    usage.record(1200, 80)
+    usage.record(5300, 40)
+
+    text = "\n".join(usage_lines(_stella_with_usage(usage)))
+    assert "model calls:  2" in text
+    assert "6,500 in · 120 out" in text
+    assert "largest prompt: 5,300 tokens" in text
+    # Counts exist here, so the "provider told us nothing" note stays off.
+    assert "reported no token counts" not in text
+
+
+def test_usage_calls_out_a_provider_that_reports_nothing() -> None:
+    # A local endpoint that omits the usage block still counts requests;
+    # saying only "0 in" would read as a cheap session rather than a
+    # provider that does not tell us.
+    usage = UsageRecorder()
+    usage.record(None, None)
+
+    text = "\n".join(usage_lines(_stella_with_usage(usage)))
+    assert "model calls:  1" in text
+    assert "reported no token counts" in text

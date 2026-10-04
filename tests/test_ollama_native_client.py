@@ -10,6 +10,7 @@ from stella.llm import (
     LLMToolDefinition,
     Message,
     ProviderRequestCancelled,
+    UsageRecorder,
 )
 from stella.ollama_client import (
     NATIVE_REQUEST_TIMEOUT_SECONDS,
@@ -95,8 +96,15 @@ class ConnectionRecorder:
         *,
         status: int = 200,
         wait_timeouts: int = 0,
+        extra: dict | None = None,
     ) -> None:
-        body = json.dumps({"message": message}).encode("utf-8")
+        # ``extra`` carries the sibling fields of ``message`` the real
+        # endpoint returns — token counts among them — so a test can prove
+        # the client reads them instead of discarding the payload.
+        payload: dict = {"message": message}
+        if extra:
+            payload.update(extra)
+        body = json.dumps(payload).encode("utf-8")
 
         def factory(host, port=None, timeout=None, **_kwargs):
             connection = FakeConnection(
@@ -434,3 +442,69 @@ def test_compat_decision_call_sends_max_tokens() -> None:
 
     request = openai.return_value.chat.completions.create.call_args.kwargs
     assert request["max_tokens"] == 8192
+
+
+def test_native_chat_records_ollamas_own_token_counts(connections) -> None:
+    # /usage reads exactly these two fields; Ollama's native endpoint is
+    # what has reported them for every measurement in this project.
+    usage = UsageRecorder()
+    connections.install(
+        {"role": "assistant", "content": "hi"},
+        extra={"prompt_eval_count": 5300, "eval_count": 42},
+    )
+    client = make_client(native=True, usage=usage)
+
+    assert client.chat([Message(role="user", content="hi")]) == "hi"
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 1
+    assert snapshot.prompt_tokens == 5300
+    assert snapshot.completion_tokens == 42
+    assert snapshot.largest_prompt == 5300
+
+
+def test_native_tool_call_records_usage_too(connections) -> None:
+    usage = UsageRecorder()
+    connections.install(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "datetime", "arguments": "{}"}}
+            ],
+        },
+        extra={"prompt_eval_count": 900, "eval_count": 12},
+    )
+    client = make_client(native=True, usage=usage)
+
+    client.chat_with_tools(
+        [Message(role="user", content="time?")],
+        [LLMToolDefinition(name="datetime", description="", arguments={})],
+    )
+
+    assert usage.snapshot().prompt_tokens == 900
+
+
+def test_compat_tool_path_records_openai_shaped_usage() -> None:
+    # The compatibility endpoint answers with the SDK's usage object, not
+    # Ollama's eval counts, so this path needs its own recording site.
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    usage = UsageRecorder()
+    response = MagicMock()
+    response.choices[0].message.content = '{"kind":"do_nothing"}'
+    response.choices[0].message.tool_calls = None
+    response.usage = SimpleNamespace(prompt_tokens=60, completion_tokens=9)
+
+    with patch("stella.openai_client.OpenAI") as openai:
+        openai.return_value.chat.completions.create.return_value = response
+        client = OllamaLLMClient(model="qwen3:4b", usage=usage)
+        client.chat_with_tools(
+            [Message(role="user", content="hi")],
+            [LLMToolDefinition(name="datetime", description="", arguments={})],
+        )
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 1
+    assert (snapshot.prompt_tokens, snapshot.completion_tokens) == (60, 9)

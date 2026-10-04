@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### `/usage`: what this session's model calls have cost
+
+- **What changed.** Provider token counts are no longer discarded.
+  `stella.llm` gained `UsageRecorder` and a frozen `UsageSnapshot`,
+  `LLMClient` gained an optional `usage` recorder plus one `_note_usage`
+  helper, and every client path now tallies what the provider reported:
+  Ollama's native `prompt_eval_count`/`eval_count`, and the OpenAI-shaped
+  `usage` block on the compatibility endpoint, llama-server, OpenAI, the
+  chat-dialect presets and the Responses API. `build_application` attaches
+  exactly one recorder per session. `usage` joined the control commands,
+  so `/usage` in the terminal and the desktop window prints the call
+  count, tokens in and out, and the largest single prompt sent — rendered
+  by `commands.usage_lines`, which is a pure attribute read like `/status`
+  (no worker hop, no database cursor).
+- **Why.** The owner asked for the feature directly. The numbers already
+  existed in every response body and were thrown away at the transport
+  edge; on a single local card they are the only practical read on whether
+  a turn is expensive and whether the 8192-token context is being clipped.
+- **Security.** A display of counts, nothing more: no new capability, no
+  new authority, no persistence (the totals live in memory and die with the
+  session), no new subprocess or network call. The recorder is
+  lock-protected because the UI thread reads while the worker writes.
+  Honesty rule: a request that was cancelled, failed, or reported no
+  counts contributes nothing to the token totals, and a provider that
+  reports nothing says so instead of showing a silent zero.
+- **Proof.** 47 passed in `test_llm.py` + `test_commands.py` (tallying,
+  non-count rejection, four-thread race, `usage_lines` rendering including
+  the no-counts case); 35 in `test_openai_client.py` +
+  `test_ollama_native_client.py` (recording on both tool dialects, the
+  native endpoint's own eval counts, and the no-recorder default); 164 in
+  `test_cli.py` + `test_app.py` (`/usage` renders with no turn, the build
+  wires one recorder onto the client); 74 in `test_ui.py` (the window
+  renders usage without touching the brain). `ruff check` clean;
+  `git diff --check` clean.
+
 ### Decision prompt: shorter memories, sized answers, a persona that shows
 
 - **What changed.** Three additions to the stable core prompt and to the

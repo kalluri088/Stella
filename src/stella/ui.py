@@ -55,6 +55,7 @@ from stella.commands import (
     parse_limit,
     status_lines,
     suggest_commands,
+    usage_lines,
     version_line,
 )
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
@@ -1123,6 +1124,11 @@ class StellaWindow:
                 lines = status_lines(
                     settings=settings, session=session, stella=stella
                 )
+            elif call.name == "usage":
+                # Pure attribute reads on the built client, the same safety
+                # class as /status: no command, no cursor, no worker hop.
+                _, _, stella = self._bridge.status_snapshot()
+                lines = usage_lines(stella)
             else:
                 lines = [version_line()]
             self._line("\n".join(lines), role="note")

@@ -8,6 +8,8 @@ from stella.llm import (
     LLMClient,
     Message,
     ProviderRequestCancelled,
+    UsageRecorder,
+    openai_usage_counts,
     run_cancellable,
 )
 
@@ -115,3 +117,59 @@ def test_run_cancellable_reports_cancellation_even_if_transport_close_fails() ->
             on_cancel=on_cancel,
         )
     assert time.monotonic() - started < 5
+
+
+def test_usage_recorder_tallies_only_reported_counts() -> None:
+    usage = UsageRecorder()
+    usage.record(100, 20)
+    usage.record(None, 5)
+    usage.record(500, None)
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 3
+    assert snapshot.prompt_tokens == 600
+    assert snapshot.completion_tokens == 25
+    # The biggest single prompt is what says whether the context window is
+    # being clipped, so it survives as its own number rather than a sum.
+    assert snapshot.largest_prompt == 500
+
+
+def test_usage_recorder_ignores_a_nonsensical_reported_count() -> None:
+    # A client hands over whatever the provider's JSON said. A string or a
+    # negative is not a token count, and adding it would poison the total.
+    usage = UsageRecorder()
+    usage.record("many", -7)
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 1
+    assert snapshot.prompt_tokens == 0
+    assert snapshot.completion_tokens == 0
+
+
+def test_usage_recorder_is_safe_across_threads() -> None:
+    usage = UsageRecorder()
+
+    def hammer() -> None:
+        for _ in range(200):
+            usage.record(1, 1)
+
+    threads = [threading.Thread(target=hammer) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    snapshot = usage.snapshot()
+    assert snapshot.requests == 800
+    assert snapshot.prompt_tokens == 800
+
+
+def test_openai_usage_counts_reads_the_shape_the_sdk_returns() -> None:
+    from types import SimpleNamespace
+
+    response = SimpleNamespace(
+        usage=SimpleNamespace(prompt_tokens=12, completion_tokens=3)
+    )
+    assert openai_usage_counts(response) == (12, 3)
+    # A response with no usage block is not an error: it yields nothing.
+    assert openai_usage_counts(SimpleNamespace(usage=None)) == (None, None)

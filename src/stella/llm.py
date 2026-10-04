@@ -51,6 +51,79 @@ class LLMResponse:
     tool_calls: tuple[LLMToolCall, ...] = ()
 
 
+@dataclass(frozen=True)
+class UsageSnapshot:
+    """What a client has observed of its provider's token counts.
+
+    ``requests`` counts completed calls, so the two token totals are an
+    average only in the arithmetic sense: a provider that reports nothing
+    contributes a request and no tokens, which is honest about the gap
+    rather than guessing a count. ``largest_prompt`` is the single biggest
+    prompt this session sent — the number that says whether the context
+    window is being clipped.
+    """
+
+    requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    largest_prompt: int
+
+
+class UsageRecorder:
+    """A session-scoped tally of the token counts a provider reports.
+
+    Nothing is persisted and nothing is estimated: only the numbers the
+    provider itself returned for a finished request are added. A cancelled
+    or failed call records nothing, so the totals describe work the model
+    actually did, not work the application threw away. The lock exists
+    because the UI thread reads while the worker thread writes.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests = 0
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+        self._largest_prompt = 0
+
+    def record(
+        self, prompt_tokens: int | None, completion_tokens: int | None
+    ) -> None:
+        """Tally one completed request; a missing count adds nothing."""
+
+        with self._lock:
+            self._requests += 1
+            if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
+                self._prompt_tokens += prompt_tokens
+                self._largest_prompt = max(
+                    self._largest_prompt, prompt_tokens
+                )
+            if (
+                isinstance(completion_tokens, int)
+                and completion_tokens >= 0
+            ):
+                self._completion_tokens += completion_tokens
+
+    def snapshot(self) -> UsageSnapshot:
+        with self._lock:
+            return UsageSnapshot(
+                requests=self._requests,
+                prompt_tokens=self._prompt_tokens,
+                completion_tokens=self._completion_tokens,
+                largest_prompt=self._largest_prompt,
+            )
+
+
+def openai_usage_counts(response: object) -> tuple[int | None, int | None]:
+    """(prompt, completion) token counts from an OpenAI-shaped response."""
+
+    usage = getattr(response, "usage", None)
+    return (
+        getattr(usage, "prompt_tokens", None),
+        getattr(usage, "completion_tokens", None),
+    )
+
+
 CancelCheck = Callable[[], bool]
 
 
@@ -120,7 +193,22 @@ class LLMClient(ABC):
     the normal safe points instead), and raising
     :class:`ProviderRequestCancelled` is the only acceptable way to
     abandon one.
+
+    ``usage`` is an optional :class:`UsageRecorder` the client tallies
+    into. It defaults to None on the class, so a client that never
+    attaches one — and a provider that reports no counts — simply
+    reports nothing rather than an invented number.
     """
+
+    usage: UsageRecorder | None = None
+
+    def _note_usage(
+        self, prompt_tokens: int | None, completion_tokens: int | None
+    ) -> None:
+        """Tally one finished request when this client carries a recorder."""
+
+        if self.usage is not None:
+            self.usage.record(prompt_tokens, completion_tokens)
 
     @abstractmethod
     def chat(

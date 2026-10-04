@@ -32,7 +32,13 @@ from stella.app import (
 )
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import Context
-from stella.llm import LLMClient, LLMResponse, Message, run_cancellable
+from stella.llm import (
+    LLMClient,
+    LLMResponse,
+    Message,
+    UsageRecorder,
+    run_cancellable,
+)
 from stella.memory import InMemoryMemory, MemoryItem, SQLiteMemory
 from stella.minilm_embedding import MiniLMEmbeddingProvider
 from stella.ollama_embedding import OllamaEmbeddingProvider
@@ -1027,6 +1033,37 @@ def test_build_application_resolves_a_preset_key_from_the_store(
         assert created[0]["api_key"] == "sk-ant-stored-value"
         assert created[0]["base_url"] == "https://api.anthropic.com/v1"
         assert created[0]["tool_dialect"] == "chat"
+    finally:
+        application.close()
+
+
+def test_build_application_hands_one_usage_recorder_to_the_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # /usage reads the counts off the client the session was built with, so
+    # the wiring point is the build: one recorder, attached, for every
+    # provider branch.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    provider_keys.save_api_key("anthropic", "sk-ant-stored-value")
+    created: list[dict] = []
+
+    class RecorderClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(app, "OpenAILLMClient", RecorderClient)
+    application = build_application(
+        StellaSettings(
+            provider="openai",
+            model="claude-sonnet-4-20250514",
+            preset="anthropic",
+            voice_transcription="off",
+            voice_speech="off",
+        )
+    )
+    try:
+        assert isinstance(created[0]["usage"], UsageRecorder)
     finally:
         application.close()
 

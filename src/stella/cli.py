@@ -30,6 +30,7 @@ from stella.commands import (
     parse_limit,
     status_lines,
     suggest_commands,
+    usage_lines,
     version_line,
 )
 from stella.config import resolve_settings, startup_key_health_report
@@ -140,6 +141,10 @@ def _run_control_command(
         else:
             for line in action_history_lines(stella, limit):
                 output_fn(line)
+        return False
+    if call.name == "usage":
+        for line in usage_lines(stella):
+            output_fn(line)
         return False
     if call.name == "help":
         for line in help_lines():

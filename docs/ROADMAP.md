@@ -474,7 +474,9 @@ code no text file can influence (`src/stella/persona.py`,
   so no model call or approval can be steered by it.
   Two tiers: built-in control commands (`/exit`, `/status`, `/help`,
   `/version`, `/clear` for the session's conversation, `/history` for
-  the newest action records, and terminal-only `/trace`/`/debug`
+  the newest action records, `/usage` for the token counts the provider
+  reported this session (`docs/MODELS.md`), and terminal-only
+  `/trace`/`/debug`
   toggles that make
   the startup flags session-mutable) and user-owned prompt templates
   in `~/.config/stella/commands/<name>.md` whose `$ARGUMENTS`

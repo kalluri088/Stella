@@ -2004,3 +2004,45 @@ def test_window_history_command_shows_a_note() -> None:
     finally:
         bridge.stop()
         root.destroy()
+
+
+def test_window_usage_command_renders_without_a_turn() -> None:
+    brain = RecordingBrain()
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/usage")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "> /usage" in transcript
+        assert "no token counts" in transcript
+        assert brain.inputs == []
+        assert window._busy is False
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_usage_shows_what_the_client_observed() -> None:
+    from types import SimpleNamespace
+
+    from stella.llm import UsageRecorder
+
+    # Same attribute-read path as /status: the UI thread renders the
+    # recorder the built client already carries, with no worker hop.
+    brain = RecordingBrain()
+    usage = UsageRecorder()
+    usage.record(3_050, 71)
+    brain.llm = SimpleNamespace(usage=usage)
+    root, window, bridge, _ = make_window(brain=brain)
+    try:
+        window._input.insert("1.0", "/usage")
+        window._send()
+        settle(root, window)
+        transcript = window._chat.get("1.0", "end")
+        assert "model calls:  1" in transcript
+        assert "3,050 in · 71 out" in transcript
+        assert brain.inputs == []
+    finally:
+        bridge.stop()
+        root.destroy()

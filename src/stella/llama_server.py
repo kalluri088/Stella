@@ -29,6 +29,7 @@ import urllib.request
 from typing import Self
 
 from stella.childproc import guarded_popen
+from stella.llm import UsageRecorder
 from stella.ollama_client import OllamaLLMClient
 
 DEFAULT_LLAMA_SERVER_BINARY = "llama-server"
@@ -262,6 +263,7 @@ class LlamaServerLLMClient(OllamaLLMClient):
         *,
         answer_max_output_tokens: int | None = None,
         decision_max_output_tokens: int | None = None,
+        usage: UsageRecorder | None = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -270,4 +272,5 @@ class LlamaServerLLMClient(OllamaLLMClient):
             native=False,
             answer_max_output_tokens=answer_max_output_tokens,
             decision_max_output_tokens=decision_max_output_tokens,
+            usage=usage,
         )

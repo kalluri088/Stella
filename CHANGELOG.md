@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Wake word now starts ON in the desktop app
+
+- **Say the name without opening Settings first.** The wake-word checkbox is
+  now **ticked by default**. `StellaSettings.from_saved`'s default and
+  `config.resolve_settings` both read a saved configuration's missing
+  `wake_word_enabled` key as ON, so a fresh setup and a config written before
+  wake had a checkbox both begin listening. An explicit
+  `"wake_word_enabled": false` (untick → Apply) still wins, and
+  `STELLA_WAKE_WORD=off` overrides a single run.
+- **Two paths deliberately unchanged.** The bare `StellaSettings` dataclass
+  and the `from_environment` path keep their historical **off** default, so
+  the environment-driven CLI and automated callers behave exactly as before.
+- **`stella voice` stays as it was.** The one-shot voice shortcut has no
+  continuous wake loop, so `headless_voice.headless_settings()` now forces the
+  mode off before building — it never constructs the unused ONNX spotter and
+  does not open the microphone any wider than it already did. Its own silence
+  endpointer is independent of the wake mode, so hands-free cut-off is
+  unaffected.
+- **The known cost, surfaced.** Default-on wake means an always-open
+  microphone on every desktop launch (one capture child plus the ONNX chain on
+  each short audio chunk). If that proves annoying, untick the Settings
+  checkbox (persisted) or run once with `STELLA_WAKE_WORD=off`. If the optional
+  `wake` extra or the model files are absent, the UI shows the existing
+  one-line notice and the feature is simply inert — it never crashes.
+
 ### Desktop awareness: already built, now consistent across every launch path
 
 - **What it actually is.** "Desktop awareness" is not a stub and is not a

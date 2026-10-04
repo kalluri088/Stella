@@ -438,6 +438,28 @@ def test_build_wake_arms_only_on_an_explicit_on(tmp_path) -> None:
         )
 
 
+def test_headless_voice_never_arms_the_unused_spotter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Wake now defaults ON in the saved config so the desktop UI listens,
+    # but `stella voice` records a single utterance and has no continuous
+    # wake loop — so it must not pay to construct the ONNX spotter. The
+    # headless wrapper forces the mode back off no matter what was saved,
+    # and leaves every other field intact (a pure override, not a
+    # mutation of the caller's settings).
+    from stella.headless_voice import headless_settings
+
+    clear_wake_env(monkeypatch)
+    saved = StellaSettings.from_saved(provider="ollama", model="m")
+    assert (saved.wake_word, saved.wake_word_enabled) == ("on", True)
+    wrapped = headless_settings(saved)
+    assert (wrapped.wake_word, wrapped.wake_word_enabled) == ("off", False)
+    assert wrapped.model == saved.model
+    assert wrapped.provider == saved.provider
+    # The source settings is untouched — dataclasses.replace, not mutation.
+    assert (saved.wake_word, saved.wake_word_enabled) == ("on", True)
+
+
 # ----------------------------------------------------------------- bridge
 
 

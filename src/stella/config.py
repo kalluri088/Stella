@@ -608,5 +608,8 @@ def resolve_settings() -> StellaSettings | None:
         web_tools_enabled=raw.get("web_tools_enabled") is True,
         shell_tools_enabled=raw.get("shell_tools_enabled") is True,
         browser_tools_enabled=raw.get("browser_tools_enabled") is True,
-        wake_word_enabled=raw.get("wake_word_enabled") is True,
+        # Wake word is now on by default for the desktop UI: a saved config
+        # that predates the key resolves to ON. An explicit
+        # ``"wake_word_enabled": false`` (the unticked opt-out) still wins.
+        wake_word_enabled=raw.get("wake_word_enabled", True) is not False,
     )

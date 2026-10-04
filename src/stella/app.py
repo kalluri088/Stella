@@ -856,7 +856,9 @@ class StellaSettings:
         web_tools_enabled: bool = False,
         shell_tools_enabled: bool = False,
         browser_tools_enabled: bool = False,
-        wake_word_enabled: bool = False,
+        # Wake word now defaults on for the desktop UI (opt-out stays the
+        # single Settings checkbox plus STELLA_WAKE_WORD=off for one run).
+        wake_word_enabled: bool = True,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 

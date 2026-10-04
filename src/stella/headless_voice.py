@@ -24,6 +24,7 @@ The security posture that must never loosen here:
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import re
@@ -110,6 +111,22 @@ _VOICE_SETUP_NEEDED = (
 )
 
 
+def headless_settings(settings):
+    """Force wake-word off for the one-shot ``stella voice`` path.
+
+    Wake now defaults ON in the saved config so the desktop UI listens for
+    the name. ``stella voice`` has no continuous wake loop — it records a
+    single utterance per press — so arming the spotter would only load an
+    unused ONNX model and open the microphone wider than this command ever
+    needs. Its own silence endpointer (``build_wake_ear``) is independent
+    of the wake mode, so hands-free cut-off is unaffected. This keeps the
+    voice shortcut byte-for-byte the behaviour it had before the default
+    flip, per the owner's "stella voice stays as-is" scope.
+    """
+
+    return dataclasses.replace(settings, wake_word="off", wake_word_enabled=False)
+
+
 def run_headless_voice() -> int:
     """Run exactly one voice turn from the latest settings; return a code.
 
@@ -125,7 +142,7 @@ def run_headless_voice() -> int:
         return 2
     # A SystemExit from the build is a configuration error the owner can
     # read verbatim ("STELLA_MODEL is required"), so let it stand.
-    application = build_application(settings)
+    application = build_application(headless_settings(settings))
     try:
         return _run_one_turn(application)
     finally:

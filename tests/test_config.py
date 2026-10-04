@@ -630,3 +630,47 @@ def test_desktop_awareness_is_on_by_default_in_the_environment_path(
     assert StellaSettings.from_environment().os_tools_enabled is True
     monkeypatch.setenv("STELLA_OS_TOOLS", "0")
     assert StellaSettings.from_environment().os_tools_enabled is False
+
+
+def test_wake_word_is_on_by_default_in_the_saved_config(monkeypatch):
+    # The desktop UI now starts listening for its name unless the owner
+    # unticks the box: from_saved's default arms wake (mode "on"). The bare
+    # dataclass keeps its historical conservative off, so the headless and
+    # environment paths are unaffected by this flip. An explicit False is
+    # still honoured.
+    monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
+    assert StellaSettings(model="m").wake_word_enabled is False
+    on = StellaSettings.from_saved(provider="ollama", model="m")
+    assert on.wake_word_enabled is True
+    assert on.wake_word == "on"
+    off = StellaSettings.from_saved(
+        provider="ollama", model="m", wake_word_enabled=False
+    )
+    assert off.wake_word_enabled is False
+    assert off.wake_word == "off"
+
+
+def test_a_legacy_config_without_the_wake_key_resolves_on(monkeypatch):
+    # A configuration written before wake had a checkbox carries no
+    # "wake_word_enabled" field at all. resolve_settings now reads that
+    # absence as ON so the desktop defaults to listening; the unticked
+    # opt-out persists an explicit false, which still resolves OFF.
+    monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
+    config.config_path().parent.mkdir(parents=True, exist_ok=True)
+    config.config_path().write_text(
+        json.dumps({"provider": "ollama", "model": "m"}), encoding="utf-8"
+    )
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.wake_word_enabled is True
+    assert resolved.wake_word == "on"
+    config.config_path().write_text(
+        json.dumps(
+            {"provider": "ollama", "model": "m", "wake_word_enabled": False}
+        ),
+        encoding="utf-8",
+    )
+    resolved = config.resolve_settings()
+    assert resolved is not None
+    assert resolved.wake_word_enabled is False
+    assert resolved.wake_word == "off"

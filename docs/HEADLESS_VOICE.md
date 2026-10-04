@@ -10,11 +10,14 @@ desktop app uses.
 
 ## The flow
 
-1. **Press the shortcut.** The command is `stella voice`. On this machine it is
-   wired to **Super + D** in `~/.config/hypr/bindings.lua`, which launches it
-   as `/usr/bin/uv run --project <repo> stella voice` because the `stella`
-   console script is not on the launcher's PATH. It runs from the latest saved
-   `config.json` (`resolve_settings`) — the same settings the desktop app uses.
+1. **Press the shortcut.** For one turn the command is `stella voice`; the
+   shortcut on this machine (**Super + D** in `~/.config/hypr/bindings.lua`)
+   now runs `stella voice --toggle`, which talks to the resident server
+   described below (and starts it if none is up). It launches as
+   `/usr/bin/uv run --project <repo> stella voice --toggle` because the
+   `stella` console script is not on the launcher's PATH. Both shapes run
+   from the latest saved `config.json` (`resolve_settings`) — the same
+   settings the desktop app uses.
 2. **A short chime** says *I'm listening*. (Two tones, generated with the
    standard library — no asset files, no new dependency.)
 3. **You speak.** One shared microphone handle is opened for the utterance; a

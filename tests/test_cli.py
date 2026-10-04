@@ -13,7 +13,7 @@ from stella.cli import (
     run_cli,
 )
 from stella.context import Context
-from stella.llm import LLMClient, UsageRecorder
+from stella.llm import LLMClient, Message, UsageRecorder
 from stella.memory import InMemoryMemory
 from stella.persona import TranscriptRecorder
 from stella.stella import Stella, StellaResult
@@ -1557,3 +1557,39 @@ def test_cli_usage_is_honest_when_nothing_was_reported() -> None:
 
     assert stella.contexts == []
     assert any("no token counts" in line for line in outputs)
+
+
+def test_cli_clear_reports_what_it_dropped() -> None:
+    stella = RecordingStella()
+    session = StellaSession(stella)
+    session.history.extend(
+        [Message(role="user", content="one"), Message(role="assistant", content="two")]
+    )
+    outputs: list[str] = []
+    inputs = iter(["/clear", "/exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        session=session,
+    )
+
+    assert session.history == []
+    assert any("2 messages dropped" in line for line in outputs)
+
+
+def test_cli_clear_on_an_empty_session_says_zero() -> None:
+    stella = RecordingStella()
+    session = StellaSession(stella)
+    outputs: list[str] = []
+    inputs = iter(["/clear", "/exit"])
+
+    run_cli(
+        stella,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        session=session,
+    )
+
+    assert any("0 messages dropped" in line for line in outputs)

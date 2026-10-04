@@ -170,6 +170,31 @@ def suggest_commands(name: str, directory: Path | None = None) -> list[str]:
     return difflib.get_close_matches(name, known, n=3, cutoff=0.6)
 
 
+def template_summary(
+    name: str, directory: Path | None = None
+) -> str | None:
+    """The one line ``/help`` shows for a template, or None.
+
+    A template is a Markdown file, so a leading ``#`` heading is the natural
+    place to say what the command is for. A file with no heading gets no
+    description rather than a quote of its prompt text: the first line of a
+    prompt is usually an instruction, and rendering it as a description
+    would mislabel it.
+    """
+
+    body, error = load_template_body(name, directory)
+    if error is not None or body is None:
+        return None
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("#"):
+            return None
+        return (stripped.lstrip("#").strip() or None)
+    return None
+
+
 def help_lines(directory: Path | None = None) -> list[str]:
     """Render the command listing shown by ``/help``."""
 
@@ -188,8 +213,12 @@ def help_lines(directory: Path | None = None) -> list[str]:
     ]
     templates = available_template_names(base)
     if templates:
-        names = "  ".join(f"/{name}" for name in templates)
-        lines.append(f"  prompt templates: {names}")
+        lines.append(
+            "  prompt templates (yours; the expanded text is ordinary input):"
+        )
+        for name in templates:
+            summary = template_summary(name, base) or ""
+            lines.append(f"  /{name:<16} {summary}".rstrip())
     else:
         lines.append(
             f"  (no prompt templates yet — add a Markdown file named "
@@ -293,11 +322,23 @@ def status_lines(
     else:
         web_line = "on (keyless DuckDuckGo; your query leaves this machine)"
     transcripts = getattr(session, "transcripts", None)
+    capabilities = [
+        label
+        for label, flag in (
+            ("desktop", getattr(settings, "os_tools_enabled", False)),
+            ("outline", getattr(settings, "outline_tools_enabled", False)),
+            ("shell", getattr(settings, "shell_tools_enabled", False)),
+            ("browser", getattr(settings, "browser_tools_enabled", False)),
+            ("wake", getattr(settings, "wake_word_enabled", False)),
+        )
+        if flag
+    ]
     lines = [
         f"provider:  {type(llm).__name__ if llm is not None else 'unknown'}",
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {memory_db or 'in-memory'}",
+        f"capabilities: {', '.join(capabilities) if capabilities else 'core only'}",
         f"web:       {web_line}",
         f"transcripts: {'on (bounded local file)' if transcripts is not None else 'off'}",
         f"persona:   {persona_directory()}",

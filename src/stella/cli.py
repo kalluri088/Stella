@@ -127,11 +127,14 @@ def _run_control_command(
             output_fn(f"{call.name} {value}.")
         return False
     if call.name == "clear":
+        dropped = 0
         if session is not None:
+            dropped = len(session.history)
             session.history.clear()
         output_fn(
-            "Conversation history cleared. Stored memories and the"
-            " action trail are untouched."
+            f"Conversation history cleared ({dropped} message"
+            f"{'s' if dropped != 1 else ''} dropped). Stored memories and"
+            " the action trail are untouched."
         )
         return False
     if call.name == "history":

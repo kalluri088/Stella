@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Slash commands: what a template is for, what is connected, what was dropped
+
+- **What changed.** `/help` now lists each prompt template on its own line
+  with the description you gave it: a template's leading `#` heading
+  becomes that line (`commands.template_summary`), and a file with no
+  heading is listed bare rather than having its first prompt sentence
+  quoted back as a label. `/status` gained one `capabilities:` line naming
+  what is actually switched on (desktop, outline, shell, browser, wake)
+  instead of leaving the owner to remember five settings. `/clear` now
+  reports how many messages it dropped, in both the terminal and the
+  window, so "cleared" is a number rather than a claim.
+- **Why.** The command surface had grown to nine control commands plus
+  user templates, and the two discoverability seams were the help listing
+  and the status readout: a template's purpose was invisible unless you
+  opened the file, and which optional capabilities were live was only
+  knowable by trying one and watching for an approval.
+- **Security.** Rendering only. `commands.py` still executes nothing: the
+  template read reuses `load_template_body`, so the containment, symlink
+  and byte-cap rules apply to the heading exactly as they do to an
+  expansion. The status line reads stored booleans and prints no values,
+  and `/clear` counts a list the session already owns. No new command, no
+  new capability, no change to what any command is allowed to do.
+- **Proof.** `tests/test_commands.py` (heading summary, no-heading case,
+  per-template help listing, both `capabilities:` states) and
+  `tests/test_cli.py` (the dropped-message count, empty session included):
+  118 passed; `tests/test_app.py` + `tests/test_ui.py` 159 passed;
+  `ruff check .` clean; `git diff --check` clean.
+
 ### `/usage`: what this session's model calls have cost
 
 - **What changed.** Provider token counts are no longer discarded.

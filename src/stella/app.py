@@ -2598,11 +2598,14 @@ class StellaBridge:
         """Forget this session's conversation (worker thread owns it)."""
 
         def handle() -> None:
-            self._require_session().history.clear()
+            session = self._require_session()
+            dropped = len(session.history)
+            session.history.clear()
             self._emit(
                 "note",
-                "Conversation history cleared. Stored memories and the"
-                " action trail are untouched.",
+                f"Conversation history cleared ({dropped} message"
+                f"{'s' if dropped != 1 else ''} dropped). Stored memories"
+                " and the action trail are untouched.",
             )
 
         self._post(handle)

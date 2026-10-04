@@ -18,6 +18,7 @@ from stella.commands import (
     parse_limit,
     status_lines,
     suggest_commands,
+    template_summary,
     usage_lines,
     version_line,
 )
@@ -273,3 +274,53 @@ def test_usage_calls_out_a_provider_that_reports_nothing() -> None:
     text = "\n".join(usage_lines(_stella_with_usage(usage)))
     assert "model calls:  1" in text
     assert "reported no token counts" in text
+
+
+# --- /help template descriptions and /status capabilities ----------------
+
+
+def test_template_summary_uses_the_leading_heading(tmp_path) -> None:
+    write_template(tmp_path, "plan", "# Plan a release\n\nSteps: $ARGUMENTS")
+    assert template_summary("plan", directory=tmp_path) == "Plan a release"
+
+
+def test_template_without_a_heading_has_no_invented_description(tmp_path) -> None:
+    # The first line of a prompt is an instruction, not a label; quoting it
+    # as a description would mislabel the file.
+    write_template(tmp_path, "draft", "Draft this: $ARGUMENTS")
+    assert template_summary("draft", directory=tmp_path) is None
+    write_template(tmp_path, "empty", "#   ")
+    assert template_summary("empty", directory=tmp_path) is None
+
+
+def test_help_lists_each_template_with_its_description(tmp_path) -> None:
+    write_template(tmp_path, "plan", "# Plan a release\n\n$ARGUMENTS")
+    write_template(tmp_path, "draft", "Draft this: $ARGUMENTS")
+    lines = help_lines(directory=tmp_path)
+    text = "\n".join(lines)
+    assert "/plan" in text and "Plan a release" in text
+    # A heading-less template is still listed, just bare.
+    assert "/draft" in text
+    assert "prompt templates" in text
+
+
+def test_status_names_the_connected_capabilities() -> None:
+    settings = type(
+        "S",
+        (),
+        {
+            "web_tools_enabled": False,
+            "os_tools_enabled": True,
+            "outline_tools_enabled": True,
+            "shell_tools_enabled": False,
+            "browser_tools_enabled": False,
+            "wake_word_enabled": False,
+        },
+    )()
+    joined = "\n".join(status_lines(settings=settings))
+    assert "capabilities: desktop, outline" in joined
+
+
+def test_status_says_core_only_when_nothing_is_connected() -> None:
+    joined = "\n".join(status_lines(settings=None))
+    assert "capabilities: core only" in joined

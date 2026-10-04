@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### The jail now masks `/run` — session sockets are unreachable
+
+- **What changed.** The bubblewrap jail (`stella.sandbox`) gained one more
+  tmpfs mask: `/run`. Everything else about the jail is the same.
+- **Why.** A read-only bind of `/` still lets a command *connect* to the
+  sockets parked under `/run` — the session D-Bus and the Wayland compositor
+  socket. So a jailed command that "could not write anything" could still
+  have spoken to the real desktop session. Desktop actions belong to the
+  dedicated desktop adapters, which run unjailed and ask separately; the
+  shell jail no longer offers a side door around them.
+- **Verified against industry practice.** A review of current agent-sandbox
+  guidance (NVIDIA's agentic-workflow sandboxing post and the LLM-agent
+  sandbox roundups) and of SSRF defenses (OWASP, Stytch, the MLflow DNS-
+  rebinding case) found the web layer already matching the standard: pinned
+  DNS with *every* answer checked for publicness, post-connect peer
+  re-validation, no-redirect fetching, https-only, untrusted-content
+  markers, runtime-owned quotas. The `/run` mask closes the one jail gap the
+  review surfaced; network stays allowed per approved command (the owner's
+  approval names the literal command, and `network: false` closes it).
+- **Proof.** `tests/test_sandbox.py` (new mask assertion, ordering) plus a
+  live `bwrap` smoke run showing `/run` empty inside the jail; the shell and
+  browser tool suites (165 tests) pass untouched.
+
 ### Browser and shell are offered by default in the desktop app
 
 - **Ticked from the start.** `browser_tools_enabled` and `shell_tools_enabled`

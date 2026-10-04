@@ -64,6 +64,12 @@ jail does:
   workspace is re-bound back, so `~/.ssh`, browser profiles, other projects
   and your dotfiles are simply absent. A private, writable `HOME`
   (`/home/stella`) is provided so tools that insist on one still run, isolated.
+- **Session sockets are out of reach.** `/run` is masked by an empty tmpfs
+  too. Mounting the host read-only still lets a command *connect* to the
+  D-Bus and Wayland sockets parked under `/run`, so without this mask a jailed
+  command could talk to your real session bus or compositor; now it can
+  neither — desktop actions go through the dedicated, separately approved
+  desktop adapters instead.
 - **Privilege is dropped.** The command loses every supplementary group
   (docker, kvm, libvirt, wheel…), so it cannot reach the daemon groups that
   would let it escalate beyond the ordinary account.

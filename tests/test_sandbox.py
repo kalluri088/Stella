@@ -92,6 +92,17 @@ class TestBuildArgv:
         assert "/home" in argv  # the mask (an exact element, not the prefix)
         assert argv.index("/home") < argv.index("/home/u/proj")
 
+    def test_run_is_masked_so_session_sockets_are_unreachable(self):
+        # A read-only / still allows *connecting* to the D-Bus/Wayland
+        # sockets under /run, so the jail must tmpfs it away.
+        argv = build_sandbox_argv("ls", workspace="/ws")
+        tmpfs_targets = [
+            argv[i + 1] for i, part in enumerate(argv) if part == "--tmpfs"
+        ]
+        assert "/run" in tmpfs_targets
+        assert "/home" in tmpfs_targets
+        assert "/tmp" in tmpfs_targets
+
     def test_network_default_shares_net_and_false_closes_it(self):
         assert "--share-net" in build_sandbox_argv("curl x", workspace="/ws")
         assert "--share-net" not in build_sandbox_argv(

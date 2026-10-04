@@ -18,6 +18,9 @@ What the jail actually does, verified on this host:
   workspace is re-bound back, so sibling projects, ``~/.ssh``, browser
   profiles and dotfiles are simply absent. A writable ``HOME`` is provided on
   a tmpfs so tools that insist on one still run, in an isolated directory.
+  ``/run`` is masked the same way: a *read-only* bind still lets a command
+  connect to the session D-Bus and Wayland sockets parked there, so without
+  the mask a jailed command could reach the real compositor or session bus.
 * **Privilege is dropped.** The command loses every supplementary group
   (docker, kvm, libvirt, wheel and friends), so a "successful" command cannot
   reach the daemon groups that would let it escape the account.
@@ -175,8 +178,15 @@ def _jail_preamble(
         "/proc",
         # Private, writable scratch and an isolated home; the real /home is an
         # empty tmpfs so nothing under it (dotfiles, other projects) survives.
+        # /run is masked too: a read-only bind still lets a command *connect*
+        # to the session D-Bus and Wayland sockets parked there, and reaching
+        # the real compositor or session bus is not the shell tool's business
+        # (desktop actions go through the dedicated, separately approved
+        # desktop adapters, which run unjailed by design).
         "--tmpfs",
         "/tmp",
+        "--tmpfs",
+        "/run",
         "--tmpfs",
         "/home",
         "--tmpfs",

@@ -8,6 +8,7 @@ approve an unclear answer) as much as what it does.
 """
 
 import os
+from dataclasses import dataclass
 
 import pytest
 
@@ -16,8 +17,16 @@ from stella.tools import ApprovalRequest
 from stella.voice import VoiceError
 
 
+@dataclass
 class FakeSettings:
-    wake_source = None
+    # A dataclass because the production path is real: headless_settings
+    # is dataclasses.replace over whatever resolve_settings returned, so
+    # this fake must carry exactly the fields that override forces off.
+    wake_source: str | None = None
+    wake_word: str = "on"
+    wake_word_enabled: bool = True
+    shell_tools_enabled: bool = True
+    browser_tools_enabled: bool = True
 
 
 class FakeStella:
@@ -142,6 +151,28 @@ def _wire(monkeypatch, voice, ear_factory):
     monkeypatch.setattr(hv, "capture_command", lambda source: ["fake-cmd"])
     monkeypatch.setattr(hv, "build_wake_ear", lambda settings, tap: ear_factory())
     return application, session
+
+
+def test_headless_settings_disarms_every_continuous_ear() -> None:
+    # The shortcut's promise against real settings: whatever the saved
+    # config turned on, the headless wrapper turns off, and every other
+    # field survives byte for byte.
+    from stella.app import StellaSettings
+
+    saved = StellaSettings(
+        model="m",
+        wake_word="on",
+        wake_word_enabled=True,
+        wake_models=("hey_stella.onnx",),
+        shell_tools_enabled=True,
+        browser_tools_enabled=True,
+    )
+    forced = hv.headless_settings(saved)
+    assert forced.wake_word == "off"
+    assert forced.wake_word_enabled is False
+    assert forced.shell_tools_enabled is False
+    assert forced.browser_tools_enabled is False
+    assert forced.wake_models == saved.wake_models
 
 
 class TestRunHeadlessVoice:

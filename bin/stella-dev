@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Run Stella from this working tree, against her own copy of her own state.
+#
+# Why: an installed release and a development tree are the same program
+# reading the same XDG directories, the same persona files, and — worst — the
+# same voice socket. Without that separation, testing a change here means
+# writing into the databases and memories of the Stella actually in use, and
+# a `stella voice --toggle` from the tree can reach the resident server the
+# installed build started.
+#
+# The separation is two environment variables and one socket path, because
+# every Stella path already derives from them (stella.config reads config.json
+# from the data dir; stella.persona reads the persona dir from the config
+# dir). That is why this is a wrapper and not new code in the package: there
+# is nothing for Stella to learn.
+#
+# XDG_RUNTIME_DIR is deliberately NOT redirected. PipeWire and Wayland find
+# their sockets there, so a fake value would break the microphone and the
+# window in the exact build meant to test them; Stella's own doorbell has a
+# dedicated override instead.
+#
+# Usage:
+#   bin/stella-dev doctor              # the tree's Stella, the tree's state
+#   bin/stella-dev ui                  # the desktop window
+#   bin/stella-dev voice --toggle      # the shortcut, in the tree
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export XDG_DATA_HOME="$repo/.dev/share"
+export XDG_CONFIG_HOME="$repo/.dev/config"
+export STELLA_VOICE_SOCKET="$repo/.dev/stella-voice.sock"
+
+if [[ "${1:-}" == "ui" ]]; then
+  shift
+  exec uv run --project "$repo" stella-ui "$@"
+fi
+exec uv run --project "$repo" stella "$@"

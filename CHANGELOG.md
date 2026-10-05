@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### `bin/stella-dev`: the tree runs against the tree, not the owner's data
+
+- **What changed.** A 15-line bash launcher that exports
+  `XDG_DATA_HOME=$repo/.dev/share`, `XDG_CONFIG_HOME=$repo/.dev/config` and
+  `STELLA_VOICE_SOCKET=$repo/.dev/stella-voice.sock` before `uv run
+  --project $repo stella "$@"` (or `stella-ui` for the `ui` argument), plus
+  `.dev/` in `.gitignore` and a laptop-discipline bullet in `AGENTS.md`.
+- **Why.** An installed release and a working tree are the same program
+  reading the same files: the data directory holds `config.json` and all four
+  state databases, the config directory holds the persona, and both builds
+  bind the same `$XDG_RUNTIME_DIR/stella-voice-<uid>.sock` — so a
+  `stella voice --toggle` from the tree could drive the resident server the
+  installed release started, and testing a memory change here wrote into the
+  memories of the Stella actually in use. The split the owner asked for
+  (develop in the tree, live from the release) needs that separation before
+  it is safe.
+- **Why it is a wrapper and not code.** Every Stella path already derives
+  from those variables (`config.py` reads `config.json` from the data dir;
+  `persona.py` reads the persona dir from the config dir), which was verified
+  against the running tree rather than assumed — so isolation needs no new
+  surface in the package. `XDG_RUNTIME_DIR` is deliberately left alone:
+  PipeWire and Wayland find their sockets there, and redirecting it would
+  break the microphone and the window in the build meant to test them.
+  Stella's own doorbell has a dedicated override instead.
+- **Security.** Nothing widened, nothing installed, no sudo. The tree's state
+  moves out of the owner's directories; the owner's real state is untouched by
+  the wrapper and never read by it.
+- **Proof.** `tests/test_dev_wrapper.py`: 4 passed — the wrapper is executable,
+  declares `set -euo pipefail` and all three redirects while NOT redirecting
+  `XDG_RUNTIME_DIR`, `.dev/` is git-ignored at any depth, and an end-to-end
+  run of `bin/stella-dev doctor --json` reports every state path inside
+  `.dev/` with a substituted `HOME`, creating nothing anywhere.
+  `tests/test_doctor.py`: 7 passed.
+
 ### `stella doctor`: a read-only answer to "what will work on this box?"
 
 - **What changed.** New module `src/stella/doctor.py` and a `stella doctor`

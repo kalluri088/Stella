@@ -14,3 +14,7 @@ opencode.json
 # pattern lets a nested copy slip through.
 stella_workspace/
 SECURITY-AUDIT.md
+# The development tree's own copy of Stella's state (data dir, config dir and
+# voice socket), written by bin/stella-dev. Never the owner's real state,
+# which stays under ~/.local/share/stella and ~/.config/stella.
+.dev/

@@ -44,6 +44,12 @@ validation list per change.
 **Laptop discipline (owner rule, stated repeatedly).** This machine is the
 owner's daily driver, not a test rig.
 
+* The tree is the development copy; the owner's day-to-day Stella is the
+  installed release. Run the tree through `bin/stella-dev` (or
+  `bin/stella-dev ui`), which redirects `XDG_DATA_HOME`, `XDG_CONFIG_HOME`
+  and `STELLA_VOICE_SOCKET` into `.dev/` — without it, a tree run shares the
+  release's databases, persona files and voice socket. Only point the tree at
+  real state deliberately, when the owner asks for that.
 * Stella GUI instances and Stella test windows open on **Hyprland
   workspace 6 only** — never in the owner's active workspace.
 * Run pytest in batches of **one or two files**, each under `timeout`,

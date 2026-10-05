@@ -223,7 +223,17 @@ def _state_checks() -> tuple[Check, ...]:
             "state",
             "voice server",
             READY if server_up else INFO,
-            f"running at {socket}" if server_up else f"not running ({socket})",
+            (
+                f"running at {socket}"
+                if server_up
+                else (
+                    f"not running ({socket})"
+                    if socket is not None
+                    # Not a missing server: this platform has no unix
+                    # sockets, so there is nowhere for one to answer.
+                    else "no control socket on this platform"
+                )
+            ),
         )
     )
     return tuple(checks)

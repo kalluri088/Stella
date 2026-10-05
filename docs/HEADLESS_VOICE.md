@@ -77,6 +77,14 @@ socket, so a dead key is diagnosable.
 `stella voice --stop` shuts the resident server down; a foreground
 `--serve` also exits on Ctrl-C.
 
+The doorbell is a unix socket, and a platform without one has nothing to
+ring: `control_path()` answers `None`, every probe reads that as "no
+server, and there cannot be one", and `--serve` says so and exits `3`
+before warming a speech model. `stella doctor` reports *"no control
+socket on this platform"* rather than crashing on a call that does not
+exist there — it is the command the installer tells every user to run, so
+being unable to answer is an answer, not an error.
+
 ## Honest failure, distinct exit codes
 
 A missing peripheral is never a silent success.

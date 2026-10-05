@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import pytest
 
 from stella import headless_voice as hv
+from stella.portable import has_unix_sockets
 from stella.tools import ApprovalRequest
 from stella.voice import VoiceError
 
@@ -704,6 +705,62 @@ class TestConversationLoop:
         assert hv._is_stop_phrase(text) is expected
 
 
+#: The subject of the class below genuinely is ``AF_UNIX``: not a Linux
+#: idiom that could be mirrored, but a socket family this platform either
+#: has or has not. Everywhere it is absent, the product's answer is that
+#: there is no doorbell at all (see ``TestAPlatformWithNoDoorbell``),
+#: which is what those tests prove without pretending to be Windows.
+needs_unix_sockets = pytest.mark.skipif(
+    not has_unix_sockets(), reason="AF_UNIX is not a socket family here"
+)
+
+
+class TestAPlatformWithNoDoorbell:
+    """Every caller's answer on a machine with no unix sockets: *there is none*.
+
+    ``stella doctor`` runs on every platform and must report, not raise;
+    ``stella voice --serve`` must say why before it warms a model.
+    """
+
+    def test_there_is_no_doorbell_to_name(self, monkeypatch):
+        monkeypatch.setattr(hv, "has_unix_sockets", lambda: False)
+        assert hv.control_path() is None
+
+    def test_the_test_seam_still_needs_the_socket(self, monkeypatch):
+        # STELLA_VOICE_SOCKET is a Linux test seam, not a way to give a
+        # platform a mechanism it does not have.
+        monkeypatch.setenv("STELLA_VOICE_SOCKET", "/tmp/whatever.sock")
+        monkeypatch.setattr(hv, "has_unix_sockets", lambda: False)
+        assert hv.control_path() is None
+
+    def test_no_doorbell_is_not_a_live_server(self):
+        assert hv._socket_alive(None) is False
+
+    def test_nothing_answers_where_there_is_no_socket(self, monkeypatch):
+        monkeypatch.setattr(hv, "has_unix_sockets", lambda: False)
+        # The same None a dead server gives: the caller decides what it
+        # is worth, and a toggle that cannot spawn says so instead of
+        # flipping a session it never opened.
+        assert hv._send_command("toggle") is None
+
+    def test_the_server_says_why_before_it_loads_anything(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(hv, "control_path", lambda: None)
+        application = FakeApplication(FakeVoice(), FakeSession(FakeOutcome()))
+        assert hv._serve(application) == 3
+        assert "unix socket" in capsys.readouterr().err
+
+    def test_a_server_is_never_spawned_where_it_could_not_answer(
+        self, monkeypatch
+    ):
+        # The shortcut's other half: starting a resident server that no
+        # toggle can ever reach would leave an orphaned ear behind.
+        monkeypatch.setattr(hv, "control_path", lambda: None)
+        assert hv._spawn_server() is False
+
+
+@needs_unix_sockets
 class TestControlSocket:
     def test_the_doorbell_carries_exactly_one_word(self, monkeypatch):
         with tempfile.TemporaryDirectory() as scratch:

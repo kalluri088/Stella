@@ -44,6 +44,7 @@ __all__ = [
     "Hardening",
     "default_editor",
     "harden_private_file",
+    "has_unix_sockets",
     "platform_name",
     "polite_stop",
     "split_command",
@@ -147,6 +148,20 @@ def polite_stop(
         process.terminate()
         return
     process.send_signal(signal.SIGINT)
+
+
+def has_unix_sockets(*, sys_platform: str | None = None) -> bool:
+    """Does this platform have the ``AF_UNIX`` socket Stella rings to talk to itself?
+
+    Windows is the answer no: Python exposes no ``AF_UNIX`` there, and the
+    per-user id Stella names the doorbell after (``os.getuid``) does not
+    exist either. The question is asked by ``stella doctor``, by
+    ``stella voice`` and by anything that probes for a running server on
+    every platform, so the answer has to be a fact rather than an
+    ``AttributeError`` on the machine that lacks the mechanism.
+    """
+
+    return platform_name(sys_platform) != WINDOWS
 
 
 @dataclass(frozen=True)

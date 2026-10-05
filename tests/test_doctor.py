@@ -108,6 +108,20 @@ def test_every_check_carries_a_group_and_a_state(tmp_path, monkeypatch) -> None:
         assert check.detail.strip()
 
 
+def test_a_platform_without_unix_sockets_is_reported_not_raised(
+    tmp_path, monkeypatch
+) -> None:
+    # ``stella doctor`` is the command the installer tells every user to
+    # run, and the doorbell it asks about lives in a socket family this
+    # platform either has or has not. Absent, the answer is a line saying
+    # so — never an AttributeError on the machine being diagnosed.
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr("stella.headless_voice.has_unix_sockets", lambda: False)
+    check = next(item for item in collect().checks if item.name == "voice server")
+    assert check.state == INFO
+    assert "no control socket" in check.detail
+
+
 def test_cli_wires_the_command_before_any_configuration(
     tmp_path, monkeypatch, capsys
 ) -> None:

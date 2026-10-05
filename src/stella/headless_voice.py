@@ -55,6 +55,7 @@ from stella.app import build_application, build_wake, build_wake_ear
 from stella.barge_in import capture_command
 from stella.config import resolve_settings
 from stella.mic_tap import MicTap
+from stella.portable import has_unix_sockets
 from stella.tools import (
     ActionPreview,
     ApprovalRequest,
@@ -157,6 +158,10 @@ _ALREADY_RUNNING = (
     "instead of taking the microphone from it."
 )
 _NO_SERVER = "No Stella voice session server is running."
+_NO_UNIX_SOCKETS = (
+    "The session server talks to itself over a private unix socket, and "
+    "this platform has none, so it cannot be started here."
+)
 _SERVER_START_FAILED = (
     "Stella's voice session did not come up. Run 'stella voice --serve' "
     "in a terminal — or read the log beside the control socket — to see "
@@ -299,6 +304,12 @@ def _serve(application) -> int:
         print(_VOICE_SETUP_NEEDED, file=sys.stderr)
         return 3
     settings = application.settings
+    doorbell = control_path()
+    if doorbell is None:
+        # Checked before any model is loaded: this platform cannot run a
+        # server at all, and saying so is cheaper than warming a voice.
+        print(_NO_UNIX_SOCKETS, file=sys.stderr)
+        return 3
     opening = threading.Event()
     ending = threading.Event()
     shutdown = threading.Event()
@@ -320,7 +331,7 @@ def _serve(application) -> int:
         return "unknown"
 
     try:
-        server = _ControlServer(control_path(), handle)
+        server = _ControlServer(doorbell, handle)
     except OSError as error:
         print(f"{_ALREADY_RUNNING} ({error})", file=sys.stderr)
         return 5
@@ -444,15 +455,22 @@ def _is_stop_phrase(transcript: str) -> bool:
     )
 
 
-def control_path() -> str:
+def control_path() -> str | None:
     """The resident server's private doorbell, one per user.
 
     XDG_RUNTIME_DIR is the standard per-user scratch space (the system
     creates it 0700); the temp directory is the fallback and carries the
     uid in the name. The socket itself is 0600 either way.
     STELLA_VOICE_SOCKET is the test seam, not a shortcut-facing knob.
+
+    A platform with no unix sockets has no doorbell to name, so the
+    answer is None — which every caller reads as *"there is no server
+    here, and there cannot be"*. That is the difference between
+    ``stella doctor`` reporting on Windows and crashing on ``getuid``.
     """
 
+    if not has_unix_sockets():
+        return None
     override = os.environ.get("STELLA_VOICE_SOCKET")
     if override:
         return override
@@ -460,7 +478,9 @@ def control_path() -> str:
     return os.path.join(base, f"stella-voice-{os.getuid()}.sock")
 
 
-def _socket_alive(path: str) -> bool:
+def _socket_alive(path: str | None) -> bool:
+    if path is None:
+        return False
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe.settimeout(1.0)
     try:
@@ -535,13 +555,18 @@ def _send_command(command: str, *, timeout: float = 2.0) -> str | None:
     None means "no server there", and the caller decides what that is
     worth: a toggle that starts one, a stop that says so. It is never
     retry-transparent — the command may have run before the answer was
-    lost, and a blind retry could flip an open session closed.
+    lost, and a blind retry could flip an open session closed. A platform
+    without the doorbell is the same None for the same reason: there is
+    nothing to answer, and that is a fact, not an error.
     """
 
+    path = control_path()
+    if path is None:
+        return None
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
             channel.settimeout(timeout)
-            channel.connect(control_path())
+            channel.connect(path)
             channel.sendall((command + "\n").encode())
             answer = channel.recv(64)
     except OSError:
@@ -572,12 +597,15 @@ def _spawn_server() -> bool:
 
     stack = contextlib.ExitStack()
     try:
+        path = control_path()
+        if path is None:
+            return False
         try:
             # The descriptor must be live at the fork so the child can
             # inherit it; ``stack`` closes this process's copy below.
             log = stack.enter_context(
                 open(  # noqa: SIM115
-                    control_path() + ".log",
+                    path + ".log",
                     "w",
                     encoding="utf-8",
                 )

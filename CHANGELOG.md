@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### A platform with no unix sockets now has something to say
+
+- **What changed.** `stella.portable.has_unix_sockets()` answers whether
+  this platform has the `AF_UNIX` family at all. `headless_voice.control_path()`
+  uses it and returns `None` where there is no doorbell to name; `_socket_alive`,
+  `_send_command` and `_spawn_server` read that as *"there is no server here, and
+  there cannot be"*, and `voice --serve` prints the reason and exits `3` before
+  loading a model. `stella doctor`'s voice-server line now reads *"no control
+  socket on this platform"*. `TestControlSocket` is guarded by the same answer,
+  because its subject genuinely is a socket family.
+- **Why this is a defect and not a colour of CI red.** The doorbell is named
+  after `os.getuid()` and probed with `socket.AF_UNIX`, neither of which exists
+  on Windows — so `stella doctor`, the one command `install.sh` tells every user
+  to run after installing, raised `AttributeError` on that machine. Eight of the
+  remaining Windows failures were those two lines: six in `test_doctor.py` and
+  the two control-socket tests. A diagnostic that crashes on the platform it is
+  diagnosing is worse than no diagnostic, and it is the first thing a new user
+  meets.
+- **What is deliberately not done.** No Windows named-pipe replacement. The
+  resident ear also needs PipeWire or ALSA to record anything, so a second
+  transport would be machinery for a machine that cannot use the feature at
+  all; the honest answer there is the absence, reported.
+- **Proof.** `tests/test_portable.py` pins the decision for all four platform
+  tokens; `tests/test_headless_voice.py::TestAPlatformWithNoDoorbell` forces it
+  and proves `control_path()` is `None`, that a `None` doorbell is not a live
+  server, that nothing answers, that a spawn refuses to start, and that
+  `--serve` says why with exit `3` before touching a model — including that the
+  `STELLA_VOICE_SOCKET` test seam cannot smuggle a socket onto a platform that
+  has none. `tests/test_doctor.py` proves the report line.
+  `tests/test_portable.py` with `tests/test_headless_voice.py`: 83 passed;
+  `tests/test_doctor.py`: 8 passed.
+
 ### Stopping a child process is now one decision, not four signals
 
 - **What changed.** `stella.portable.polite_stop(process)` answers *"how do I

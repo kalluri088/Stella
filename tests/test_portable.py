@@ -22,6 +22,7 @@ from stella.portable import (
     WINDOWS,
     Hardening,
     default_editor,
+    has_unix_sockets,
     platform_name,
     polite_stop,
     split_command,
@@ -136,6 +137,18 @@ def test_polite_stop_never_asks_a_windows_child_to_interrupt_itself():
     # would raise is never reached at all. That is what the shared cancel
     # ladder needed: on Windows it used to die here, before terminate.
     assert child.calls == ["terminate"]
+
+
+def test_the_control_doorbell_is_a_fact_not_an_attribute_error():
+    # ``stella doctor`` and ``stella voice`` ask this on every platform.
+    # Windows has no AF_UNIX in Python and no ``os.getuid`` either, so the
+    # answer has to be a decision — reporting "no such socket here" is
+    # what keeps a diagnostic command from crashing on the machine it is
+    # diagnosing.
+    assert has_unix_sockets(sys_platform="linux") is True
+    assert has_unix_sockets(sys_platform="darwin") is True
+    assert has_unix_sockets(sys_platform="freebsd14") is True
+    assert has_unix_sockets(sys_platform="win32") is False
 
 
 def test_harden_private_file_uses_the_real_mode_bit_on_posix(tmp_path):

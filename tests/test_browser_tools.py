@@ -515,6 +515,7 @@ class TestFindBrowser:
 @pytest.fixture
 def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "share"))
     for name in (
         "STELLA_MODEL",
         "STELLA_LLM_PROVIDER",

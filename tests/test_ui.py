@@ -995,6 +995,7 @@ def test_setup_finish_saves_only_after_test_and_selection(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, dialog = make_dialog()
     try:
         dialog._fields["Model"].insert("0", "qwen3:4b")
@@ -1020,6 +1021,7 @@ def test_setup_editing_the_model_invalidates_a_previous_test(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, dialog = make_dialog()
     try:
         dialog._fields["Model"].insert("0", "tested:1")
@@ -1087,6 +1089,7 @@ def test_setup_api_key_field_is_masked_and_stored_privately(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     root, dialog = make_dialog()
     try:
@@ -1124,6 +1127,7 @@ def test_setup_key_entry_typed_after_a_passing_test_disables_start(
     # A passing test now saves; the success must not let a stale flag
     # carry a newly typed, untested key into the store or into a launch.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, dialog = make_dialog()
     try:
         dialog._preset.set(provider_keys.PRESETS["openai"].label)
@@ -1155,6 +1159,7 @@ def test_setup_preset_switch_shows_and_hides_the_right_fields(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, dialog = make_dialog()
     try:
         assert dialog._rows["API key"].winfo_manager() == ""
@@ -1279,6 +1284,7 @@ def test_settings_apply_stores_a_matching_key_and_never_writes_environment(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
     root, window, bridge, _ = make_window(
         settings=StellaSettings(
@@ -1306,6 +1312,7 @@ def test_settings_apply_refuses_a_foreign_key_and_stores_nothing(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     root, window, bridge, _ = make_window(
         settings=StellaSettings(
@@ -1336,6 +1343,7 @@ def test_settings_apply_survives_a_disk_error_during_key_storage(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     root, window, bridge, _ = make_window(
         settings=StellaSettings(
@@ -1372,6 +1380,7 @@ def test_the_wake_picker_names_the_phrase_and_the_classifier(
     # dropdown and maps to openWakeWord's file convention even before
     # its classifier exists on disk — nothing here trains or downloads.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
     models_dir = tmp_path / "models"
     models_dir.mkdir()
@@ -1412,6 +1421,7 @@ def test_settings_apply_without_a_key_leaves_the_environment_alone(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.setenv("OPENAI_API_KEY", "untouched")
     root, window, bridge, _ = make_window()
     try:
@@ -1431,6 +1441,7 @@ def test_the_wake_checkbox_writes_both_spellings_of_one_choice(
     # running, and the window shows the saved bool while every consumer
     # reads the mode: a tick has to move both spellings together.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
     root, window, bridge, _ = make_window()
     try:
@@ -1454,6 +1465,7 @@ def test_startup_key_sweep_stays_silent_unless_a_key_is_bad(
     # the thread -> queue -> _tick wiring and the "only on a connection error"
     # rule, not the probe logic (covered in test_config.py).
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, window, bridge, _ = make_window()
     try:
         def settle() -> str:
@@ -1485,6 +1497,7 @@ def test_settings_preset_picker_derives_provider_and_preset(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, window, bridge, _ = make_window()
     try:
         window._provider.set(provider_keys.PRESETS["xai"].label)
@@ -1509,6 +1522,7 @@ def test_settings_picker_offers_the_local_free_router(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     root, window, bridge, _ = make_window()
     try:
@@ -1531,6 +1545,7 @@ def test_settings_apply_refuses_a_keyless_switch_before_rebuild(
     # refused in the panel, not posted to a rebuild the worker can only
     # fail. Once a key exists (stored or entered), the same switch goes.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     root, window, bridge, _ = make_window()
     try:

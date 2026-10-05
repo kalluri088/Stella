@@ -134,6 +134,14 @@ is gated:
   already has — Stella sets `0600` on the key file itself, not on the
   directory. A world-writeable data directory would weaken the story;
   that setup is broken for the config file (also `0600`) anyway.
+- On Windows the store lands in `%LOCALAPPDATA%\stella`, and the mode
+  bit Stella sets there is not a permission: privacy there comes from
+  the owner ACL `stella.portable.harden_private_file` asks `icacls` to
+  apply, and it reports honestly when it could not. Nothing on that
+  platform is verified by this repository's tests, so the NTFS answer is
+  asserted against fakes (`tests/test_portable.py`) and the *location* is
+  isolated on every platform (`tests/test_isolation.py`) — a test suite
+  that forgot to is one that writes real keys into a user's profile.
 
 ## Validation
 
@@ -147,7 +155,8 @@ is gated:
   `tests/test_ui.py` (setup stores after a verified test, Apply refuses
   a foreign key, a disk error during storage surfaces as a status line
   and not a crash, no environment writes), `tests/test_backup_cli.py`
-  (key file excluded from backups).
+  (key file excluded from backups), `tests/test_isolation.py` (every test
+  that isolates the store isolates it on Windows too, not only on Linux).
 - Live (2026-09-29, real display + real local Ollama, all state in temp
   directories): the first-run dialog listed installed models, the
   connection test passed, Start gated on that success, the saved

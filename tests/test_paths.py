@@ -68,8 +68,10 @@ def test_linux_data_dir_is_byte_for_byte_the_pre_platformdirs_answer(
     for case in (None, str(tmp_path / "xdg"), str(tmp_path / "xdg") + "/"):
         if case is None:
             monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+            monkeypatch.delenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", raising=False)
         else:
             monkeypatch.setenv("XDG_DATA_HOME", case)
+            monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", case)
         assert str(default_data_dir()) == legacy(os.environ)
 
 
@@ -78,6 +80,7 @@ def test_data_dir_still_resolves_to_the_linux_xdg_location(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     assert default_data_dir() == tmp_path / "xdg" / "stella"
 
 
@@ -95,6 +98,7 @@ def test_every_state_path_hangs_off_the_one_data_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root = tmp_path / "xdg" / "stella"
     assert Path(default_memory_db()) == root / "stella_memory.db"
     assert Path(default_history_db()) == root / "stella_action_history.db"
@@ -193,6 +197,7 @@ def test_outline_token_dir_follows_xdg_data_home(
     root.mkdir(parents=True)
     (root / "outline.token").write_text("from-xdg", encoding="utf-8")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("OUTLINE_TOKEN", raising=False)
     monkeypatch.delenv("OUTLINE_DATA_DIR", raising=False)
     client = outline_tools._client_from_environment({})

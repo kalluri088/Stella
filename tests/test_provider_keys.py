@@ -14,6 +14,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     """Never read or write the developer's real key store in tests."""
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "share"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 

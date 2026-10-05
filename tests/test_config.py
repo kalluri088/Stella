@@ -17,6 +17,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     """Never read or write the developer's real configuration in tests."""
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "share"))
     monkeypatch.delenv("STELLA_MODEL", raising=False)
     monkeypatch.delenv("STELLA_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

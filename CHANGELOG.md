@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Every test that isolates Stella's state directory now isolates it on Windows
+
+- **What changed.** 41 sites that pointed `XDG_DATA_HOME` at a `tmp_path` now
+  mirror the same base into `WIN_PD_OVERRIDE_LOCAL_APPDATA`, and a new session
+  fixture in `tests/conftest.py` sets that variable for the whole run on
+  Windows even where a test forgot. `tests/test_isolation.py` is the guard: it
+  scans the suite and fails if an `XDG_DATA_HOME` write is not followed by its
+  mirror, pins the number of sites it looked at so a silent no-match cannot
+  pass, and then proves the underlying facts by driving the real
+  `platformdirs.windows` resolver — that XDG is not what it reads, that the one
+  override covers data, config, cache and runtime, and that an override without
+  a drive letter is dropped rather than rejected.
+- **Why this is a defect and not a colour of CI red.** Windows ignores the XDG
+  variables entirely; `user_data_dir` answers from the caller's real
+  `%LOCALAPPDATA%`. So `tests/test_provider_keys.py`'s own fixture, whose
+  docstring reads *"Never read or write the developer's real key store in
+  tests"*, did exactly that on Windows — every provider-keys test merged onto
+  one shared `api_keys.json` in the user's profile, saw other tests' keys in
+  it, and left the file behind. `test_config.py`'s "first run has no
+  configuration" found a configuration because an earlier test had written one
+  there. Nothing was failing to be isolated on purpose; the idiom simply had no
+  meaning on that platform, and the cost lands on a user's machine rather than
+  in a log.
+- **The rule is scanned, not shared.** A helper would have been the usual
+  answer and a test can always call `monkeypatch.setenv` anyway, so the
+  invariant is checked against the source. It is inert on Linux, which is
+  precisely why it is easy to forget: forgetting costs nothing here and
+  everything there. One line in the suite is exempt and declares itself with
+  `# isolation-probe` — the probe that sets `XDG_DATA_HOME` in order to show it
+  isolates nothing.
+- **Proof.** `tests/test_isolation.py` with `tests/test_portable.py`: 21
+  passed; `tests/test_app.py`: 85 passed; `tests/test_ui.py`: 74 passed;
+  `tests/test_dev_wrapper.py` with `tests/test_cli.py`: 86 passed;
+  `ruff check tests/` clean. On Linux the mirror lines change nothing, which
+  is the point being made; the Windows effect is proven by the next CI run.
+
 ### CI now installs Stella the way a stranger does
 
 - **What changed.** A `package`-job step fetches `install.sh` from the exact

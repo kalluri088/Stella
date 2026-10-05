@@ -918,6 +918,7 @@ def test_bridge_settings_success_rebinds_and_persists_configuration(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     from stella import config as stella_config
 
     def replacement(settings: StellaSettings) -> StellaApplication:
@@ -952,6 +953,7 @@ def test_bridge_settings_failure_does_not_overwrite_saved_configuration(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     from stella import config as stella_config
 
     stella_config.save_configuration(
@@ -1011,6 +1013,7 @@ def test_build_application_resolves_a_preset_key_from_the_store(
     # later session builds with, without any environment variable.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     provider_keys.save_api_key("anthropic", "sk-ant-stored-value")
     created: list[dict] = []
 
@@ -1045,6 +1048,7 @@ def test_build_application_hands_one_usage_recorder_to_the_client(
     # provider branch.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     provider_keys.save_api_key("anthropic", "sk-ant-stored-value")
     created: list[dict] = []
 
@@ -1075,6 +1079,7 @@ def test_build_application_drives_the_local_router_preset_end_to_end(
     # its own, aimed at the router's localhost endpoint, chat dialect.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     provider_keys.save_api_key("freellmapi", "freellmapi-unified-token")
     created: list[dict] = []
 
@@ -1106,6 +1111,7 @@ def test_build_application_names_both_key_paths_when_none_exists(
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
 
     with pytest.raises(SystemExit) as exit_info:
         build_application(
@@ -1124,6 +1130,7 @@ def test_voice_never_offers_a_foreign_provider_key_to_openai_endpoints(
     # shipped to them just because some provider is configured.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     provider_keys.save_api_key("anthropic", "sk-ant-for-the-brain-only")
     settings = StellaSettings(
         model="m", voice_transcription="openai", voice_speech="openai"
@@ -1138,6 +1145,7 @@ def test_the_stored_openai_slot_serves_voice(
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     provider_keys.save_api_key("openai", "sk-stored-voice-key")
     settings = StellaSettings(model="m", voice_transcription="openai")
 
@@ -1151,6 +1159,7 @@ def test_default_state_paths_follow_xdg_not_the_working_directory(
     # arbitrary working directory, so cwd-relative defaults silently lost
     # memory and history across restarts.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     arbitrary_cwd = tmp_path / "arbitrary"
     arbitrary_cwd.mkdir()
     monkeypatch.chdir(arbitrary_cwd)
@@ -1168,6 +1177,7 @@ def test_from_environment_keeps_explicit_paths_and_xdg_fallbacks(
 ) -> None:
     monkeypatch.setenv("STELLA_MODEL", "test")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.setenv("STELLA_WORKSPACE", str(tmp_path / "my-workspace"))
 
     settings = StellaSettings.from_environment()
@@ -1183,6 +1193,7 @@ def test_transcript_recording_is_opt_in_across_settings_paths(
 ) -> None:
     monkeypatch.delenv("STELLA_TRANSCRIPTS", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
 
     # Default everywhere: recording is off unless the user says otherwise.
     assert StellaSettings().transcripts_enabled is False
@@ -1221,6 +1232,7 @@ def test_semantic_recall_is_opt_in_across_settings_paths(
 ) -> None:
     monkeypatch.delenv("STELLA_SEMANTIC_MEMORY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
 
     # Default everywhere: the duplicated index is off unless requested.
     assert StellaSettings().semantic_memory_enabled is False

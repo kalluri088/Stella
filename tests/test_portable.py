@@ -11,6 +11,7 @@ import os
 import subprocess
 
 import pytest
+from platformdirs.windows import Windows
 
 from stella import portable
 from stella.portable import (
@@ -23,6 +24,10 @@ from stella.portable import (
     platform_name,
     split_command,
 )
+
+#: platformdirs' supported hook for a Windows user profile. tests/conftest.py
+#: and every isolation site in the suite are built on this one name.
+WIN_APPDATA = "WIN_PD_OVERRIDE_LOCAL_APPDATA"
 
 
 def test_platform_name_maps_the_three_targets_and_keeps_the_rest_posix():
@@ -192,3 +197,61 @@ def test_sid_lookup_reports_none_instead_of_raising():
             raise OSError("advapi32 is not there")
 
     assert portable._current_user_sid(advapi=Broken()) is None
+
+
+# platformdirs consults the Windows override before it consults the
+# platform at all, so these exercise the real Windows resolver rather than
+# a fake: the same seam doctrine as the rest of this file — decide the
+# platform, do not skip it. test_isolation.py pins the suite's use of the
+# variable these three describe.
+
+
+def _windows_answer() -> str | None:
+    """What the Windows resolver answers for Stella's data directory here.
+
+    None off Windows, where there is no profile to read and the resolver says
+    so — which is itself part of the proof that XDG was never an option.
+    """
+
+    try:
+        return Windows(appname="stella", appauthor=False).user_data_dir
+    except NotImplementedError:
+        return None
+
+
+def test_xdg_is_not_what_a_windows_install_reads(monkeypatch) -> None:
+    # XDG pointing at a scratch directory does not move the Windows answer.
+    # Off Windows the resolver refuses outright; on Windows it answers with the
+    # caller's real profile. Either way the directory the test meant to isolate
+    # is not the one a Windows install used.
+    monkeypatch.setenv("XDG_DATA_HOME", "C:\\scratch\\xdg")  # isolation-probe
+    monkeypatch.delenv(WIN_APPDATA, raising=False)
+    answer = _windows_answer()
+    assert answer is None or "scratch" not in answer
+
+
+def test_the_windows_knob_is_the_one_that_isolates_every_state_directory(
+    monkeypatch,
+) -> None:
+    # A Windows path, so a literal rather than tmp_path: this host has no drive
+    # letter to offer, and the resolver wants one either way.
+    monkeypatch.setenv(WIN_APPDATA, "C:\\scratch\\profile")
+    dirs = Windows(appname="stella", appauthor=False)
+    assert dirs.user_data_dir == os.path.join("C:\\scratch\\profile", "stella")
+    # One knob covers four: config is the same directory on Windows, and cache
+    # and runtime hang off the same CSIDL_LOCAL_APPDATA — which is why the
+    # conftest net can be a single variable.
+    assert dirs.user_config_dir == dirs.user_data_dir
+    assert dirs.user_cache_dir.startswith("C:\\scratch\\profile")
+    assert dirs.user_runtime_dir.startswith("C:\\scratch\\profile")
+
+
+def test_the_windows_knob_ignores_a_path_it_cannot_qualify(monkeypatch) -> None:
+    # An override platformdirs cannot qualify is dropped rather than rejected,
+    # so a mirror that lost its drive letter would mean "the real profile
+    # again", not an error. pytest's tmp_path is always drive-qualified, which
+    # is why the sites mirror it instead of assembling a path of their own.
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setenv(WIN_APPDATA, "relative\\profile")
+    answer = _windows_answer()
+    assert answer is None or "relative" not in answer

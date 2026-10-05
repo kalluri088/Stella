@@ -814,6 +814,7 @@ def test_cli_main_points_unconfigured_users_at_the_setup_window(
     from stella import cli
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("STELLA_MODEL", raising=False)
     with pytest.raises(SystemExit) as raised:
         cli.main([])
@@ -832,6 +833,7 @@ def test_cli_main_uses_saved_configuration_without_environment(
     from stella import config as stella_config
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     monkeypatch.delenv("STELLA_MODEL", raising=False)
     stella_config.save_configuration(
         stella_config.StellaSettings(

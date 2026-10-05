@@ -1167,6 +1167,7 @@ def test_the_saved_checkbox_and_the_running_mode_never_disagree(
 ) -> None:
     clear_wake_env(monkeypatch)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     for enabled in (False, True):
         settings = StellaSettings.from_saved(
             provider="ollama", model="m", wake_word_enabled=enabled
@@ -1230,6 +1231,7 @@ def apply_wake_settings(
     """
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     wake = FakeWake()
     ear = FakeWakeEar()
     panel = VoicePanel(

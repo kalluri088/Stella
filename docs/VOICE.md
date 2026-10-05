@@ -578,3 +578,9 @@ was polluting every live transcript until it was read out of stdout.
   Synthesis is one process per sentence unless the resident worker is enabled.
   There is still no mixing, ducking, or overlap between artifacts.
 - Voice mode is desktop-UI only; the CLI remains text-only.
+- The capture commands are PipeWire and ALSA, so there is no recording path on
+  Windows at all. What that platform does lose is the polite stop: it cannot
+  interrupt a child process, so Stella asks it to exit (`terminate`) and the
+  recorder therefore never gets to finalize its WAV. The capture is then
+  reported as *no recording* rather than as a usable file — fail-closed, not
+  silent.

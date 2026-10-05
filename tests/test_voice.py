@@ -22,6 +22,7 @@ import wave
 
 import pytest
 
+from stella import portable
 from stella.app import (
     NARRATION_PHRASES,
     StellaApplication,
@@ -63,6 +64,7 @@ from stella.voice import (
     SubprocessRecorder,
     TapRecorder,
     VoiceError,
+    _cancel_process_tree,
     _inspect_speech_artifact,
     is_transcription_junk,
     voxtype_transcript,
@@ -794,6 +796,73 @@ def test_recorder_stop_failure_removes_its_temp_directory(
         recorder.stop()
 
     assert not os.path.exists(created[0])
+
+
+class InterruptIntolerantChild:
+    """A child on a platform that cannot be asked to interrupt itself.
+
+    ``send_signal(SIGINT)`` raises ``ValueError`` there instead of
+    failing quietly — which is why "how do I stop this politely?" is one
+    decision in :mod:`stella.portable` rather than four hand-written
+    signals across the voice and brain paths.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def send_signal(self, signal_number: int) -> None:
+        self.calls.append(f"send_signal:{signal_number}")
+        raise ValueError(f"Unsupported signal: {signal_number}")
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+    def poll(self) -> int | None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def test_the_cancel_ladder_is_polite_the_way_this_platform_allows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The shared tap's cancel path used to send SIGINT first with no
+    # platform branch, so on a machine that cannot deliver it the whole
+    # microphone died on the *attempt* to stop recording. Forcing the
+    # decision (never sys.platform itself) runs that branch here.
+    monkeypatch.setattr(
+        portable, "platform_name", lambda sys_platform=None: portable.WINDOWS
+    )
+    child = InterruptIntolerantChild()
+    _cancel_process_tree(child)
+    assert child.calls == ["terminate"]
+
+
+def test_the_recorder_stops_without_asking_for_an_undeliverable_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        portable, "platform_name", lambda sys_platform=None: portable.WINDOWS
+    )
+    monkeypatch.setattr(
+        "stella.voice.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    child = InterruptIntolerantChild()
+    monkeypatch.setattr("stella.voice.subprocess.Popen", lambda *a, **k: child)
+    recorder = SubprocessRecorder()
+    recorder.start()
+    try:
+        with pytest.raises(VoiceError, match="no recording"):
+            recorder.stop()
+    finally:
+        recorder.dispose()
+    # No crash on the way down, and the capture that a killed recorder
+    # could not finalize is reported as missing rather than as a success.
+    assert child.calls == ["terminate"]
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,7 @@ from __future__ import annotations
 import ctypes
 import os
 import shlex
+import signal
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -44,6 +45,7 @@ __all__ = [
     "default_editor",
     "harden_private_file",
     "platform_name",
+    "polite_stop",
     "split_command",
 ]
 
@@ -125,6 +127,26 @@ def default_editor(
         if value:
             return value
     return "notepad" if platform_name(sys_platform) == WINDOWS else "vi"
+
+
+def polite_stop(
+    process: subprocess.Popen, *, sys_platform: str | None = None
+) -> None:
+    """Ask one child to shut down on its own terms, as far as this platform lets.
+
+    POSIX: ``SIGINT``, which is the clean-shutdown path both a recording
+    command and ``llama.cpp`` read. Windows cannot deliver that signal to
+    another process at all — ``send_signal`` raises ``ValueError`` there rather
+    than failing quietly — so the closest thing is ``terminate()``, which
+    kills the child without letting it finish its work. A caller that needs to
+    know whether the child got its work done has to check the result, not the
+    exit status: that is what ``recording_finalized_ok`` is for.
+    """
+
+    if platform_name(sys_platform) == WINDOWS:
+        process.terminate()
+        return
+    process.send_signal(signal.SIGINT)
 
 
 @dataclass(frozen=True)

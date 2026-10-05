@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from stella import app
+from stella import app, portable
 from stella.app import StellaApplication, StellaSession, StellaSettings
 from stella.brain import Brain, Decision
 from stella.llama_server import (
@@ -264,6 +264,30 @@ def test_stop_escalates_when_the_child_ignores_signals() -> None:
     assert process.signals == [signal.SIGINT]
     assert process.terminates == 1
     assert process.kills == 1
+    assert not server.alive
+
+
+def test_stop_asks_portable_how_to_be_polite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Windows cannot deliver SIGINT to another process — ``send_signal``
+    # raises ``ValueError`` there, which is how the brain used to die on
+    # that platform before it ever reached terminate. Forcing the
+    # *decision* runs the branch a Windows user gets, here.
+    monkeypatch.setattr(
+        portable,
+        "platform_name",
+        lambda sys_platform=None: portable.WINDOWS,
+    )
+    process = FakeProcess(exit_on_signal=False, exit_on_terminate=True)
+    server = LlamaBrainServer("m.gguf")
+    server._process = process
+
+    server.stop()
+
+    assert process.signals == []
+    assert process.terminates == 1
+    assert process.kills == 0
     assert not server.alive
 
 

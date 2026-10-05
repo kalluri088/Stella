@@ -19,7 +19,6 @@ Harmony chat template.
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import tempfile
 import threading
@@ -31,6 +30,7 @@ from typing import Self
 from stella.childproc import guarded_popen
 from stella.llm import UsageRecorder
 from stella.ollama_client import OllamaLLMClient
+from stella.portable import polite_stop
 
 DEFAULT_LLAMA_SERVER_BINARY = "llama-server"
 DEFAULT_LLAMA_SERVER_PORT = 8080
@@ -194,8 +194,11 @@ class LlamaBrainServer:
         if process is not None and process.poll() is None:
             # SIGINT is llama.cpp's own clean-shutdown path (the same
             # ladder the audio player uses); escalate only if ignored.
+            # Windows has no way to ask a child for one, so there the
+            # polite rung is terminate() and the ladder below simply
+            # finds the server already gone.
             try:
-                process.send_signal(signal.SIGINT)
+                polite_stop(process)
             except OSError:  # pragma: no cover - process just died
                 pass
             try:

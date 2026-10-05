@@ -8,6 +8,7 @@ another OS is exercised here even though only Linux can really run it.
 """
 
 import os
+import signal
 import subprocess
 
 import pytest
@@ -22,6 +23,7 @@ from stella.portable import (
     Hardening,
     default_editor,
     platform_name,
+    polite_stop,
     split_command,
 )
 
@@ -91,6 +93,49 @@ def test_default_editor_falls_back_per_platform():
     assert default_editor({}, sys_platform="win32") == "notepad"
     # An explicit choice wins over the platform default everywhere.
     assert default_editor({"EDITOR": "code"}, sys_platform="win32") == "code"
+
+
+class _Child:
+    """A ``Popen``-shaped recorder: which rungs were asked for, in order.
+
+    ``windows=True`` makes it answer a requested ``SIGINT`` the way a real
+    Windows child does — with ``ValueError``, because the platform cannot
+    deliver that signal to another process. That is the failure this
+    decision exists to avoid, so the tests can be proven on Linux.
+    """
+
+    def __init__(self, *, windows: bool = False) -> None:
+        self.calls: list[str] = []
+        self._windows = windows
+
+    def send_signal(self, signal_number: int) -> None:
+        self.calls.append(f"send_signal:{signal_number}")
+        if self._windows and signal_number == int(signal.SIGINT):
+            raise ValueError(f"Unsupported signal: {signal_number}")
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+
+
+def test_polite_stop_asks_a_posix_child_to_interrupt_itself():
+    # Unchanged Linux behaviour, rung for rung: SIGINT is the clean
+    # shutdown path a recorder and llama.cpp both read.
+    for name in ("linux", "darwin", "freebsd14"):
+        child = _Child()
+        polite_stop(child, sys_platform=name)
+        assert child.calls == [f"send_signal:{int(signal.SIGINT)}"]
+
+
+def test_polite_stop_never_asks_a_windows_child_to_interrupt_itself():
+    child = _Child(windows=True)
+    polite_stop(child, sys_platform="win32")
+    # terminate() is the closest thing Windows has, and the rung that
+    # would raise is never reached at all. That is what the shared cancel
+    # ladder needed: on Windows it used to die here, before terminate.
+    assert child.calls == ["terminate"]
 
 
 def test_harden_private_file_uses_the_real_mode_bit_on_posix(tmp_path):

@@ -18,7 +18,6 @@ import os
 import queue
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -36,6 +35,7 @@ from stella.audio_output import (
 )
 from stella.childproc import guarded_popen, recording_finalized_ok
 from stella.context import InputModality, InputPart
+from stella.portable import polite_stop
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -97,17 +97,21 @@ def default_speech_worker() -> str:
 
 
 def _cancel_process_tree(process: subprocess.Popen) -> None:
-    """Best-effort SIGINT → terminate → kill ladder for one command.
+    """Best-effort polite-stop → terminate → kill ladder for one command.
 
     Runs on the cancelling thread and is bounded to about a second: a
     well-behaved command exits on the first signal, and anything that
     ignores the polite ones is killed. ``cancel_requested`` on the
     provider turns the resulting non-zero exit into an honest
     "cancelled" error rather than a "failed" one.
+
+    The first rung is :func:`stella.portable.polite_stop`, which is
+    ``SIGINT`` on POSIX and ``terminate()`` on Windows — asking a Windows
+    child to interrupt itself is not a thing that can be done.
     """
 
     steps = (
-        (lambda: process.send_signal(signal.SIGINT), 0.25),
+        (lambda: polite_stop(process), 0.25),
         (process.terminate, 0.25),
         (process.kill, 0.5),
     )
@@ -233,7 +237,7 @@ class SubprocessRecorder(Recorder):
         if process is None or path is None:
             raise VoiceError("Stella is not listening.")
         try:
-            process.send_signal(signal.SIGINT)
+            polite_stop(process)
             returncode = process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()

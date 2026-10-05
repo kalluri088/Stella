@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Stopping a child process is now one decision, not four signals
+
+- **What changed.** `stella.portable.polite_stop(process)` answers *"how do I
+  ask this child to shut down on its own terms, on this platform"*: `SIGINT` on
+  POSIX, `terminate()` on Windows. The three places that had hand-written the
+  polite rung — the shared microphone tap's cancel ladder
+  (`voice._cancel_process_tree`), the recorder's `stop()`, and
+  `LlamaBrainServer.stop()` — now call it. `shell_tools` and `browser_tools`
+  already branched on the platform before their process-group ladders and are
+  unchanged.
+- **Why this is a defect and not a colour of CI red.** Windows cannot deliver
+  `SIGINT` to another process; `send_signal` raises
+  `ValueError: Unsupported signal: 2` there rather than failing quietly. The
+  ladder sent it *first*, so on Windows cancelling a recording died before it
+  reached the rung that works. 21 of the remaining 49 Windows failures came
+  from this one hole, across the tap, recorder, wake-word and barge-in paths.
+  The rung reads correctly on Linux, which is the only platform that ever ran
+  it, and each of the three sites was written by copying the last one.
+- **Windows loses politeness, not correctness.** `terminate()` does not let a
+  recorder finish writing its WAV header, so a capture stopped there is
+  reported by `recording_finalized_ok` as *no recording* rather than as a
+  usable file. That fail-closed check was already the right answer and needed
+  no change: the exit status is interpreted with this platform's conventions
+  and the file itself has to exist.
+- **Proof.** `tests/test_portable.py` drives the decision with a
+  `Popen`-shaped recorder: POSIX asks for `SIGINT` and nothing else, Windows
+  calls `terminate()` and never reaches the call that would raise.
+  `tests/test_voice.py` and `tests/test_llama_server.py` then force the same
+  decision (through `portable.platform_name`, never `sys.platform`) against a
+  child that raises `ValueError` on an interrupt request, and assert the
+  ladder stops it. The Linux behaviour is pinned by the tests that already
+  existed: `test_stop_prefers_sigint_and_is_idempotent` still sees
+  `[signal.SIGINT]`, and the cancel ladder still escalates rung for rung.
+  `tests/test_portable.py`: 20 passed; `tests/test_llama_server.py`: 25
+  passed; `tests/test_voice.py`: 125 passed; `tests/test_mic_tap.py` with
+  `tests/test_isolation.py`: 13 passed; `tests/test_wake.py` with
+  `tests/test_barge_in.py`: 77 passed; `ruff check` clean.
+
 ### Every test that isolates Stella's state directory now isolates it on Windows
 
 - **What changed.** 41 sites that pointed `XDG_DATA_HOME` at a `tmp_path` now

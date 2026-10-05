@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import re
 from unittest.mock import patch
 
 import pytest
@@ -421,7 +422,10 @@ def test_stella_executes_datetime_and_sends_result_to_llm() -> None:
         InMemoryMemory(),
     )
 
-    fixed = dt.datetime(2026, 9, 6, 12, 34, 56, tzinfo=dt.timezone(dt.timedelta(hours=5, minutes=30)))
+    # A naive instant, because that is what datetime.now() returns: the tool
+    # reads it in the host's zone, so the digits are the contract and the
+    # offset is whatever machine the test happens to run on.
+    fixed = dt.datetime(2026, 9, 6, 12, 34, 56)  # noqa: DTZ001
     with patch("stella.tools.dt.datetime") as datetime_class:
         datetime_class.now.return_value = fixed
         result = stella.process(Context(user_input="What time is it?"))
@@ -430,10 +434,10 @@ def test_stella_executes_datetime_and_sends_result_to_llm() -> None:
     assert result.tool_result.success is True
     payload = json.loads(llm.messages[0][1].content)
     assert payload["decision"]["capability"] == "datetime"
-    assert payload["tool_result"] == {
-        "success": True,
-        "output": "12:34:56 +0530",
-    }
+    assert payload["tool_result"]["success"] is True
+    assert re.fullmatch(
+        r"12:34:56 [+-]\d{4}", payload["tool_result"]["output"]
+    ), payload["tool_result"]
     assert result.response == "The local time is 12:34:56."
 
 

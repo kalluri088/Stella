@@ -1,6 +1,7 @@
 import datetime as dt
 import http.client
 import json
+import re
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -133,23 +134,45 @@ def test_system_info_tool_contains_runtime_failures() -> None:
     )
 
 
+# What datetime.now() actually returns: naive local wall-clock time. The tool
+# then reads that instant in the host's own zone, so the wall clock is the part
+# a test can pin exactly and the offset is the part it cannot — an earlier
+# version fed an +05:30-aware instant and asserted that offset back, which
+# passed on this machine and failed everywhere the zone was not +05:30.
+LOCAL_WALL_CLOCK = dt.datetime(2026, 9, 6, 12, 34, 56)  # noqa: DTZ001
+
+
+def _at_the_wall_clock(kind: str) -> str:
+    with patch("stella.tools.dt.datetime") as datetime_class:
+        datetime_class.now.return_value = LOCAL_WALL_CLOCK
+        result = DateTimeTool().execute({"kind": kind})
+    assert result.success, result.output
+    return result.output
+
+
 @pytest.mark.parametrize(
     ("kind", "expected"),
     [
         ("date", "2026-09-06"),
-        ("time", "12:34:56 +0530"),
-        ("datetime", "2026-09-06T12:34:56+05:30"),
         ("weekday", "Sunday"),
     ],
 )
-def test_datetime_tool_executes_valid_operations(kind: str, expected: str) -> None:
-    fixed = dt.datetime(2026, 9, 6, 12, 34, 56, tzinfo=dt.timezone(dt.timedelta(hours=5, minutes=30)))
-    with patch("stella.tools.dt.datetime") as datetime_class:
-        datetime_class.now.return_value = fixed
+def test_datetime_tool_reads_the_local_date_and_weekday(
+    kind: str, expected: str
+) -> None:
+    assert _at_the_wall_clock(kind) == expected
 
-        result = DateTimeTool().execute({"kind": kind})
 
-    assert result == ToolResult(success=True, output=expected)
+def test_datetime_tool_formats_time_with_the_host_offset() -> None:
+    assert re.fullmatch(r"12:34:56 [+-]\d{4}", _at_the_wall_clock("time"))
+
+
+def test_datetime_tool_formats_datetime_as_local_iso_seconds() -> None:
+    output = _at_the_wall_clock("datetime")
+    assert re.fullmatch(r"2026-09-06T12:34:56[+-]\d{2}:\d{2}", output), output
+    # The offset has to be the host's, not just any offset: a client that
+    # stamped UTC here would keep the same digits and still parse.
+    assert dt.datetime.fromisoformat(output) == LOCAL_WALL_CLOCK.astimezone()
 
 
 @pytest.mark.parametrize(

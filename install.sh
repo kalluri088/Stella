@@ -123,10 +123,11 @@ else
   # -f, so a 404 (a private repo, a deleted release, a wrong version) is an
   # error here rather than a saved HTML page that fails the checksum later.
   # https only, because the release URL redirects and a downgrade mid-chain
-  # should not be able to land on plain http.
-  curl -fL --proto '=https' --tlsv1.2 -o "$work/$wheel" \
+  # should not be able to land on plain http. -# keeps a single tidy progress
+  # line instead of the meter's multi-column noise in the middle of the report.
+  curl -fL -# --proto '=https' --tlsv1.2 -o "$work/$wheel" \
     "$base_url/$wheel" || die "could not download $base_url/$wheel — is the release published and visible?"
-  curl -fL --proto '=https' --tlsv1.2 -o "$work/$wheel.sha256" \
+  curl -fsSL --proto '=https' --tlsv1.2 -o "$work/$wheel.sha256" \
     "$base_url/$wheel.sha256" || die "could not download the checksum for $version — this release predates checksums"
   verify_checksum "$work/$wheel" "$work/$wheel.sha256"
 fi

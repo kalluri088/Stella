@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### CI goes green for a public repository: two causes, seven tests
+
+- **What changed.** Seven tests were failing on every push, on all three
+  operating systems, and had been since the rounds before this one. Two
+  unrelated causes. `DateTimeTool` reports the host's own zone, so a fixture
+  that handed it an `+05:30`-aware instant and asserted that same offset back
+  could only pass on a `+05:30` machine — the datetime tests now feed the naive
+  wall clock `datetime.now()` actually returns, pin the digits exactly, and
+  check the offset by shape and by round-trip instead of by value. And the
+  `/usage` recorder reached every real client but never its test doubles:
+  `SpyClient` rejected the new keyword outright, and two CLI assertions were one
+  argument out of date, so both now carry `usage=` — with the llama case also
+  asserting the recorder really is passed, which is what makes `/usage` mean
+  anything on a llama.cpp brain. Alongside them, `install.sh` downloads with
+  `curl -#` and fetches its checksum quietly, so the one command prints a
+  report rather than a progress meter.
+- **Why it waited until now.** The owner asked for releases the industry way,
+  and a public repository whose CI has been red is not that. Each cause was
+  reproducible without any network by running the same two files under `TZ=UTC`
+  — which is exactly why this machine never showed them: it runs at `+05:30`.
+- **Not a weakening.** Nothing was deleted or skipped. The datetime tests gave
+  up a hard-coded offset and gained a layout check plus a round-trip that fails
+  if the tool stamps the wrong zone; the client tests gained an argument and a
+  new invariant.
+- **Proof.** `tests/test_tools.py` + `tests/test_stella.py`: 235 passed under
+  each of UTC, `Asia/Kathmandu` (+05:45), `America/New_York`,
+  `Pacific/Kiritimati` (+14:00) and this host's own zone.
+  `tests/test_llama_server.py` + `tests/test_ollama_client.py`: 33 passed.
+  `tests/test_install_script.py`: 6 passed, and the updated script verified the
+  published 1.5.0 wheel end-to-end in `STELLA_CHECK` mode. `ruff check .` clean.
+
 ## 1.5.0 — 2026-10-05
 
 ### Release docs, and an installer that runs under any `/bin/sh`

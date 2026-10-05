@@ -385,11 +385,13 @@ class SpyClient:
         base_url: str,
         answer_max_output_tokens: int | None = None,
         decision_max_output_tokens: int | None = None,
+        usage: object | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url
         self.answer_max_output_tokens = answer_max_output_tokens
         self.decision_max_output_tokens = decision_max_output_tokens
+        self.usage = usage
         SpyClient.last = self
 
 
@@ -441,6 +443,9 @@ def test_build_starts_and_close_stops_the_owned_brain(
     assert application.brain_server is server
     assert SpyClient.last is not None
     assert SpyClient.last.base_url == server.base_url
+    # The session's usage recorder reaches every client, not just Ollama's —
+    # otherwise `/usage` would quietly report nothing on a llama.cpp brain.
+    assert SpyClient.last.usage is not None
 
     application.close()
     assert server.stops == 1

@@ -167,6 +167,7 @@ def test_cli_selects_ollama_provider(monkeypatch) -> None:
 
     with (
         patch("stella.app.SQLiteMemory"),
+        patch("stella.app.UsageRecorder") as usage_recorder,
         patch("stella.app.OllamaLLMClient") as ollama_client,
     ):
         stella = create_stella_from_environment()
@@ -183,6 +184,10 @@ def test_cli_selects_ollama_provider(monkeypatch) -> None:
         decision_max_output_tokens=8192,
         answer_max_output_tokens=2048,
         think=None,
+        # One tally for the session, owned by the app and handed to the
+        # client — /usage reads it, so a client built without it would
+        # report nothing.
+        usage=usage_recorder.return_value,
     )
     assert stella.brain.llm is ollama_client.return_value
 
@@ -194,6 +199,7 @@ def test_cli_honours_custom_ollama_base_url(monkeypatch) -> None:
 
     with (
         patch("stella.app.SQLiteMemory"),
+        patch("stella.app.UsageRecorder") as usage_recorder,
         patch("stella.app.OllamaLLMClient") as ollama_client,
     ):
         create_stella_from_environment()
@@ -209,6 +215,7 @@ def test_cli_honours_custom_ollama_base_url(monkeypatch) -> None:
         decision_max_output_tokens=8192,
         answer_max_output_tokens=2048,
         think=None,
+        usage=usage_recorder.return_value,
     )
 
 

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### One bad path now means one thing on every platform
+
+- **What changed.** The workspace validators ask both path flavours for
+  absoluteness instead of this host's plus Windows': a new
+  `tools._names_no_absolute_path()` answers for `PurePosixPath` and
+  `PureWindowsPath` together, and `_workspace_is_within` and
+  `WorkspaceReadTool._is_relative` — the two copies of that rule — both
+  use it.
+- **Why this is a defect and not a nicety.** `workspace_list` with
+  `dir: "/etc"` is refused on POSIX as *invalid arguments* and on Windows
+  as *directory outside workspace*, because `/etc` carries no drive and
+  Windows' own flavour therefore calls it relative. Safety held — both
+  answers refuse — but the same bad model output meant two different
+  things depending on the machine, which is how a validation rule drifts.
+  Asking the POSIX flavour is a no-op on Linux and macOS and the missing
+  half on Windows.
+- **Unchanged.** Containment, symlink refusal, the `..` check on the host
+  flavour (a POSIX file may legitimately be named `..\evil`), and every
+  message a tool can answer with.
+- **Proof.** `tests/test_workspace_tools.py`: 39 passed (the parametrised
+  `/etc` case now means the same thing on both platforms, so no test had
+  to move); new `test_an_absolute_path_is_rejected_in_either_platforms_shape`
+  pins both flavours directly.
+
 ### The Windows ACL was never applied, because a call that fails on purpose looked like an error
 
 - **What changed.** `portable._current_user_sid()` no longer treats the

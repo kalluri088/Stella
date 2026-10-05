@@ -14,6 +14,7 @@ from stella.tools import (
     WorkspaceFindTool,
     WorkspaceListTool,
     WorkspaceSearchTool,
+    _names_no_absolute_path,
 )
 
 
@@ -337,3 +338,16 @@ def test_workspace_tools_reject_invalid_arguments(workspace, tool_type, argument
     assert result == ToolResult(
         success=False, output="Invalid tool arguments."
     )
+
+
+def test_an_absolute_path_is_rejected_in_either_platforms_shape() -> None:
+    # Both flavours are asked, not just the host's: `/etc` has no drive, so
+    # Windows' own flavour calls it relative and the argument used to mean
+    # "invalid" on POSIX and "outside the workspace" on Windows. One bad
+    # path now means one thing on every machine Stella runs on.
+    assert not _names_no_absolute_path("/etc")
+    assert not _names_no_absolute_path("///etc/passwd")
+    assert not _names_no_absolute_path("C:\\Windows\\system32")
+    assert not _names_no_absolute_path("\\\\server\\share")
+    assert _names_no_absolute_path("notes.txt")
+    assert _names_no_absolute_path("nested/dir")

@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import SplitResult, urlsplit
 
 from stella.history import ActionHistory, InMemoryActionHistory
@@ -484,6 +484,21 @@ _WORKSPACE_SKIP_DIRECTORY_NAMES = frozenset(
 WORKSPACE_MAX_SCAN_SIZE = 1_048_576
 
 
+def _names_no_absolute_path(path: str) -> bool:
+    """Whether a model-supplied string is shaped like a workspace-relative path.
+
+    Absolute in *any* platform's sense is refused, not only this host's:
+    ``/etc`` carries no drive letter, so Windows' own flavour calls it
+    relative, and the same argument then reaches containment and is
+    answered with a different message than POSIX gives it. Deciding both
+    flavours here is what makes one bad argument mean one thing everywhere.
+    """
+
+    return not PurePosixPath(path).is_absolute() and not PureWindowsPath(
+        path
+    ).is_absolute()
+
+
 def _workspace_is_within(workspace: Path, path: str) -> bool:
     """Return whether a model-provided path could stay inside the workspace."""
 
@@ -492,8 +507,7 @@ def _workspace_is_within(workspace: Path, path: str) -> bool:
     return (
         bool(path.strip())
         and "\x00" not in path
-        and not candidate.is_absolute()
-        and not windows_candidate.is_absolute()
+        and _names_no_absolute_path(path)
         and not windows_candidate.drive
         and ".." not in candidate.parts
     )
@@ -886,8 +900,7 @@ class FileSystemReadTool(Tool):
         candidate = Path(path)
         windows_candidate = PureWindowsPath(path)
         return (
-            not candidate.is_absolute()
-            and not windows_candidate.is_absolute()
+            _names_no_absolute_path(path)
             and not windows_candidate.drive
             and ".." not in candidate.parts
         )

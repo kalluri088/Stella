@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### The lookup that promises never to raise now believes every way a load fails
+
+- **What changed.** `childproc._prctl_function()` catches `TypeError`
+  alongside `AttributeError`, `OSError` and `ValueError`, and its docstring
+  now lists the shapes instead of naming one platform. In the tests,
+  `_reap` picks the kill this platform has (`SIGKILL`, or `SIGTERM` where
+  the name does not exist), `test_recording_finalized_ok_fails_closed_without_a_file`
+  states each exit-status convention for the platform that produces it and
+  adds the Windows `0xC000013A` case, and the prctl test that called itself
+  "the Windows CDLL failure" is parametrised over both `TypeError` (what
+  Windows really raises) and `ValueError` (what it was asserting).
+- **Why this is a defect and not a portability nicety.** The function's own
+  rule is *never raise from here*, because importing the spawn layer is not
+  allowed to fail on any platform — and on Windows `CDLL(None)` is rejected
+  with `TypeError`, which no branch caught, so the rule was broken on the
+  one platform the comment described. The test is the reason nobody noticed:
+  it named Windows and raised a different exception, so the fake passed and
+  the product was wrong. The other two are the same class of dishonesty in
+  miniature — a cleanup helper and an exit-status assertion each quietly
+  borrowing the machine running them.
+- **Unchanged.** Every fallback decision: no prctl means the watchdog
+  guarantee, and `_kill`'s `SIGKILL`/`waitpid` pair stays Linux-only behind
+  the existing `platform_name() != "linux"` gate.
+- **Proof.** `tests/test_childproc.py`: 39 passed; `ruff check` clean.
+  Windows count is the next CI run's.
+
 ### The key store now asks the same privacy question the config file asks
 
 - **What changed.** `provider_keys._write_store` sets permissions on the

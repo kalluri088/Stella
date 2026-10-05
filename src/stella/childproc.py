@@ -165,10 +165,14 @@ class _JobObjectExtendedLimitInformation(ctypes.Structure):
 def _prctl_function() -> object | None:
     """The libc ``prctl`` symbol, resolved once, or None if unavailable.
 
-    ``CDLL(None)`` raises ``ValueError`` on Windows and ``OSError`` where
-    dynamic loading is restricted; either way the answer is "no prctl",
-    and the caller falls back to the watchdog. Never raise from here:
-    importing this module is not allowed to fail on any platform.
+    The shape of "unavailable" is not one exception: ``CDLL(None)`` is
+    rejected with ``TypeError`` on Windows (``LoadLibrary`` wants a name,
+    not the main program), reaches no ``prctl`` symbol with
+    ``AttributeError`` on a libc that does not export it, and raises
+    ``OSError``/``ValueError`` where dynamic loading is restricted. Every
+    one of them means the same thing — *no prctl here* — and the caller
+    falls back to the watchdog. Never raise from this function: importing
+    this module is not allowed to fail on any platform.
     """
 
     global _PRCTL, _PRCTL_RESOLVED
@@ -178,7 +182,7 @@ def _prctl_function() -> object | None:
         if not _PRCTL_RESOLVED:
             try:
                 _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
-            except (AttributeError, OSError, ValueError):
+            except (AttributeError, OSError, TypeError, ValueError):
                 _PRCTL = None
             _PRCTL_RESOLVED = True
     return _PRCTL

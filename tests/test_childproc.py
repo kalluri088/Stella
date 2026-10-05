@@ -62,8 +62,18 @@ def _wait_for_death(pid: int, timeout: float = 2.0) -> bool:
 
 
 def _reap(pid: int) -> None:
+    """End a child a test left running, however this platform kills.
+
+    Cleanup, not the subject: ``SIGKILL`` is the POSIX name for "die now"
+    and Windows has none, where any other number through ``os.kill``
+    terminates the process outright. Deciding here keeps every test that
+    reaps a child runnable everywhere instead of only proving itself on
+    the machine that happens to be running it.
+    """
+
+    force = signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM
     try:
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, force)
     except OSError:
         pass
 
@@ -309,7 +319,17 @@ def test_recording_finalized_ok_fails_closed_without_a_file(tmp_path):
     assert recording_finalized_ok(0, path) is False
     path.write_bytes(b"x" * 45)
     assert recording_finalized_ok(0, path) is True
-    assert recording_finalized_ok(-signal.SIGINT, path) is True
+    # Death by the interrupt Stella sent is how POSIX reports it, and a
+    # Windows console interrupt is the unsigned code — each stated for the
+    # platform that produces it, so this pins the file check on every host
+    # instead of borrowing the one running the suite.
+    assert recording_finalized_ok(-signal.SIGINT, path, sys_platform="linux") is True
+    assert (
+        recording_finalized_ok(
+            childproc.WINDOWS_INTERRUPT_EXIT, path, sys_platform="win32"
+        )
+        is True
+    )
     assert recording_finalized_ok(1, path) is False
 
 
@@ -439,12 +459,24 @@ def test_temp_path_matching_does_not_assume_a_separator(token, expected):
     assert _mentions_stella_temp(token) is expected
 
 
-def test_prctl_lookup_survives_the_windows_cdll_failure(monkeypatch):
-    # CDLL(None) raises ValueError on Windows, not OSError. Resolving it
-    # must never raise, because a failed lookup is a platform fact, not a
-    # spawn error.
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # What Windows actually does: LoadLibrary wants a name, not the
+        # main program, so the call is rejected before anything loads.
+        TypeError("LoadLibrary() argument 1 must be str, not None"),
+        # What a restricted dynamic loader does instead. The test used to
+        # call this one "the Windows failure", which is how the product
+        # ended up catching the wrong exception.
+        ValueError("nothing to load"),
+    ],
+    ids=["windows-rejects-unnamed-load", "loader-restricted"],
+)
+def test_prctl_lookup_survives_a_cdll_that_cannot_load(failure, monkeypatch):
+    # Resolving prctl must never raise, because a failed lookup is a
+    # platform fact, not a spawn error.
     def boom(*args, **kwargs):
-        raise ValueError("nothing to load")
+        raise failure
 
     monkeypatch.setattr(childproc, "_PRCTL_RESOLVED", False)
     monkeypatch.setattr(childproc, "_PRCTL", None)

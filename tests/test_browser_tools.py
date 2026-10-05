@@ -14,6 +14,7 @@ the clean process teardown are only true if they run.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -500,8 +501,13 @@ class TestRegistration:
 
 class TestFindBrowser:
     def test_explicit_path_wins(self, tmp_path):
-        exe = tmp_path / "mybrowser"
-        exe.write_text("#!/bin/sh\n")
+        # The fake has to be an executable *this platform recognises*: on
+        # Windows `shutil.which` consults PATHEXT and passes over a bare
+        # name, and `chmod 0o755` there is not a permission. The decision
+        # under test — an explicit STELLA_BROWSER beats the PATH scan — is
+        # the same on both, so the fixture takes the host's shape.
+        exe = tmp_path / ("mybrowser.exe" if os.name == "nt" else "mybrowser")
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
         exe.chmod(0o755)
         assert find_browser({ENV_BROWSER: str(exe), "PATH": str(tmp_path)}) == str(exe)
 

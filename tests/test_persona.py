@@ -202,13 +202,14 @@ def test_hostile_persona_text_survives_but_stays_below_the_invariant(
 def test_loader_errors_fail_closed_to_the_default_prompt(tmp_path) -> None:
     # A persona file that cannot be read must not break the turn: the
     # loader returns None and the prompt stays the default build.
+    #
+    # Not `chmod 0o000`: a mode bit is POSIX machinery, and on Windows the
+    # file would simply have been read, so the test would pass by proving
+    # nothing. A directory where the file belongs fails the open the same
+    # way on every platform.
     blocker = tmp_path / "persona.md"
-    blocker.write_text("x", encoding="utf-8")
-    blocker.chmod(0o000)
-    try:
-        assert PersonaLoader(tmp_path).load() is None
-    finally:
-        blocker.chmod(0o644)
+    blocker.mkdir()
+    assert PersonaLoader(tmp_path).load() is None
 
 
 @pytest.mark.parametrize(

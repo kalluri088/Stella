@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Four fixtures stopped building their subject out of this host's machinery
+
+- **What changed.** `test_database_names_match_app_helpers` splits the
+  app's own paths with `Path(...).name` instead of `rpartition("/")`;
+  the persona fail-closed test makes `persona.md` a *directory* rather
+  than `chmod 0o000`ing it; `test_explicit_path_wins` names its fake
+  browser with the suffix this platform's `shutil.which` recognises; and
+  the three shell-argv assertions in `tests/test_shell_tools.py` are
+  parametrised over both platforms through `decide_shell_platform`, which
+  patches the module's own `platform_name` binding and clears `COMSPEC`
+  so the Windows answer is one fixed string everywhere.
+- **Why each is a retarget and not a weakening.** `/etc`-style basename
+  splitting left every full Windows path in the comparison, so the test
+  that exists to catch a renamed database compared names against paths. A
+  mode bit is not a denial on NTFS: that persona test passed on Windows by
+  reading the file and asserting nothing. An extensionless fake is not an
+  executable there, so the explicit-browser override was unproven on the
+  platform that has the most browsers to find. And `if sys.platform !=
+  "win32": assert …` is a test that quietly stops being a test — the two
+  jail cases now check the confined-not-bwrap answer for *both* shells,
+  which is one assertion more than they had.
+- **Unchanged.** Every product decision these four tests describe. Each
+  failed on Windows while Stella was right.
+- **Proof.** `tests/test_shell_tools.py`: 60 passed; `tests/test_persona.py`:
+  54; `tests/test_browser_tools.py`: 79; `tests/test_backup_cli.py`: 14.
+
 ### One bad path now means one thing on every platform
 
 - **What changed.** The workspace validators ask both path flavours for

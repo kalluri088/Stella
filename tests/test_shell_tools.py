@@ -20,6 +20,7 @@ import pytest
 from stella import config as config_module
 from stella import shell_tools
 from stella.app import StellaSettings
+from stella.portable import LINUX, WINDOWS
 from stella.sandbox import build_sandbox_argv, sandbox_available
 from stella.shell_tools import (
     MAX_COMMAND_CHARS,
@@ -82,6 +83,25 @@ def _run(returncode=0, output=b"", truncated=False, timed_out=False):
     return ShellRun(returncode, output, truncated, timed_out)
 
 
+#: The argv each platform's shell is reached through, asserted for both
+#: rather than borrowed from whichever machine runs the suite.
+_SHELL_PREFIXES = {LINUX: ["/bin/sh", "-c"], WINDOWS: ["cmd.exe", "/c"]}
+
+
+def decide_shell_platform(monkeypatch, sys_platform: str) -> None:
+    """Name the platform a shell-argv assertion is about.
+
+    ``shell_tools`` imported ``platform_name`` into its own namespace, so
+    that binding is the seam to patch — and ``COMSPEC`` is cleared so the
+    Windows answer is one fixed string on every host, not this machine's.
+    """
+
+    monkeypatch.setattr(
+        shell_tools, "platform_name", lambda *_args, **_kwargs: sys_platform
+    )
+    monkeypatch.delenv("COMSPEC", raising=False)
+
+
 class TestValidateArguments:
     @pytest.mark.parametrize(
         "arguments",
@@ -129,15 +149,22 @@ class TestExecutionDecisions:
         assert result.output.endswith(CONTENT_CLOSE)
         assert "hello" in result.output
 
-    def test_argv_cwd_and_timeout_are_the_workspace_and_the_bound(self, workspace):
+    @pytest.mark.parametrize(
+        ("sys_platform", "prefix"),
+        list(_SHELL_PREFIXES.items()),
+        ids=list(_SHELL_PREFIXES),
+    )
+    def test_argv_cwd_and_timeout_are_the_workspace_and_the_bound(
+        self, workspace, monkeypatch, sys_platform, prefix
+    ):
         runner = _FakeRunner()
+        decide_shell_platform(monkeypatch, sys_platform)
         ShellRunTool(workspace, runner=runner).execute({"command": "true"})
         argv, cwd, timeout = runner.calls[0]
         assert cwd == str(workspace)
         assert timeout == TIMEOUT_SECONDS
-        if sys.platform != "win32":
-            assert argv[:2] == ["/bin/sh", "-c"]
-            assert argv[2] == "true"
+        assert argv[:2] == prefix
+        assert argv[2] == "true"
 
     def test_missing_workspace_refuses_before_spawning(self, tmp_path):
         runner = _FakeRunner()
@@ -242,24 +269,40 @@ class TestSandboxJail:
         assert nasty not in wrapper
         assert "$1" in wrapper
 
-    def test_unavailable_jail_falls_back_to_confined_and_says_so(self, workspace):
+    @pytest.mark.parametrize(
+        ("sys_platform", "prefix"),
+        list(_SHELL_PREFIXES.items()),
+        ids=list(_SHELL_PREFIXES),
+    )
+    def test_unavailable_jail_falls_back_to_confined_and_says_so(
+        self, workspace, monkeypatch, sys_platform, prefix
+    ):
         runner = _FakeRunner(_run(0, b"ok\n"))
         sb = _FakeSandbox(available=False)
+        decide_shell_platform(monkeypatch, sys_platform)
         result = ShellRunTool(workspace, runner=runner, sandbox=sb).execute(
             {"command": "echo ok"}
         )
         argv = runner.calls[0][0]
-        assert argv[:2] == ["/bin/sh", "-c"]  # confined path, not bwrap
+        assert argv[:2] == prefix  # confined path, not bwrap
         assert "WITHOUT the filesystem jail" in result.output
         assert sb.requests == []  # never asked to build a jail argv
 
-    def test_jail_off_never_consults_the_sandbox(self, workspace):
+    @pytest.mark.parametrize(
+        ("sys_platform", "prefix"),
+        list(_SHELL_PREFIXES.items()),
+        ids=list(_SHELL_PREFIXES),
+    )
+    def test_jail_off_never_consults_the_sandbox(
+        self, workspace, monkeypatch, sys_platform, prefix
+    ):
         runner = _FakeRunner()
         sb = _FakeSandbox(available=True)
+        decide_shell_platform(monkeypatch, sys_platform)
         ShellRunTool(workspace, runner=runner, sandbox=sb, jail=False).execute(
             {"command": "echo ok"}
         )
-        assert runner.calls[0][0][:2] == ["/bin/sh", "-c"]
+        assert runner.calls[0][0][:2] == prefix
         assert sb.requests == []
 
 

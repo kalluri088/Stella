@@ -3,6 +3,7 @@ over the state databases."""
 
 import json
 import sqlite3
+from pathlib import Path
 
 from stella.app import (
     default_history_db,
@@ -39,7 +40,10 @@ def test_database_names_match_app_helpers():
     # The runtime resolves these paths through stella.app; a rename there
     # must fail this test rather than silently back up nothing.
     basenames = {
-        name.rpartition("/")[2]
+        # Split with the host's own path machinery: a literal "/" is a
+        # POSIX separator, and on Windows it left every full path in the
+        # comparison while the assertion itself never changed.
+        Path(name).name
         for name in (
             default_memory_db(),
             default_history_db(),

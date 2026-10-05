@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### The window tests run in CI for the first time, on the platform that has a display
+
+- **What changed.** Ubuntu's green was hollow: it has no display, so all 74
+  Tk window tests skipped every run and never executed in any CI job. The two
+  runners that *do* open Tk were then the only ones to try, and both died
+  inside it — macOS with a `SIGSEGV` in `root.update()` in the first window
+  test, Windows with an access violation in `clipboard_clear` in the third —
+  which failed the job by killing the interpreter, taking every later file
+  with it. The Linux job now installs Xvfb and runs the suite against a real
+  X server; the window tests skip on macOS and Windows CI, where they cannot
+  run honestly. A fourth step now fails the Linux job outright if the suite
+  skips, so the hole cannot quietly reopen.
+- **Why a skip, and why that is not the same as the one above.** A CI macOS
+  job signs in over SSH with no console user, so Cocoa never reaches the
+  window server; a Windows job gets as far as drawing but has no usable
+  clipboard. `tk.Tk()` succeeds on both, so the existing display probe said
+  yes and the crash came later, in code neither this repository nor its owner
+  can debug from a Linux host. Stella's desktop surface is Linux — Hyprland,
+  X11/EWMH, sway — so the choice was between two platforms that crash the run
+  and one that executes 74 tests that had never run anywhere. The gate is
+  `GITHUB_ACTIONS` *and* macOS/Windows: a developer at a real desktop on
+  either platform still runs them. No assertion changed.
+- **Proof.** `tests/test_ui.py`: 74 passed against this machine's X display in
+  one process (24s), which is what the same job will do under Xvfb; the gate
+  itself returns `False` on Linux CI, `True` on macOS CI, `False` on a macOS
+  developer machine; the workflow YAML parses and the steps read in order.
+  What this does *not* prove: Xvfb has no window manager, so the one test that
+  asserts a dialog is mapped is the plausible place for a genuine finding —
+  worth reading as a result, not a reason to skip Linux too.
+
 ### CI goes green for a public repository: two causes, seven tests
 
 - **What changed.** Seven tests were failing on every push, on all three

@@ -1,14 +1,17 @@
 """Phase 4 Tk window tests.
 
 These exercise the real widgets when a display is available and skip
-otherwise. The window may only talk to Stella through ``StellaBridge``,
-so the tests assert exactly that: widget actions post bridge commands,
-approval dialogs answer the dispatcher's live request, and closing a
-dialog denies rather than fabricates authorization.
+otherwise — and on the two CI platforms with no GUI session to join they
+skip even though Tk opens, because a crash there is not a failing test.
+The window may only talk to Stella through ``StellaBridge``, so the tests
+assert exactly that: widget actions post bridge commands, approval dialogs
+answer the dispatcher's live request, and closing a dialog denies rather
+than fabricates authorization.
 """
 
 import os
 import re
+import sys
 import threading
 import time
 import tkinter as tk
@@ -54,9 +57,33 @@ def display_available() -> bool:
     return True
 
 
-pytestmark = pytest.mark.skipif(
-    not display_available(), reason="no display available for Tk"
-)
+def headless_ci_desktop() -> bool:
+    """True on a CI runner whose platform has no GUI *session* to join.
+
+    ``tk.Tk()`` succeeds on both of them, so the probe above says yes — and
+    then the first call that needs the window server kills the interpreter:
+    on macOS the job's SSH session has no console user for Cocoa
+    (SIGSEGV inside ``root.update()``), on Windows the window draws but
+    clipboard access raises an access violation. Neither reports a failure;
+    the whole run dies, taking every later test file with it. Stella's
+    desktop surface is Linux, where CI now supplies a real X server, so this
+    skips the window tests only where they cannot be run honestly.
+    """
+    return (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and sys.platform in ("darwin", "win32")
+    )
+
+
+pytestmark = [
+    pytest.mark.skipif(
+        not display_available(), reason="no display available for Tk"
+    ),
+    pytest.mark.skipif(
+        headless_ci_desktop(),
+        reason="macOS/Windows CI runners have no GUI session for Tk",
+    ),
+]
 
 
 class AnswerLLM(LLMClient):

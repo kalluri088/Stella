@@ -39,8 +39,48 @@ jobs:
       # The suite must at least import on every platform; that is the
       # regression this matrix exists for. Tests whose subject is
       # genuinely POSIX-only skip themselves off POSIX.
+      #
+      # Stella's window is a Tk window, and Tk needs a GUI *session* —
+      # which only Linux has here, once Xvfb provides it. macOS's runner
+      # signs in over SSH with no console user, so Cocoa never reaches
+      # WindowServer and the process dies inside the first update();
+      # Windows gets far enough to draw but dies on clipboard access
+      # (see the skip in tests/test_ui.py). Both crash the interpreter, so
+      # on those two the window tests skip and the rest of the matrix still
+      # proves portability. Under Xvfb they run for real — 74 of them,
+      # which had never executed in any CI job before.
+      - name: Provide an X server for the window tests
+        if: runner.os == 'Linux'
+        run: command -v Xvfb || sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: Test (Linux, with a display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a uv run pytest
+
       - name: Test
+        if: runner.os != 'Linux'
         run: uv run pytest
+
+      # The hole this job just had: with no display, every window test
+      # skipped and the run still reported success, so the GUI went untested
+      # for the whole life of the workflow. Skipping is therefore a failure
+      # here, not a pass — if the X server above ever stops being provided,
+      # this says so in one line instead of going quiet.
+      - name: The window suite ran, it did not skip
+        if: runner.os == 'Linux'
+        run: |
+          set -uo pipefail
+          summary="$(xvfb-run -a uv run pytest tests/test_ui.py -q 2>&1 | tail -1)"
+          echo "$summary"
+          case "$summary" in
+            *skipped*) echo "::error::the Tk window suite skipped on Linux"
+                       exit 1 ;;
+            *failed*)  echo "::error::the Tk window suite failed"
+                       exit 1 ;;
+            *passed*)  echo "Tk window suite ran on Xvfb" ;;
+            *)         echo "::error::the Tk window suite reported no result"
+                       exit 1 ;;
+          esac
 
       - name: Lint
         run: uv run ruff check .

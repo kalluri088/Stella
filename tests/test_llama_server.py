@@ -154,6 +154,21 @@ def fast_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("stella.llama_server.HEALTH_POLL_SECONDS", 0.0)
 
 
+def ask_for_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Decide the platform a signal assertion is actually about.
+
+    These tests say *the first rung is SIGINT* — a fact about POSIX, not
+    about whichever machine the suite happens to run on, and the brain
+    now asks :func:`stella.portable.polite_stop` which rung this platform
+    can deliver. The Windows rung has its own test. Nothing is weakened:
+    the assertion is the same, it just stops borrowing the host.
+    """
+
+    monkeypatch.setattr(
+        portable, "platform_name", lambda sys_platform=None: portable.LINUX
+    )
+
+
 def test_start_spawns_the_command_and_waits_for_health(
     fast_polling, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -196,6 +211,7 @@ def test_start_reports_an_early_exit_with_the_log_tail(
 def test_start_times_out_loudly_and_stops_the_child(
     fast_polling, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    ask_for_posix(monkeypatch)
     process = FakeProcess()
     popen = FakePopen(process)
     monkeypatch.setattr("stella.llama_server.subprocess.Popen", popen)
@@ -240,7 +256,10 @@ def test_start_refuses_a_port_that_already_answers(
     assert popen.calls == []
 
 
-def test_stop_prefers_sigint_and_is_idempotent() -> None:
+def test_stop_prefers_sigint_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ask_for_posix(monkeypatch)
     process = FakeProcess()
     server = LlamaBrainServer("m.gguf")
     server._process = process
@@ -254,7 +273,10 @@ def test_stop_prefers_sigint_and_is_idempotent() -> None:
     assert not server.alive
 
 
-def test_stop_escalates_when_the_child_ignores_signals() -> None:
+def test_stop_escalates_when_the_child_ignores_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ask_for_posix(monkeypatch)
     process = FakeProcess(exit_on_signal=False, exit_on_terminate=False)
     server = LlamaBrainServer("m.gguf")
     server._process = process

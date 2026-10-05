@@ -756,6 +756,12 @@ def test_recorder_stop_failure_removes_its_temp_directory(
         def send_signal(self, signal: int) -> None:
             return None
 
+        def terminate(self) -> None:
+            # Part of the interface a real child has: on a platform that
+            # cannot deliver an interrupt, this is the rung that gets
+            # asked, and a fake without it hides the product's choice.
+            return None
+
         def wait(self, timeout: float | None = None) -> int:
             return 0
 
@@ -903,6 +909,9 @@ def test_the_fallback_recorder_pins_16k_mono_wav(
             seen.append(list(argv))
 
         def send_signal(self, signal: int) -> None:
+            return None
+
+        def terminate(self) -> None:
             return None
 
         def wait(self, timeout: float | None = None) -> int:

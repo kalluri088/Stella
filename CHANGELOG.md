@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### A signal assertion now says which platform it means
+
+- **What changed.** Three `tests/test_llama_server.py` stop tests call
+  `ask_for_posix(monkeypatch)`, which decides the platform through the same
+  `portable.platform_name` seam the product uses, and two recorder fakes in
+  `tests/test_voice.py` gained the `terminate` rung every real child has.
+- **Why this is not a weakened test.** All five failed on Windows while the
+  product behaved correctly, because the assertion *"the first rung is
+  SIGINT"* was quietly borrowing whichever machine ran the suite. Deciding
+  the platform keeps the assertion identical and makes it portable, and the
+  Windows rung now has its own test rather than being implied. A fake that
+  under-implements the interface it stands in for does the same thing in
+  reverse: it hides the choice the product just made.
+- **Proof.** `tests/test_llama_server.py`: 25 passed; `tests/test_voice.py`:
+  125 passed; `ruff check` clean. Windows count is the next CI run's.
+
 ### A platform with no unix sockets now has something to say
 
 - **What changed.** `stella.portable.has_unix_sockets()` answers whether

@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Release and CI workflows: the wheel gets proved before it gets published
+
+- **What changed.** `.github/workflows/release.yml`, triggered by pushing a
+  `v*` tag: it builds the wheel and sdist, installs the wheel into a clean
+  venv with the default extras, asserts that `import stella`,
+  `stella --version` and `stella doctor --json` all report the tagged version,
+  writes the `.sha256` assets `install.sh` looks for, and only then uploads —
+  with `gh release create --verify-tag`, or `gh release upload --clobber` when
+  the release already exists. `ci.yml` gained a `package` job that does the
+  same build-and-clean-install on every push, plus a scan of the wheel's own
+  entries (source files and packaging metadata only, no path from the machine
+  that built it, no key-shaped strings) and a run of `install.sh` against the
+  freshly built wheel in `STELLA_CHECK` mode.
+- **Why.** The v1.4.0 release ships a wheel that no job has ever opened: CI is
+  a test-and-lint matrix, so a packaging change — exactly what this round of
+  work is — would have been discovered on the owner's machine by a failed
+  install. And the installer and the workflow name the same two assets without
+  seeing each other, which is a seam that breaks silently.
+- **Tags are history.** Nothing here moves or deletes one. A wheel installed
+  by checksum has to stay the bytes it was published as, so the workflow
+  verifies the tag exists (`--verify-tag`) and replaces assets only.
+- **Security.** The tag name is read from `GITHUB_REF_NAME` as an environment
+  variable, never interpolated into a command, and narrowed to digits and dots
+  before the steps that do expand it — a ref is input from anyone with push
+  access. `permissions:` stays `contents: write` and nothing else is granted.
+  The `STELLA_CHECK` path means CI never installs into a tool directory.
+- **Not implemented.** No PyPI publish (the owner chose GitHub releases), no
+  auto-changelog, and no artifact attestation. The sdist is uploaded but not
+  scanned here — its docs still contain a personal path until the scrub in
+  this same round lands.
+- **Proof.** `tests/test_release_workflow.py`: 5 passed — the two sides agree
+  on the exact asset names, no tag-moving command appears, the clean-install
+  step is ordered before the publish step, the ref-narrowing is present, and CI
+  installs what it builds. Both workflow files parse as YAML; the wheel scan
+  was dry-run locally against the built 1.5.0 wheel (67 entries, no
+  violations). `ruff check .` clean.
+
 ### `install.sh`: one command from a released build
 
 - **What changed.** A POSIX-shell installer at the repository root. It

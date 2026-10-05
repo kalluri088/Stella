@@ -1,0 +1,108 @@
+name: Release
+
+# Pushing a tag is the only input: `v1.5.0` builds that version, proves the
+# wheel it publishes actually installs and runs in a clean environment, and
+# attaches the artifacts `install.sh` downloads. Nothing here ever moves a
+# tag — a release that has been installed by checksum has to stay the bytes
+# it was published as, so a re-run refreshes assets and stops short of
+# rewriting history.
+#
+# The version this workflow ships comes from src/stella/__init__.py
+# (pyproject.toml reads it dynamically), and the first verification step is
+# that it matches the tag. That disagreement is exactly what shipped once as
+# pyproject saying 1.4.0 while the module still said 0.1.0.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Work out the version from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          # GITHUB_REF_NAME is read as an environment variable, never
+          # interpolated into the script text. It is then narrowed to digits
+          # and dots before it is handed to later steps, because those steps
+          # do expand it — a tag is only allowed to be a version.
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "not a v-prefixed version tag: $tag"; exit 1 ;;
+          esac
+          version="${tag#v}"
+          case "$version" in
+            "" | *[!0-9.]*)
+              echo "tag $tag is not a plain x.y.z version; refusing"
+              exit 1
+              ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      - name: Install the wheel in a clean environment and check it
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          wheel="dist/stella-${VERSION}-py3-none-any.whl"
+          test -f "$wheel" || { echo "no $wheel — the tag and the package version disagree"; exit 1; }
+          uv venv /tmp/released
+          uv pip install --python /tmp/released/bin/python \
+            "$wheel[wake,barge-in,web]"
+          # Three things have to be true of the artifact people install:
+          # the module reports the tagged version, the console script is the
+          # same version, and doctor runs on a box with no Stella state yet.
+          /tmp/released/bin/python -c \
+            "import stella, sys; sys.exit(0 if stella.__version__ == '$VERSION' else 1)"
+          /tmp/released/bin/stella --version
+          /tmp/released/bin/stella doctor --json | \
+            /tmp/released/bin/python -c \
+            "import json,sys; d=json.load(sys.stdin); assert d['checks']; assert d['version'] == '$VERSION', d['version']"
+
+      - name: Publish the checksum install.sh verifies against
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum "stella-${VERSION}-py3-none-any.whl" \
+            "stella-${VERSION}.tar.gz" > "stella-${VERSION}-sha256.txt"
+          # Per-file .sha256 assets, named exactly the way install.sh looks
+          # them up: <wheel>.sha256 holding "<hash>  <filename>".
+          sha256sum "stella-${VERSION}-py3-none-any.whl" \
+            > "stella-${VERSION}-py3-none-any.whl.sha256"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # --verify-tag refuses to invent or move a tag; an existing release
+          # gets its assets replaced and nothing else touched.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --verify-tag \
+              --title "Stella $VERSION" \
+              --notes "Installed with \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/HEAD/install.sh | sh\`. Run \`stella doctor\` afterwards to see what this machine still needs."
+          fi

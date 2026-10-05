@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 #
 # Install Stella from a GitHub release.
 #
@@ -23,7 +23,10 @@
 #   STELLA_EMBED=1         also install the 'embed' extra (pulls torch, ~2 GB)
 #   STELLA_MINIMAL=1       base package only: no wake, barge-in or web extras
 #   STELLA_CHECK=1         resolve, download and verify, then change nothing
-set -euo pipefail
+#
+# Written for the POSIX shell, because `curl … | sh` runs whatever /bin/sh is
+# and on Debian and Ubuntu that is dash, not bash: no `pipefail`, no `local`.
+set -eu
 
 REPO="kalluri088/Stella"
 DEFAULT_VERSION="1.5.0"
@@ -87,7 +90,8 @@ verify_checksum() {
   # The published .sha256 beside the wheel is what makes "downloaded the file
   # GitHub says it is" a fact rather than a hope, so an unverifiable download
   # stops here instead of installing a page that 404'd.
-  local actual expected
+  actual=""
+  expected=""
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$1" | cut -d' ' -f1)"
   elif command -v shasum >/dev/null 2>&1; then

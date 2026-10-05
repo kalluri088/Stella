@@ -82,14 +82,25 @@ def test_a_missing_wheel_is_an_error_not_a_download(tmp_path) -> None:
 
 def test_the_script_stays_posix_sh_compatible() -> None:
     # `curl … | sh` runs under dash on Debian and Ubuntu, where one bashism
-    # is a broken install command for most users.
+    # is a broken install command for most users. On this machine /bin/sh is
+    # bash, so the runtime cannot catch what it tolerates — these are the
+    # constructs dash rejects outright.
     syntax = subprocess.run(
         ["sh", "-n", str(SCRIPT)], capture_output=True, text=True, check=False
     )
     assert syntax.returncode == 0, syntax.stderr
     script = SCRIPT.read_text("utf-8")
+    # Comments may name the bashisms they avoid; only executable text counts.
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
     for bashism in ("[[", "<<<", "mapfile", "readarray", "shopt"):
-        assert bashism not in script, bashism
+        assert bashism not in code, bashism
+    # `set -o pipefail` is the one that fails on the first line of the script,
+    # so nothing runs at all; `local` is not in the POSIX shell either.
+    assert "pipefail" not in code
+    assert not re.search(r"^\s*local\s", code, re.MULTILINE), code
+    assert script.startswith("#!/usr/bin/env sh\n"), "the shebang must not claim bash"
 
 
 def test_the_installer_never_reaches_for_the_machine() -> None:

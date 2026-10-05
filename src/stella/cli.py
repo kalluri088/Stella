@@ -889,6 +889,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="render a compact 'Stella did' timeline after each turn",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=version_line(),
+        help="print the installed version and exit",
+    )
     commands = parser.add_subparsers(dest="command")
     chat_parser = commands.add_parser(
         "chat", help="start an interactive session (the default)"

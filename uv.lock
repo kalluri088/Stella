@@ -1487,7 +1487,6 @@ wheels = [
 
 [[package]]
 name = "stella"
-version = "1.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "openai" },
@@ -1523,7 +1522,7 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.0" },
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.0" },
 ]
-provides-extras = ["embed", "barge-in", "wake", "web"]
+provides-extras = ["barge-in", "embed", "wake", "web"]
 
 [package.metadata.requires-dev]
 dev = [

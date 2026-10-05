@@ -793,6 +793,19 @@ def test_format_startup_names_the_outline_alert_source(monkeypatch) -> None:
     assert "alerts:    Outline reminders" in format_startup(stella)
 
 
+def test_cli_version_flag_agrees_with_the_package(monkeypatch, capsys) -> None:
+    # The one-command install story needs a way to ask an installed Stella
+    # what it is, from a terminal or a script, without opening a session.
+    # The command CI asserts on is this one, so it must say the same number
+    # the wheel was named with.
+    import stella
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["--version"])
+    assert raised.value.code == 0
+    assert capsys.readouterr().out.strip() == f"stella {stella.__version__}"
+
+
 def test_cli_main_points_unconfigured_users_at_the_setup_window(
     tmp_path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:

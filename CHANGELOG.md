@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Version: one number, and a way to ask it from a terminal
+
+- **What changed.** `pyproject.toml` no longer declares a version of its own —
+  it says `dynamic = ["version"]` and hatch reads `__version__` from
+  `src/stella/__init__.py`, which is now the only place a number is written.
+  That number moved `0.1.0` → `1.5.0` (the tip is thirteen features past the
+  shipped 1.4.0, and `0.1.0` had been stale since before the first tag).
+  `stella --version` now prints `stella <version>` and exits, and
+  `tests/test_package.py` asserts that the module and the installed metadata
+  report the same string.
+- **Why.** Packaging work starts here: a release is a tag, a wheel name, a
+  `/version` line and a `--version` line, and until now those were four
+  separately-maintained facts, three of which were already wrong
+  (`pyproject.toml` said 1.4.0 while the module said 0.1.0). A one-command
+  install is only honest if the thing it installs can be asked what it is.
+- **Security.** Nothing widened. The version string is compile-time metadata;
+  the flag is handled by argparse before any config, model or socket is
+  touched, so it works on an unconfigured machine — which is the case where
+  knowing the installed build matters most.
+- **Proof.** `tests/test_package.py` (2 passed: importable at the expected
+  version, module == metadata) and `tests/test_cli.py` (82 passed, including
+  the new `--version` assertion). `uv build` produces
+  `stella-1.5.0-py3-none-any.whl`; installing that wheel into a clean venv
+  reports 1.5.0 from both the module and `stella --version`, and the wheel
+  contains only `.py` files and dist-info metadata — no home paths, no keys.
+  `ruff check .` clean; `git diff --check` clean.
+
 ### Research: what actually limits more agentic work
 
 - **What changed.** Documentation only — `docs/AGENTIC_TASKS.md`, pointed to

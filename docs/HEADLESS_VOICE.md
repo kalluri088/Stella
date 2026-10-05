@@ -14,8 +14,12 @@ desktop app uses.
    shortcut on this machine (**Super + D** in `~/.config/hypr/bindings.lua`)
    now runs `stella voice --toggle`, which talks to the resident server
    described below (and starts it if none is up). It launches as
-   `/usr/bin/uv run --project <repo> stella voice --toggle` because the
-   `stella` console script is not on the launcher's PATH. Both shapes run
+   `/usr/bin/uv run --project <repo> stella voice --toggle` because this
+   machine is still bound to the development tree and the installed
+   `stella` console script was not on the launcher's PATH when the line was
+   written — an installed release is bound by absolute path instead
+   (`~/.local/bin/stella voice --toggle`, which is what `install.sh` prints;
+   see `docs/RELEASE.md`). Both shapes run
    from the latest saved `config.json` (`resolve_settings`) — the same
    settings the desktop app uses.
 2. **A short chime** says *I'm listening*. (Two tones, generated with the

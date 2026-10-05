@@ -10,7 +10,7 @@ The rule she never breaks: **nothing that changes your system happens without
 your explicit approval.** And she never claims something worked unless she
 checked that it did.
 
-## What she can do (as of 1.4.0)
+## What she can do (as of 1.5.0)
 
 - **Chat** — a desktop window or the terminal, with your choice of model.
 - **Remember** — say "remember that …" and she asks first; the Memories tab
@@ -125,7 +125,9 @@ can grant themselves permission.
 ## What you need
 
 - Linux with Python 3.12+ (the window needs Tkinter: `python3-tk` on
-  Debian/Ubuntu, `tk` on Fedora).
+  Debian/Ubuntu, `tk` on Fedora), plus `curl` — the installer uses it once, to
+  fetch the release, and Stella herself needs no network for local work.
+  `uv` is installed by the installer if it is missing.
 - A language model — Stella ships none of her own:
   - **Local (recommended):** [Ollama](https://ollama.com) with a chat model
     pulled, e.g. `ollama pull qwen3:4b`. Nothing leaves your machine.
@@ -137,30 +139,76 @@ can grant themselves permission.
 
 ## Install
 
-From a release: download the `.whl` file and run
+One command, from the latest release on GitHub:
 
 ```bash
-uv tool install ./stella-1.4.0-py3-none-any.whl
+curl -fsSL https://raw.githubusercontent.com/kalluri088/Stella/HEAD/install.sh | sh
 ```
 
-From source:
+It asks GitHub which release is newest, downloads that wheel and the
+`.sha256` published beside it over https, **verifies the hash before
+installing anything**, and installs it with `uv` — adding `uv` itself to
+`~/.local` only if the machine has none. Nothing is written outside
+`~/.local`, there is no clone, no build and no sudo, and re-running the same
+line upgrades in place. The `wake`, `barge-in` and `web` extras come by
+default because they cost tens of megabytes and are what makes voice and web
+work; `curl … | sh` takes no arguments, so the choices are environment
+variables on the shell that runs the script:
+
+```bash
+install=https://raw.githubusercontent.com/kalluri088/Stella/HEAD/install.sh
+
+curl -fsSL "$install" | sh                       # the latest release
+curl -fsSL "$install" | STELLA_MINIMAL=1 sh      # base package only
+curl -fsSL "$install" | STELLA_EMBED=1 sh        # + MiniLM embeddings (~2 GB)
+curl -fsSL "$install" | STELLA_VERSION=1.4.0 sh  # one exact version
+curl -fsSL "$install" | STELLA_CHECK=1 sh        # verify, change nothing
+```
+
+What the script deliberately does **not** do: install system packages, pull
+multi-gigabyte models, touch your window-manager config, or start anything. A
+wheel carries Python and nothing else, so the recorder, transcriber, speech
+worker, VAD and wake-word files, model and browser it also wants stay your
+decision — the script says so at the end and names the check below.
+
+That gives you two commands: `stella-ui` (desktop window) and `stella`
+(terminal chat, plus subcommands like `stella voice` for one hands-free turn,
+`stella persona`, `stella reflect`, `stella doctor`). Make sure `~/.local/bin`
+is on your `PATH` — it usually already is on a desktop session, including
+Hyprland's. To remove Stella: `uv tool uninstall stella`, and delete
+`~/.local/share/stella` if you also want your data gone.
+
+### One keypress
+
+`stella voice --toggle` starts the voice server if it is not running, runs one
+hands-free turn, and leaves the server warm for the next press. Bind it in
+`~/.config/hypr/bindings.lua` with the absolute path, because the compositor
+does not read your shell's `PATH` additions:
+
+```lua
+o.bind("SUPER + D", "Stella voice", "/home/you/.local/bin/stella voice --toggle")
+```
+
+The installer prints this line with your actual path already filled in.
+`hyprctl reload` picks it up; with a server already running the same keypress
+opens a conversation, and pressing it again closes the live one.
+`stella voice --stop` shuts the resident server down when you want your
+microphone and CPU back.
+
+### From source, for development
 
 ```bash
 git clone https://github.com/kalluri088/Stella && cd Stella
-uv build
-uv tool install ./dist/stella-1.4.0-py3-none-any.whl
+uv sync                       # the dev environment, not an install
+bin/stella-dev ui             # or: bin/stella-dev doctor
 ```
 
-This gives you two commands: `stella-ui` (desktop window) and `stella`
-(terminal chat, plus subcommands like `stella voice` for one hands-free turn,
-`stella persona` and `stella reflect`). Above that, three optional extras exist:
-`stella[embed]` adds a CPU MiniLM embedding model you can select for
-semantic recall instead of the default word-shape index;
-`stella[barge-in]` adds the ONNX runtime that lets you interrupt spoken
-replies; `stella[web]` adds keyless DuckDuckGo search for the web
-capability (with a TinyFish key the web tools need no extra).
-To remove Stella: `uv tool uninstall stella`, and delete
-`~/.local/share/stella` if you also want your data gone.
+`bin/stella-dev` runs the working tree against its own state directory
+(`.dev/`, gitignored) instead of `~/.local/share/stella`, so a checkout under
+development cannot read or rewrite what the installed release has stored —
+your memories, persona and API key stay with whichever copy you launched.
+Use it for any tree-side testing; use the installed `stella` for everyday
+work. `docs/RELEASE.md` covers what a release is made of and how to cut one.
 
 ### Checking a machine: `stella doctor`
 
@@ -355,6 +403,8 @@ without touching the live state.
   opt-in reflection loop
 - `docs/ROADMAP.md` — what is done, what is next, what is deliberately out
   of scope (plugins, autonomous agents, cloud accounts…)
+- `docs/RELEASE.md` — how a release is cut, what CI proves before it
+  publishes, and why a tag never moves
 - `tests/` — 1400+ tests; every "done" claim in this README is checked by
   one
 

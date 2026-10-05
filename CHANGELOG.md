@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 — 2026-10-05
+
+### Release docs, and an installer that runs under any `/bin/sh`
+
+- **What changed.** Four things the sections below assumed were already true.
+  `install.sh` is now strict POSIX shell: `set -eu` instead of
+  `set -euo pipefail`, no `local`, shebang `#!/usr/bin/env sh`. The README's
+  install section is the one command instead of a hand-downloaded
+  `stella-1.4.0-py3-none-any.whl`, with the extras and the `STELLA_*` knobs
+  explained where a first-time reader will meet them. `docs/RELEASE.md` says how
+  a release is cut, what CI proves before it publishes, why a tag never moves,
+  and how the development tree stays apart from the installed release. And two
+  files no longer name this machine — `docs/RESEARCH-RUNNING-OUTLINE.md` (a local
+  sibling checkout path) and one test fixture (a hostname built from the user's
+  name) — because both ship inside the sdist.
+- **Why the shell matters.** `curl -fsSL … | sh` runs under whatever `/bin/sh`
+  is, and on Debian and Ubuntu that is dash, which rejects `set -o pipefail` on
+  the script's first line. The one command the owner asked for would have failed
+  for most users before it printed anything, and it could not fail on this
+  machine to be noticed: `/bin/sh` here is bash.
+- **Security.** CI's artifact scan now covers the sdist as well as the wheel —
+  180 files checked for the building user's home path, and every shipped
+  non-test file checked for key shapes. Tests keep their sentinel strings on
+  purpose (a test that proves redaction has to name a secret), and the wheel
+  holds no tests, so shipped code is covered by both rules either way. The gate
+  was proved to bite, not merely to pass: a poisoned sdist with an injected home
+  path fails with the offending member named. Run locally it compares against
+  this machine's real home, which is the strictest version of the check CI can
+  express.
+- **Not implemented.** Nothing scans git *history*. Two hundred-odd commits
+  carry the author's name and email, and the GitHub account the installer
+  downloads from is in the README and the script — that is a publishing decision
+  written down in `docs/RELEASE.md`, not a leak a CI step can undo.
+- **Proof.** `tests/test_install_script.py`: 6 passed, and its POSIX test now
+  also rejects `pipefail`, a `local` declaration and a bash shebang.
+  `tests/test_answer_after_observation.py` retargeted to a neutral hostname with
+  every assertion intact. `git grep` for this owner's identifiers now finds only
+  the public repository name, which the installer cannot work without.
+  `ruff check .` clean.
 
 ### Release and CI workflows: the wheel gets proved before it gets published
 
@@ -29,15 +67,15 @@
   access. `permissions:` stays `contents: write` and nothing else is granted.
   The `STELLA_CHECK` path means CI never installs into a tool directory.
 - **Not implemented.** No PyPI publish (the owner chose GitHub releases), no
-  auto-changelog, and no artifact attestation. The sdist is uploaded but not
-  scanned here — its docs still contain a personal path until the scrub in
-  this same round lands.
+  auto-changelog, and no artifact attestation. `install.sh` itself is proved by
+  a job on every push, but a re-tagged release still depends on a human
+  reading this file's rule about never moving a tag.
 - **Proof.** `tests/test_release_workflow.py`: 5 passed — the two sides agree
   on the exact asset names, no tag-moving command appears, the clean-install
   step is ordered before the publish step, the ref-narrowing is present, and CI
   installs what it builds. Both workflow files parse as YAML; the wheel scan
-  was dry-run locally against the built 1.5.0 wheel (67 entries, no
-  violations). `ruff check .` clean.
+  was dry-run locally against the built 1.5.0 wheel and reported no
+  violations. `ruff check .` clean.
 
 ### `install.sh`: one command from a released build
 

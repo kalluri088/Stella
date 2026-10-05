@@ -50,6 +50,9 @@ owner's daily driver, not a test rig.
   and `STELLA_VOICE_SOCKET` into `.dev/` — without it, a tree run shares the
   release's databases, persona files and voice socket. Only point the tree at
   real state deliberately, when the owner asks for that.
+* Releases follow `docs/RELEASE.md`: one version number in
+  `src/stella/__init__.py`, changelog promoted, then a `vX.Y.Z` tag that the
+  workflow proves and publishes. A tag that has been released never moves.
 * Stella GUI instances and Stella test windows open on **Hyprland
   workspace 6 only** — never in the owner's active workspace.
 * Run pytest in batches of **one or two files**, each under `timeout`,

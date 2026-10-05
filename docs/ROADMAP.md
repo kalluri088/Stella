@@ -761,11 +761,16 @@ agentic-work review kept its own document):
 
 - The repository is published on GitHub as `origin`; branches are
   pushed only with the user's explicit approval, never force-pushed.
-- The `v1.0.0` and `v1.1.0` tags stay where they are. Versions follow
-  semver per milestone: **1.1.0 = Stage A complete**, **1.2.0 = Stages
-  B and C complete**, and so on.
+- Versions follow semver per milestone: **1.1.0 = Stage A complete**,
+  **1.2.0 = Stages B and C complete**, and so on. Every tag from `v1.0.0`
+  onward stays where it is — a wheel installed by checksum has to remain the
+  bytes it was published as, so a bad release is superseded, never retagged.
 - Every release gets a `CHANGELOG.md` section written from the user's
   point of view, and work lands as one commit per deliverable.
+- From 1.5.0 the release is what users run: `install.sh` installs the
+  published wheel after verifying its checksum, and a checkout is the
+  development copy, kept in its own state directory by `bin/stella-dev`.
+  `docs/RELEASE.md` is the whole procedure and what CI proves.
 
 ## Explicitly out of scope
 

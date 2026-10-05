@@ -4,12 +4,18 @@ Nothing here pretends to be Windows or macOS by faking ``sys.platform``
 globally — that would make the *decision* untestable and the *result*
 meaningless on this host. Each function takes the platform as a
 parameter or resolves it through one seam, so the branch that runs on
-another OS is exercised here even though only Linux can really run it.
+another OS is exercised here whatever machine happens to run the suite.
+The CI matrix then runs this file on all three platforms, which is the
+difference between a decision proven with fakes and a mechanism proven
+for real: the Windows ACL below is what a runner found in code that all
+of these fakes had passed.
 """
 
+import ctypes
 import os
 import signal
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from platformdirs.windows import Windows
@@ -278,6 +284,52 @@ def test_sid_lookup_reports_none_instead_of_raising():
             raise OSError("advapi32 is not there")
 
     assert portable._current_user_sid(advapi=Broken()) is None
+
+
+def test_sid_lookup_follows_the_probe_that_is_supposed_to_fail():
+    """Advapi32 answers "how big?" by *refusing* the call.
+
+    A fake that returns success for the zero-length probe is what let this
+    go unnoticed: real Windows returns FALSE there and only the length it
+    writes back is the answer, so requiring success meant no SID, so no
+    ACL, so a "private" file that was never private on the one platform
+    where the mode bit is not a permission. The CI runner, not any of
+    these fakes, is what proved it.
+    """
+
+    # Plain functions in a namespace, exactly like the real `_FuncPtr`s the
+    # product sets `argtypes` on: a bound method would refuse that and the
+    # lookup would answer "no advapi32 here" for the wrong reason.
+    def open_process_token(process, access, out):
+        out._obj.value = 1234
+        return 1
+
+    def get_token_information(handle, info_class, buffer, length, out):
+        if length == 0:
+            out._obj.value = 16  # the size it wants, and a refusal
+            return 0
+        ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p)).contents.value = 4242
+        return 1
+
+    def convert_sid_to_string_sid(sid, out):
+        assert sid == 4242, "the SID must come out of the real buffer"
+        out._obj.value = "S-1-5-21-fake"
+        return 1
+
+    advapi = SimpleNamespace(
+        OpenProcessToken=open_process_token,
+        GetTokenInformation=get_token_information,
+        ConvertSidToStringSidW=convert_sid_to_string_sid,
+    )
+
+    closed = []
+    assert portable._current_user_sid(advapi=advapi, closer=closed.append) == (
+        "*S-1-5-21-fake"
+    )
+    assert [getattr(handle, "value", handle) for handle in closed] == [1234], (
+        "every lookup runs per private file written, so the token handle "
+        "has to go back or the handle table fills over a long session"
+    )
 
 
 # platformdirs consults the Windows override before it consults the

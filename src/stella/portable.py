@@ -5,9 +5,10 @@ Stella is a Linux desktop assistant. This module exists so that the
 how a private file is made private — is correct by construction on
 Linux, macOS and Windows instead of accidentally POSIX-only. It does
 **not** make Stella's desktop capabilities portable: there are no
-screen, keyboard or window adapters here, and only Linux is verified by
-this repository's tests. The macOS and Windows branches are deliberately
-small, dependency-free and honest about being unverified.
+screen, keyboard or window adapters here, and only Linux is *used* by
+this repository's owners. The suite runs on all three platforms in CI,
+which is what turned the first real Windows ACL attempt into a bug
+report; the macOS and Windows branches stay small and dependency-free.
 
 Design rules:
 
@@ -15,8 +16,9 @@ Design rules:
   behind a plausible-looking success. Where a platform has no mechanism,
   the answer is reported as "not applied", never as "applied".
 * Nothing may fail at import time. ``ctypes.WinDLL`` does not exist off
-  Windows and ``ctypes.CDLL(None)`` raises ``ValueError`` there, so both
-  are looked up lazily inside guarded functions, never at module scope.
+  Windows and ``ctypes.CDLL(None)`` is rejected with ``TypeError`` there
+  (``LoadLibrary`` wants a name, not the main program), so both are looked
+  up lazily inside guarded functions, never at module scope.
 * Platform choice is always a parameter (``sys_platform``) that defaults
   to ``sys.platform``. That keeps the decision unit-testable with a fake
   platform string instead of being skipped on the machine that cannot
@@ -185,7 +187,30 @@ class Hardening:
         return f"could not restrict permissions ({self.detail or self.mechanism})"
 
 
-def _current_user_sid(advapi: object | None = None) -> str | None:
+def _close_kernel_handle(handle: object) -> None:
+    """Release one Windows kernel handle; best-effort by design.
+
+    ``OpenProcessToken`` hands back a real handle, and this function runs
+    for every private file Stella writes, so a handle left behind is a
+    table that fills up over a long session. Failing a file write over a
+    failed close would be the worse bug, so the close is silent.
+    """
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    except (AttributeError, OSError, TypeError, ValueError):
+        return
+    try:
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return
+
+
+def _current_user_sid(
+    advapi: object | None = None,
+    closer: Callable[[object], None] = _close_kernel_handle,
+) -> str | None:
     """``*S-1-5-...`` for the running user, or None. Windows only.
 
     ``icacls`` accepts a SID trustee prefixed with ``*``, which avoids
@@ -197,7 +222,7 @@ def _current_user_sid(advapi: object | None = None) -> str | None:
     if advapi is None:
         try:
             advapi = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
-        except (AttributeError, OSError, ValueError):
+        except (AttributeError, OSError, TypeError, ValueError):
             return None
     try:
         token_query = 0x0008  # TOKEN_QUERY
@@ -229,20 +254,28 @@ def _current_user_sid(advapi: object | None = None) -> str | None:
         ]
         if not advapi.OpenProcessToken(ctypes.c_void_p(-1), token_query, ctypes.byref(handle)):
             return None
-        if (
-            not advapi.GetTokenInformation(handle, token_user, None, 0, ctypes.byref(size))
-            or not size.value
-        ):
-            return None
-        buffer = ctypes.create_string_buffer(size.value)
-        if not advapi.GetTokenInformation(handle, token_user, buffer, size, ctypes.byref(size)):
-            return None
-        sid = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.User.Sid
-        string_sid = ctypes.c_wchar_p()
-        if not sid or not advapi.ConvertSidToStringSidW(sid, ctypes.byref(string_sid)):
-            return None
-        return f"*{string_sid.value}" if string_sid.value else None
-    except (AttributeError, OSError, ValueError):
+        try:
+            # Asking the size is *supposed* to fail: with a zero-length
+            # buffer Advapi32 returns FALSE and only the length it writes
+            # back is the answer. Treating that honest FALSE as an error
+            # is how this returned None on every real Windows host, and no
+            # SID means no ACL — a "private" file that was never private.
+            advapi.GetTokenInformation(handle, token_user, None, 0, ctypes.byref(size))
+            if not size.value:
+                return None
+            buffer = ctypes.create_string_buffer(size.value)
+            if not advapi.GetTokenInformation(
+                handle, token_user, buffer, size, ctypes.byref(size)
+            ):
+                return None
+            sid = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.User.Sid
+            string_sid = ctypes.c_wchar_p()
+            if not sid or not advapi.ConvertSidToStringSidW(sid, ctypes.byref(string_sid)):
+                return None
+            return f"*{string_sid.value}" if string_sid.value else None
+        finally:
+            closer(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
         return None
 
 
@@ -258,8 +291,9 @@ def _harden_windows(
     would *imply* privacy it does not provide. This grants exactly one
     trustee full control after removing inherited entries, in argv form
     (never through a shell), and returns whether the grant was reported
-    as successful. It is unverified here: no macOS/Windows host is
-    available to this repository.
+    as successful. The grant itself is only ever proven on a real Windows
+    host — which CI now is — while every decision around it is proven
+    here against fakes.
     """
 
     sid = sid_lookup()

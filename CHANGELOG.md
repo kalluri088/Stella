@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### The Windows ACL was never applied, because a call that fails on purpose looked like an error
+
+- **What changed.** `portable._current_user_sid()` no longer treats the
+  zero-length `GetTokenInformation` probe as a failure: Advapi32 returns
+  FALSE there by design and only the length it writes back is the answer,
+  so the probe's return value is ignored and the length is what is checked.
+  The lookup also catches `TypeError` like every other ctypes entry point,
+  and it now hands the token handle back through `CloseHandle` in a
+  `finally` (`_close_kernel_handle`) instead of leaking one per call.
+  `docs/SECRETS.md` and the `portable` docstrings stop claiming the Windows
+  branch is unverified — CI runs it on a real host now.
+- **Why this is a defect and not a portability nicety.** Every private
+  file Stella writes asks this function for a SID before it runs `icacls`.
+  On a real Windows machine the answer was always `None`, so no ACL was
+  ever applied: `config.json` and `api_keys.json` kept their inherited
+  permissions, and a `filesystem_write` added the honest note *"The file
+  could not be restricted to its owner"* to the user's result. Three CI
+  failures (`tests/test_tools.py` twice and `tests/test_stella.py`) are
+  that report reaching a test that asserted the tool had succeeded
+  silently. The fake that let it through returned
+  success for the probe, which is the shape of the mistake: the harness
+  was more cooperative than the operating system.
+- **Unchanged.** POSIX hardening (`chmod 0600`, `OSError` propagating),
+  the `icacls` argv shape, and the honest-report contract — a platform
+  with no mechanism still says "not applied", never "applied".
+- **Proof.** `tests/test_portable.py`: 23 passed, including a new probe
+  test that reproduces the refusal and pins the handle release;
+  `tests/test_tools.py`: 161 passed; `tests/test_stella.py`: 74 passed.
+  Whether `icacls` accepts the grant on a real host is the next CI run's
+  answer, and if it does not, the tool's note says so.
+
 ### The lookup that promises never to raise now believes every way a load fails
 
 - **What changed.** `childproc._prctl_function()` catches `TypeError`

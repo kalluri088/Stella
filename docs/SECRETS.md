@@ -140,12 +140,20 @@ is gated:
   apply, and it reports honestly when it could not. Both private files —
   `api_keys.json` and `config.json` — now go through that one decision,
   so a Windows install does not harden one store and forget the other.
-  Nothing on that platform is verified by this repository's tests, so the
-  NTFS answer is asserted against fakes (`tests/test_portable.py`), the
-  `0600` the POSIX branch sets is pinned only on hosts where a mode bit
-  means something, and the *location* is isolated on every platform
-  (`tests/test_isolation.py`) — a test suite that forgot to is one that
-  writes real keys into a user's profile.
+  The ACL code has been exercised on a real Windows host by CI, which is
+  how it earned its one fixed defect: the Advapi32 call that asks how big
+  the token buffer should be *fails on purpose*, and reading that honest
+  refusal as an error meant Stella never found its own SID, never ran
+  `icacls`, and quietly shipped every "private" file with inherited
+  permissions while saying so only in a tool's output note. The decisions
+  around the grant are still asserted against fakes
+  (`tests/test_portable.py`), the `0600` the POSIX branch sets is pinned
+  only on hosts where a mode bit means something, and the *location* is
+  isolated on every platform (`tests/test_isolation.py`) — a test suite
+  that forgot to is one that writes real keys into a user's profile.
+  What a real Windows host has yet to prove is whether `icacls` accepts
+  the grant Stella asks for there; if it does not, the note is the
+  report.
 
 ## Validation
 

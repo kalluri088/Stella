@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### `install.sh`: one command from a released build
+
+- **What changed.** A POSIX-shell installer at the repository root. It
+  resolves the release (`STELLA_VERSION`, else GitHub's `/releases/latest`
+  redirect, else the version baked into the script), downloads
+  `stella-<version>-py3-none-any.whl` and the `.sha256` beside it over https
+  only, verifies the hash before installing anything, installs with
+  `uv tool install --reinstall` using the `wake,barge-in,web` extras by default,
+  and ends by pointing at `stella doctor` and printing the exact
+  `bindings.lua` line for the shortcut. `STELLA_MINIMAL=1` installs the base
+  package, `STELLA_EMBED=1` adds the torch-bearing extra with its size said
+  out loud, `STELLA_CHECK=1` verifies without changing anything, and
+  `STELLA_WHEEL=/path` installs a wheel you already have.
+- **Why.** The owner asked for the shape everyone else uses: type one command
+  and it works. Re-running the command upgrades in place, which is what makes
+  it the install story rather than a first-time-only script.
+- **Scope, on purpose.** Python side only. No sudo, no system packages, no
+  model downloads, no dotfile edits — `pw-record`, a transcriber, a speech
+  worker, the ONNX model files and a Chromium-family browser are reported by
+  `doctor` and decided by a human, and the window-manager line is printed for
+  the owner to add by hand rather than applied.
+- **Security.** The checksum gate fails closed: an unverifiable or mismatched
+  wheel is never installed, and `curl -f` means a 404 is an error rather than
+  an HTML page that hashes into something surprising. Downloads are pinned to
+  https with `--proto '=https' --tlsv1.2`, because release URLs redirect and a
+  downgrade mid-chain should not be able to land on plain http. Nothing is
+  written outside `~/.local`, uv's tool directory, and a `mktemp -d` cleaned
+  on exit. If uv is missing it is installed from astral's own script into
+  `~/.local` — the one thing this script installs besides Stella — and
+  `STELLA_CHECK` refuses to do even that.
+- **Known limit.** `/bin/sh` on this machine is bash, so the POSIX-compatibility
+  test proves the script parses and contains no bashism (`[[`, `<<<`, mapfile,
+  `shopt`) but has not been executed under dash.
+- **Proof.** `tests/test_install_script.py`: 6 passed — a matching checksum is
+  accepted and names the default extras, a tampered checksum stops the run
+  before `STELLA_CHECK` output, minimal and embed variants resolve the targets
+  they claim, a missing wheel is an error rather than a download, `sh -n` plus
+  the bashism scan, and the never-reaches-for-the-machine guard (no sudo in
+  command position, no package manager, no compositor calls, and `stella
+  doctor` in the output). Plus `ruff check .` clean and `git diff --check` clean.
+
 ### `bin/stella-dev`: the tree runs against the tree, not the owner's data
 
 - **What changed.** A 15-line bash launcher that exports

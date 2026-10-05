@@ -80,8 +80,10 @@
 - **Proof.** `tests/test_portable.py`: 23 passed, including a new probe
   test that reproduces the refusal and pins the handle release;
   `tests/test_tools.py`: 161 passed; `tests/test_stella.py`: 74 passed.
-  Whether `icacls` accepts the grant on a real host is the next CI run's
-  answer, and if it does not, the tool's note says so.
+  CI then answered the half no fake can: the Windows suite is green, and
+  the three tests that had been reading the *"could not be restricted to
+  its owner"* note now read a plain success — so `icacls` accepted the
+  grant Stella asked for, on a real Windows host, for the first time.
 
 ### The lookup that promises never to raise now believes every way a load fails
 

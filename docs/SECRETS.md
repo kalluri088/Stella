@@ -151,9 +151,12 @@ is gated:
   only on hosts where a mode bit means something, and the *location* is
   isolated on every platform (`tests/test_isolation.py`) — a test suite
   that forgot to is one that writes real keys into a user's profile.
-  What a real Windows host has yet to prove is whether `icacls` accepts
-  the grant Stella asks for there; if it does not, the note is the
-  report.
+  What a real Windows host makes of the grant is no longer one of them:
+  the CI runner's suite is green, which means `icacls` accepted it and the
+  ACL is applied rather than merely asked for — the first time this
+  repository has had that proof instead of a promise. A machine under
+  unusual local policy can still refuse it, and there the note in the
+  tool's own output is the report.
 
 ## Validation
 
@@ -168,7 +171,10 @@ is gated:
   a foreign key, a disk error during storage surfaces as a status line
   and not a crash, no environment writes), `tests/test_backup_cli.py`
   (key file excluded from backups), `tests/test_isolation.py` (every test
-  that isolates the store isolates it on Windows too, not only on Linux).
+  that isolates the store isolates it on Windows too, not only on Linux),
+  `tests/test_portable.py` (one privacy decision serving both files, the
+  Windows size probe that is supposed to fail, and the handle it must
+  give back).
 - Live (2026-09-29, real display + real local Ollama, all state in temp
   directories): the first-run dialog listed installed models, the
   connection test passed, Start gated on that success, the saved

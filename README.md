@@ -162,6 +162,24 @@ capability (with a TinyFish key the web tools need no extra).
 To remove Stella: `uv tool uninstall stella`, and delete
 `~/.local/share/stella` if you also want your data gone.
 
+### Checking a machine: `stella doctor`
+
+A wheel carries Python and nothing else. The parts that make Stella's voice
+and tools real — a microphone recorder, a transcriber, a speech worker, the
+VAD and wake-word model files, a pulled Ollama model, a browser — all live
+outside the package, so an install can be complete and still silent.
+
+```bash
+stella doctor          # one line per piece, and what to do about any miss
+stella doctor --json   # the same report for scripts
+```
+
+It reads only: it creates no directory, opens no database, starts no process,
+and never prints a key — credentials appear as "present" or "none stored".
+It runs on a machine that is not configured yet (that is most of its purpose),
+and it checks the same paths Stella itself resolves, so a line that says `ok`
+means the same probe passed at runtime.
+
 ## First launch
 
 `stella-ui` opens a short setup dialog — no environment variables needed:

@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### `stella doctor`: a read-only answer to "what will work on this box?"
+
+- **What changed.** New module `src/stella/doctor.py` and a `stella doctor`
+  subcommand (plus `--json` for scripts). It prints one line per piece the
+  machine has to supply — capture and playback binaries, a transcriber, a
+  speech worker, the VAD and wake ONNX files, onnxruntime, the configured
+  provider and whether Ollama actually has that model pulled, an API key's
+  presence, the bubblewrap jail, a browser, the web backend, stored secret
+  names, the persona file, the resolved data/config/workspace paths, whether
+  the resident voice server is up, and tkinter — grouped under `build`,
+  `state`, `model`, `voice`, `desktop`, `interface`, with a `to fix` block
+  naming what to do about each miss.
+- **Why.** A wheel carries Python and nothing else, so `curl … | sh` can
+  install Stella completely and leave her silent. Before this the only probe
+  for a missing piece was to press the shortcut and listen. The installer
+  needs a command to point at, and the release workflow needs something to
+  assert against a freshly built wheel.
+- **Invariants.** Read-only: no directory created, no database opened, nothing
+  started, no device touched. The two probes that leave the filesystem are
+  Ollama's model list (a GET that downloads nothing, reused from
+  `stella.config`) and a connect to the voice control socket, whose handler
+  answers an unrecognised word and acts on nothing. Credentials are reported
+  as present/absent and by name only — each value is discarded by the same
+  expression that asks for it. Every check calls the resolver Stella itself
+  calls (`default_data_dir`, `default_speech_worker`, `find_browser`,
+  `sandbox_available`, `resolve_settings`) rather than re-deriving a path, so
+  a green line means the same probe passed at runtime. Optional dependencies
+  are detected with `importlib.util.find_spec`, which never imports them —
+  loading `sentence_transformers` to report on it would load torch.
+- **Deliberately before the configuration gate** in `cli.main`, like `voice`
+  and `audit`: the machine that will not start is doctor's customer, so a
+  settings object that raises is rendered as one `MISS settings` line instead
+  of a traceback. `KeyboardInterrupt` is not caught.
+- **Not implemented.** It does not fix anything, does not run a model, does
+  not record a test tone, and exits 0 whether or not checks are missing — it
+  reports, it does not judge. Nothing consumes it yet; the installer and the
+  release workflow (next) are its callers.
+- **Proof.** `tests/test_doctor.py`: 7 passed — that running doctor against a
+  machine with no Stella directories leaves none behind, that an unconfigured
+  box gets its missing piece named in both forms, that a sentinel API key
+  appears in neither the rendered text nor the JSON, that an invalid
+  `STELLA_SEMANTIC_PROVIDER` degrades to one line, the JSON shape, a shape
+  guard on every check, and the CLI wiring. `tests/test_cli.py` +
+  `tests/test_config.py`: 135 passed. `ruff check .` clean.
+
 ### Version: one number, and a way to ask it from a terminal
 
 - **What changed.** `pyproject.toml` no longer declares a version of its own —

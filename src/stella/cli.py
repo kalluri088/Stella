@@ -34,6 +34,9 @@ from stella.commands import (
     version_line,
 )
 from stella.config import resolve_settings, startup_key_health_report
+from stella.doctor import as_json as doctor_json
+from stella.doctor import collect as doctor_checks
+from stella.doctor import render as doctor_text
 from stella.headless_voice import (
     run_headless_voice,
     run_voice_server,
@@ -1037,7 +1040,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     verify_parser.add_argument(
         "source", help="a directory written by 'stella backup'"
     )
+    doctor_parser = commands.add_parser(
+        "doctor",
+        help=(
+            "read-only preflight: what this machine has and what a wheel "
+            "cannot carry (starts nothing, writes nothing)"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the checks as JSON instead of lines",
+    )
     args = parser.parse_args(argv)
+    if args.command == "doctor":
+        # Deliberately before every other branch: doctor's main customer is
+        # a machine that is not configured yet, so it must run without
+        # settings, a terminal, a model or a display.
+        report = doctor_checks()
+        print(doctor_json(report) if args.json else doctor_text(report))
+        raise SystemExit(0)
     if args.command == "audit":
         raise SystemExit(
             run_audit(

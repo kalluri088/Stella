@@ -60,12 +60,12 @@ def tool_then_answer(content: str | None) -> list[Decision]:
 
 
 def test_answer_content_after_observation_is_used_directly() -> None:
-    brain = FinalContentBrain(tool_then_answer("yaswanth-laptop"))
+    brain = FinalContentBrain(tool_then_answer("example-laptop"))
     llm = RecordingLLM()
 
     result = build(brain, llm).process(Context(user_input="hostname?"))
 
-    assert result.response == "yaswanth-laptop"
+    assert result.response == "example-laptop"
     assert llm.chat_calls == 0  # no redundant synthesis call
     assert [s.decision.kind for s in result.step_trace] == [
         DecisionKind.TOOL,

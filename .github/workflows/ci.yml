@@ -81,17 +81,16 @@ jobs:
             /tmp/installed/bin/python -c \
             "import json,sys; d=json.load(sys.stdin); assert d['checks']; assert all(c['state'] for c in d['checks'])"
 
-      - name: The wheel contains no home paths and no secrets
+      - name: The release artifacts contain no home paths and no secrets
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import glob, os, re, zipfile
+          python3 - <<'PY'
+          import glob, os, re, tarfile, zipfile
 
           hits = glob.glob("dist/stella-*-py3-none-any.whl")
           assert len(hits) == 1, hits
           wheel = hits[0]
           assert re.fullmatch(r"dist/stella-\d+\.\d+\.\d+-py3-none-any\.whl", wheel), wheel
-          archive = zipfile.ZipFile(wheel)
           # What a build leak actually looks like: the building user's own
           # home path baked into a source file or a packaging record. A plain
           # absolute path is not a leak — app.py names /home/user and
@@ -100,14 +99,44 @@ jobs:
           # instead of forbidding every path.
           home = os.path.expanduser("~").encode()
           assert home != b"", "no home to compare against"
+          secret = re.compile(
+              rb"sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|BEGIN [A-Z ]*PRIVATE KEY"
+          )
+
+          archive = zipfile.ZipFile(wheel)
           for name in archive.namelist():
               # Source files plus packaging metadata, and nothing else: no
-              # docs, no tests, no dotfiles riding along into a release.
+              # docs, no tests, no dotfiles riding along into a wheel.
               assert name.endswith(".py") or name.startswith("stella-"), name
               body = archive.read(name)
               assert home not in body, name
-              assert not re.search(rb"sk-[A-Za-z0-9]{12,}", body), name
-          print(len(archive.namelist()), "entries, no build paths, no key shapes")
+              assert not secret.search(body), name
+          wheel_count = len(archive.namelist())
+
+          # The sdist is the one that shows a public repository everything it
+          # keeps — docs, tests, workflows, the agent guide — so it gets the
+          # same look. It is a release asset, and a personal path in a research
+          # note is exactly what nobody wants published forever.
+          sdists = glob.glob("dist/stella-*.tar.gz")
+          assert len(sdists) == 1, sdists
+          with tarfile.open(sdists[0]) as tar:
+              sdist_count = 0
+              for member in tar:
+                  if not member.isfile():
+                      continue
+                  body = tar.extractfile(member).read()
+                  assert home not in body, member.name
+                  # A test that proves redaction has to name a secret, so the
+                  # key-shape rule applies to everything the sdist ships
+                  # *except* tests — the wheel holds no tests, so shipped code
+                  # stays covered by both rules either way.
+                  if "/tests/" not in member.name:
+                      assert not secret.search(body), member.name
+                  sdist_count += 1
+          print(
+              wheel_count, "wheel entries and", sdist_count,
+              "sdist files: no build paths, no key shapes",
+          )
           PY
 
       - name: The installer accepts the built wheel

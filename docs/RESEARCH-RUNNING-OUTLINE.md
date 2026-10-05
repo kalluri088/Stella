@@ -49,8 +49,8 @@ something.
 
 ## The facts about the thing being started
 
-From `/home/yaswanth/Projects/Outline` (a sibling repository, not a Stella
-dependency):
+From the Outline checkout kept beside this one (a sibling repository, not a
+Stella dependency):
 
 - **What it is.** A FastAPI app served by uvicorn, packaged as
   `outline-server` with the console script pointing at

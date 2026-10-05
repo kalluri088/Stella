@@ -47,12 +47,22 @@ into which release. `v1.0.0`–`v1.4.0` exist and stay where they are.
 - **Only then publishes**, with `gh release create --verify-tag` — which
   refuses to invent or move a tag. If the release already exists, the run
   replaces its assets (`--clobber`) and touches no tag and no history.
+- **Then installs what it just published**, using the same public URL the
+  README prints and the same command a stranger copies: `install.sh` fetched
+  over HTTPS, the release resolved, the wheel downloaded, its published
+  checksum verified, the minimal flavour installed into `~/.local/bin`, and
+  `stella --version` compared to the version this tag released. A release is
+  not finished when the tag exists; it is finished when that command works,
+  and this is the only job that runs with the assets already public.
 
 Order matters and `tests/test_release_workflow.py` pins it: a workflow that
-published before installing would publish unverified bytes. The same test file
-pins the other two contracts that can break silently — the asset names
-`install.sh` downloads, and the fact that CI installs the wheel it built
-rather than the one on PyPI.
+published before installing would publish unverified bytes, and a release that
+nobody installed afterwards would never notice an asset missing its checksum.
+The same test file pins the other contracts that can break silently — the
+asset names `install.sh` downloads, the repository every copy of the install
+command has to agree on, the fact that CI installs the wheel it built rather
+than the one on PyPI, and that the CI test job gives the Tk window suite a
+display to run on instead of letting it skip and call that success.
 
 ## Never move a tag
 

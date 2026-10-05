@@ -106,3 +106,25 @@ jobs:
               --title "Stella $VERSION" \
               --notes "Installed with \`curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/HEAD/install.sh | sh\`. Run \`stella doctor\` afterwards to see what this machine still needs."
           fi
+
+      # A release is not finished when the tag exists; it is finished when the
+      # command in the README installs it. This is the only job that runs with
+      # the assets already public, so it is the one that can catch a wheel
+      # uploaded without its checksum, an asset name install.sh does not
+      # recognise, or a release invisible to the anonymous request a stranger
+      # makes. Pinned against the checkout's own version, not whatever
+      # /releases/latest happens to point at by now.
+      - name: Prove the published release installs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://raw.githubusercontent.com/kalluri088/Stella/HEAD/install.sh \
+            -o /tmp/install.sh
+          STELLA_VERSION="$VERSION" STELLA_CHECK=1 sh /tmp/install.sh
+          STELLA_VERSION="$VERSION" STELLA_MINIMAL=1 sh /tmp/install.sh
+          stella="$HOME/.local/bin/stella"
+          echo "installed: $("$stella" --version)"
+          test "$("$stella" --version)" = "stella $VERSION"
+          "$stella" doctor --json >/dev/null

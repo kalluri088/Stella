@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### CI now installs Stella the way a stranger does
+
+- **What changed.** A `package`-job step fetches `install.sh` from the exact
+  public URL the README prints, runs it in `STELLA_CHECK` mode against the
+  live release, then runs it for real (`STELLA_MINIMAL`) and asks the binary
+  that landed in `~/.local/bin` what version it is — compared to the tag
+  `/releases/latest` redirects to, not to the checkout's own number. The
+  release workflow gets the same proof as its last step, pinned to the version
+  it just published, because a release nobody installed afterwards is a
+  release nobody noticed was broken. The existing installer step only ever
+  handed the script a local wheel, so nothing proved the four things a first
+  install actually depends on: the raw file is fetchable (repository public,
+  `HEAD` a real branch), the release resolves, its wheel and checksum download
+  and match, and the result runs.
+- **Why the address stays literal, and what now guards it.** Deriving it from
+  the repository the workflow happens to run in would keep passing if the
+  published one moved, went private, or lost its assets — which is the failure
+  worth hearing about, and the one this machine cannot see, because installing
+  here would write into the owner's `~/.local`. So `install.sh`'s own `REPO`
+  line is the source of truth and `tests/test_release_workflow.py` requires
+  the README, the installer, CI and the release job to print the identical
+  URL; a rename on one side fails the suite instead of a stranger's terminal.
+- **Proof.** The two URLs answer `200` and the redirect parses as `1.5.0`;
+  `STELLA_CHECK=1 sh install.sh` fetched the published wheel and verified its
+  checksum end-to-end without changing anything; both workflow files parse and
+  their new steps pass `bash -n`; `tests/test_release_workflow.py`: 9 passed.
+  The installing half is proven only by the next CI run, on GitHub's ephemeral
+  runner.
+
 ### The window tests run in CI for the first time, on the platform that has a display
 
 - **What changed.** Ubuntu's green was hollow: it has no display, so all 74

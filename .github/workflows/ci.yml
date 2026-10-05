@@ -185,3 +185,33 @@ jobs:
           wheel="$(ls dist/stella-*-py3-none-any.whl)"
           sha256sum "$wheel" | sed 's|dist/||' > "$wheel.sha256"
           STELLA_WHEEL="$wheel" STELLA_CHECK=1 sh ./install.sh
+
+      # The README's one command, run exactly as a stranger types it. The step
+      # above hands install.sh a local wheel; this one gives it nothing but the
+      # public URL, so it proves the four things a first-time install actually
+      # depends on: the raw file is fetchable at all (the repository is public
+      # and HEAD is a real branch), the release resolves, its wheel and checksum
+      # download and match, and what lands in ~/.local/bin really runs. The
+      # address is a literal on purpose — deriving it from the repository this
+      # workflow runs in would keep passing if the published one moved.
+      - name: The published curl command installs a Stella that runs
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/kalluri088/Stella/HEAD/install.sh"
+          curl -fsSL "$url" -o /tmp/install.sh
+          # Resolve, download and verify the release as published, change
+          # nothing — the cheapest full check of the release assets.
+          STELLA_CHECK=1 sh /tmp/install.sh
+          # Then the real thing. Minimal: the default extras bring the voice
+          # stack, and a runner has no microphone to prove with anyway.
+          STELLA_MINIMAL=1 sh /tmp/install.sh
+          stella="$HOME/.local/bin/stella"
+          released="$(curl -fsSI -o /dev/null -w '%{redirect_url}' \
+            "https://github.com/kalluri088/Stella/releases/latest" |
+            sed -n 's|.*/tag/v\([0-9][0-9.]*\)$|\1|p')"
+          echo "installed: $("$stella" --version) — latest release: v$released"
+          # Not the checkout's version: the release's. This proves the wheel
+          # a user downloads is the one tagged, and it keeps meaning something
+          # once master moves ahead of the published build.
+          test "$("$stella" --version)" = "stella $released"
+          "$stella" doctor --json >/dev/null

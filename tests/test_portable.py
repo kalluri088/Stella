@@ -32,6 +32,15 @@ from stella.portable import (
 #: and every isolation site in the suite are built on this one name.
 WIN_APPDATA = "WIN_PD_OVERRIDE_LOCAL_APPDATA"
 
+#: The subject of the test below genuinely is the POSIX mode bit. Windows
+#: has no 0600 — `chmod` there sets the read-only flag and nothing else —
+#: so the permission it pins cannot be observed on that host, and the
+#: Windows answer is the ACL path, which has its own tests with fakes.
+POSIX_MODES = pytest.mark.skipif(
+    os.name != "posix",
+    reason="0600 is a POSIX mode; on Windows the mechanism is an ACL",
+)
+
 
 def test_platform_name_maps_the_three_targets_and_keeps_the_rest_posix():
     assert platform_name("linux") == LINUX
@@ -82,10 +91,13 @@ def test_split_command_branch_choice_is_visible_to_a_fake_splitter():
 
 
 def test_default_editor_prefers_visual_then_editor():
+    # The precedence is the contract; the fallback under it is decided
+    # per platform (below), so this states which platform it is talking
+    # about rather than borrowing the one running the suite.
     assert default_editor({"VISUAL": "emacs", "EDITOR": "nano"}) == "emacs"
     assert default_editor({"VISUAL": "  ", "EDITOR": "nano"}) == "nano"
-    assert default_editor({}) == "vi"
-    assert default_editor({"VISUAL": "", "EDITOR": ""}) == "vi"
+    assert default_editor({}, sys_platform="linux") == "vi"
+    assert default_editor({"VISUAL": "", "EDITOR": ""}, sys_platform="linux") == "vi"
 
 
 def test_default_editor_falls_back_per_platform():
@@ -151,13 +163,24 @@ def test_the_control_doorbell_is_a_fact_not_an_attribute_error():
     assert has_unix_sockets(sys_platform="win32") is False
 
 
-def test_harden_private_file_uses_the_real_mode_bit_on_posix(tmp_path):
+def test_harden_private_file_chooses_the_posix_mechanism_and_says_so(tmp_path):
+    # The decision, on any host: what Stella claims it did.
     path = tmp_path / "stella.token"
     path.write_text("secret", encoding="utf-8")
     result = harden_for("linux", path)
     assert result.applied is True
     assert result.mechanism == "posix-mode-600"
     assert result.note() == ""
+
+
+@POSIX_MODES
+def test_harden_private_file_uses_the_real_mode_bit_on_posix(tmp_path):
+    # …and that the claim is not empty: the file really is 0600. This is
+    # the part a Windows host cannot show, because there chmod sets one
+    # read-only flag and calls it a permission.
+    path = tmp_path / "stella.token"
+    path.write_text("secret", encoding="utf-8")
+    harden_for("linux", path)
     assert os.stat(path).st_mode & 0o777 == 0o600
 
 

@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### The key store now asks the same privacy question the config file asks
+
+- **What changed.** `provider_keys._write_store` sets permissions on the
+  temporary file through `stella.portable.harden_private_file` instead of a
+  raw `os.chmod(tmp, 0o600)` — the same call `config.save_configuration`
+  already made.
+- **Why this is a defect and not a portability nicety.** On Windows a mode
+  bit is not a permission: `chmod` sets the read-only flag and leaves
+  everyone else in the ACL. `docs/SECRETS.md` has said the key file's
+  privacy there comes from the owner ACL that helper asks `icacls` for —
+  and it did not, because the store never called it. One of the two files
+  that hold a user's secrets was hardened and the other was not, on the
+  platform where the difference is the whole point.
+- **Unchanged.** On POSIX the helper does exactly the `chmod 0o600` it
+  always did and lets an `OSError` through, so the atomic-replace path, the
+  failure handling and the bytes on disk are identical.
+- **Proof.** `tests/test_provider_keys.py`: 62 passed (the two mode-bit
+  tests now run only where a mode bit exists — see the next entry).
+
+### A path's shape, a mode bit and a default editor stopped borrowing this host
+
+- **What changed.** Four test-level retargets, each keeping its assertion
+  and naming the platform it is about: the two `tests/test_paths.py`
+  call-shape tests now fake platformdirs' answer in *this host's* shape
+  (`os.path.join(os.sep, …)`) instead of a Linux string compared against a
+  `WindowsPath`; `test_default_editor_prefers_visual_then_editor` decides
+  `sys_platform="linux"` for the fallback it asserts; and the three `0600`
+  assertions (`config.json`, and `api_keys.json` twice) are marked
+  `POSIX_MODES`, with the portable one split into a decision test that runs
+  everywhere and a mode-bit test that runs where a mode bit means something.
+- **Why these are guards, not skips.** Each failed on Windows while the
+  product was right: `\\tmp\\resolved\\stella` *is* the directory the fake
+  was asked to return, `notepad` *is* Windows' editor, and NTFS has no
+  `0600` to observe — the privacy there is the ACL, which
+  `tests/test_portable.py` already proves with fakes. Pinning them to the
+  platform that has the mechanism is what keeps the assertion honest on
+  both.
+- **Proof.** `tests/test_provider_keys.py` with `tests/test_config.py`: 115
+  passed; `tests/test_portable.py` with `tests/test_paths.py`: 38 passed;
+  `tests/test_isolation.py`: 4 passed; `ruff check` clean.
+
 ### A signal assertion now says which platform it means
 
 - **What changed.** Three `tests/test_llama_server.py` stop tests call

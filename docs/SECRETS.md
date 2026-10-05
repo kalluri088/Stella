@@ -137,11 +137,15 @@ is gated:
 - On Windows the store lands in `%LOCALAPPDATA%\stella`, and the mode
   bit Stella sets there is not a permission: privacy there comes from
   the owner ACL `stella.portable.harden_private_file` asks `icacls` to
-  apply, and it reports honestly when it could not. Nothing on that
-  platform is verified by this repository's tests, so the NTFS answer is
-  asserted against fakes (`tests/test_portable.py`) and the *location* is
-  isolated on every platform (`tests/test_isolation.py`) — a test suite
-  that forgot to is one that writes real keys into a user's profile.
+  apply, and it reports honestly when it could not. Both private files —
+  `api_keys.json` and `config.json` — now go through that one decision,
+  so a Windows install does not harden one store and forget the other.
+  Nothing on that platform is verified by this repository's tests, so the
+  NTFS answer is asserted against fakes (`tests/test_portable.py`), the
+  `0600` the POSIX branch sets is pinned only on hosts where a mode bit
+  means something, and the *location* is isolated on every platform
+  (`tests/test_isolation.py`) — a test suite that forgot to is one that
+  writes real keys into a user's profile.
 
 ## Validation
 

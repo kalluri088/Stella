@@ -30,6 +30,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from stella.portable import harden_private_file
+
 STORE_VERSION = 1
 MAX_KEY_CHARS = 4096
 
@@ -297,7 +299,11 @@ def _write_store(keys: dict[str, str], secrets: dict[str, str]) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(body)
-        os.chmod(tmp, 0o600)
+        # The same private-file decision the configuration file makes:
+        # 0600 where a mode bit means something, an owner ACL where it
+        # does not. A raw chmod here would silently do neither on
+        # Windows, and this is the file that holds the keys.
+        harden_private_file(tmp)
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)

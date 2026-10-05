@@ -129,6 +129,17 @@ def test_saved_wake_choices_roundtrip():
     assert resolved.wake_phrase == "hey stella"
 
 
+#: The subject of the test marked with this genuinely is the POSIX mode
+#: bit: Windows has no 0600 to observe, and the file's privacy there is
+#: the owner ACL `portable.harden_private_file` asks `icacls` for — proven
+#: with fakes in `tests/test_portable.py`.
+POSIX_MODES = pytest.mark.skipif(
+    os.name != "posix",
+    reason="0600 is a POSIX mode; on Windows the mechanism is an ACL",
+)
+
+
+@POSIX_MODES
 def test_configuration_file_is_private():
     config.save_configuration(
         StellaSettings.from_saved(provider="ollama", model="m")

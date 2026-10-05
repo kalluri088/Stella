@@ -36,6 +36,10 @@ POSIX_ONLY = pytest.mark.skipif(
     reason="HOME-driven: Windows resolves the home directory from USERPROFILE",
 )
 
+#: A directory path written the way this host would spell it, for the two
+#: tests that fake platformdirs' answer instead of reading the real one.
+RESOLVED = os.path.join(os.sep, "tmp", "resolved", "stella")
+
 
 def _clear_xdg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
@@ -114,10 +118,14 @@ def test_data_dir_uses_the_platformdirs_call_shape_the_server_shares(
 
     def fake_user_data_dir(appname, *, appauthor):
         seen.append((appname, appauthor))
-        return "/tmp/resolved/stella"
+        # A resolved answer, in this host's shape: the same directory
+        # arrives with backslashes on Windows. What this test pins is the
+        # *call shape* Stella hands to platformdirs and the fact that it
+        # returns the answer untouched — not how a separator looks.
+        return RESOLVED
 
     monkeypatch.setattr(stella_app, "user_data_dir", fake_user_data_dir)
-    assert str(default_data_dir()) == "/tmp/resolved/stella"
+    assert str(default_data_dir()) == RESOLVED
     assert seen == [("stella", False)]
 
 
@@ -168,12 +176,12 @@ def test_persona_directory_uses_the_shared_platformdirs_shape(
 
     def fake_user_config_dir(appname, *, appauthor):
         seen.append((appname, appauthor))
-        return "/tmp/resolved/stella"
+        return RESOLVED
 
     monkeypatch.delenv("STELLA_PERSONA_DIR", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(persona, "user_config_dir", fake_user_config_dir)
-    assert str(persona.persona_directory()) == "/tmp/resolved/stella"
+    assert str(persona.persona_directory()) == RESOLVED
     assert seen == [("stella", False)]
 
 

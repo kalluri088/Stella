@@ -8,6 +8,15 @@ import pytest
 
 from stella import provider_keys
 
+#: The subject of the two tests marked with this genuinely is the POSIX
+#: mode bit. Windows has no 0600 to observe — `chmod` there sets one
+#: read-only flag — and the store's privacy on that platform is the owner
+#: ACL, which `tests/test_portable.py` proves with fakes.
+POSIX_MODES = pytest.mark.skipif(
+    os.name != "posix",
+    reason="0600 is a POSIX mode; on Windows the mechanism is an ACL",
+)
+
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(tmp_path, monkeypatch):
@@ -31,6 +40,7 @@ class TestStore:
             "secrets": {},
         }
 
+    @POSIX_MODES
     def test_store_file_is_private(self):
         provider_keys.save_api_key("openai", "sk-proj-test")
         mode = stat.S_IMODE(os.stat(provider_keys.api_keys_path()).st_mode)
@@ -188,6 +198,7 @@ class TestNamedSecrets:
         assert provider_keys.stored_api_key("openai") == "sk-proj-old"
         assert provider_keys.stored_secret("tinyfish") == "tf_live_added"
 
+    @POSIX_MODES
     def test_secret_store_file_is_private(self):
         provider_keys.save_secret("tinyfish", "tf_live_one")
         mode = stat.S_IMODE(os.stat(provider_keys.api_keys_path()).st_mode)

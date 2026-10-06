@@ -93,6 +93,13 @@ is gated:
   flows into notices, logs and saved-state paths). The dataclass carries
   the non-secret `preset` string only; `config.json` contains no key
   material.
+- The same trap, found again in a different class: `OutlineClient` is a
+  frozen dataclass holding the Outline workspace token, and its generated
+  repr named that field until it was given an explicit `__repr__`. The
+  rule is general — **any frozen dataclass that holds a credential owes a
+  repr that does not** — and `stella doctor` and `/status` are the two
+  paths that read the Outline gate, so both are tested to print where the
+  token lives and never what it is.
 - Mismatch hints and errors are built from preset labels and key
   prefixes, never key content; `sanitize()` scrubs the key from any
   provider error text.
@@ -174,7 +181,15 @@ is gated:
   that isolates the store isolates it on Windows too, not only on Linux),
   `tests/test_portable.py` (one privacy decision serving both files, the
   Windows size probe that is supposed to fail, and the handle it must
-  give back).
+  give back),
+  `tests/test_outline_tools.py` (the Outline client repr carries no token
+  while the attribute still reads normally) and `tests/test_doctor.py`
+  (the Outline gate reported through every state it can be in, with a
+  sentinel token absent from both the text and the JSON form).
+- Live (2026-10-06, read-only): `STELLA_OUTLINE=1 stella doctor` on the
+  owner's machine, where a real `outline.token` exists and no server
+  listens — both output forms were searched in-process for that file's
+  actual contents and neither contained them.
 - Live (2026-09-29, real display + real local Ollama, all state in temp
   directories): the first-run dialog listed installed models, the
   connection test passed, Start gated on that success, the saved

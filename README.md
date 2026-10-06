@@ -95,8 +95,9 @@ checked that it did.
   says so. The same jail wraps the browser when bubblewrap is present;
   otherwise Chromium keeps its own sandbox plus a throwaway profile. Every
   one of their calls is still an approval prompt.
-  See `docs/WEB.md`, `docs/BROWSER.md`, `docs/SHELL_TOOLS.md` and the
-  capability sections of `docs/ARCHITECTURE.md`.
+  See `docs/WEB.md`, `docs/BROWSER.md`, `docs/SHELL_TOOLS.md`,
+  `docs/OUTLINE.md` and the capability sections of
+  `docs/ARCHITECTURE.md`.
 - **Show her work** — a History tab lists what she recently did, kept
   between launches (names and outcomes only, never file contents). The
   terminal prints the same durable trail with `stella audit` —
@@ -281,6 +282,9 @@ development, or running several configurations side by side:
 | `STELLA_EMBED_MODEL` | Ollama embedding model name | `nomic-embed-text` |
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |
 | `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` / `STELLA_SHELL_TOOLS` / `STELLA_BROWSER_TOOLS` | Opt-in tool families (`1`/`0`; overrides the saved checkbox) | off (OS tools on) |
+| `OUTLINE_URL` | Address of a running Outline server (`docs/OUTLINE.md`) | `http://127.0.0.1:8741` |
+| `OUTLINE_TOKEN` | Outline request token, winning over the token file; never stored in `config.json` | unset |
+| `OUTLINE_DATA_DIR` | Directory to read the server's `outline.token` from — the same name the Outline server itself uses | this platform's per-user data dir for `outline` |
 | `STELLA_SHELL_SANDBOX` | Run `shell_run` and the headless browser inside the bubblewrap filesystem jail when bubblewrap is installed (`1`/`0`; `0` drops to workspace-confinement / Chromium's own sandbox only) | on |
 | `STELLA_BROWSER` | Path to the Chromium-family binary the browser tool drives; unset means probe `PATH` for one | unset (auto-probe) |
 | `STELLA_VOICE_TRANSCRIPTION` / `STELLA_VOICE_SPEECH` | Voice on/off/auto | `auto` |

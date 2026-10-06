@@ -26,6 +26,14 @@ On this machine, right now, that means the entire Outline surface is dark:
 - `~/.local/share/outline/` does not exist, so there is no `outline.db`, no
   `outline.token`, and no first-run data directory yet.
 
+**Re-checked 2026-10-06, and one premise above has since become false.** The
+data directory now exists with a real `outline.db` and a `0600`
+`outline.token`, so the server has been run since this was written; no
+`outline.service` unit is installed and `127.0.0.1:8741` still refuses
+connections. What that changes is which half of the gate is holding: the token
+is no longer the missing piece, only the running server is — and as of today
+`stella doctor` says so instead of leaving it to be inferred (`OUTLINE.md`).
+
 So "let Stella run Outline" is not a convenience feature under discussion; it
 is the difference between a documented capability that exists and one that is
 reachable. A "remind me to X at 18:00" today resolves to an honest refusal on

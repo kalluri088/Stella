@@ -454,19 +454,24 @@ tool audit.
 
 ### Outline app tools
 
-`stella.outline_tools` adds three opt-in capabilities for the Outline task
-app (`~/Projects/Outline`): `outline_search` (SAFE), `outline_create` and
-`outline_update` (both SENSITIVE, exact-argument approval). They speak the
-server's loopback HTTP API with stdlib `urllib` only — no new dependency,
-no direct database access; the token comes from `OUTLINE_TOKEN` or the
-server's own data directory. Registration follows the desktop-tools rule:
+`stella.outline_tools` adds four opt-in capabilities for the Outline task
+app (`~/Projects/Outline`): `outline_search` (SAFE), `outline_create`,
+`outline_update` and `outline_bulk` (all SENSITIVE, exact-argument approval).
+They speak the server's loopback HTTP API with stdlib `urllib` only — no new
+dependency, no direct database access; the token comes from `OUTLINE_TOKEN` or
+the server's own data directory. Registration follows the desktop-tools rule:
 the `STELLA_OUTLINE` flag *and* a live `/healthz` probe (quarter-second
 timeout) must both answer, so a stopped Outline server means the model
 never sees capabilities that could only fail. No delete is exposed. What
 comes back from Outline is framed as stored data, never instructions, and
 bounded (`MAX_OUTPUT_LINES`).
 
-The three tools stay three; capabilities grow as `kind`/`action` values:
+Because that gate is silent by design, `probe_outline` reports what it decided
+and why, on the same precedence, and is read by `stella doctor` and `/status` —
+never the token, only where it was looked for. `docs/OUTLINE.md` is the family
+document.
+
+The four capabilities stay four; they grow as `kind`/`action` values:
 task `edit`/`reschedule` (with recurrence and tags on create), event
 `reschedule`/`edit`, note and project `edit`, person-link `attach`/`detach`,
 tag-filtered and `kind=person` search, `kind=graph` — a text rendering of

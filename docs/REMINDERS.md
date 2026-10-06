@@ -4,7 +4,7 @@ Stella does not keep reminders. It once did — a `stella.reminders` store,
 three capabilities (`reminder_create`, `reminder_list`, `reminder_cancel`), and
 a desktop panel listing them. All of that has been removed. A scheduled alert
 is now a property of the notes workspace the user already keeps, reached
-through the single `outline` capability pair; Stella's job is to write the
+through the `outline` capability family; Stella's job is to write the
 alert into that application, not to run a competing one. What survives is only
 the part that carries an alert back to the user: the due-check and the desktop
 ticker now read Outline's own reminder list instead of a local table (see
@@ -53,7 +53,9 @@ touch them:
   tested directly — `test_the_sweep_never_consults_the_brain_or_the_llm` and
   `test_claimed_content_cannot_grant_tool_authority` in
   `tests/test_outline_reminder_delivery.py`, which delivers a hostile title
-  and then proves a dangerous tool still refuses.
+  and then proves a dangerous tool still refuses. The pump's own mechanics —
+  its claim funnel, its rate limit and its exactly-once rule — live in
+  `OUTLINE.md`.
 - **Proactivity remains one-directional.** `DueTaskEvent`,
   `ProactivityDelegation` and `Stella.handoff_due_task_event()` stay, and
   they stay generic: their remaining producer is Outline's own overdue data,

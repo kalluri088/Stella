@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### `/status` was reading the checkbox instead of the dispatcher
+
+- **What changed.** `status_lines` takes its `capabilities:` line from
+  `stella.tool.describe()` — the same call the Brain's decision prompt is
+  built from — through a new `_CAPABILITY_FAMILIES` table mapping each
+  family's Settings flag to the exact capabilities registration produces.
+  A family that was asked for and refused now appears on its own
+  `not connected:` line instead of being silently claimed. Wake stays
+  flag-derived: it is a mode, and nothing registers for it.
+- **Why this is a defect and not a preference.** Outline and the desktop
+  tools are doubly gated, so a ticked box with nothing behind it registers
+  nothing — and `/status` reported `capabilities: … outline` anyway. The
+  owner then asks for a reminder, is honestly refused, and is told by the
+  status command that the capability is connected. The old
+  `test_status_names_the_connected_capabilities` *pinned* the lie by
+  passing no `stella` at all; it is retargeted to a real registry, and a
+  new case asserts the refused-box answer.
+- **Unchanged.** Which tools exist, the web line (single gate, nothing to
+  probe), every other status field, and the defensive-read rule that a
+  partial object yields a shorter line rather than a traceback.
+- **Proof.** `tests/test_commands.py`: 40 passed. Checked against a real
+  `ToolDispatcher` holding four real `build_outline_tools` instances: the
+  line reads `capabilities: outline, wake` with the server answering and
+  `capabilities: wake` plus `not connected: outline` without it.
+
+### Outline could be dark and say nothing about it
+
+- **What changed.** `probe_outline()` answers "could Stella use Outline
+  right now?" with the gate's own precedence and a reason, never the
+  token. `stella doctor` gained an `outline` line reading it, applying
+  `STELLA_OUTLINE` with the same precedence `StellaSettings.from_saved`
+  does, so a machine with no config yet is still asked the real question.
+  `docs/OUTLINE.md` is the family document every other capability family
+  already had, `OUTLINE_URL` / `OUTLINE_TOKEN` / `OUTLINE_DATA_DIR` are in
+  the README environment table for the first time, and the Settings label
+  now names all four verbs and says the server has to be running.
+- **Why the gate needed a voice.** Returning an empty tool list when the
+  server is stopped is the right behaviour for the model and leaves the
+  person who enabled it with no way to tell *disabled* from *broken* — the
+  two look identical from inside the app. `docs/RESEARCH-RUNNING-OUTLINE.md`
+  described this exact state on this machine and had no command to confirm
+  it. A disabled gate makes no request at all; only an asked-for one is
+  probed, and a missing one is reported `MISSING` because the owner did ask.
+- **Unchanged.** Registration semantics, the four capabilities and their
+  risk levels, the quarter-second probe budget, claim-once reminder
+  semantics, and the rule that no release ships an Outline server.
+- **Proof.** `tests/test_outline_tools.py`: 92 passed, including a
+  parametrised case that the probe and `build_outline_tools` can never
+  disagree. `tests/test_doctor.py`: 13 passed, holding all four gate states
+  and asserting a sentinel token reaches neither output form. Measured live
+  on this machine: `STELLA_OUTLINE=1 stella doctor` reports `MISS outline`,
+  names `http://127.0.0.1:8741` and `~/.local/share/outline`, and searching
+  both output forms for the real token finds zero occurrences.
+
+### A frozen dataclass was one log line away from printing the Outline token
+
+- **What changed.** `OutlineClient` carries an explicit `__repr__` showing
+  the base URL and `token='*'`.
+- **Why this is a defect.** The class is a frozen dataclass, so the
+  generated repr named every field — including the live workspace token.
+  Any exception message, assertion failure or stray `str(client)` writes
+  that into a terminal, a log or a bug report, which is exactly what
+  `docs/SECRETS.md` forbids. `tests/test_doctor.py` and
+  `tests/test_outline_tools.py` now pin it in both directions: the value
+  reads normally off the object and never appears in the repr.
+- **Unchanged.** Construction order — the tests that build a client
+  positionally still work.
+
 ### Four fixtures stopped building their subject out of this host's machinery
 
 - **What changed.** `test_database_names_match_app_helpers` splits the

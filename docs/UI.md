@@ -165,6 +165,9 @@ display, and can never approve a tool or change permissions.
   `STELLA_OS_TOOLS` / `STELLA_OUTLINE` / `STELLA_WEB` /
   `STELLA_BROWSER_TOOLS` / `STELLA_SHELL_TOOLS` environment override that wins
   for a single launch in either direction. A checked box only offers the tools;
+  for the Outline family it offers nothing at all unless a server answers
+  `OUTLINE_URL`, which is what the `outline` line of `stella doctor` is for
+  (`OUTLINE.md`).
   every dangerous call still raises an approval prompt naming the exact target
   (and, for the shell, the literal command; for the browser, the literal
   address). The browser capability reuses the shell's `STELLA_SHELL_SANDBOX`

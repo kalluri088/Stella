@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### "Test connection" tested OpenAI, not the provider you chose
+
+- **What changed.** `_test_openai_connection` now resolves the endpoint as
+  `base_url or provider_keys.base_url_for(preset)` — the identical
+  expression `app.py` uses when it builds the real client.
+- **Why this is a defect.** A saved configuration deliberately carries no
+  base URL for a preset that has one built in, so the dialog passed `None`
+  to the probe and the OpenAI SDK substituted its own default,
+  `https://api.openai.com/v1`. Every fixed-URL preset was affected:
+  FreeLLMAPI, OpenRouter, Gemini. A user pasting a valid router token was
+  told "the API key was rejected" — true, but by a server they never chose
+  and never opted into sending that credential to. The proof came from
+  outside Stella: the same token asked `localhost:3001/v1/models` directly
+  and got `200` with the model list, while the dialog kept failing.
+  Removing the one resolved line makes the new test fail with
+  `assert None == 'http://localhost:3001/v1'`, so the drift cannot return
+  silently.
+- **Unchanged.** The key store, the offline mismatch gate, the chat-dialect
+  fall-through, and the Ollama and llama paths, which resolve their own
+  endpoints elsewhere and were never affected.
+- **Proof.** `tests/test_config.py`: 58 passed.
+
 ### A pasted key was tested with bytes the store throws away
 
 - **What changed.** `config._request_key` trims the API key at the three
@@ -12,21 +34,20 @@
 - **Why this is a defect and not a preference.** `provider_keys.save_api_key`
   strips before storing, so a token copied out of a terminal — which almost
   always carries the newline it ended on — was saved clean but *tested*
-  dirty. A router that refused the trailing whitespace answered 401, and
-  Stella reported "the API key was rejected" about a perfectly good key. The
-  probe and the store disagreed about what the key was, and only the user
-  could notice. Observed exactly this way against a local FreeLLMAPI router
-  on `localhost:3001`, which is a real server that correctly 401s anything
-  unauthenticated.
-- **Unchanged.** The offline mismatch gate, the chat-dialect fall-through
-  that lets a guarded `/models` list be judged through chat instead, and the
-  rule that a key never appears in a message, a log or `argv`. A value that
-  is *only* whitespace now counts as absent rather than becoming a request
-  carrying a bare `Bearer `.
-- **Proof.** `tests/test_config.py`: 57 passed, including three new cases
-  that read the header off the request the probe actually built, and one
-  that reads the key off the client the dialog actually constructed.
-  `tests/test_ui.py`: 74 passed.
+  dirty. The probe and the store disagreed about what the key was, and only
+  a user with a working token and a failing dialog could notice.
+- **What this was not.** First written as the explanation for a FreeLLMAPI
+  key that would not connect. It was not: the request never reached that
+  router at all, which the entry above fixes. The trim mismatch is real and
+  fixed on its own terms; the observation that seemed to support it is
+  explained better one entry up.
+- **Unchanged.** The offline mismatch gate, and the rule that a key never
+  appears in a message, a log or `argv`. A value that is *only* whitespace
+  now counts as absent rather than becoming a request carrying a bare
+  `Bearer `.
+- **Proof.** `tests/test_config.py`: four new cases read the header off the
+  request the probe actually built and the key off the client the dialog
+  actually constructed. `tests/test_ui.py`: 74 passed.
 
 ### `/status` was reading the checkbox instead of the dispatcher
 

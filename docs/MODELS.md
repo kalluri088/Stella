@@ -107,6 +107,15 @@ rate limits are per-provider and shifting. Users running the router on a
 different port use "Other OpenAI-compatible" with the URL instead; the
 preset's endpoint is fixed, like every preset except custom.
 
+Which server answers that endpoint is one rule, not two. A saved
+configuration deliberately holds no base URL for a preset that ships with
+one, so every path that opens a client — the Brain's and the setup
+dialog's "Test connection" probe alike — resolves
+`settings.openai_base_url or base_url_for(preset)` and reaches the server
+the user picked. When the probe skipped that step it left the URL empty,
+the SDK substituted its own default of `api.openai.com`, and a valid local
+router token came back reported as "the API key was rejected".
+
 Pasting that token is forgiving in one direction only: a value copied from a
 terminal usually carries the newline it ended on, and Stella trims leading and
 trailing whitespace before it goes into an `Authorization` header and again

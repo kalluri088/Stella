@@ -556,6 +556,13 @@ def _test_openai_connection(
         )
     raw_key = api_key or provider_keys.effective_api_key(preset) or ""
     key = _request_key(raw_key)
+    # A saved configuration carries no base URL for a fixed preset, on
+    # purpose — the endpoint belongs to the preset, not to the user's
+    # settings. app.py resolves it the same way when it builds the real
+    # client; without this identical step the SDK falls back to its own
+    # default of api.openai.com, and a FreeLLMAPI or OpenRouter key gets
+    # "rejected" by a server nobody chose.
+    base_url = base_url or provider_keys.base_url_for(preset)
     # Both spellings are redaction material: an error string that echoed the
     # pasted form must not slip the untrimmed secret through.
     secrets = tuple(dict.fromkeys(part for part in (raw_key, key) if part))

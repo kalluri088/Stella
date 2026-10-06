@@ -555,6 +555,32 @@ def test_the_connection_test_authenticates_with_the_trimmed_key(monkeypatch):
     assert built["api_key"] == "sk-pasted-value"
 
 
+def test_a_fixed_preset_is_tested_at_its_own_endpoint(monkeypatch):
+    # The dialog sends no base URL for a preset that carries one, because
+    # the endpoint belongs to the preset and not to the saved settings. The
+    # probe used to hand that None straight to the SDK, whose default is
+    # api.openai.com — so a local router key was "rejected" by a server the
+    # user never chose, while the same key worked from the terminal.
+    built: dict = {}
+
+    class Capturing(_fake_openai(None)):
+        def __init__(self, *, api_key, base_url=None, timeout=None):
+            super().__init__(
+                api_key=api_key, base_url=base_url, timeout=timeout
+            )
+            built["base_url"] = base_url
+
+    monkeypatch.setattr("openai.OpenAI", Capturing)
+    result = config.test_connection(
+        provider="openai",
+        model="auto",
+        api_key="freellmapi-a-local-token",
+        preset="freellmapi",
+    )
+    assert result.ok
+    assert built["base_url"] == "http://localhost:3001/v1"
+
+
 def test_connection_test_sanitizes_unknown_errors(monkeypatch):
     error = RuntimeError(
         "upstream said: authorization: Bearer sk-super-secret-value failed"

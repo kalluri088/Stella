@@ -298,6 +298,45 @@ def usage_lines(stella: object | None) -> list[str]:
     return lines
 
 
+_CAPABILITY_FAMILIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    # The label, the settings flag that *asks* for the family, and the
+    # exact capabilities that asking actually put in front of the model.
+    # The third half is the point: Outline and the desktop tools are
+    # doubly gated, so a checked box can legally register nothing, and a
+    # /status that reads only the box reports a capability the model has
+    # never been offered.
+    (
+        "desktop",
+        "os_tools_enabled",
+        ("desktop_control", "key_send", "screen_read", "window_focus"),
+    ),
+    (
+        "outline",
+        "outline_tools_enabled",
+        ("outline_bulk", "outline_create", "outline_search", "outline_update"),
+    ),
+    ("shell", "shell_tools_enabled", ("shell_run",)),
+    ("browser", "browser_tools_enabled", ("browser_read", "browser_screenshot")),
+)
+
+
+def _registered_capabilities(stella: object) -> frozenset[str]:
+    """The capabilities this running object would actually dispatch."""
+
+    describe = getattr(getattr(stella, "tool", None), "describe", None)
+    if not callable(describe):
+        return frozenset()
+    try:
+        described = describe()
+    except Exception:  # noqa: BLE001 - a status line never outlives the object
+        return frozenset()
+    return frozenset(
+        str(entry["capability"])
+        for entry in described or ()
+        if isinstance(entry, dict) and "capability" in entry
+    )
+
+
 def status_lines(
     *,
     settings: object | None = None,
@@ -322,23 +361,37 @@ def status_lines(
     else:
         web_line = "on (keyless DuckDuckGo; your query leaves this machine)"
     transcripts = getattr(session, "transcripts", None)
-    capabilities = [
-        label
-        for label, flag in (
-            ("desktop", getattr(settings, "os_tools_enabled", False)),
-            ("outline", getattr(settings, "outline_tools_enabled", False)),
-            ("shell", getattr(settings, "shell_tools_enabled", False)),
-            ("browser", getattr(settings, "browser_tools_enabled", False)),
-            ("wake", getattr(settings, "wake_word_enabled", False)),
-        )
-        if flag
-    ]
+    registered = _registered_capabilities(stella)
+    capabilities: list[str] = []
+    unconnected: list[str] = []
+    for label, flag, names in _CAPABILITY_FAMILIES:
+        if not bool(getattr(settings, flag, False)):
+            continue
+        if any(name in registered for name in names):
+            capabilities.append(label)
+        else:
+            unconnected.append(label)
+    # Wake is a mode rather than a tool family — nothing registers for it,
+    # so the setting is the whole truth here.
+    if bool(getattr(settings, "wake_word_enabled", False)):
+        capabilities.append("wake")
+    summary = ", ".join(capabilities) if capabilities else "core only"
     lines = [
         f"provider:  {type(llm).__name__ if llm is not None else 'unknown'}",
         f"model:     {getattr(llm, 'model', None) or 'unknown'}",
         f"endpoint:  {base_url or 'default'}",
         f"memory db: {memory_db or 'in-memory'}",
-        f"capabilities: {', '.join(capabilities) if capabilities else 'core only'}",
+        f"capabilities: {summary}",
+    ]
+    if unconnected:
+        # The box is ticked and the model was never offered the tool, which
+        # reads as a broken assistant unless the line says it is a gate.
+        lines.append(
+            f"not connected: {', '.join(unconnected)} (asked for in "
+            "Settings, refused by the capability's own gate — "
+            "stella doctor says why)"
+        )
+    lines += [
         f"web:       {web_line}",
         f"transcripts: {'on (bounded local file)' if transcripts is not None else 'off'}",
         f"persona:   {persona_directory()}",

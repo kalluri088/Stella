@@ -304,23 +304,90 @@ def test_help_lists_each_template_with_its_description(tmp_path) -> None:
     assert "prompt templates" in text
 
 
-def test_status_names_the_connected_capabilities() -> None:
-    settings = type(
-        "S",
-        (),
-        {
+def _stella_with(*capabilities: str) -> object:
+    """A built object whose dispatcher would answer for exactly these.
+
+    ``status_lines`` reads ``stella.tool.describe()``, the same call the
+    Brain's prompt is built from, so this is the ground truth of what the
+    model can actually ask for — not what Settings happens to remember.
+    """
+
+    return SimpleNamespace(
+        tool=SimpleNamespace(
+            describe=lambda: [{"capability": name} for name in capabilities]
+        )
+    )
+
+
+_OUTLINE_CAPABILITIES = (
+    "outline_search",
+    "outline_create",
+    "outline_update",
+    "outline_bulk",
+)
+
+
+def _settings(**flags: bool) -> object:
+    return SimpleNamespace(
+        **{
             "web_tools_enabled": False,
-            "os_tools_enabled": True,
-            "outline_tools_enabled": True,
+            "os_tools_enabled": False,
+            "outline_tools_enabled": False,
             "shell_tools_enabled": False,
             "browser_tools_enabled": False,
             "wake_word_enabled": False,
-        },
-    )()
-    joined = "\n".join(status_lines(settings=settings))
+            **flags,
+        }
+    )
+
+
+def test_status_names_the_connected_capabilities() -> None:
+    settings = _settings(os_tools_enabled=True, outline_tools_enabled=True)
+    stella = _stella_with("screen_read", *_OUTLINE_CAPABILITIES)
+    joined = "\n".join(status_lines(settings=settings, stella=stella))
     assert "capabilities: desktop, outline" in joined
+
+
+def test_status_reports_registered_tools_rather_than_ticked_boxes() -> None:
+    # The defect this pins: Outline (and the desktop tools) are doubly
+    # gated, so a ticked box with no running server registers nothing.
+    # /status used to read the box and promise a capability the model had
+    # never been offered, which is how "remind me" turns into a refusal
+    # the owner cannot explain.
+    settings = _settings(outline_tools_enabled=True)
+    joined = "\n".join(
+        status_lines(settings=settings, stella=_stella_with("memory_write"))
+    )
+    assert "capabilities: core only" in joined
+    assert "capabilities: outline" not in joined
+    assert "not connected: outline" in joined
+
+
+def test_status_connects_outline_only_when_its_tools_are_registered() -> None:
+    settings = _settings(outline_tools_enabled=True)
+    joined = "\n".join(
+        status_lines(
+            settings=settings, stella=_stella_with(*_OUTLINE_CAPABILITIES)
+        )
+    )
+    assert "capabilities: outline" in joined
+    assert "not connected" not in joined
 
 
 def test_status_says_core_only_when_nothing_is_connected() -> None:
     joined = "\n".join(status_lines(settings=None))
     assert "capabilities: core only" in joined
+    assert "not connected" not in joined
+
+
+def test_status_survives_a_partial_built_object() -> None:
+    # Every read in /status is defensive: a missing registry is a line
+    # that says less, never a traceback in the owner's chat.
+    joined = "\n".join(
+        status_lines(
+            settings=_settings(shell_tools_enabled=True, wake_word_enabled=True),
+            stella=SimpleNamespace(tool=None),
+        )
+    )
+    assert "capabilities: wake" in joined
+    assert "not connected: shell" in joined

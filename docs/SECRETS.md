@@ -171,7 +171,8 @@ is gated:
   merge, malformed reads inert and writes refused, precedence, detection
   traps, key-free hints),
   `tests/test_config.py` (mismatch gate constructs no client, 404 chat
-  probe, preset roundtrip), `tests/test_openai_client.py` and
+  probe, preset roundtrip, and the header a pasted key actually becomes),
+  `tests/test_openai_client.py` and
   `tests/test_conformance.py` (chat dialect against the full conformance
   matrix), `tests/test_app.py` (store-backed build, voice scoping),
   `tests/test_ui.py` (setup stores after a verified test, Apply refuses

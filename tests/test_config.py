@@ -359,6 +359,57 @@ def test_scan_empty_list_explains_install_without_downloading(monkeypatch):
     assert "ollama pull" in scan.message
 
 
+# ------------------------------------------------- what a pasted key costs
+
+
+def _recording_urlopen(body: bytes = b'{"data": []}'):
+    """A transport that keeps the requests it was handed."""
+
+    seen: list = []
+
+    def open(request, timeout=None):
+        seen.append(request)
+        return _Response(body)
+
+    open.seen = seen
+    return open
+
+
+def test_a_pasted_key_is_sent_trimmed_by_the_model_scan(monkeypatch):
+    # A token copied out of a terminal usually carries the newline it ended
+    # on. save_api_key strips before storing, so the probe was judging a
+    # different string from the one the store keeps — and a router that
+    # refused the whitespace reported a perfectly good key as rejected.
+    opener = _recording_urlopen(json.dumps({"data": [{"id": "m"}]}).encode())
+    monkeypatch.setattr(config.urllib.request, "urlopen", opener)
+    config.scan_openai_models("http://localhost:3001/v1", "freellmapi-token\n")
+    assert opener.seen[0].get_header("Authorization") == (
+        "Bearer freellmapi-token"
+    )
+
+
+def test_the_key_probe_judges_the_bytes_the_store_will_keep(monkeypatch):
+    opener = _recording_urlopen()
+    monkeypatch.setattr(config.urllib.request, "urlopen", opener)
+    check = config.check_api_key(
+        "http://localhost:3001/v1", " freellmapi-token \n"
+    )
+    assert check.state == "verified"
+    assert opener.seen[0].get_header("Authorization") == (
+        "Bearer freellmapi-token"
+    )
+
+
+def test_a_key_that_is_only_whitespace_is_absent_and_not_sent(monkeypatch):
+    # Trimming happens before the guard, so an empty paste cannot become a
+    # request carrying a bare "Bearer ".
+    opener = _recording_urlopen()
+    monkeypatch.setattr(config.urllib.request, "urlopen", opener)
+    check = config.check_api_key("http://localhost:3001/v1", "  \n")
+    assert check.state == "inconclusive"
+    assert opener.seen == []
+
+
 # --------------------------------------------------- connection tests
 
 
@@ -483,6 +534,25 @@ def test_connection_test_openai_reports_rejected_key(monkeypatch):
     assert not result.ok
     assert "rejected" in result.message
     assert "sk-super-secret-value" not in result.message
+
+
+def test_the_connection_test_authenticates_with_the_trimmed_key(monkeypatch):
+    # The other half of the paste bug: the client the dialog builds must
+    # carry the same bytes save_api_key would keep, or "Test connection"
+    # fails on a key that then works on the next launch.
+    built: dict = {}
+
+    class Capturing(_fake_openai(None)):
+        def __init__(self, *, api_key, base_url=None, timeout=None):
+            super().__init__(api_key=api_key, base_url=base_url, timeout=timeout)
+            built["api_key"] = api_key
+
+    monkeypatch.setattr("openai.OpenAI", Capturing)
+    result = config.test_connection(
+        provider="openai", model="m", api_key="sk-pasted-value\n"
+    )
+    assert result.ok
+    assert built["api_key"] == "sk-pasted-value"
 
 
 def test_connection_test_sanitizes_unknown_errors(monkeypatch):

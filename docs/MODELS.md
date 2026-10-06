@@ -107,6 +107,13 @@ rate limits are per-provider and shifting. Users running the router on a
 different port use "Other OpenAI-compatible" with the URL instead; the
 preset's endpoint is fixed, like every preset except custom.
 
+Pasting that token is forgiving in one direction only: a value copied from a
+terminal usually carries the newline it ended on, and Stella trims leading and
+trailing whitespace before it goes into an `Authorization` header and again
+before it is stored. A token with whitespace *inside* it is refused rather than
+repaired — it is not a key, and silently deleting characters from a credential
+would make a copy-paste error impossible to see.
+
 ## Hard rules that survive any model change
 
 The rules in `AGENTS.md` are not affected by anything in this file:

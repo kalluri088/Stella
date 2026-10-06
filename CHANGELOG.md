@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### A pasted key was tested with bytes the store throws away
+
+- **What changed.** `config._request_key` trims the API key at the three
+  places that build an `Authorization` header — `scan_openai_models`,
+  `check_api_key` and the OpenAI client the connection test constructs —
+  and the connection test now redacts both the pasted and the trimmed
+  spelling.
+- **Why this is a defect and not a preference.** `provider_keys.save_api_key`
+  strips before storing, so a token copied out of a terminal — which almost
+  always carries the newline it ended on — was saved clean but *tested*
+  dirty. A router that refused the trailing whitespace answered 401, and
+  Stella reported "the API key was rejected" about a perfectly good key. The
+  probe and the store disagreed about what the key was, and only the user
+  could notice. Observed exactly this way against a local FreeLLMAPI router
+  on `localhost:3001`, which is a real server that correctly 401s anything
+  unauthenticated.
+- **Unchanged.** The offline mismatch gate, the chat-dialect fall-through
+  that lets a guarded `/models` list be judged through chat instead, and the
+  rule that a key never appears in a message, a log or `argv`. A value that
+  is *only* whitespace now counts as absent rather than becoming a request
+  carrying a bare `Bearer `.
+- **Proof.** `tests/test_config.py`: 57 passed, including three new cases
+  that read the header off the request the probe actually built, and one
+  that reads the key off the client the dialog actually constructed.
+  `tests/test_ui.py`: 74 passed.
+
 ### `/status` was reading the checkbox instead of the dispatcher
 
 - **What changed.** `status_lines` takes its `capabilities:` line from

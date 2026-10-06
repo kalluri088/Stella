@@ -207,6 +207,20 @@ def scan_ollama_models(
     )
 
 
+def _request_key(api_key: str) -> str:
+    """The key as it goes into an ``Authorization`` header.
+
+    ``provider_keys.save_api_key`` strips before storing, so a token pasted
+    with a trailing newline is saved clean but was *tested* dirty: the router
+    rejects the whitespace and Stella reported "the API key was rejected"
+    about a perfectly good key. Trimming here keeps the probe honest about
+    the same bytes the store will keep. A value that is only whitespace
+    becomes empty, which every caller already reads as "no key".
+    """
+
+    return api_key.strip()
+
+
 def scan_openai_models(
     base_url: str,
     api_key: str,
@@ -218,6 +232,7 @@ def scan_openai_models(
     ``http://localhost:3001/v1``); this appends ``/models`` to it.
     """
 
+    api_key = _request_key(api_key)
     trimmed = base_url.rstrip("/")
     url = f"{trimmed}/models"
     request = urllib.request.Request(url, method="GET")
@@ -335,7 +350,7 @@ def check_api_key(
     model", which does authenticate through chat — rather than a scary
     "key rejected" that is really just the router protecting its list.
     """
-    if not base_url or not api_key:
+    if not base_url or not (api_key := _request_key(api_key)):
         return KeyCheck("inconclusive", "no endpoint or key to check")
     trimmed = base_url.rstrip("/")
     url = f"{trimmed}/models"
@@ -539,8 +554,11 @@ def _test_openai_connection(
             ok=False,
             message="The OpenAI client library is not installed.",
         )
-    key = api_key or provider_keys.effective_api_key(preset) or ""
-    secrets = (key,) if key else ()
+    raw_key = api_key or provider_keys.effective_api_key(preset) or ""
+    key = _request_key(raw_key)
+    # Both spellings are redaction material: an error string that echoed the
+    # pasted form must not slip the untrimmed secret through.
+    secrets = tuple(dict.fromkeys(part for part in (raw_key, key) if part))
     if not key:
         return ConnectionTest(
             ok=False,

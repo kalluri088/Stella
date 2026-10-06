@@ -8,6 +8,10 @@ the Stella-side half of that integration:
 * environment-gated exactly like ``stella.desktop`` registration: when the
   Outline server is not running or its token is unreadable, the tools are
   simply not registered and the model never sees them;
+* ``probe_outline`` says *why* the gate is shut, because a silent gate is
+  correct for the model and useless for the person who turned the checkbox
+  on. ``stella doctor`` and ``/status`` are its only consumers, and neither
+  ever learns the token — only where it was looked for;
 * four coarse capabilities, one per verb (search/create/update/bulk).
   No delete is exposed: Outline rows are removed in the UI, by the
   user.
@@ -70,6 +74,15 @@ RESULT_HEADER = (
     "any action):"
 )
 
+# The reasons the gate can give, named because a diagnostic maps them to
+# advice. Spelling them out here is what keeps `stella doctor` and this
+# module able to disagree loudly instead of quietly.
+PROBE_READY = "a running Outline server answered the health probe"
+PROBE_BAD_URL = "OUTLINE_URL is not an http(s) address"
+PROBE_NO_TOKEN = "no outline.token was found"
+PROBE_BAD_TOKEN = "the Outline token is not usable"
+PROBE_NO_SERVER = "no Outline server answered the health probe"
+
 
 class OutlineError(Exception):
     """One request failed; the message is safe to show the model."""
@@ -116,6 +129,16 @@ class OutlineClient:
     token: str
     transport: Transport = _urllib_transport
 
+    def __repr__(self) -> str:
+        """A form that cannot put the owner's token in a log line.
+
+        A frozen dataclass prints every field in its generated repr, so
+        without this an exception message, a pytest assertion or any stray
+        ``str(client)`` would write a live secret into whatever it touched.
+        """
+
+        return f"OutlineClient(base_url={self.base_url!r}, token='*')"
+
     def request(
         self,
         method: str,
@@ -133,41 +156,132 @@ class OutlineClient:
         return payload
 
 
+def _token_source(env: Mapping[str, str]) -> tuple[str, str]:
+    """The raw token, and where it came from in terms a diagnostic may print.
+
+    ``OUTLINE_TOKEN`` wins, otherwise the server's own data directory
+    supplies ``outline.token``. The second half of the pair never contains
+    the token: it is either the variable's name or the directory that was
+    read, because the question a user needs answered is *where did you
+    look*, not *what did you find*.
+    """
+
+    token = (env.get("OUTLINE_TOKEN") or "").strip()
+    if token:
+        return token, "OUTLINE_TOKEN"
+    data_dir = env.get("OUTLINE_DATA_DIR")
+    # Same resolution the Outline server itself uses: an explicit
+    # directory wins, otherwise this platform's per-user data
+    # directory with the app name "outline" and no author segment.
+    # On Linux that is exactly ``$XDG_DATA_HOME/outline`` falling back
+    # to ``~/.local/share/outline``, so a token written by either
+    # program is still found by the other.
+    root = (
+        Path(data_dir).expanduser()
+        if data_dir
+        else Path(user_data_dir("outline", appauthor=False))
+    )
+    try:
+        return (root / "outline.token").read_text("utf-8").strip(), str(root)
+    except (OSError, UnicodeDecodeError):
+        return "", str(root)
+
+
+def _token_is_usable(token: str) -> bool:
+    """Whether a token can go in a header at all.
+
+    A control character in the value would be a request-splitting header
+    injection, so an odd token is refused rather than sanitised.
+    """
+
+    return bool(token) and len(token) <= 256 and not any(ord(c) < 32 for c in token)
+
+
 def _client_from_environment(env: Mapping[str, str]) -> OutlineClient | None:
     """The client for this machine, or None when Outline is unusable here.
 
-    Token precedence mirrors the rest of Stella's environment handling:
-    ``OUTLINE_TOKEN`` wins, otherwise the server's own data directory
-    (``OUTLINE_DATA_DIR``, defaulting to this platform's per-user data
-    directory for the app ``outline`` — on Linux
-    ``$XDG_DATA_HOME/outline`` or ``~/.local/share/outline``) supplies
-    ``outline.token``.
+    Token precedence lives in :func:`_token_source`; an address that is
+    not http(s) is refused here, before a token is ever spent on it.
     """
 
     base_url = (env.get("OUTLINE_URL") or DEFAULT_BASE_URL).strip()
     if not base_url.startswith(("http://", "https://")):
         return None
-    token = (env.get("OUTLINE_TOKEN") or "").strip()
-    if not token:
-        data_dir = env.get("OUTLINE_DATA_DIR")
-        # Same resolution the Outline server itself uses: an explicit
-        # directory wins, otherwise this platform's per-user data
-        # directory with the app name "outline" and no author segment.
-        # On Linux that is exactly ``$XDG_DATA_HOME/outline`` falling back
-        # to ``~/.local/share/outline``, so a token written by either
-        # program is still found by the other.
-        root = (
-            Path(data_dir).expanduser()
-            if data_dir
-            else Path(user_data_dir("outline", appauthor=False))
-        )
-        try:
-            token = (root / "outline.token").read_text("utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            return None
-    if not token or len(token) > 256 or any(ord(c) < 32 for c in token):
+    token, _ = _token_source(env)
+    if not _token_is_usable(token):
         return None
     return OutlineClient(base_url=base_url, token=token)
+
+
+@dataclass(frozen=True)
+class OutlineProbe:
+    """What the Outline gate decided about this machine, and why.
+
+    ``ok`` is exactly what ``build_outline_tools`` would have returned
+    tools for; ``reason`` and ``token_source`` are printable without
+    ever naming the token.
+    """
+
+    ok: bool
+    base_url: str
+    reason: str
+    token_source: str
+
+
+def probe_outline(
+    env: Mapping[str, str], *, transport: Transport | None = None
+) -> OutlineProbe:
+    """Answer "could Stella use Outline right now?" instead of just not.
+
+    The gate's whole design is that a dark Outline produces *no tools at
+    all*, which is correct for the model and useless for the person who
+    turned the checkbox on: a disabled integration and a broken one look
+    identical. This is the one place that says which it is, and it is the
+    same precedence ``build_outline_tools`` uses, so the diagnosis and the
+    behaviour cannot drift apart.
+    """
+
+    base_url = (env.get("OUTLINE_URL") or DEFAULT_BASE_URL).strip()
+    token, source = _token_source(env)
+    if not base_url.startswith(("http://", "https://")):
+        return OutlineProbe(
+            ok=False,
+            base_url=base_url,
+            reason=PROBE_BAD_URL,
+            token_source=source,
+        )
+    if not token:
+        return OutlineProbe(
+            ok=False,
+            base_url=base_url,
+            reason=PROBE_NO_TOKEN,
+            token_source=source,
+        )
+    if not _token_is_usable(token):
+        return OutlineProbe(
+            ok=False,
+            base_url=base_url,
+            reason=PROBE_BAD_TOKEN,
+            token_source=source,
+        )
+    client = OutlineClient(
+        base_url=base_url,
+        token=token,
+        transport=transport if transport is not None else _urllib_transport,
+    )
+    if _healthz(client):
+        return OutlineProbe(
+            ok=True,
+            base_url=base_url,
+            reason=PROBE_READY,
+            token_source=source,
+        )
+    return OutlineProbe(
+        ok=False,
+        base_url=base_url,
+        reason=PROBE_NO_SERVER,
+        token_source=source,
+    )
 
 
 def _healthz(client: OutlineClient) -> bool:
@@ -1872,9 +1986,15 @@ def active_reminder_pump() -> OutlineReminderPump | None:
 
 
 __all__ = [
+    "PROBE_BAD_TOKEN",
+    "PROBE_BAD_URL",
+    "PROBE_NO_SERVER",
+    "PROBE_NO_TOKEN",
+    "PROBE_READY",
     "OutlineClient",
     "OutlineCreateTool",
     "OutlineDueReminder",
+    "OutlineProbe",
     "OutlineReminderPump",
     "OutlineSearchTool",
     "OutlineUpdateTool",
@@ -1882,4 +2002,5 @@ __all__ = [
     "build_outline_tools",
     "claim_due_reminders",
     "outline_tool_summaries",
+    "probe_outline",
 ]

@@ -11,10 +11,13 @@ workflow runs against a freshly installed wheel.
 Rules this module upholds:
 
 - **Read-only.** No directory is created, no database is opened, nothing is
-  started and no device is touched. The two probes that leave the filesystem
+  started and no device is touched. The three probes that leave the filesystem
   are Ollama's model list (a GET that downloads nothing, reused from
-  ``stella.config``) and connecting to the voice server's control socket,
-  whose handler answers a word it does not recognise and acts on nothing.
+  ``stella.config``), connecting to the voice server's control socket,
+  whose handler answers a word it does not recognise and acts on nothing,
+  and Outline's ``/healthz`` — a loopback GET on a quarter-second budget,
+  run only when the owner has asked for the Outline tools, from the same
+  resolver that decides whether those tools exist.
 - **No secrets, ever.** Keys and named secrets are reported as present or
   absent, and by name. The value is discarded in the same expression that
   asks for it and never reaches a ``Check``.
@@ -48,6 +51,7 @@ from stella.app import (
     default_transcripts_db,
     default_vad_model,
     default_workspace,
+    outline_tools_env_override,
 )
 from stella.browser_tools import find_browser
 from stella.config import (
@@ -57,6 +61,12 @@ from stella.config import (
     scan_ollama_models,
 )
 from stella.headless_voice import _socket_alive, control_path
+from stella.outline_tools import (
+    PROBE_BAD_TOKEN,
+    PROBE_BAD_URL,
+    PROBE_NO_TOKEN,
+    probe_outline,
+)
 from stella.persona import persona_directory
 from stella.sandbox import sandbox_available
 from stella.voice import PLAY_BINARIES, RECORD_BINARIES, default_speech_worker
@@ -421,6 +431,70 @@ def _voice_checks(settings: StellaSettings) -> tuple[Check, ...]:
     return tuple(checks)
 
 
+def _outline_check(settings: StellaSettings) -> Check:
+    """Why the Outline surface is bright or dark, from the gate itself.
+
+    This reuses :func:`stella.outline_tools.probe_outline`, the same
+    precedence ``build_outline_tools`` runs, so doctor can never claim a
+    surface the model was not given. It is also the only way to learn that
+    a ticked box produced nothing: registration is silent by design, and a
+    capability that is absent looks exactly like one that is disabled.
+
+    The environment toggle is applied here with exactly the precedence
+    ``StellaSettings.from_saved`` gives it, because on a machine with no
+    config yet doctor falls back to a plain default settings object. Without
+    that, ``STELLA_OUTLINE=1 stella doctor`` would answer "off" to the one
+    question it had just been asked.
+    """
+
+    override = outline_tools_env_override()
+    asked = settings.outline_tools_enabled if override is None else override
+    if not asked:
+        return Check(
+            "desktop",
+            "outline",
+            INFO,
+            "off (the Settings box or STELLA_OUTLINE=1 asks for it; nothing "
+            "is probed while it is off)",
+        )
+    probe = probe_outline(os.environ)
+    if probe.ok:
+        return Check(
+            "desktop",
+            "outline",
+            READY,
+            f"{probe.reason} at {probe.base_url}",
+        )
+    # Keyed on the probe's own constants rather than copies of their wording:
+    # a retyped reason would otherwise stop matching here quietly, leaving
+    # every Outline diagnosis with the generic one-line answer.
+    fixes = {
+        PROBE_NO_TOKEN: (
+            "start the Outline server so it writes its token, or point "
+            "Stella at its data directory with OUTLINE_DATA_DIR"
+        ),
+        PROBE_BAD_URL: (
+            "set OUTLINE_URL to the http(s) address the server binds"
+        ),
+        PROBE_BAD_TOKEN: (
+            "reset the token — a value over 256 characters or holding a "
+            "control character is refused rather than sanitised"
+        ),
+    }
+    return Check(
+        "desktop",
+        "outline",
+        MISSING,
+        f"{probe.reason} at {probe.base_url} (looked for the token in "
+        f"{probe.token_source})",
+        fix=fixes.get(
+            probe.reason,
+            "start the Outline server, or turn the Outline tools off in "
+            "Settings",
+        ),
+    )
+
+
 def _capability_checks(settings: StellaSettings) -> tuple[Check, ...]:
     display = os.environ.get("WAYLAND_DISPLAY")
     compositor = _on_path(("hyprctl",))
@@ -468,6 +542,7 @@ def _capability_checks(settings: StellaSettings) -> tuple[Check, ...]:
             ),
             fix="add the TinyFish secret in Settings, or install the web extra",
         ),
+        _outline_check(settings),
     ]
     secrets = provider_keys.stored_secret_names()
     checks.append(

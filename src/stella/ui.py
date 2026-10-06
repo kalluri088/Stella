@@ -1861,13 +1861,15 @@ class StellaWindow:
         )
         ttk.Checkbutton(
             frame,
-            text="Outline app tools (search, create, update)",
+            text="Outline app tools (search, create, update, bulk)",
             variable=self._outline_tools_var,
         ).pack(padx=6, pady=(4, 0), anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
-            text="Outline notes search, create, update; writes ask first.",
+            text="Reads and writes the Outline workspace over its local API; "
+            "writes ask first. Needs the Outline server running — "
+            "stella doctor says whether it answers.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
         self._web_tools_var = tk.BooleanVar(value=settings.web_tools_enabled)

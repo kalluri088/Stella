@@ -27,10 +27,18 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.delenv("STELLA_SEMANTIC_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("STELLA_TRANSCRIPTION_COMMAND", raising=False)
-    # Doctor's one network probe is Ollama's model list. Nothing here may
-    # depend on whether the machine running the tests happens to have a
-    # server up, so point it at a port that refuses connections instantly.
+    monkeypatch.delenv("STELLA_OUTLINE", raising=False)
+    # Doctor's network probes are Ollama's model list and — only when the
+    # owner has asked for it — Outline's /healthz. Nothing here may depend
+    # on whether the machine running the tests happens to have either up,
+    # so point them at ports that refuse connections instantly.
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("OUTLINE_URL", "http://127.0.0.1:1")
+    # Without this the Outline probe would read the *real* token from this
+    # platform's user data directory, so a test run on the owner's laptop
+    # would answer a different question than a test run in CI.
+    monkeypatch.setenv("OUTLINE_DATA_DIR", str(tmp_path / "share" / "outline"))
+    monkeypatch.delenv("OUTLINE_TOKEN", raising=False)
     return tmp_path
 
 
@@ -120,6 +128,81 @@ def test_a_platform_without_unix_sockets_is_reported_not_raised(
     check = next(item for item in collect().checks if item.name == "voice server")
     assert check.state == INFO
     assert "no control socket" in check.detail
+
+
+def _outline_check(report):
+    return next(check for check in report.checks if check.name == "outline")
+
+
+def test_a_capability_that_is_off_is_not_probed(tmp_path, monkeypatch) -> None:
+    # The owner who never ticked the box must not pay a loopback GET, and
+    # must not be told anything is missing. Registration is silent by
+    # design, so doctor is the only place this state gets said out loud.
+    _isolate(monkeypatch, tmp_path)
+
+    def never_probed(*args, **kwargs):
+        raise AssertionError("a disabled Outline must not reach the network")
+
+    monkeypatch.setattr(doctor, "probe_outline", never_probed)
+    check = _outline_check(collect())
+    assert check.state == INFO
+    assert not check.fix
+
+
+def test_a_ticked_box_with_no_server_says_so_in_terms_to_act_on(
+    tmp_path, monkeypatch
+) -> None:
+    # The defect this pins: Outline is doubly gated, so a checked Settings
+    # box with nothing listening on 8741 produces no tools and no message.
+    # doctor has to distinguish "you never asked" from "you asked and it
+    # is not there", because only the second one is a problem.
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("STELLA_OUTLINE", "1")
+    monkeypatch.setenv("OUTLINE_TOKEN", "outline-sentinel-value")
+    report = collect()
+    check = _outline_check(report)
+    assert check.state == MISSING
+    assert "no Outline server answered" in check.detail
+    assert "start the Outline server" in check.fix
+
+
+def test_a_reachable_outline_is_reported_ready(tmp_path, monkeypatch) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("STELLA_OUTLINE", "1")
+    monkeypatch.setenv("OUTLINE_TOKEN", "outline-sentinel-value")
+    monkeypatch.setattr("stella.outline_tools._healthz", lambda client: True)
+    check = _outline_check(collect())
+    assert check.state == READY
+    assert not check.fix
+
+
+def test_a_missing_token_names_the_directory_that_was_read(
+    tmp_path, monkeypatch
+) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("STELLA_OUTLINE", "1")
+    check = _outline_check(collect())
+    assert check.state == MISSING
+    assert "no outline.token was found" in check.detail
+    assert str(tmp_path / "share" / "outline") in check.detail
+    assert "OUTLINE_DATA_DIR" in check.fix
+
+
+def test_doctor_never_prints_the_outline_token(tmp_path, monkeypatch) -> None:
+    # Every state the Outline gate can be in, both output forms, one
+    # sentinel: the diagnosis names where the token lives and never what
+    # it is, so a pasted report cannot leak a working workspace credential.
+    sentinel = "outline-sentinel-doctor-must-not-print"
+    for healthy in (True, False):
+        _isolate(monkeypatch, tmp_path)
+        monkeypatch.setenv("STELLA_OUTLINE", "1")
+        monkeypatch.setenv("OUTLINE_TOKEN", sentinel)
+        monkeypatch.setattr(
+            "stella.outline_tools._healthz", lambda client, ok=healthy: ok
+        )
+        report = collect()
+        assert sentinel not in render(report)
+        assert sentinel not in doctor.as_json(report)
 
 
 def test_cli_wires_the_command_before_any_configuration(

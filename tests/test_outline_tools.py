@@ -1,5 +1,7 @@
 """Outline tools: fake-transport tests, no network and no Outline server."""
 
+import pytest
+
 from stella.app import StellaSettings
 from stella.outline_tools import (
     MAX_OUTPUT_LINES,
@@ -12,6 +14,7 @@ from stella.outline_tools import (
     build_outline_tools,
     claim_due_reminders,
     outline_tool_summaries,
+    probe_outline,
 )
 from stella.tools import ApprovalRequest, RiskLevel, action_summary
 
@@ -137,6 +140,80 @@ def test_environment_token_wins_and_bad_url_rejected():
         {"OUTLINE_TOKEN": "t"}, transport=FakeServer(server_routes())
     )
     assert len(tools) == 4
+
+
+# --------------------------------------------------------------------------
+# the honest probe: what the gate decided, and why
+# --------------------------------------------------------------------------
+
+
+def test_client_repr_does_not_carry_the_token():
+    # A frozen dataclass prints every field by default, and one of these
+    # fields is the owner's live Outline token.
+    hidden = OutlineClient("http://127.0.0.1:8741", "super-secret-token")
+    assert "super-secret-token" not in repr(hidden)
+    assert "http://127.0.0.1:8741" in repr(hidden)
+    # The value itself still reads normally; only the repr is safe.
+    assert hidden.token == "super-secret-token"
+
+
+def test_probe_reports_a_missing_token_by_the_directory_it_read(tmp_path):
+    data_dir = tmp_path / "absent"
+    probe = probe_outline({"OUTLINE_DATA_DIR": str(data_dir)})
+    assert probe.ok is False
+    assert probe.reason == "no outline.token was found"
+    assert probe.token_source == str(data_dir)
+
+
+def test_probe_reports_a_silent_server_as_a_reachability_problem(tmp_path):
+    data_dir = tmp_path / "outline"
+    data_dir.mkdir()
+    (data_dir / "outline.token").write_text("secret-token\n")
+    probe = probe_outline(
+        {"OUTLINE_DATA_DIR": str(data_dir)},
+        transport=FakeServer([("GET", "/healthz", OutlineError("refused"))]),
+    )
+    assert probe.ok is False
+    assert probe.reason == "no Outline server answered the health probe"
+    # The diagnosis names where it looked, and never what it found there.
+    assert probe.token_source == str(data_dir)
+    assert "secret-token" not in repr(probe)
+
+
+def test_probe_reports_a_malformed_url_before_spending_a_token():
+    probe = probe_outline({"OUTLINE_URL": "ftp://x", "OUTLINE_TOKEN": "t"})
+    assert probe.ok is False
+    assert probe.reason == "OUTLINE_URL is not an http(s) address"
+    assert probe.token_source == "OUTLINE_TOKEN"
+
+
+def test_probe_reports_the_reason_a_token_is_refused_without_repeating_it():
+    probe = probe_outline({"OUTLINE_TOKEN": "x" * 300})
+    assert probe.ok is False
+    assert probe.reason == "the Outline token is not usable"
+    assert "x" * 300 not in repr(probe)
+
+
+@pytest.mark.parametrize(
+    ("env", "routes"),
+    [
+        ({"OUTLINE_DATA_DIR": "/nonexistent-outline-dir"}, server_routes()),
+        ({"OUTLINE_URL": "ftp://x", "OUTLINE_TOKEN": "t"}, server_routes()),
+        ({"OUTLINE_TOKEN": "x" * 300}, server_routes()),
+        ({"OUTLINE_TOKEN": "head\rer"}, server_routes()),
+        ({"OUTLINE_TOKEN": "t"}, []),
+        ({"OUTLINE_TOKEN": "t"}, [("GET", "/healthz", {"ok": False})]),
+        ({"OUTLINE_TOKEN": "t"}, server_routes()),
+    ],
+)
+def test_the_probe_and_registration_never_disagree(env, routes):
+    # This is the whole point of the probe: a person reading the diagnosis
+    # must be told the same thing the gate already decided. If these two
+    # ever drift, doctor says "fine" while the model has no tools.
+    tools = build_outline_tools(env, transport=FakeServer(routes))
+    probe = probe_outline(env, transport=FakeServer(routes))
+    assert probe.ok is bool(tools)
+    assert probe.ok is (len(tools) == 4)
 
 
 # --------------------------------------------------------------------------

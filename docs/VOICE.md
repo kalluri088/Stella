@@ -578,6 +578,23 @@ was polluting every live transcript until it was read out of stdout.
   Synthesis is one process per sentence unless the resident worker is enabled.
   There is still no mixing, ducking, or overlap between artifacts.
 - Voice mode is desktop-UI only; the CLI remains text-only.
+- A Bluetooth headset's microphone is also a mode switch, and Stella's ear can
+  flip it. While *any* capture holds that device, PipeWire must keep the headset
+  in its hands-free profile, and playback through the same headphones follows:
+  mono, low-bitrate, volume ceiling quietly dropped — a phone-call sound where
+  music used to be. The taps that do this are the wake ear and the barge-in
+  watcher; with `STELLA_WAKE_SOURCE` unset they name no node, so they take
+  PipeWire's default source, which is the headset's own microphone whenever a
+  headset is connected and current. Observed directly on 2026-10-06: two live
+  taps — a resident voice server and a session UI, both
+  `pw-record -a --rate 16000 --channels 1 -` — held a WH-CH720N at
+  `headset-head-unit`; ending them returned the device to `a2dp-sink`, stereo
+  and full volume, by itself, with no profile touched by hand. To fix: give the
+  always-open ear a sensible target and let the owner see it (the tap already
+  honours `--target`, so the capability is there and the defaulting is not),
+  and say plainly in Setup that arming the ear on a Bluetooth headset's own
+  microphone costs that headset its audio quality for as long as it is armed.
+  The laptop's built-in input has no such coupling.
 - The capture commands are PipeWire and ALSA, so there is no recording path on
   Windows at all. What that platform does lose is the polite stop: it cannot
   interrupt a child process, so Stella asks it to exit (`terminate`) and the

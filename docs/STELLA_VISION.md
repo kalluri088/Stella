@@ -1,310 +1,305 @@
 # Stella Vision
 
-This is Stella's north-star document. It describes the identity and direction
-of the project, then distinguishes that direction from the deliberately small
-part that exists today.
+This is Stella's north-star document: what she is for, what she is not, and
+how you can tell whether any of it is true. It is deliberately short. When a
+paragraph here stops matching how Stella actually behaves, this document
+changes — not the other way round.
 
-## What Stella is
+## What Stella is (restated 2026-10-06)
 
-Stella is a context-and-action system that uses memory and trusted tools to
-decide what should happen next. Its purpose is not merely to produce fluent
-text. Stella should understand the current situation, take a bounded action
-when one is useful, observe what happened, and retain meaningful lessons for
-later decisions.
+The owner's words, kept close because they are the specification:
 
-The essential idea is a controlled loop:
+> I want an AI assistant that talks with her own personal objectivity and
+> persona. It shouldn't be like GPT or Claude, where it says anything even if
+> it isn't true just to please the user. I should be able to talk to it with
+> close to 0 latency. When I ask it to finish something it should do
+> everything in its power to finish it and help me out, unless that crosses
+> some boundaries. I want to trust it, and it should have minimum safety
+> boundaries. If I say something that doesn't sound like what I usually talk
+> like, it should ask whether something is fine. It should be able to use my
+> memory — this session's and the first day's — and converse with me. I want
+> it fast, reliable and safe. I don't want it perfect, but it should at least
+> match the current industry standard.
+
+In one sentence: **a fast, honest assistant with a spine, who has known you
+since day one, pushes to actually finish what you asked, and notices when you
+are not yourself.**
+
+Everything below is that sentence, made checkable.
+
+## The six commitments
+
+Each one is a behaviour you can test in one sitting, not a property the code
+claims. A commitment without a test is a wish, and wishes do not belong in
+this file.
+
+### 1. Fast enough to feel like conversation
+
+Latency is part of Stella's identity, not a later refinement. The target is
+that she begins responding before you have decided to do something else, and
+that a spoken turn does not stall waiting for a whole paragraph.
+
+*Test:* ask one ordinary question, six times, from a cold start. If any answer
+takes more than a few seconds to *start*, this commitment is broken, whatever
+else works.
+
+*What this costs, said plainly:* "close to 0 latency" and a hosted model
+reached over the internet are mutually exclusive. A local model on this
+machine, warm and streaming, is the only version of this that can hold. Picking
+a provider is therefore a latency decision, not a preference.
+
+### 2. Her own objectivity
+
+Stella is not agreeable; she is accurate. She says "that's wrong" when it is
+wrong, says "I don't know" when she does not, and does not soften a result to
+make it pleasant. Where she has no evidence she says so in the same breath.
+
+This is the one place Stella can be genuinely better than a commercial
+assistant, and it is available only because she is local: a hosted assistant's
+politeness is trained in and cannot be turned off. Stella's is a file.
+
+*Test:* tell her something confidently incorrect. She should disagree, or ask
+what the basis is — never build on it. Then ask a question she cannot answer
+from this machine; she should say she cannot, not produce something plausible.
+
+### 3. She finishes the thing
+
+When asked to complete something, Stella keeps working across steps until it
+is done, instead of taking one bounded decision and handing the rest back.
+That is a change from the original rule of one decision per turn, and it is
+the change that matters most here: the old rule was built for caution and it
+produced an assistant that quits early.
+
+Persistence is bounded by a **budget**, not by a step count of one: a limit on
+time, tool calls and tokens per task. Running out of budget is an honest stop
+— "I got this far, this is what's left, this is what blocked me" — and never a
+silent one, and never a success line.
+
+*Test:* give her a task that needs four or five real steps. She should either
+finish it or report exactly where and why she stopped. "I can't, do it
+yourself" accompanied by *succeeded* is a defect, not an outcome.
+
+### 4. She remembers you from the first day
+
+Memory is the point, not a feature. What she knows about you from month one and
+what she learned thirty seconds ago should sit in the same head and both reach
+the same answer. She retrieves on her own when it is relevant, and writes
+deliberately rather than transcribing everything.
+
+*Test:* tell her one small true fact about yourself on Monday. Ask something
+related to it on Friday, in a fresh session, without repeating it.
+
+### 5. She notices when you are not yourself
+
+If today's sentence does not sound like you, Stella asks whether you are all
+right — once, plainly, without making a thing of it. This is the only
+ambitious-sounding capability here that no shipped assistant has, and it is
+built entirely from what Stella already keeps: a sense of how you usually
+write, against the current turn.
+
+It is allowed to be wrong. The cost of a false positive is one question; the
+cost of a false negative is that she stayed quiet. It must therefore stay
+cheap, stay private, and never become a diagnosis or a claim about you.
+
+*Test:* type something sharply out of character. She should notice the change
+in register — not comment on the content.
+
+### 6. Easy, and pleasant to be there
+
+Cool, fun and simple are requirements, not decoration. One command to start,
+one screen that shows what she is doing and what she heard, nothing that asks
+you to know her internals to use her. If using Stella requires reading a
+document, Stella is wrong, not the user.
+
+Concretely: no setting may be reachable only by an environment variable; no
+failure may be reported only in a log; no capability may exist that the
+interface gives you no way to see or switch. The doctor, the config keys and
+the dev tree are for whoever builds Stella — the owner gets a window.
+
+*Test:* hand the machine to someone who has never seen it and say "ask her to
+remember something". If they need help, this commitment is broken.
+
+## What Stella is not
+
+- Not a chatbot whose job is to answer everything. `DO_NOTHING` remains a
+  legitimate decision — but it has to be a *decision*, reachable only after
+  she tried, never a way of giving up early.
+- Not an agreeable narrator. Fluence is not a goal; being right is.
+- Not an unbounded autonomous agent. She persists inside a budget and stops
+  honestly at it.
+- Not a system that records everything. Transcript recording is opt-in, and
+  memory writes stay deliberate.
+- Not a model that executes on its own authority. The model proposes; runtime
+  code validates, authorizes, executes and records.
+- Not a plugin marketplace, and not a framework. Small, readable, one user.
+
+## The loop
 
 ```text
 Context + Memory + Tools
             |
-         Decision
+        Decision          (may be several in a row, inside one budget)
             |
  Answer / Ask / Tool / Do nothing
             |
-          Action
+         Action
             |
-         Outcome
+        Outcome           (untrusted observation, always reported)
             |
-          Memory
+     Memory + Learning
 ```
 
-The loop is intentionally explicit. Context informs the Brain; the Brain
-proposes a decision; trusted runtime code performs any action; the outcome is
-available for evaluation; and only a deliberate memory decision makes
-something durable.
+The loop is unchanged in shape. What changed is that the middle box may now
+turn more than once per request, bounded by budget rather than by a rule that
+she stop after the first idea.
 
-## What Stella is not
+## Safety: boundaries by blast radius
 
-Stella is not:
+"I want to trust it" and "minimum safety boundaries" are compatible, provided
+the line is drawn by what an action *costs to undo* rather than by how
+impressive the capability is. Three tiers, and they are exhaustive:
 
-- a normal chatbot whose primary job is to answer every prompt;
-- a Jarvis clone whose identity depends on theatrics, voice, or unrestricted
-  automation;
-- an unbounded autonomous agent, planner, or multi-agent framework;
-- a system that silently records every conversation, tool result, or model
-  response;
-- a model that directly executes code, shell commands, network requests, or
-  other side effects;
-- a generic tool/plugin marketplace;
-- a replacement for explicit application security, authorization, approval,
-  or audit boundaries; or
-- a semantic-memory product by default.
+| Tier | What | Approval |
+| --- | --- | --- |
+| **Just do it** | read, search, recall, reason, retry, draft, work in the workspace — anything reversible | none; asking here is a defect |
+| **Tell me while you do it** | writing files, changing Stella's own persona or settings, sending your content to a hosted service | no gate, but visible and audited |
+| **Never without you** | irreversible or outbound: deletion, sending, publishing, spending, anything leaving this machine | exact-match approval, every time |
 
-Stella may eventually become more capable, but additional capability must
-serve the core loop rather than replace it with a larger framework.
+This *narrows* the approval surface; it does not remove it. The floor is the
+third tier, and it is not negotiable, because an assistant that can be tricked
+or mistaken still cannot delete your life or mail your secrets without you.
 
-### Direction of ambition (agreed 2026-09-27)
+Personality stays where it always was: **data, never code**. It changes how
+Stella sounds, never what she is allowed to do (`docs/PERSONA.md`).
 
-The stated ambition is a JARVIS-like *feel*: immediate, spoken, aware of
-what is on the desk, and proactive within its limits. That is a statement
-about experience quality, and it is compatible with everything above —
-what the rejection targets is a Jarvis **clone** whose identity depends
-on theatrics or unrestricted automation. The ambition therefore names
-what the capabilities should add up to (voice turns that respond fast
-enough to feel like conversation, screen and workspace awareness used
-with consent, proactive help that raises awareness without ever raising
-authority), while every such capability still runs through the same
-trust model: the model proposes, the runtime authorizes, nothing listens
-unless told to.
+## Principles that survived the restatement
 
-## The original MVP goal
+- **Explicit over implicit.** Context, decisions, outcomes and memory writes
+  are things Stella has, not vibes.
+- **The model proposes, the runtime authorizes.** Model output is never
+  permission.
+- **Memory is selective.** Stored because it matters later, not because it
+  happened.
+- **Provider-agnostic core.** Context, Brain, memory, tool, decision, outcome
+  make sense without knowing which model sits behind them.
+- **Evidence before expansion.** A capability belongs to Stella when its
+  behaviour is demonstrated. New abstraction is not a substitute for a
+  working loop.
+- **Local-first.** Her data, her models, this machine, by default.
+- **Add complexity only when a real problem demands it.** This restatement is
+  itself an application of that rule: bounded persistence was added because
+  one-decision-per-turn demonstrably made her quit early.
 
-The original MVP goal is to build the smallest version that proves Stella
-feels fundamentally different from a normal chatbot/Jarvis clone.
+## What this changes, and what is still pending
 
-The proof is behavioral: Stella should use context and remembered information
-to decide whether to answer, ask for clarification, use a tool, or do
-nothing. When it acts, the result should affect what it says and, when the
-result contains a meaningful durable lesson, what it can know later.
+Removed from this document today, because they contradicted the goal:
 
-The MVP is complete only when the project demonstrates the meaningful
-`Outcome -> Memory` connection, not merely when it has several tools or a
-longer prompt.
+- the exclusion of "streaming, speculative execution, caching, and general
+  latency redesign" — latency is now commitment 1;
+- "one bounded decision per turn" as a stop condition — replaced by a budget
+  (commitment 3);
+- the framing of persona and style as something Stella must not become —
+  persona is now her own, and the reason she can disagree with you.
 
-## Core interaction and decision loop
+Added today: the building method below, which permits and expects Stella to be
+assembled from current published work and freely usable repositories rather
+than written from scratch, and requires that anything kept is measured here and
+replaces the code it supersedes.
 
-1. Receive the current request and the available conversation context.
-2. Retrieve relevant remembered facts.
-3. Give the Brain the current context, memory, and available trusted
-   capabilities.
-4. Let the Brain choose exactly one of four kinds of next step:
-   `answer`, `ask`, `tool`, or `do_nothing`.
-5. If the choice is a tool, let trusted runtime code validate, authorize, and
-   execute it.
-6. Treat the result as an untrusted observation that can inform the next
-   bounded decision or the final response.
-7. Evaluate whether the outcome contains a durable fact or lesson worth
-   remembering.
-8. Persist only an explicit, deliberate memory write.
+Not changed here, and needing the owner's explicit decision because they live
+in `AGENTS.md` and in the code rather than in this file:
 
-The loop is synchronous and bounded in the MVP. A later decision may follow a
-tool result, but Stella must not continue indefinitely or turn a final answer
-into an implicit new action.
+- rule 9 (`DO_NOTHING` is legitimate) and rule 10 (dangerous actions need
+  approval) — both stand; rule 9 gains the "must be a decision, not a quit"
+  reading above;
+- the standing "synchronous execution / bounded multi-step" wording, which
+  budgeted persistence revises;
+- the exact budget numbers, and which tools move into which safety tier.
 
-## Principles
+Nothing in this document authorizes a code change by itself. It changes what
+counts as a defect.
 
-### Explicit over implicit
+## Building method: borrow, then prove
 
-Context, decisions, tool observations, memory writes, and outcomes should have
-clear representations and boundaries. Stella should not infer persistence from
-words such as “I will remember that,” and it should not silently turn ordinary
-conversation into memory.
+Stella is one person's project on one laptop, and the field publishes its hard
+parts constantly. So the default is **not to write what already exists in
+maintained, freely usable work**. Speech recognition, speech synthesis,
+voice-activity detection, wake words, embeddings, reranking, quantised model
+serving, and evaluation harnesses are all solved problems with public
+implementations, and Stella already stands on several — openWakeWord, Silero's
+VAD, Kokoro, faster-whisper, Ollama and `llama.cpp` behind their own command
+boundaries. Anything she still hand-rolls in those categories is a decision to
+be behind, and should be justified as one.
 
-### Trusted runtime over model authority
+Recent papers and released code are welcome inputs, including the architectures
+published alongside them. Two things are true at once about that: reading them
+is cheap, and running them is how you find out whether the paper's number
+survives on a single 12 GB card. A figure from a benchmark is not a measurement
+taken here.
 
-The Brain proposes. Application code decides whether a capability exists,
-validates arguments, applies risk and approval rules, executes the tool, and
-records the outcome. Model output is never authorization.
+The order is fixed, and it is the whole method:
 
-### Memory is selective
+1. find the existing implementation, and check its licence actually permits
+   what Stella does with it;
+2. try it as a boundary — a command, a service, a model file — before it
+   becomes a dependency in the tree;
+3. measure it on this machine, on a real Stella turn, not in isolation;
+4. keep it only if it removed work *and* made a commitment above truer;
+5. when it is adopted, delete the code it replaces. Borrowing that leaves the
+   old hand-written path in place is not reuse, it is accumulation.
 
-Memory is for meaningful durable facts and lessons, not a transcript dump.
-Retrieval and writing are separate decisions. A result should be stored because
-it matters later, not merely because it was produced.
+Nothing here overrides the standing rules: no new hard dependency without the
+owner's explicit approval, nothing installed or downloaded unasked, and the
+machine stays the owner's daily driver rather than a test rig. This section
+changes what Stella may be *made of*; it does not change who decides what gets
+installed.
 
-### Bounded behavior
+Research still informs architecture and never dictates it. If a paper, a repo
+or a clever design produces no demonstrated Stella weakness it addresses, the
+correct outcome is to build nothing.
 
-Context, tool observations, and multi-step execution need deterministic
-limits. A bounded system is easier to understand, test, secure, and trust than
-an agent that can continue without a clear stop condition.
+## Current state, honestly
 
-### Provider-agnostic foundations
+Built and tested: the loop, four decision kinds, memory with retrieval,
+trusted tools with validation/risk/approval/audit, a voice periphery (push to
+talk, optional wake ear, barge-in, chunked speech, a resident synthesis
+worker), a persona subsystem, opt-in transcripts, reminders and one-shot event
+informs, hosted and local provider presets, and a desktop UI.
 
-The core concepts—context, Brain, memory, tool, dispatcher, decision, and
-outcome—should remain understandable independently of a particular model
-provider. Provider integrations belong at the boundary.
+Not built, and required by the six commitments: budgeted multi-step
+persistence, a style baseline that can notice an out-of-character turn,
+streaming answers on the final-response path, and an interface where nothing
+important is reachable only by an environment variable or a log line.
 
-### Evidence before expansion
+Known-broken as of today, from live use rather than theory: a turn that took
+154 seconds and then refused the task while reporting `succeeded`; the resident
+speech worker timing out twice in one session; and the always-open microphone
+silently downgrading a Bluetooth headset's own audio (`docs/VOICE.md`).
 
-A capability is part of Stella's identity only when its behavior is proved by
-focused tests and, where relevant, an end-to-end validation. More abstraction,
-tools, or autonomy should not be added to compensate for an unproven core
-loop.
+Details live in `docs/ARCHITECTURE.md` (structure) and `docs/ROADMAP.md`
+(status and scope). This file does not duplicate them.
 
-### Local-first and safe by default
+## The proof
 
-The current direction favors local persistence, narrow capabilities, explicit
-approval for risky actions, untrusted tool-result handling, and no hidden
-background work. Safety boundaries are part of Stella's behavior, not an
-optional wrapper around it.
+Stella's MVP is complete when the owner — not a test suite — has the
+experience, on their own machine, in an ordinary minute:
 
-## What makes Stella different
+1. ask something with one command, and she starts answering quickly enough to
+   feel like conversation;
+2. ask her to do something that needs several steps, and she finishes it or
+   says exactly where she stopped;
+3. tell her something true about yourself once, and see her use it weeks later
+   without being reminded;
+4. disagree with her, and watch her hold her ground when she is right;
+5. and have her ask, unprompted, whether you are okay on a day you do not
+   sound like yourself.
 
-A normal chatbot primarily maps a request to a response. A Jarvis-style clone
-often emphasizes persona and a growing collection of actions. Stella's
-distinctive behavior is the relationship between decision, action, outcome,
-and selective memory:
-
-- it can decide that answering is not the right next step;
-- it can ask for the information required to act responsibly;
-- it can recognize when context and memory are insufficient, and ask a useful
-  clarification instead of guessing;
-- it can apply one relevant, explicit behavioral preference consistently without
-  turning that preference into a persona system;
-- it can use a bounded, trusted capability rather than merely describe one;
-- it can interpret the result before responding;
-- it can preserve a meaningful lesson and use it in a later decision; and
-- it can choose not to act when no useful or authorized action exists.
-
-The difference is therefore not “more tools” or “more personality.” It is a
-reliable behavioral loop in which remembered experience changes future action.
-
-## Original vision versus current implementation
-
-The original vision includes the complete loop, including selective learning
-from meaningful outcomes. The current implementation is a deliberately small
-foundation:
-
-- Context preserves the compatible `user_input` field and also carries a
-  bounded provider-neutral `InputEnvelope` of typed parts. Parts support text,
-  future audio, image, video, and environment observations with provenance,
-  bounded content or references, and metadata. Memory retrieval considers the
-  current request together with bounded conversation history so follow-up
-  decisions can use the situation and the remembered fact together.
-- Memory supports explicit in-memory and SQLite storage and deterministic
-  keyword-overlap retrieval.
-- The Brain supports structured `answer`, `ask`, `tool`, and `do_nothing`
-  decisions with safe fallback behavior.
-- Trusted tools are dispatched through validation, risk, approval, and audit
-  boundaries.
-- Tool results can affect the immediate response and later decisions in a
-  bounded multi-step interaction.
-- The Brain is instructed to ask for required missing or ambiguous action
-  details rather than inventing them; retrieved memory only fills a gap when
-  it is relevant to the current request.
-- A directly relevant explicit preference can guide response style or a
-  decision consistently; the current request takes precedence, and the
-  preference is not exposed as a personality layer.
-- A bounded one-shot due-task event evaluation can increase awareness without
-  increasing authority: trusted scoped delegation may permit an `INFORM`
-  result, missing permission produces `ASK`, and irrelevant events produce
-  `DO_NOTHING`. A trusted application handoff supplies stable event identity
-  and suppresses duplicate IDs. A trusted caller may present the resulting
-  `INFORM` or `ASK` message; Stella does not deliver notices or execute
-  actions.
-- A one-shot audio input can cross a provider-neutral transcription boundary
-  into the same typed text and reasoning path; transcription is observation,
-  not permission or a new action authority.
-- A one-shot image input can cross a provider-neutral vision boundary into the
-  same typed text and reasoning path; the original image is preserved and the
-  derived description is marked with model provenance. Image understanding is
-  observation, not permission or a new action authority.
-- An existing final response can cross a provider-neutral speech boundary for
-  one-shot audio rendering. Speech is presentation after the decision loop;
-  it cannot alter decisions, permissions, memory, or tool authority.
-- A finite, explicitly supplied video clip can cross a provider-neutral
-  analysis boundary as bounded temporal observations. The clip reference is
-  preserved and derived observations remain untrusted model provenance; this
-  does not imply consent for continuous observation or any action authority.
-- Interface adapters can normalize richer inputs into the same bounded context
-  contract; modality and provenance describe observations but never grant tool,
-  memory, delegation, or approval authority.
-- The CLI is request-driven and synchronous; conversation history is not
-  persistent.
-- Explicit user-requested memory writes persist, and a successful non-empty
-  tool outcome can produce one additional explicit memory write when the Brain
-  proposes a durable fact or lesson.
-
-This is the minimal outcome-to-memory bridge. It does not store raw tool
-results, failed outcomes, or every successful result, and it is available for
-an explicitly bounded multi-step interaction rather than an unbounded learning
-loop.
-
-## Long-term direction
-
-Stella should grow into a dependable personal context-and-action system whose
-behavior becomes more useful through selective experience. Its long-term
-direction is not unlimited autonomy. It is better judgment within explicit
-boundaries:
-
-- richer context assembled from the right sources;
-- memory that is relevant, scoped, inspectable, and useful over time;
-- decisions that account for uncertainty, consequences, and user intent;
-- trusted capabilities with clear authorization and observable outcomes;
-- meaningful lessons that improve later decisions;
-- personality expressed through consistent behavior rather than decoration;
-- events and proactivity only when there is a clear, user-serving reason; and
-- latency and interaction quality appropriate for real use.
-
-Each future capability should be evaluated against the core question: does it
-help Stella make a better bounded decision from context, memory, tools, and
-outcomes?
-
-## Current boundaries
-
-The current system intentionally includes:
-
-- one local user/session assumption;
-- explicit context assembly;
-- deterministic lexical memory retrieval, with opt-in provider-backed
-  semantic recall over Stella's own local vector storage;
-- explicit memory writes;
-- a small approved tool set;
-- trusted validation, risk, approval, and audit handling;
-- synchronous execution;
-- bounded multi-step tool interactions;
-- selective memory writes from successful meaningful tool outcomes;
-- one-shot due-task event evaluation with explicit, scoped delegation;
-- trusted one-shot event handoff with process-local duplicate suppression;
-- synchronous user-facing proactivity results without delivery infrastructure;
-- a bounded provider-neutral input envelope with text compatibility;
-- one-shot audio-to-text normalization through a provider-neutral boundary;
-- one-shot image-to-text normalization through a provider-neutral boundary;
-- one-shot speech rendering through a provider-neutral boundary; and
-- one-shot finite video observation through a provider-neutral boundary; and
-- explicit end-to-end cancellation of a turn, including its voice periphery;
-- an approval-gated persona/style subsystem with snapshot-revertible writes; and
-- answer, clarification, tool, and no-op outcomes.
-
-It intentionally does not include:
-
-- automatic storage of all conversation or tool output;
-- unbounded planning, retries, autonomous loops, or background execution;
-- generalized event ingress, notification delivery, background schedulers,
-  daemons, or heartbeats;
-- wake words, continuous listening, or always-on audio; interruption is
-  user-initiated, never ambient; *(amended 2026-10-03, by the owner's own
-  request: a wake word exists now, and what this line keeps is the part that
-  was never negotiable — nothing is recorded or acted on ambiently. The ear
-  holds the device open for a local classifier behind a box the owner ticks,
-  its entire authority is one **Listen** press, and **Mute mic** gives the
-  microphone back. Continuous listening is still out. See `VOICE.md`.)*
-- continuous video or environment observation, camera or desktop capture, and
-  raw-media retention; image/video stay at their one-shot boundaries with no
-  provider-specific processing behind them;
-- multi-user memory ownership and migration;
-- a plugin marketplace or broad tool ecosystem; and
-- streaming, speculative execution, caching, and general latency redesign.
-
-These are boundaries, not permanent prohibitions. They should be reconsidered
-only when a concrete requirement shows that they advance Stella's identity and
-the existing loop remains understandable and secure.
+Until then this is a prototype with good bones, and it should be judged as one
+— which means: no new capability until these five sentences are true.
 
 ## Maintaining this document
 
-This document is the source of truth for Stella's identity and original goal.
-When an architectural decision, major capability, or roadmap change
-materially affects what Stella is, what it is not, or how the core loop works,
-update this document in the same change. Implementation-specific details that
-do not affect those principles belong in the architecture and review
-documents, not here.
+This is the source of truth for Stella's identity. When a decision materially
+changes what she is, what she is not, or how the loop works, update this file
+in the same change and say what it invalidated. Implementation detail belongs
+in the architecture and review documents, not here.

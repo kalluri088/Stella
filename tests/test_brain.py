@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 
@@ -498,6 +499,38 @@ def test_llm_brain_exposes_datetime_tool_schema() -> None:
     assert '"content": "UTF-8 string"' in prompt
     assert decision.capability == "datetime"
     assert decision.arguments == {"kind": "time"}
+
+
+def test_clock_rides_with_the_request_not_the_stable_prompt_prefix() -> None:
+    """The rules and tool list are the part a server can reuse between
+    turns; a timestamp inside them made every new minute re-read the whole
+    prefix (~1.0 s against ~0.07 s cached, measured on qwen3:4b)."""
+
+    llm = ResponseLLM('{"kind": "answer", "content": "four"}')
+    moment = datetime(2026, 10, 6, 21, 42, tzinfo=UTC)
+    brain = LLMBrain(llm, clock=lambda: moment)
+
+    brain.decide(Context(user_input="Remind me in two minutes"))
+
+    system = llm.messages[0][0].content
+    request = llm.messages[0][1].content
+    assert "2026-10-06T21:42" not in system
+    assert "2026-10-06T21:42" in request
+    assert "Currently available tools:" in system
+
+
+def test_system_prompt_is_byte_stable_across_turns() -> None:
+    """Nothing a real next turn changes may live in the system prompt."""
+
+    moments = iter(
+        [
+            datetime(2026, 10, 6, 21, 42, tzinfo=UTC),
+            datetime(2026, 10, 6, 21, 43, tzinfo=UTC),
+        ]
+    )
+    brain = LLMBrain(ResponseLLM("{}"), clock=lambda: next(moments))
+
+    assert brain._system_prompt() == brain._system_prompt()
 
 
 def test_llm_brain_normalizes_native_tool_call_to_existing_decision() -> None:

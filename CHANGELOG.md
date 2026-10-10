@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### The clock stopped costing a second every minute
+
+- **What changed.** `LLMBrain._system_prompt` no longer embeds the current
+  local date and time. That runtime reference now travels in
+  `_context_payload` — the request-side message that already carries the
+  user's words, the conversation history and the retrieved memories — so the
+  system prompt is byte-stable between turns and a provider can reuse its
+  KV cache across the whole rules-and-tools prefix.
+- **Why this is a defect.** Speed is the first commitment of
+  `docs/STELLA_VISION.md`, and prefix caching is how every fast agent
+  runtime gets there. Stella's prompt is ~6,900 tokens; reading it cold costs
+  ~3.0 s on this machine and reading it from a warm cache costs ~0.07 s. A
+  minute-granular timestamp sat at the end of the system prompt, and Ollama
+  renders the `tools` array after it, so each new minute invalidated the
+  cached prefix from that point and forced ~2,300 tokens to be re-read:
+  measured 1.03 s for a turn whose only difference from the last was the
+  minute, against 0.11 s for the same request after the move. The rest of the
+  prompt was already well-behaved — changing only the request payload costs
+  0.07 s — which is why this one line was worth moving rather than a rewrite.
+- **Unchanged.** What the model is told: the same sentence, the same
+  ISO-8601 minute precision, still reference data and never authority, and
+  the `datetime` tool is still the only way Stella answers "what time is
+  it". The routing check, reply-format rule, persona placement, tool list,
+  approval gates and every decision path are untouched.
+- **Proof.** `tests/test_brain.py`: 58 passed, including two new tests that
+  pin the clock to the request payload and assert the system prompt is
+  identical across a minute boundary. `tests/test_persona.py`: 54 passed.
+  `tests/test_conformance.py`: 79 passed, 4 skipped. Measured on the real
+  `qwen3:4b` through the production client with `num_predict=1` to isolate
+  prefill: cold full prompt 3.05 s, warm 0.07 s, next-minute before 1.03 s /
+  after 0.11 s. `uv run ruff check .`: clean.
+
 ### "Test connection" tested OpenAI, not the provider you chose
 
 - **What changed.** `_test_openai_connection` now resolves the endpoint as

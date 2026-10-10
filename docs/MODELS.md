@@ -29,6 +29,32 @@ decision corpus, and 6 passes per case before it can ship.
   `qwen3:4b` — deleting the reasoning channel is a downgrade, not a
   speedup.
 
+### The stable part of the prompt
+
+A turn's decision prompt is about 6,900 tokens on the default tool set:
+roughly 4,950 for the system prompt (persona, rules, the tool list
+rendered into it, the routing check and the reply-format instruction),
+about 1,850 for the `tools` array, and a few hundred for the request
+payload. Reading all of it from nothing costs ~3.0 s on this machine;
+reading it again from a server that cached the prefix costs ~0.07 s. That
+cache is the whole difference between a turn that starts instantly and one
+that stalls, and it keys on the *beginning* of the prompt — change one
+early byte and everything after it is re-read.
+
+So the rule is that nothing a real next turn changes may live in the
+system prompt. The clock used to: a minute-granular timestamp closed the
+system prompt, and because Ollama serializes the tool array after it, every
+new minute re-read the tools and the tail — measured 1.03 s for a turn whose
+only difference was the minute. The clock now travels in the request payload
+with the user's words, the conversation history and the retrieved memories,
+which are already different every turn and sit after the cached prefix; the
+same next-minute request costs 0.11 s. The invariant is pinned by
+`tests/test_brain.py`.
+
+This says nothing about *what* the model is told — the runtime reference is
+still context data and never authority, and the datetime tool is still the
+only way Stella answers "what time is it".
+
 ## Token accounting (`/usage`)
 
 Every provider client can carry one `UsageRecorder` (`stella.llm`), and

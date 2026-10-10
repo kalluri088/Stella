@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### A turn that could not be read no longer ends in silence
+
+- **What changed.** `Decision` carries one new flag, `unreadable`, set only by
+  the parse fallback in `LLMBrain._safe_decision`. When a turn ends on a
+  decision that failed to parse *and* nothing else is available to show, the
+  runtime ends it with its own sentence — "I couldn't make sense of that
+  answer. Try asking again." An explicit `{"kind":"do_nothing"}` keeps saying
+  nothing, and a garbled summary after a tool step keeps showing that tool's
+  output. `docs/ARCHITECTURE.md`, `docs/UI.md` and the two `fails-closed`
+  cases in the conformance matrix state the new contract.
+- **Why this is a defect.** Measurement, not theory. Timing every provider
+  request a real turn makes on `qwen3:4b` found the 16.8 s is a single call
+  whose whole cost is decoding the thinking channel (~44 tok/s), and that the
+  channel length is stochastic: the same factual question cost 31.4 s once and
+  67.6 s later. Sweeping the decision token cap down to find that time produced
+  two turns whose token count landed *exactly* on the cap — truncated
+  mid-thought — and both came back as **no words at all**, in a window that had
+  just shown a 12-to-23-second spinner and reported the turn as finished. That
+  is commitment one and commitment three broken together: slow, and then
+  dishonest about being slow.
+- **Safety.** The fallback grants exactly what it always granted: no
+  capability, no arguments, no memory write, no approval prompt. The flag adds
+  a sentence, not authority, and the sentence is a literal in the runtime —
+  the model's prose is still never spoken, which is the property the
+  `bare-prose-fails-closed` case exists to protect.
+- **Unchanged.** The 8192-token decision budget, which is a runaway backstop
+  rather than a latency knob: a legitimate decision may carry a 20k-character
+  Outline body (~5k tokens), so tightening it would truncate honest work before
+  it saved anyone a second. Rule 9's silence is untouched. `docs/MODELS.md` now
+  records where a turn's seconds go, and what the cap sweep measured, so the
+  next person does not retry it.
+- **Proof.** A real `qwen3:4b` turn with the decision cap at 512 — the exact
+  setting that produced the blank above — now ends in 15.8 s with
+  `unreadable=True`, the sentence as the response, and the sentence in the
+  conversation history, so the next turn knows the last one failed. Then the
+  suites: `tests/test_brain.py` (59 passed): a chosen `do_nothing` is not
+  flagged, and every malformed shape is — with no capability and no memory
+  write either way. `tests/test_stella.py` (76 passed): the unreadable turn
+  ends with the runtime's sentence and still calls no tool and no LLM
+  follow-up; a read that succeeded keeps showing its output when only the
+  summary garbled. `tests/test_conformance.py` + `tests/test_trace.py` (86
+  passed, 4 skipped): the obligation holds unchanged across all five provider
+  dialects. `tests/test_cli.py` + `tests/test_app.py` (167), `tests/test_voice.py`
+  + `tests/test_audio.py` (129), `tests/test_tool_fast_path.py` +
+  `tests/test_app.py` (107) all green. `uv run ruff check .` clean,
+  `git diff --check` clean.
+
 ### The window says what Stella is doing, not only for how long
 
 - **What changed.** The status label now renders the activity phases the

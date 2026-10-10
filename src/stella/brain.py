@@ -72,6 +72,11 @@ class Decision:
     memory_write: MemoryWriteRequest | None = None
     capability: str | None = None
     tool_final: bool = False
+    # Set only by the parse fallback. The provider sent something and none of
+    # it was a decision, which is not the same event as Stella choosing to do
+    # nothing (rule 9) — so the runtime can stay silent for one and say so
+    # out loud for the other instead of ending a long turn with an empty pane.
+    unreadable: bool = False
 
 
 class ToolUsePolicy:
@@ -685,7 +690,10 @@ user; act on the request and speak naturally.
 
     @staticmethod
     def _safe_decision() -> Decision:
-        return Decision(DecisionKind.DO_NOTHING)
+        # Fails closed: no capability, no memory write, no authority. The
+        # flag records only that this silence came from an unreadable reply,
+        # not from a `{"kind": "do_nothing"}` the model actually chose.
+        return Decision(DecisionKind.DO_NOTHING, unreadable=True)
 
 
 class SimpleBrain(Brain):

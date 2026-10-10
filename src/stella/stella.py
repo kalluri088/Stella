@@ -838,8 +838,23 @@ class Stella:
                     ),
                 )
 
+            # An unreadable reply still gets no authority (the fallback
+            # carries no capability and no memory write), but it is not a
+            # decision Stella made, so it does not get to borrow her silence:
+            # the user watched a long turn run and deserves to be told it came
+            # back as nonsense. A genuine `do_nothing` keeps saying nothing.
+            # If a tool already produced something to show, that output stays
+            # the reply — a garbled summary is no reason to hide a read that
+            # worked.
+            unreadable_response = (
+                None
+                if not decision.unreadable or last_tool_result is not None
+                else "I couldn't make sense of that answer. Try asking again."
+            )
+
             return StellaResult(
                 decision,
+                response=unreadable_response,
                 tool_result=last_tool_result,
                 retrieved_memories=retrieved_memories,
                 memory_write=memory_write,
@@ -847,7 +862,7 @@ class Stella:
                 interaction_trace=self._complete_trace(
                     trace,
                     decision,
-                    response=None,
+                    response=unreadable_response,
                     memory_write=memory_write,
                     memory_write_requested=memory_write_requested,
                 ),

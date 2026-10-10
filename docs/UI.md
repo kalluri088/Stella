@@ -111,7 +111,15 @@ display, and can never approve a tool or change permissions.
   Every finished turn also ends with how long it took and when it
   finished in the transcript ("… (took 47 s · 14:32)", in Stella's
   plain reply) — display-only, the stored conversation never carries
-  that text.
+  that text. A turn that says nothing is now only a genuine `do_nothing`
+  (rule 9): when the provider's reply could not be read as a decision —
+  prose with no JSON, an unknown kind, a thought truncated by its token
+  cap — the window prints the runtime's own sentence, "I couldn't make
+  sense of that answer. Try asking again." instead of returning to idle
+  after a long spinner with an empty pane. The sentence is the
+  application's, never model text; and if a tool had already produced
+  output that turn, the output is still what shows, because a garbled
+  summary is no reason to hide a read that worked.
   The CLI keeps Ctrl+C as its immediate-stop equivalent.
 - Approvals: a dialog shows "Stella wants to: <capability and arguments>"
   for every `DANGEROUS` action, with Allow and Cancel, plus a read-only

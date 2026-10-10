@@ -327,6 +327,8 @@ model's job under the prompt contract, never a runtime rewrite of user text.
 
 Malformed JSON, an unknown or missing kind, or invalid field types produce a deterministic `do_nothing` decision with no tool arguments or memory-write request. This safe fallback prevents unusable model output from causing an action.
 
+That fallback is not the same event as rule 9, and it no longer pretends to be. `Decision.unreadable` marks the difference: `{"kind":"do_nothing"}` arrives with the flag false, because Stella chose silence, while a reply that failed to parse — prose with no decision object, a kind the runtime does not know, a field of the wrong type, or an empty completion — arrives with it true. The loop still grants the unreadable reply nothing at all, because failing closed is the safety property and the flag carries no capability, no arguments and no memory write. What changes is what the user hears. A turn whose decision could not be read now ends with the runtime's own sentence, "I couldn't make sense of that answer. Try asking again.", instead of ending with no words after a long wait; the model's prose is still never spoken, since the sentence is a literal in the runtime and the fallback's `content` is `None`. Two cases keep the silence they had: a genuinely chosen `do_nothing`, and an unreadable reply that followed a tool step which had already produced output, because garbling the summary of a read is no reason to hide the read.
+
 ### Tool and ToolResult
 
 `stella.tools.Tool` is the provider-agnostic interface for a tool with a

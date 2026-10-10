@@ -277,7 +277,11 @@ silently downgrading a Bluetooth headset's own audio (`docs/VOICE.md`). The
 third one on that list — a 154-second turn that refused the task while
 reporting `succeeded` — is fixed: only a verified receipt can carry the
 success tick, and a call that changed nothing is no longer reported as an
-outcome at all.
+outcome at all. Measured since, the turn time itself is the thinking channel:
+one provider call per trivial turn, 10 to 68 seconds of decoding depending on
+how long the model decided to think (`docs/MODELS.md`), which is what the next
+two items on the roadmap are for. And a reply that arrived unreadable used to
+end the turn with no words at all; it now says so.
 
 Details live in `docs/ARCHITECTURE.md` (structure) and `docs/ROADMAP.md`
 (status and scope). This file does not duplicate them.

@@ -416,11 +416,11 @@ CONFORMANCE_CASES: tuple[ConformanceCase, ...] = (
     ),
     ConformanceCase(
         name="bare-prose-fails-closed",
-        obligation="a reply with no decision JSON at all must never be spoken; it is do_nothing",
+        obligation="a reply with no decision JSON at all is do_nothing and its prose is never spoken; the unreadable flag lets the runtime say so in its own words",
         user_input="Say hello.",
         reply=WireReply(content="Hello there! How are you?"),
         expectation=ConformanceExpectation(
-            decision=Decision(DecisionKind.DO_NOTHING)
+            decision=Decision(DecisionKind.DO_NOTHING, unreadable=True)
         ),
     ),
     ConformanceCase(
@@ -429,7 +429,7 @@ CONFORMANCE_CASES: tuple[ConformanceCase, ...] = (
         user_input="Say hello.",
         reply=WireReply(content=None),
         expectation=ConformanceExpectation(
-            decision=Decision(DecisionKind.DO_NOTHING)
+            decision=Decision(DecisionKind.DO_NOTHING, unreadable=True)
         ),
     ),
     ConformanceCase(

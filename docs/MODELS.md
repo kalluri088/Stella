@@ -55,6 +55,49 @@ This says nothing about *what* the model is told — the runtime reference is
 still context data and never authority, and the datetime tool is still the
 only way Stella answers "what time is it".
 
+### Where a turn's seconds actually go
+
+Measured with real `qwen3:4b` on Ollama through the production client, timing
+every provider request a turn makes and counting the tokens the provider
+itself reported: **a trivial turn is exactly one request.** Not a
+plan-then-answer pair, not a retry — one call whose whole cost is decoding.
+
+The prompt work above did its job. Prefill is cached and contributes about
+0.07 s, so reading the capability list lazily (#229) could recover at most the
+~0.9 s of a *cold* prefix and cannot fix a turn that already reads warm.
+Everything else is decode, at roughly 44 tokens per second on this card. Two
+arms of the same script, the same resident model, the same two questions:
+
+| Question | Thinking tokens decoded | Wall clock |
+| --- | --- | --- |
+| "what is 2 plus 2?" | 272 – 301 | 10.4 – 11.0 s |
+| "who is the prime minister of India?" | 1,385 – 2,956 | 31.4 – 67.6 s |
+
+So the honest description of tonight's latency is not "16.8 seconds" but
+**unbounded and unpredictable**: the same factual question cost 31 s once and
+68 s later, because how long Stella thinks before answering is the model's
+choice, and the user watches a spinner the entire time.
+
+The output-token cap is *not* the lever people would hope. The default is 8192
+because a legitimate decision is allowed to carry a 20k-character Outline body
+(~5k tokens), so the cap is a runaway backstop that never binds on honest work —
+the two turns above finished far under it. Sweeping it down neither sped turns
+up reliably nor ended them safely. How much a model thinks is stochastic, so a
+tighter cap can cost time: the trivial question answered in 10.4 s at 8192 took
+18.7 s at 1024, where the model decoded 820 tokens of thinking instead of 272.
+And whenever the cap actually bound — the token count landing exactly on 1024,
+exactly on 512 — the decision was cut off mid-thought, no JSON arrived, and the
+turn ended with **no words at all** while reporting success.
+Deleting the channel is worse still: `think:false` measured slower and rambled
+(reported above), which is why the reasoning stays.
+
+What the measurement does establish, and what was fixed: an unreadable
+decision is not a `do_nothing`, and it no longer gets to be silent
+(`docs/ARCHITECTURE.md`, `Decision.unreadable`). For the seconds themselves the
+remaining candidates are streaming the answer (#230) so the wait has a
+beginning and an end the user can see, and a faster brain for the turns that
+need no reasoning at all (#237) — not a smaller budget.
+
 ## Token accounting (`/usage`)
 
 Every provider client can carry one `UsageRecorder` (`stella.llm`), and

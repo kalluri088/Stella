@@ -1812,6 +1812,60 @@ def test_stella_does_nothing_without_calling_dependencies() -> None:
     assert tool.arguments == []
 
 
+def test_stella_says_so_when_an_answer_came_back_unreadable() -> None:
+    # A provider reply that failed to parse reaches the loop in the shape of
+    # a do_nothing. Measured on qwen3:4b, a decision whose thinking channel
+    # hit its token cap left the window showing nothing at all after 30-plus
+    # seconds of spinner. That silence belongs to rule 9 alone: an unreadable
+    # answer gets a sentence, and still gets no capability and no memory
+    # write, so the honesty costs no authority.
+    stella, llm, tool = make_stella(
+        Decision(DecisionKind.DO_NOTHING, unreadable=True)
+    )
+
+    result = stella.process(Context(user_input="Do something"))
+
+    assert result.decision.kind is DecisionKind.DO_NOTHING
+    assert result.response == (
+        "I couldn't make sense of that answer. Try asking again."
+    )
+    assert result.tool_result is None
+    assert llm.messages == []
+    assert tool.arguments == []
+
+
+def test_a_read_still_shows_when_its_summary_came_back_unreadable() -> None:
+    # The honest sentence must never hide work that succeeded. When a tool
+    # already returned output and only the follow-up summary was unreadable,
+    # the turn keeps its result and the session layer still shows it.
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "first"},
+                capability="record",
+            ),
+            Decision(DecisionKind.DO_NOTHING, unreadable=True),
+        ]
+    )
+    tool = RecordingTool()
+    stella = Stella(
+        brain,
+        RecordingLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        max_tool_steps=2,
+    )
+
+    result = stella.process(Context(user_input="Do something, then answer"))
+
+    assert result.decision.unreadable is True
+    assert result.response is None
+    assert result.tool_result == ToolResult(
+        success=True, output="tool output"
+    )
+
+
 def test_stella_passes_retrieved_memories_to_brain_without_mutating_context() -> None:
     memory = InMemoryMemory()
     item = MemoryItem(content="User likes tea")

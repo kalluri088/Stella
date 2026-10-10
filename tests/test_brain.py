@@ -785,7 +785,22 @@ def test_llm_brain_uses_do_nothing_for_malformed_output(response: str) -> None:
         Context(user_input="Do something")
     )
 
-    assert decision == Decision(DecisionKind.DO_NOTHING)
+    assert decision == Decision(DecisionKind.DO_NOTHING, unreadable=True)
+
+
+def test_a_chosen_do_nothing_is_not_an_unreadable_answer() -> None:
+    # Rule 9's silence and a reply that failed to parse must not be the same
+    # event: one is Stella deciding nothing should happen, the other is the
+    # provider saying nothing readable. Only the second owes the user a
+    # sentence, and only the first gets to say nothing at all.
+    decision = LLMBrain(ResponseLLM('{"kind": "do_nothing"}')).decide(
+        Context(user_input="Do something")
+    )
+
+    assert decision.kind is DecisionKind.DO_NOTHING
+    assert decision.unreadable is False
+    assert decision.capability is None
+    assert decision.memory_write is None
 
 
 def test_llm_brain_recovers_decision_embedded_in_prose() -> None:
@@ -831,7 +846,8 @@ def test_llm_brain_rejects_recovered_payload_failing_validation() -> None:
         Context(user_input="Do something")
     )
 
-    assert decision == Decision(DecisionKind.DO_NOTHING)
+    assert decision == Decision(DecisionKind.DO_NOTHING, unreadable=True)
+    assert decision.capability is None
 
 
 def test_system_prompt_forbids_narrating_stellas_own_machinery() -> None:

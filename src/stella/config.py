@@ -60,6 +60,11 @@ _CONFIG_FIELDS = (
     "wake_word_enabled",
     "wake_models",
     "wake_phrase",
+    # The PipeWire node the always-open ear listens on. A node name is
+    # hardware identity, not a secret, and it is saved because "which
+    # microphone" is not something the owner should have to reach by
+    # environment variable (docs/VOICE.md).
+    "wake_source",
     # The first numeric settings this file persists: the two budgets one turn
     # may spend. They join the save list so a choice made in Settings survives
     # the next launch, and resolve_settings coerces them rather than trusting
@@ -725,6 +730,15 @@ def resolve_settings() -> StellaSettings | None:
         else ()
     )
     raw_wake_phrase = raw.get("wake_phrase")
+    # The capture node the ear listens on. A malformed value is dropped —
+    # which means "let Stella choose" — rather than refused or trusted
+    # verbatim into a subprocess argv.
+    raw_wake_source = raw.get("wake_source")
+    wake_source = (
+        raw_wake_source.strip()
+        if isinstance(raw_wake_source, str) and raw_wake_source.strip()
+        else None
+    )
     # The two turn budgets. Both arrive as JSON numbers, and both are checked
     # against the same ranges the Settings panel refuses outside of: a
     # hand-edited config.json gets the default, not an unbounded loop.
@@ -773,6 +787,7 @@ def resolve_settings() -> StellaSettings | None:
         wake_phrase=(
             raw_wake_phrase if isinstance(raw_wake_phrase, str) else ""
         ),
+        wake_source=wake_source,
         max_tool_calls=int(saved_calls or DEFAULT_MAX_TOOL_CALLS),
         turn_time_limit_seconds=(
             saved_seconds or DEFAULT_TURN_TIME_LIMIT_SECONDS

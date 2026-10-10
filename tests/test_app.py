@@ -16,7 +16,7 @@ from typing import Self
 
 import pytest
 
-from stella import app, provider_keys
+from stella import app, capture_target, provider_keys
 from stella.app import (
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_TURN_TIME_LIMIT_SECONDS,
@@ -29,9 +29,14 @@ from stella.app import (
     StellaSettings,
     TurnOutcome,
     build_application,
+    build_barge_in,
+    build_mic_tap,
+    build_wake,
+    build_wake_ear,
     display_response,
     outcome_status,
 )
+from stella.barge_in import capture_command
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain
 from stella.context import Context
 from stella.llm import (
@@ -2127,3 +2132,90 @@ def test_decode_budget_settings_default_override_and_off(
     monkeypatch.setenv("STELLA_ANSWER_MAX_TOKENS", "many")
     with pytest.raises(SystemExit, match="STELLA_ANSWER_MAX_TOKENS"):
         StellaSettings.from_environment()
+
+
+# ------------------------------------------------------- microphone targets
+#
+# The ear used to name no capture node at all, which is PipeWire's way of
+# asking "whatever you like", and on a laptop with a headset connected what
+# it likes is the headset's microphone (docs/VOICE.md). These tests pin the
+# two things that matter: the chosen node really reaches the command line,
+# and when discovery has nothing to say the command line is the one this
+# program built before any of this existed.
+
+
+class _StubVad:
+    """A SileroVad that never loads a model, so the argv is inspectable."""
+
+    def __init__(self, model_path: str) -> None:
+        self.model_path = model_path
+
+    @property
+    def features(self):
+        return lambda frame: (0.0, 0.0)
+
+
+class _StubSpotter:
+    def __init__(self, **kwargs: object) -> None:
+        del kwargs
+
+    def feed(self, frame: bytes) -> bool:
+        del frame
+        return False
+
+    def reset(self) -> None:
+        pass
+
+
+def test_the_three_listening_ears_share_the_resolved_microphone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "WakeSpotter", _StubSpotter)
+    monkeypatch.setattr(app, "SileroVad", _StubVad)
+    monkeypatch.setattr(
+        app, "resolve_capture_source", lambda explicit: "resolved-node"
+    )
+    settings = StellaSettings(model="m", wake_word="on")
+    for built in (
+        build_mic_tap(settings),
+        build_wake(settings),
+        build_wake_ear(settings),
+    ):
+        assert built is not None
+        assert built._command[-3:] == ["--target", "resolved-node", "-"]
+
+
+def test_the_barge_ear_is_handed_its_own_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app, "SileroVad", _StubVad)
+    seen: list[str | None] = []
+
+    def _resolve(explicit: str | None) -> str:
+        seen.append(explicit)
+        return "resolved-node"
+
+    monkeypatch.setattr(app, "resolve_capture_source", _resolve)
+    listener = build_barge_in(
+        StellaSettings(
+            model="m", voice_barge_in="on", barge_source="ec_mic"
+        )
+    )
+    assert listener is not None
+    assert seen == ["ec_mic"]
+    assert listener._command[-3:] == ["--target", "resolved-node", "-"]
+
+
+def test_the_tap_names_no_target_when_discovery_has_nothing_to_say(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The daily-driver pin: no pw-dump, one microphone, or a PipeWire that
+    # will not answer must all leave the command line exactly as it was.
+    monkeypatch.setattr(capture_target, "discover_capture_sources", lambda: ())
+    capture_target.reset_capture_source_probe()
+    try:
+        tap = build_mic_tap(StellaSettings(model="m", wake_word="on"))
+    finally:
+        capture_target.reset_capture_source_probe()
+    assert tap is not None
+    assert tap._command == capture_command(None)

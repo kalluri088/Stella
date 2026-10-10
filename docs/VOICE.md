@@ -290,11 +290,14 @@ Environment variables (voice config is environment-only and is never written
 to `config.json`):
 
 - `STELLA_VOICE_BARGE_IN` — `auto` (default: arms only when
-  `STELLA_BARGE_SOURCE` names a capture), `on` (arm on any source, including
-  the system default) or `off` (never).
+  `STELLA_BARGE_SOURCE` names a capture), `on` (arm on a chosen capture —
+  and where none is chosen, on whatever `capture_target` resolves, which is
+  the system default unless that default is a Bluetooth headset's microphone
+  and something else exists) or `off` (never).
 - `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file.
 - `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic`. Under `auto`
-  this doubles as the enable switch; unset, the ear never arms.
+  this doubles as the enable switch; unset, the ear never arms. Under `on`,
+  unset means resolved-by-default rather than unnamed.
 - `STELLA_BARGE_THRESHOLD` — VAD probability in (0, 1), default `0.5`.
 
 Echo cancellation is the make-or-break prerequisite: without it Stella's own
@@ -383,6 +386,54 @@ list of classifier files; unset means detect everything in the
 directory), `STELLA_WAKE_PHRASE` (display label),
 `STELLA_WAKE_MODEL_DIR`, `STELLA_WAKE_SOURCE` and
 `STELLA_WAKE_THRESHOLD`.
+
+### Which microphone the ear takes
+
+A capture that names no node takes PipeWire's *default source*, and on a
+laptop with a Bluetooth headset connected that source is the headset's own
+microphone — which costs the headset its audio quality for as long as the ear
+is armed (see *Known limitations*). `stella/capture_target.py` now decides
+what to name, in three rules:
+
+- **The deviation is narrow.** Nothing is chosen unless the highest-priority
+  input **is** a Bluetooth microphone and some other input exists; then Stella
+  takes the highest-priority input that is not. Every other machine — this
+  laptop with no headset connected, a desktop with one built-in mic, a machine
+  with no PipeWire — gets the identical command line it got before this module
+  existed, with no `--target` at all. That equality is pinned by a test, and
+  it is the reason a change to the default is safe to make.
+- **The ordering is WirePlumber's.** `priority.session` decides which input
+  wins, so a microphone the owner plugs in deliberately can outrank the
+  built-in instead of losing to a ranking hardcoded here.
+- **Doubt means silence.** No `pw-dump` on PATH, a probe that stalls past one
+  second, output that does not parse, one candidate, a headset and nothing
+  else — all of it means "name no target", which is what the voice path always
+  did with that answer. A probe must never become a reason voice stops
+  working, so nothing in the module raises into a user's path.
+
+Discovery reads only `Audio/Source` nodes whose name starts with
+`alsa_input.`, which is what leaves out playback streams, monitors, the
+echo-cancelled filter, MIDI and video. Each one is classified from the device
+segment of its name — `pci-` built-in, `usb-`, `bluez_` Bluetooth, anything
+else other — and a PipeWire node name is hardware identity, not a secret: it
+is safe in a command line and in `config.json`.
+
+The owner sees the whole decision. Settings has a **Microphone** row listing
+*let Stella choose* plus every input found when the panel opens (so a
+hot-plugged device appears on reopen even though the running ear already
+decided), and under it one line saying what the choice costs: naming the
+headset's own microphone, whether by hand or because it is the only input
+here, says so; automatic with a headset to step away from says which
+microphone Stella took instead. A deliberate choice is saved in
+`config.json` as `wake_source` and survives the next launch. A node that was
+saved but is not connected now is still listed, marked as such — an unplugged
+microphone must not silently rewrite what the owner picked.
+`STELLA_WAKE_SOURCE` still outranks the saved value, and only for the launch
+that carries it.
+
+Both the always-open taps and the barge-in watcher resolve through the same
+function, because VOICE.md's own observation was two live captures pinning the
+device, and either one alone would do it.
 
 ## UI states
 
@@ -558,6 +609,21 @@ whole and in order — and the run found a real defect no fake could see, the
 voxtype progress block described under "Providers and configuration", which
 was polluting every live transcript until it was read out of stdout.
 
+The microphone choice was checked on this machine, read-only, before and after.
+`pw-dump` here reports one capture node, `alsa_input.pci-0000_00_1f.3.analog-stereo`
+at `priority.session` 2009, so the pick is empty and the panel says
+"Stella listens on Built-in Audio Analog Stereo" from the defaulting branch —
+and the built command is `pw-record -a --rate 16000 --channels 1 -`, exactly
+the list `capture_command(None)` produces, which is the assertion the test
+suite pins too. `pw-record --target` was then proven to accept a *node name*
+rather than only a serial: one bounded second of capture against the named
+built-in input delivered 4000 bytes, and a deliberately unknown name delivered
+the same, falling back to the default silently — the reason an absent
+microphone reads as silence rather than as an error, and why the saved value is
+a name the panel showed rather than anything hand-typed. The Bluetooth branch,
+which is the one this laptop cannot offer on command, is proven against recorded
+`pw-dump` text in `tests/test_capture_target.py`.
+
 ## Known limitations
 
 - One utterance per Listen press — or per wake phrase, where that is on —
@@ -578,23 +644,31 @@ was polluting every live transcript until it was read out of stdout.
   Synthesis is one process per sentence unless the resident worker is enabled.
   There is still no mixing, ducking, or overlap between artifacts.
 - Voice mode is desktop-UI only; the CLI remains text-only.
-- A Bluetooth headset's microphone is also a mode switch, and Stella's ear can
-  flip it. While *any* capture holds that device, PipeWire must keep the headset
-  in its hands-free profile, and playback through the same headphones follows:
-  mono, low-bitrate, volume ceiling quietly dropped — a phone-call sound where
-  music used to be. The taps that do this are the wake ear and the barge-in
-  watcher; with `STELLA_WAKE_SOURCE` unset they name no node, so they take
-  PipeWire's default source, which is the headset's own microphone whenever a
-  headset is connected and current. Observed directly on 2026-10-06: two live
-  taps — a resident voice server and a session UI, both
+- A Bluetooth headset's microphone is also a mode switch, and any capture that
+  holds it flips it. While *any* capture holds that device, PipeWire must keep
+  the headset in its hands-free profile, and playback through the same
+  headphones follows: mono, low-bitrate, volume ceiling quietly dropped — a
+  phone-call sound where music used to be. Observed directly on 2026-10-06:
+  two live taps — a resident voice server and a session UI, both
   `pw-record -a --rate 16000 --channels 1 -` — held a WH-CH720N at
   `headset-head-unit`; ending them returned the device to `a2dp-sink`, stereo
-  and full volume, by itself, with no profile touched by hand. To fix: give the
-  always-open ear a sensible target and let the owner see it (the tap already
-  honours `--target`, so the capability is there and the defaulting is not),
-  and say plainly in Setup that arming the ear on a Bluetooth headset's own
-  microphone costs that headset its audio quality for as long as it is armed.
-  The laptop's built-in input has no such coupling.
+  and full volume, by itself, with no profile touched by hand. The ear no
+  longer asks for that microphone by accident (*Which microphone the ear
+  takes* above), and the Settings row says out loud when the ear is going to
+  hold one anyway. What remains is the machine with a headset and no other
+  input: the ear arms on the headset's microphone, because the alternative is
+  no voice at all, and the panel says what that costs.
+- A microphone named deliberately, or cached by the automatic pick at startup,
+  is not re-decided mid-session. Unplug it while Stella is running and the ear
+  keeps listening on a node that is gone — silence, not an error — and plug one
+  in and nothing changes until the next launch. Reopening Settings shows the
+  new device; restarting Stella listens to it.
+- The Bluetooth branch of the pick is proven against recorded `pw-dump` text,
+  not against a headset connected to this laptop: the case that motivated the
+  change has not been re-run on the owner's own WH-CH720N since. What was
+  checked here is the other half — that with no headset connected the built
+  input is the only candidate, the pick is empty, and the capture command is
+  byte-for-byte the one Stella ran before.
 - The capture commands are PipeWire and ALSA, so there is no recording path on
   Windows at all. What that platform does lose is the polite stop: it cannot
   interrupt a child process, so Stella asks it to exit (`terminate`) and the

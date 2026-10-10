@@ -640,6 +640,24 @@ inside that session, not before); D5 waits behind the voice work.
   Settings picks), any hit is still exactly one Listen press, and a
   custom "hey X" means a classifier the owner trained or placed there —
   Stella never downloads or trains anything herself.
+- **D7. The ear stops borrowing the headset's microphone (#235, landed
+  2026-10-10).** Observed on this machine on 2026-10-06, not theorised: the
+  always-open tap named no capture node, so it took PipeWire's default
+  source — the Bluetooth headset's own microphone whenever one is current —
+  and holding that device pins the headset in its hands-free profile, which
+  drops its playback to mono call-quality for as long as the ear is armed.
+  The owner's music was the cost, and it was charged by default. A new
+  `stella/capture_target.py` now decides the node: it deviates only in that
+  one case (a Bluetooth input leading with something else available, ranked
+  by WirePlumber's own `priority.session` so a plugged-in USB microphone can
+  win), and answers `None` — the argv this program always built — for every
+  other machine, including one with no PipeWire to ask. Settings gained a
+  *Microphone* row that lists what discovery found and states, in the line
+  under it, what listening on a headset's microphone costs; the choice is
+  saved as `wake_source` and `STELLA_WAKE_SOURCE` still outranks it for one
+  launch. Consequence stated plainly: on a machine that today silently grabs
+  the headset, `stella voice --serve` now captures something else. See
+  `docs/VOICE.md`, *Which microphone the ear takes*.
 
 Explicitly **not** adopted from this input: the always-listening
 hands-free loop as a background recorder, KV-cache save/restore between

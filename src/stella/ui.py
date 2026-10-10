@@ -48,6 +48,14 @@ from stella.app import (
     default_data_dir,
     outcome_status,
 )
+from stella.capture_target import (
+    BLUETOOTH,
+    CaptureSource,
+    discover_capture_sources,
+    kind_of,
+    pick_preferred_source,
+    ranked,
+)
 from stella.commands import (
     CommandCall,
     expand_template,
@@ -71,6 +79,10 @@ from stella.wake import (
 #: The wake-phrase dropdown entry that arms every classifier found in
 #: the model directory (empty ``wake_models`` — detection, not a list).
 _WAKE_EVERYTHING = "everything detected on this machine"
+
+#: The microphone dropdown entry that leaves the choice to Stella
+#: (``capture_target.py``). Every other entry names one node exactly.
+_WAKE_SOURCE_AUTOMATIC = "let Stella choose"
 
 
 def _panel_number(raw: str, fallback: float) -> float:
@@ -1996,6 +2008,28 @@ class StellaWindow:
         self._wake_hint.pack(padx=6, anchor="w")
         self._wake_choice_var.trace_add("write", self._refresh_wake_hint)
         self._wake_phrase_var.trace_add("write", self._refresh_wake_hint)
+        # Which microphone the ear listens on. The list is probed when this
+        # panel is built, not from the memoized startup pick: a microphone
+        # plugged in after the last launch is exactly what the owner opens
+        # this row to look at.
+        self._wake_sources = discover_capture_sources()
+        self._wake_source_map = self._microphone_choices(self._wake_sources)
+        self._wake_source_var = tk.StringVar(
+            value=self._initial_wake_source(settings)
+        )
+        mic_row = ttk.Frame(frame)
+        mic_row.pack(padx=6, pady=(4, 0), anchor="w")
+        ttk.Label(mic_row, text="Microphone:").pack(side="left")
+        ttk.Combobox(
+            mic_row,
+            textvariable=self._wake_source_var,
+            values=list(self._wake_source_map),
+            state="readonly",
+            width=34,
+        ).pack(side="left", padx=(6, 0))
+        self._mic_hint = ttk.Label(frame, style="Dim.TLabel", wraplength=340)
+        self._mic_hint.pack(padx=6, anchor="w")
+        self._wake_source_var.trace_add("write", self._refresh_wake_hint)
         self._refresh_wake_hint()
         # The two budgets one turn may spend. These are the panel's first
         # numeric entries, so they follow the wake row's shape: a frame of
@@ -2275,6 +2309,7 @@ class StellaWindow:
             wake_word="on" if self._wake_var.get() else "off",
             wake_models=wake_models,
             wake_phrase=wake_phrase,
+            wake_source=self._wake_source_selection(),
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],
@@ -2379,6 +2414,88 @@ class StellaWindow:
                 return label
         return _WAKE_EVERYTHING
 
+    def _microphone_choices(
+        self, sources: tuple[CaptureSource, ...]
+    ) -> dict[str, CaptureSource | None]:
+        """Panel labels mapped to the input each one names.
+
+        ``automatic`` maps to ``None``, which is the same "name no target"
+        the command builder has always taken; every other label is one
+        node exactly.
+        """
+
+        choices: dict[str, CaptureSource | None] = {
+            _WAKE_SOURCE_AUTOMATIC: None
+        }
+        for source in ranked(sources):
+            label = source.label if source.label not in choices else source.name
+            choices[label] = source
+        return choices
+
+    def _initial_wake_source(self, settings: StellaSettings) -> str:
+        for label, source in self._wake_source_map.items():
+            if source is not None and source.name == settings.wake_source:
+                return label
+        if settings.wake_source:
+            # A node chosen deliberately is shown even when it is not on the
+            # machine this minute: dropping it to "automatic" because a
+            # microphone happens to be unplugged would silently rewrite the
+            # owner's saved choice the next time Apply is pressed.
+            label = f"{settings.wake_source} (not connected now)"
+            self._wake_source_map[label] = CaptureSource(
+                name=settings.wake_source,
+                label=label,
+                kind=kind_of(settings.wake_source),
+                priority=0,
+            )
+            return label
+        return _WAKE_SOURCE_AUTOMATIC
+
+    def _wake_source_selection(self) -> str | None:
+        """The node the microphone row names, or None for automatic."""
+
+        source = self._wake_source_map.get(self._wake_source_var.get())
+        return source.name if source is not None else None
+
+    def _microphone_hint(self) -> str:
+        """What listening on this microphone costs, said plainly.
+
+        A capture on a Bluetooth headset's own microphone pins that headset
+        in its hands-free profile, and its playback follows: mono,
+        low-bitrate, for as long as the ear is armed (docs/VOICE.md). The
+        row exists so the owner sees that price before she pays it.
+        """
+
+        automatic = self._wake_source_var.get() == _WAKE_SOURCE_AUTOMATIC
+        if automatic:
+            ordered = ranked(self._wake_sources)
+            if not ordered:
+                return (
+                    "Stella chooses the microphone, and steps off a Bluetooth "
+                    "headset's mic whenever another input exists."
+                )
+            picked = pick_preferred_source(ordered)
+            source = picked or ordered[0]
+        else:
+            picked = None
+            source = self._wake_source_map.get(self._wake_source_var.get())
+            if source is None:
+                return f"The ear listens on {self._wake_source_var.get()}."
+        if source.kind == BLUETOOTH:
+            return (
+                f"{source.label} is a Bluetooth headset's own microphone. "
+                "While the ear listens there, that headset loses stereo and "
+                "full volume — phone-call sound where music was."
+            )
+        if picked is not None:
+            # Said only when it is true: a headset is here, and this is the
+            # microphone chosen instead of its microphone.
+            return (
+                f"Stella listens on {source.label} and leaves the Bluetooth "
+                "headset's own microphone alone."
+            )
+        return f"The ear listens on {source.label}."
+
     def _wake_selection(self) -> tuple[tuple[str, ...], str]:
         """(classifiers, phrase) the wake row currently spells out.
 
@@ -2456,6 +2573,7 @@ class StellaWindow:
                 "is recorded until one fires."
             )
         self._wake_hint.configure(text=text)
+        self._mic_hint.configure(text=self._microphone_hint())
 
     def _apply_settings(self) -> None:
         refusal = self._store_entered_key()

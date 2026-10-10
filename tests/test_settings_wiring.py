@@ -147,7 +147,7 @@ PLAIN_CONFIG_FIELDS = (
 # _environment_fields() (shared by from_environment and from_saved), so
 # they have no literal ``field=`` line in from_environment. They still
 # get the persist/read-back/passthrough checks below.
-ENV_DICT_CONFIG_FIELDS = ("wake_models", "wake_phrase")
+ENV_DICT_CONFIG_FIELDS = ("wake_models", "wake_phrase", "wake_source")
 
 # The two turn budgets are the first numeric saved settings. They arrive the
 # same way the wake choices do (an environment value that wins for one launch,

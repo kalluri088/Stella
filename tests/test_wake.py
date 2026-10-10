@@ -553,6 +553,29 @@ def test_an_environment_wake_list_beats_the_saved_choice(
     assert settings.wake_phrase == "saved phrase"
 
 
+def test_an_environment_wake_source_beats_the_saved_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One launch, one microphone: STELLA_WAKE_SOURCE picks it up without
+    # rewriting what the owner saved in Settings.
+    clear_wake_env(monkeypatch)
+    monkeypatch.setenv("STELLA_WAKE_SOURCE", "alsa_input.from-env")
+    settings = StellaSettings.from_saved(
+        provider="ollama",
+        model="m",
+        wake_source="alsa_input.saved",
+    )
+    assert settings.wake_source == "alsa_input.from-env"
+
+    clear_wake_env(monkeypatch)
+    settings = StellaSettings.from_saved(
+        provider="ollama",
+        model="m",
+        wake_source="alsa_input.saved",
+    )
+    assert settings.wake_source == "alsa_input.saved"
+
+
 def test_invalid_wake_settings_exit_at_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

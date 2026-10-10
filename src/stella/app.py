@@ -34,6 +34,7 @@ from stella.audio_output import (
 from stella.barge_in import BargeInListener, SileroVad, capture_command
 from stella.brain import LLMBrain
 from stella.browser_tools import build_browser_tools
+from stella.capture_target import resolve_capture_source
 from stella.childproc import sweep_orphaned_children
 from stella.commands import action_history_lines
 from stella.context import (
@@ -950,6 +951,10 @@ class StellaSettings:
         # as setting nothing at all.
         wake_models: tuple[str, ...] = (),
         wake_phrase: str = "",
+        # The capture node the ear listens on, as saved in config.json.
+        # None means "let Stella choose" (capture_target.py); an explicit
+        # STELLA_WAKE_SOURCE still wins for a single launch.
+        wake_source: str | None = None,
         # The two turn budgets, as the owner saved them. The matching
         # environment variables still win for a single launch, exactly like
         # the wake choices above.
@@ -983,6 +988,10 @@ class StellaSettings:
         environment["wake_phrase"] = (
             environment["wake_phrase"] or wake_phrase
         )
+        # Same merge and same reason: the environment path always supplies a
+        # key for every field it owns, so an unset STELLA_WAKE_SOURCE must not
+        # be read as "no choice" once a choice was saved.
+        environment["wake_source"] = environment["wake_source"] or wake_source
         # The same merge the wake choices use, and for the same reason: the
         # splat below happens last, so leaving the budget at whatever
         # _environment_fields defaulted to would silently overwrite the
@@ -1785,7 +1794,9 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     declaration the raw mic hears the speakers directly and live
     measurement (research report 29) showed uncancelled playback frames
     self-firing the interrupt, so an un-armed ear is the safe default;
-    ``on`` arms on the system default source anyway, ``off`` never.
+    ``on`` arms on a chosen microphone anyway (``capture_target.py`` —
+    the system default when that is not a Bluetooth headset's mic),
+    ``off`` never.
 
     Unlike :func:`build_voice` this raises :class:`VoiceError` when
     barge-in was explicitly asked for but cannot work (missing extra,
@@ -1800,7 +1811,7 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     vad = SileroVad(settings.vad_model)
     return BargeInListener(
         features=vad.features,
-        command=capture_command(settings.barge_source),
+        command=capture_command(resolve_capture_source(settings.barge_source)),
         threshold=settings.barge_threshold,
     )
 
@@ -1823,7 +1834,7 @@ def build_mic_tap(settings: StellaSettings) -> MicTap | None:
     if settings.wake_word == "off":
         return None
     try:
-        command = capture_command(settings.wake_source)
+        command = capture_command(resolve_capture_source(settings.wake_source))
     except ValueError as error:
         raise VoiceError(str(error)) from error
     return MicTap(command=command)
@@ -1855,7 +1866,7 @@ def build_wake(
     )
     return WakeListener(
         feed=spotter.feed,
-        command=capture_command(settings.wake_source),
+        command=capture_command(resolve_capture_source(settings.wake_source)),
         reset=spotter.reset,
         tap=tap,
     )
@@ -1878,7 +1889,7 @@ def build_wake_ear(
     return WakeUtteranceEar(
         features=vad.features,
         endpoint=WakeEndpoint(),
-        command=capture_command(settings.wake_source),
+        command=capture_command(resolve_capture_source(settings.wake_source)),
         tap=tap,
     )
 

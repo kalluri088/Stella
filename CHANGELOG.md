@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+### The wake ear listens on a microphone of its own choosing
+
+- **What changed.** A new module, `stella/capture_target.py`, decides which
+  capture node the always-open ear and the barge-in watcher aim at, and
+  Settings gained a *Microphone* row that shows that decision and lets the
+  owner make it instead: one entry per input PipeWire reports, plus *let
+  Stella choose*, with a line underneath naming what the choice costs. The
+  selected node is saved in `config.json` as `wake_source`;
+  `STELLA_WAKE_SOURCE` still outranks it for the launch that carries it, and
+  `stella voice --serve` resolves through the same function as the desktop
+  window.
+- **Why.** Observed on this machine on 2026-10-06 rather than theorised: an
+  unarmed tap names no node, which is PipeWire's way of asking "whatever you
+  like", and with a Bluetooth headset current what it likes is the headset's
+  own microphone. Any capture holding that device pins the headset in its
+  hands-free profile, and playback through the same headphones follows — mono,
+  low-bitrate, volume ceiling quietly dropped. Two live
+  `pw-record -a --rate 16000 --channels 1 -` children were holding a WH-CH720N
+  at `headset-head-unit`; ending them returned it to `a2dp-sink` by itself.
+  The ear is on by default, so this was the owner's music, billed daily, for a
+  microphone nobody chose. The capability was already there (`--target`);
+  the defaulting was not.
+- **The rule, deliberately narrow.** Stella deviates in exactly one case: the
+  highest-priority input *is* a Bluetooth microphone and some other input
+  exists, and then she takes the highest-priority input that is not — ranked by
+  WirePlumber's `priority.session`, so a deliberately plugged USB microphone
+  beats the built-in instead of losing to a ranking hardcoded here. Every
+  other machine gets the command line it got yesterday. Discovery reads only
+  `Audio/Source` nodes named `alsa_input.*` (which excludes playback,
+  monitors, the echo-cancelled filter, MIDI and video) and classifies the
+  device from the name. Any doubt means `None`: no `pw-dump`, a probe that
+  stalls past a second, output that will not parse, one candidate, a headset
+  and nothing else — a probe must never become a reason voice stops working.
+- **Safety.** A PipeWire node name is hardware identity, not a secret, so it
+  is safe in argv and in `config.json`; it is still only ever a separate
+  argument in a shell-free `Popen` list, and a malformed saved value is
+  dropped to "choose automatically" rather than trusted or fatal, the way a
+  malformed wake choice already is. Nothing new can authorize anything: the
+  ear's authority is unchanged — it presses Listen or it does not.
+- **Unchanged.** `mic_tap.py` stays device-ignorant and its own
+  `capture_command(None)` default stands; the push-to-talk `Recorder` is
+  untouched, because a capture that lives as long as one utterance does not
+  pin a device across a session; no restart machinery was invented for a
+  microphone unplugged mid-session (the ear then hears silence, and reopening
+  Settings shows the new device, while the next launch uses it). One
+  consequence is stated rather than hidden: a machine that today silently
+  grabs the headset's microphone now captures something else.
+- **Proof.** `tests/test_capture_target.py` (15) covers parsing against
+  recorded `pw-dump` text — sinks, monitors, video, the echo-cancelled
+  filter, malformed JSON and wrong-typed properties all excluded — the three
+  branches of the pick, the absent-binary and stalled-child paths, and the
+  once-per-process memo. `tests/test_app.py` pins that all three listening
+  ears get the resolved node, and that when discovery has nothing to say the
+  built argv is *equal* to `capture_command(None)`. `tests/test_config.py`
+  round-trips the saved node and drops a malformed one; `tests/test_wake.py`
+  keeps the environment winning over the saved choice; `tests/test_ui.py`
+  (5 new) reads the row, the warning and the unsaved-but-visible case, with
+  discovery stubbed so no test asks the laptop what it owns. On this machine
+  now: one capture node reported, the pick empty, and the built command
+  byte-for-byte the one Stella ran before — plus a bounded second of
+  `pw-record --target alsa_input.pci-0000_00_1f.3.analog-stereo -` delivering
+  4000 bytes, which is what proves a node *name* is accepted, not merely
+  parsed. The Bluetooth branch is unit-proven and machine-unverified: it needs
+  the owner's headset connected, which this laptop cannot offer on command.
+
+
 ### A turn keeps working until its budget runs out, and then says so
 
 - **What changed.** A turn carries two bounds and stops at whichever comes

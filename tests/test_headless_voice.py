@@ -355,6 +355,41 @@ class TestCapture:
         # Reused, never a second handle on the same device.
         assert len(voice.taps) == 1
 
+    def test_the_tap_is_built_for_the_resolved_microphone(self, monkeypatch):
+        # The saved node is handed to the resolver, and whatever the
+        # resolver names is what the capture targets — the resident server
+        # and the one-shot run share this closure.
+        voice = FakeVoice()
+        seen: list[str | None] = []
+        monkeypatch.setattr(
+            "stella.barge_in.shutil.which",
+            lambda name: (
+                "/usr/bin/pw-record" if name == "pw-record" else None
+            ),
+        )
+        monkeypatch.setattr(hv, "MicTap", FakeTap)
+        monkeypatch.setattr(
+            hv,
+            "resolve_capture_source",
+            lambda explicit: seen.append(explicit) or "resolved-node",
+        )
+        monkeypatch.setattr(
+            hv, "build_wake_ear", lambda settings, tap: FakeEar("complete")
+        )
+        hv._make_capture(FakeSettings(wake_source="alsa_input.saved"), voice)
+        assert seen == ["alsa_input.saved"]
+        assert voice.taps[0].command == [
+            "pw-record",
+            "-a",
+            "--rate",
+            "16000",
+            "--channels",
+            "1",
+            "--target",
+            "resolved-node",
+            "-",
+        ]
+
     def test_wait_timeout_is_read_as_silence(self, monkeypatch):
         voice = FakeVoice()
         monkeypatch.setattr(hv, "CAPTURE_WAIT_SECONDS", 0.05)

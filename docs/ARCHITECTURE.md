@@ -113,6 +113,21 @@ utterance per Listen press, transcribes it, and sends the transcript through
 the same `StellaSession.run_turn()` path as typed input; the recording is
 deleted right after transcription and never enters history. See `VOICE.md`.
 
+Which device those captures read is a separate concern, owned by
+`stella.capture_target`. `barge_in.capture_command(source)` has always named a
+`--target` only when given one, and `mic_tap` stays deliberately
+device-ignorant, so the deciding was nowhere: an unnamed capture takes
+PipeWire's default source, which on a laptop with a Bluetooth headset is the
+headset's own microphone, and holding it costs that headset stereo and full
+volume (`VOICE.md`). `capture_target` asks PipeWire once per process, picks a
+node only in that one case — a Bluetooth input leading with something else
+available — and returns `None` for every other answer, including no PipeWire
+and a probe that stalls, because a probe must never become a reason voice
+stops working. The push-to-talk `Recorder` is untouched: a capture that lives
+as long as one utterance does not pin a device across a whole session. The
+owner's chosen node is a saved setting the panel shows, and a node name is
+hardware identity rather than a secret.
+
 ### Image input boundary
 
 `stella.vision.VisionProvider` is the provider-neutral interface for one
@@ -835,6 +850,7 @@ described in the architecture above, not here):
 │       ├── audio_output.py    # playback boundary
 │       ├── barge_in.py        # opt-in Silero VAD voice-interrupt ear (Stage B7)
 │       ├── brain.py           # structured decisions from the LLM
+│       ├── capture_target.py  # which microphone the always-open ear takes
 │       ├── cli.py             # terminal front-end
 │       ├── conformance.py     # provider conformance suite harness (Stage B4)
 │       ├── config.py          # settings and first-run configuration

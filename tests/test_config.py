@@ -116,6 +116,10 @@ def test_configuration_stores_only_non_secret_fields():
         # owner's disk and a display phrase. No audio, no path content.
         "wake_models",
         "wake_phrase",
+        # The microphone the always-open ear listens on: one PipeWire node
+        # name, which is hardware identity rather than a secret or a path
+        # into anything the owner keeps.
+        "wake_source",
         # The two turn budgets: plain numbers, the first numeric settings this
         # file persists. They are what the owner set in Settings, not a model
         # name, a path or anything secret.
@@ -140,6 +144,52 @@ def test_saved_wake_choices_roundtrip():
     assert resolved is not None
     assert resolved.wake_models == ("hey_stella.onnx",)
     assert resolved.wake_phrase == "hey stella"
+
+
+def test_saved_wake_source_survives_the_config_roundtrip():
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            wake_source="alsa_input.usb-Samson_Q9U-00.analog-stereo",
+        )
+    )
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.wake_source == (
+        "alsa_input.usb-Samson_Q9U-00.analog-stereo"
+    )
+    # Whitespace a hand-edit left behind is trimmed, not trusted verbatim
+    # into a command line.
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["wake_source"] = "  alsa_input.pci-0000_00_1f.3.analog-stereo  "
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+    assert config.resolve_settings().wake_source == (
+        "alsa_input.pci-0000_00_1f.3.analog-stereo"
+    )
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", 7, True, ["a"], {"a": 1}])
+def test_a_malformed_saved_wake_source_is_dropped_not_fatal(value: object):
+    # "No saved choice" and "a saved choice this file cannot carry" are the
+    # same answer: automatic. Refusing the file would discard every other
+    # setting the owner saved, which the wake_models rule already rejects.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="keeper", wake_source="alsa_input.usb-x"
+        )
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["wake_source"] = value
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    assert resolved.wake_source is None
 
 
 #: The subject of the test marked with this genuinely is the POSIX mode

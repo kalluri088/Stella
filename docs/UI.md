@@ -172,6 +172,21 @@ display, and can never approve a tool or change permissions.
   local detection ear the moment Apply rebuilds and stops that capture
   when unticked — the privacy contract, the models it needs and the
   `STELLA_WAKE_WORD` override are in `VOICE.md`.
+- Under it, a *Microphone* row: *let Stella choose* plus one entry per capture
+  input PipeWire reports when the panel opens. The row exists because an
+  unarmed ear takes whatever the system defaults to, and on a laptop with a
+  Bluetooth headset that default is the headset's own microphone — which costs
+  that headset stereo and full volume for as long as the ear holds it
+  (`VOICE.md`, *Which microphone the ear takes*). The dim line under the row
+  therefore says what the choice costs rather than only what it is: the
+  headset's microphone named, by hand or because nothing else exists, is
+  spelled out; an automatic step off a headset names the microphone taken
+  instead. Discovery is live on reopen, so a microphone plugged in after the
+  last launch shows up, while a saved node that is not connected now is still
+  listed as itself rather than silently reverted. The choice is saved in
+  `config.json` as `wake_source`, `STELLA_WAKE_SOURCE` outranks it for one
+  launch, and a machine with nothing to discover offers only *let Stella
+  choose* — an empty list, never a broken-looking widget.
 - Capability families: the Settings panel carries one checkbox per opt-in
   tool family — *Desktop awareness*, *Browser (open a page, run its
   scripts)*, and *Shell commands (run programs in your workspace)* are **on by

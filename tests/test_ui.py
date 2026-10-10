@@ -32,6 +32,7 @@ from stella.app import (
 )
 from stella.audio import TranscriptionProvider
 from stella.brain import Brain, Decision, DecisionKind
+from stella.capture_target import CaptureSource
 from stella.context import Context
 from stella.llm import LLMClient
 from stella.memory import InMemoryMemory, MemoryItem
@@ -194,6 +195,34 @@ def make_window(
         root, bridge, settings or StellaSettings(model="test")
     )
     return root, window, bridge, memory
+
+
+@pytest.fixture(autouse=True)
+def _no_microphone_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The panel must never ask the owner's machine which mics it has.
+
+    Discovery is deliberately uncached in production — a hot-plugged
+    microphone should show up when the panel is reopened — so a test that
+    built a window would otherwise read real hardware, and assert against
+    whatever the laptop happened to report today.
+    """
+
+    monkeypatch.setattr(stella_ui, "discover_capture_sources", lambda: ())
+
+
+#: Two inputs in the shape the panel is handed by ``capture_target``.
+HEADSET_MIC = CaptureSource(
+    name="alsa_input.bluez_1C_71_29_0A_7B_D8.headset-head-unit",
+    label="WH-CH720N Hands Free",
+    kind="bluetooth",
+    priority=2009,
+)
+BUILT_IN_MIC = CaptureSource(
+    name="alsa_input.pci-0000_00_1f.3.analog-stereo",
+    label="Built-in Audio Analog Stereo",
+    kind="builtin",
+    priority=2007,
+)
 
 
 def test_window_conversation_round_trip() -> None:
@@ -1508,6 +1537,141 @@ def test_the_wake_picker_names_the_phrase_and_the_classifier(
         monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
         window._apply_settings()
         assert captured == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_mic_picker_writes_the_chosen_node_into_the_draft(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        stella_ui,
+        "discover_capture_sources",
+        lambda: (HEADSET_MIC, BUILT_IN_MIC),
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        # Ranked by WirePlumber's own preference, automatic first.
+        assert list(window._wake_source_map) == [
+            stella_ui._WAKE_SOURCE_AUTOMATIC,
+            HEADSET_MIC.label,
+            BUILT_IN_MIC.label,
+        ]
+        assert window._wake_source_var.get() == (
+            stella_ui._WAKE_SOURCE_AUTOMATIC
+        )
+        assert window._draft_settings().wake_source is None
+        window._wake_source_var.set(BUILT_IN_MIC.label)
+        assert window._draft_settings().wake_source == BUILT_IN_MIC.name
+        window._wake_source_var.set(HEADSET_MIC.label)
+        assert window._draft_settings().wake_source == HEADSET_MIC.name
+        window._wake_source_var.set(stella_ui._WAKE_SOURCE_AUTOMATIC)
+        assert window._draft_settings().wake_source is None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_mic_picker_says_what_a_headset_microphone_costs(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The row exists to make the price visible before it is paid: listening
+    # on a headset's own microphone takes that headset's stereo away for
+    # as long as the ear is armed (docs/VOICE.md).
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        stella_ui,
+        "discover_capture_sources",
+        lambda: (HEADSET_MIC, BUILT_IN_MIC),
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        window._wake_source_var.set(HEADSET_MIC.label)
+        hint = window._mic_hint.cget("text")
+        assert HEADSET_MIC.label in hint
+        assert "loses stereo and full volume" in hint
+        # Automatic steps off the headset, and says that is what it does.
+        window._wake_source_var.set(stella_ui._WAKE_SOURCE_AUTOMATIC)
+        assert BUILT_IN_MIC.label in window._mic_hint.cget("text")
+        assert "loses stereo" not in window._mic_hint.cget("text")
+        # A deliberate choice is saved on Apply, not merely displayed.
+        window._provider.set(provider_keys.PRESETS["ollama"].label)
+        window._panel_preset_changed()
+        window._wake_source_var.set(BUILT_IN_MIC.label)
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._apply_settings()
+        assert len(captured) == 1
+        assert captured[0].wake_source == BUILT_IN_MIC.name
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_mic_picker_warns_on_a_machine_with_only_a_headset_mic(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Headset-only: the ear stays armed there, because the alternative is
+    # no voice at all — so the warning is the whole answer.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        stella_ui, "discover_capture_sources", lambda: (HEADSET_MIC,)
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        assert window._wake_source_var.get() == (
+            stella_ui._WAKE_SOURCE_AUTOMATIC
+        )
+        assert "loses stereo and full volume" in window._mic_hint.cget("text")
+        assert window._draft_settings().wake_source is None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_mic_picker_offers_only_automatic_when_discovery_finds_nothing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No PipeWire to ask is not a broken panel: one entry, no target named.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    root, window, bridge, _ = make_window()
+    try:
+        assert list(window._wake_source_map) == [
+            stella_ui._WAKE_SOURCE_AUTOMATIC
+        ]
+        assert "steps off a Bluetooth headset" in window._mic_hint.cget("text")
+        assert window._draft_settings().wake_source is None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_a_saved_microphone_that_is_not_connected_stays_visible(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Unplugged this minute is not "the owner changed her mind": the panel
+    # shows the saved node as itself rather than silently rewriting the
+    # choice back to automatic.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        stella_ui, "discover_capture_sources", lambda: (BUILT_IN_MIC,)
+    )
+    settings = StellaSettings(model="test", wake_source=HEADSET_MIC.name)
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        assert window._wake_source_var.get() == (
+            f"{HEADSET_MIC.name} (not connected now)"
+        )
+        assert window._draft_settings().wake_source == HEADSET_MIC.name
+        # Its name still says what it is, so the warning travels with it.
+        assert "loses stereo and full volume" in window._mic_hint.cget("text")
     finally:
         bridge.stop()
         root.destroy()

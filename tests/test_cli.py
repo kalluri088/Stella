@@ -665,6 +665,20 @@ def test_format_trace_handles_missing_trace_and_step_limit() -> None:
     ]
 
 
+def test_format_trace_names_a_time_stop_apart_from_a_step_stop() -> None:
+    # The two budgets end a turn in the same shape, so the trace line is what
+    # tells the owner which limit to raise; a steps stop keeps its older
+    # wording through max_steps_reached.
+    result = StellaResult(
+        decision=Decision(DecisionKind.TOOL),
+        interaction_trace=make_trace(
+            FinalResponseEvent("tool", False, 0, False, False, "time"),
+        ),
+    )
+
+    assert format_trace(result) == ["  final     stopped at time limit"]
+
+
 def test_cli_trace_renders_timeline_before_final_response() -> None:
     stella = TraceStella(
         StellaResult(

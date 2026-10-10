@@ -37,10 +37,13 @@ execution; Stella never falls back to another tool. Tool exceptions become the
 deterministic `Tool execution failed.` result so the failure is visible to the
 final response path without leaking stack traces, and Stella does not retry.
 
-The loop is bounded (`max_tool_steps`, CLI composes 2): the Brain may iterate
-tool → observation → decision within that cap, and hitting the limit produces
-a deterministic capped result, never an unbounded loop. Each dangerous action
-inside the loop still requires its own exact approval. See `ARCHITECTURE.md`
+The loop is bounded by two turn budgets the owner sets in Settings —
+`max_tool_steps` tool calls (default 8) and a wall-clock bound
+(default 90 s) consulted only between steps (`ARCHITECTURE.md`, *Turn
+budgets*): the Brain may iterate tool → observation → decision within those
+bounds, and hitting either produces a deterministic honest stop naming what
+ran, never an unbounded loop. Each dangerous action inside the loop still
+requires its own exact approval. See `ARCHITECTURE.md`
 for the orchestration details.
 
 ## Registered capabilities (as composed in app.py)

@@ -1,6 +1,7 @@
 """Minimal orchestration for Stella's current components."""
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
@@ -115,6 +116,10 @@ class StellaResult:
     memory_write: MemoryWriteResult | None = None
     step_trace: list["StellaStep"] = field(default_factory=list)
     max_steps_reached: bool = False
+    # Which budget ended the turn: "steps" or "time", or None when the model
+    # finished on its own. Display and trace material only — it never changes
+    # what is authorized, and a budget stop is otherwise an ordinary result.
+    budget: str | None = None
     interaction_trace: InteractionTrace | None = None
     cancelled: bool = False
 
@@ -154,6 +159,8 @@ class Stella:
         approval_provider: Callable[..., ToolApproval | None]
         | None = None,
         max_tool_steps: int = 1,
+        turn_time_limit_seconds: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
         semantic_retriever: SemanticRetriever | None = None,
     ) -> None:
         if (
@@ -162,6 +169,14 @@ class Stella:
             or max_tool_steps < 1
         ):
             raise ValueError("max_tool_steps must be a positive integer")
+        if turn_time_limit_seconds is not None and (
+            not isinstance(turn_time_limit_seconds, (int, float))
+            or isinstance(turn_time_limit_seconds, bool)
+            or turn_time_limit_seconds <= 0
+        ):
+            raise ValueError(
+                "turn_time_limit_seconds must be a positive number or None"
+            )
         self.brain = brain
         self.llm = llm
         self.tool = tool
@@ -171,6 +186,15 @@ class Stella:
         self.memory = memory
         self.approval_provider = approval_provider
         self.max_tool_steps = max_tool_steps
+        # The turn's second budget. It bounds when new work may START, never
+        # whether a request already in flight is worth reading — a single
+        # provider call on this machine measures 10-68 s, so a clock that
+        # abandoned half-answers would trade a late reply for no reply.
+        # None means the bound is off.
+        self.turn_time_limit_seconds = turn_time_limit_seconds
+        # Injectable so the time path is tested without sleeping, following
+        # the LLMBrain clock precedent.
+        self.clock = clock
         self.semantic_retriever = semantic_retriever
         self._handled_proactive_event_ids: dict[str, None] = {}
 
@@ -197,6 +221,15 @@ class Stella:
         interrupt an approval prompt or a dispatched tool midway; those
         steps stay atomic and land before the next checkpoint.
 
+        The turn additionally carries two budgets, consulted at the same
+        safe points: at most ``max_tool_steps`` dispatched tool calls, and
+        at most ``turn_time_limit_seconds`` of wall clock. Either one ends
+        the turn with the runtime's own sentence about what it stopped —
+        not with an answer invented by a second model call — and neither
+        one abandons a provider request already in flight: a call that
+        began inside the budget is read to the end and the loop stops
+        after it. A user cancel outranks both.
+
         ``on_activity`` is an optional presentation-only observer (D3):
         it is called with ``"thinking"`` just before a brain decision,
         ``"working"`` just before a selected tool is dispatched (immedi-
@@ -209,6 +242,15 @@ class Stella:
         """
 
         trace = InteractionTrace()
+        # The turn's time budget starts here, not when the loop does: the
+        # retrieval below is part of the work the user is waiting for. One
+        # deadline in this frame — a deadline on the instance would leak
+        # across concurrent turns.
+        deadline = (
+            None
+            if self.turn_time_limit_seconds is None
+            else self.clock() + self.turn_time_limit_seconds
+        )
         spoken_request = any(
             part.modality is InputModality.AUDIO
             for part in context.input_envelope.parts
@@ -362,6 +404,70 @@ class Stella:
                 cancelled=True,
             )
 
+        def time_expired() -> bool:
+            return deadline is not None and self.clock() >= deadline
+
+        def budget_stop(reason: str, refused: Decision | None) -> StellaResult:
+            # One honest ending for both budgets. The sentence is built only
+            # from facts the runtime holds: the limit that is in force and the
+            # capabilities that actually came back. What remains of the
+            # request is not one of those facts, so the turn says the work
+            # *may* not be finished instead of inventing a remainder — and it
+            # speaks no model text and spends no second call phrasing itself.
+            ran: list[str] = []
+            for step in step_trace:
+                if step.tool_result is None:
+                    continue
+                label = (step.decision.capability or "").replace("_", " ").strip()
+                if label and label not in ran:
+                    ran.append(label)
+            if reason == "steps":
+                lead = (
+                    f"I reached the limit of {self.max_tool_steps} tool calls, "
+                    "so I stopped."
+                )
+                advice = "raise the tool-call limit in Settings"
+            else:
+                lead = (
+                    f"I reached the "
+                    f"{self.turn_time_limit_seconds:g}-second limit for this "
+                    "turn, so I stopped."
+                )
+                advice = "raise the time limit in Settings"
+            response = (
+                f"{lead} What ran: "
+                f"{', '.join(ran) if ran else 'nothing'}. "
+                f"The request may not be finished — {advice}."
+            )
+            # A refused proposal stays on the record as the turn's decision;
+            # when the clock stopped the loop before it asked, the stop itself
+            # is the answer, and an ANSWER carries no capability, no arguments
+            # and no memory write — a budget end grants nothing.
+            stop_decision = (
+                refused
+                if refused is not None
+                else Decision(DecisionKind.ANSWER, content=response)
+            )
+            return StellaResult(
+                stop_decision,
+                response=response,
+                tool_result=last_tool_result,
+                retrieved_memories=retrieved_memories,
+                memory_write=memory_write,
+                step_trace=step_trace,
+                max_steps_reached=reason == "steps",
+                budget=reason,
+                interaction_trace=self._complete_trace(
+                    trace,
+                    stop_decision,
+                    response,
+                    memory_write,
+                    memory_write_requested,
+                    max_steps_reached=reason == "steps",
+                    budget=reason,
+                ),
+            )
+
         def decide_turn(decision_context: Context) -> Decision:
             notify("thinking")
             if should_cancel is not None:
@@ -387,6 +493,12 @@ class Stella:
                 return cancelled_result(
                     Decision(kind=DecisionKind.DO_NOTHING)
                 )
+            if time_expired():
+                # The first point where new work could start. A call that was
+                # already in flight when the clock ran out is read to the end
+                # — this bound decides whether another step begins, not
+                # whether a step that began is worth finishing.
+                return budget_stop("time", None)
             decision_context = Context(
                 user_input=context.user_input,
                 conversation_history=conversation_history,
@@ -433,23 +545,13 @@ class Stella:
             if decision.kind is DecisionKind.TOOL:
                 if tool_steps >= self.max_tool_steps:
                     step_trace.append(StellaStep(decision))
-                    return StellaResult(
-                        decision,
-                        response="I reached the maximum number of tool steps.",
-                        tool_result=last_tool_result,
-                        retrieved_memories=retrieved_memories,
-                        memory_write=memory_write,
-                        step_trace=step_trace,
-                        max_steps_reached=True,
-                        interaction_trace=self._complete_trace(
-                            trace,
-                            decision,
-                            "I reached the maximum number of tool steps.",
-                            memory_write,
-                            memory_write_requested,
-                            max_steps_reached=True,
-                        ),
-                    )
+                    return budget_stop("steps", decision)
+                if time_expired():
+                    # A capability proposed at 89.9 s does not execute at
+                    # 90.5 s. The decision stays in the trace as what it is:
+                    # a proposal the runtime refused on its own clock.
+                    step_trace.append(StellaStep(decision))
+                    return budget_stop("time", decision)
 
                 arguments = (
                     decision.arguments
@@ -1081,6 +1183,7 @@ class Stella:
         *,
         needs_more_information: bool = False,
         max_steps_reached: bool = False,
+        budget: str | None = None,
     ) -> InteractionTrace:
         trace.record(
             FinalResponseEvent(
@@ -1089,6 +1192,7 @@ class Stella:
                 response_chars=len(response or ""),
                 needs_more_information=needs_more_information,
                 max_steps_reached=max_steps_reached,
+                budget=budget,
             )
         )
         trace.record_memory_write(

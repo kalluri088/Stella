@@ -375,7 +375,7 @@ There is no plugin registry or dynamic discovery layer.
 
 ### Stella orchestration
 
-`stella.stella.Stella` is the minimal coordinator. It receives a `Brain` (either `SimpleBrain` or `LLMBrain`), an `LLMClient`, one `Tool` or `ToolDispatcher`, and a `Memory` explicitly. Its `process(context)` method retrieves matching memories, gives them to the brain through a derived context, and returns a structured `StellaResult` that also exposes retrieved items and an ordered step trace. `max_tool_steps` defaults to one; a larger explicit bound enables a synchronous sequence of Brain/tool cycles.
+`stella.stella.Stella` is the minimal coordinator. It receives a `Brain` (either `SimpleBrain` or `LLMBrain`), an `LLMClient`, one `Tool` or `ToolDispatcher`, and a `Memory` explicitly. Its `process(context)` method retrieves matching memories, gives them to the brain through a derived context, and returns a structured `StellaResult` that also exposes retrieved items and an ordered step trace. `max_tool_steps` defaults to one; a larger explicit bound enables a synchronous sequence of Brain/tool cycles. The application composes both turn budgets — `max_tool_steps=settings.max_tool_calls` and `turn_time_limit_seconds=settings.turn_time_limit_seconds` — so the numbers the owner sets in the window are the numbers the loop enforces. See *Turn budgets* below.
 
 The separate `stella.proactivity` module contains the focused one-shot
 `DueTaskEvent` evaluator. `Stella.evaluate_due_task_event()` returns exactly
@@ -677,10 +677,11 @@ The implemented flow constructs or receives a `Context`, and `Stella` performs t
 
 When `max_tool_steps` is greater than one, a tool result is added as a
 structured observation and steps 2, 5, and 6 repeat synchronously until the
-Brain selects a non-tool decision or the trusted step bound is reached. A
-proposal after the bound returns the deterministic limit result without
-execution or another final LLM call. The default bound of one preserves the
-single-tool flow above.
+Brain selects a non-tool decision, the trusted step bound is reached, or the
+turn's time budget expires between steps (see *Turn budgets*). A proposal
+after either bound returns the deterministic honest stop without execution or
+another final LLM call. The default bound of one preserves the single-tool
+flow above.
 
 A `kind=tool` decision may carry the reserved marker `"tool_final": true`
 (when calling a tool directly, the same signal is one of its arguments; the
@@ -717,13 +718,78 @@ pins the connection to a validated public address, limits the response to
 1 MiB of UTF-8 `text/plain`, and returns fetched content as untrusted data.
 The content is not automatically stored or treated as an instruction.
 
+### Turn budgets
+
+A turn carries two bounds, and whichever comes first ends it: at most
+`max_tool_steps` dispatched tool calls (the application composes
+`settings.max_tool_calls`, default 8) and at most `turn_time_limit_seconds`
+of wall clock (default 90). Both are owner-settable in the Settings panel and
+persisted in `config.json`, so the numbers are not a code edit and not an
+environment variable.
+
+**The clock decides whether another step begins, never whether a step that
+began is worth finishing.** Both bounds are consulted only at the two points
+where new work could start: at the top of the loop before another decision is
+asked for, and after a `tool` decision but before its dispatch — a capability
+proposed at 89.9 s does not execute at 90.5 s. A provider request already in
+flight when the clock runs out is read to the end, and an `answer` that
+arrives after the deadline is kept. That is a deliberate choice, not an
+oversight: one call on this machine measures 10–68 s of decoding (`MODELS.md`,
+*Where a turn's seconds actually go*), so a turn can finish well past the
+number in Settings — and the panel says so in those words rather than
+promising a deadline it cannot meet. Cancelling mid-call is the provider
+client's business (`llm.py`, `run_cancellable`) and is left exactly as it was.
+
+The deadline lives in the `process` frame, never on the instance: a second
+concurrent turn must not inherit the first one's clock. The clock is injected
+(`clock=time.monotonic` by default, following the `LLMBrain._clock`
+precedent), so the whole time path is tested deterministically without
+sleeping.
+
+Running out is an honest stop, not a silent one and not a new model call.
+`budget_stop` composes the sentence from facts the runtime knows — the limit
+in force and the capability names of the steps that actually got a tool
+result, deduplicated in order — and never from model text: *"I reached the
+limit of 8 tool calls, so I stopped. What ran: outline search, memory list.
+The request may not be finished — raise the tool-call limit in Settings."*
+The runtime cannot know what remains of the request, so it says *may not be
+finished* instead of inventing a remainder. The result is a normal
+`StellaResult` (`cancelled=False`), so history, the window, the CLI and voice
+all render it with no special case. `StellaResult.budget` (`"steps"` or
+`"time"`) names which bound fired; it is display and trace material only and
+never changes what is authorized. `FinalResponseEvent` carries the same value
+and the CLI prints `stopped at time limit` beside the existing `stopped at
+step limit`. The steps stop keeps `max_steps_reached=True` for consumers that
+already looked at it.
+
+A user cancel outranks both budgets at both checkpoints, and it stays as
+silent as it is today. Reaching the tool-call bound still outranks the time
+bound when both are true at the same instant, because the steps guard is
+checked first.
+
+Persistence follows the wake-word merge rather than the environment-splat
+path: an environment value wins for one launch, otherwise the validated saved
+value, otherwise the default. These are the first numeric fields
+`config.json` persists, and a malformed number there falls back to the
+default instead of refusing the file — a rejected load would silently discard
+every other setting the owner saved. An out-of-range *environment* value does
+refuse the launch, matching the token-budget doctrine.
+
+What is deliberately not part of this: a per-turn token budget, a
+task-progress model, and any second LLM call to summarise what is left. The
+`do_nothing` prompt line now says it may never be used to abandon a task
+halfway (`brain.py`), which is the whole of the "quitting early" doctrine —
+whether tools already ran is in `step_trace`, so no marker the runtime cannot
+honestly hold was invented.
+
 ## Intentionally not implemented yet
 
 The following are outside the current system (things that have shipped are
 described in the architecture above, not here):
 
 - Unbounded LLM-based planning or decision-making — the tool loop is bounded
-  by `max_tool_steps` and the limit result is deterministic (what the bound
+  by both turn budgets (tool calls and wall clock, `Turn budgets` above) and
+  the limit result is deterministic (what the bound
   costs a multi-tool request, and which techniques were reviewed and rejected
   for closing that gap, is recorded in `AGENTIC_TASKS.md`)
 - Summarization, compaction, or learned context compression; retrieval is

@@ -281,6 +281,54 @@ class RaisingTool(RecordingTool):
         raise RuntimeError("unexpected failure")
 
 
+class FakeClock:
+    """A clock the test advances by hand, so a budget costs no sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class TimeCostingTool(RecordingTool):
+    """A capability that takes wall time, so a step can outlive a deadline."""
+
+    name = "workspace_list"
+    description = "Lists the workspace, slowly."
+
+    def __init__(self, clock: FakeClock, seconds: float) -> None:
+        super().__init__()
+        self.clock = clock
+        self.seconds = seconds
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        self.clock.advance(self.seconds)
+        return super().execute(arguments)
+
+
+class SteppingSequenceBrain(SequenceBrain):
+    """A brain whose provider calls take time, so the clock moves mid-turn."""
+
+    def __init__(
+        self, decisions: list[Decision], clock: FakeClock, seconds: float
+    ) -> None:
+        super().__init__(decisions)
+        self.clock = clock
+        self.seconds = seconds
+
+    def decide(
+        self,
+        context: Context,
+        should_cancel=None,
+    ) -> Decision:
+        self.clock.advance(self.seconds)
+        return super().decide(context, should_cancel)
+
+
 class ApprovalRecordingTool(RecordingTool):
     name = "approval_test"
     description = "Test-only approval-required action."
@@ -1659,7 +1707,12 @@ def test_stella_stops_deterministically_at_tool_step_limit() -> None:
     result = stella.process(Context(user_input="Run bounded steps."))
 
     assert result.max_steps_reached is True
-    assert result.response == "I reached the maximum number of tool steps."
+    assert result.budget == "steps"
+    assert result.response == (
+        "I reached the limit of 2 tool calls, so I stopped. "
+        "What ran: record. The request may not be finished — "
+        "raise the tool-call limit in Settings."
+    )
     assert result.tool_result == ToolResult(success=True, output="tool output")
     assert tool.arguments == [
         {"message": "first"},
@@ -1669,6 +1722,259 @@ def test_stella_stops_deterministically_at_tool_step_limit() -> None:
     assert result.step_trace[-1].decision.arguments == {"message": "third"}
     assert result.step_trace[-1].tool_result is None
     assert llm.messages == []
+
+
+def test_the_clock_stops_a_turn_before_another_step_begins() -> None:
+    clock = FakeClock()
+    tool = TimeCostingTool(clock, 40.0)
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"path": "first"},
+                capability="workspace_list",
+            ),
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"path": "second"},
+                capability="workspace_list",
+            ),
+        ]
+    )
+    llm = RecordingLLM()
+    stella = Stella(
+        brain,
+        llm,
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        max_tool_steps=8,
+        turn_time_limit_seconds=30,
+        clock=clock,
+    )
+
+    result = stella.process(Context(user_input="Keep working."))
+
+    # One 40-second step against a 30-second budget: the second decision is
+    # never asked, and the sentence names the limit in force and the
+    # capability that actually came back — spelled for reading, not as an
+    # internal tool identifier.
+    assert clock.now == 40.0
+    assert tool.arguments == [{"path": "first"}]
+    assert result.budget == "time"
+    assert result.max_steps_reached is False
+    assert result.cancelled is False
+    assert result.response == (
+        "I reached the 30-second limit for this turn, so I stopped. "
+        "What ran: workspace list. The request may not be finished — "
+        "raise the time limit in Settings."
+    )
+    assert llm.messages == []
+
+
+def test_a_call_running_past_the_deadline_is_read_to_the_end() -> None:
+    clock = FakeClock()
+    tool = TimeCostingTool(clock, 40.0)
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"path": "first"},
+                capability="workspace_list",
+            ),
+            Decision(DecisionKind.ANSWER),
+        ]
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        max_tool_steps=8,
+        turn_time_limit_seconds=30,
+        clock=clock,
+    )
+
+    result = stella.process(Context(user_input="Finish what you started."))
+
+    # The owner's chosen semantics, pinned: the deadline decides whether new
+    # work may start, never whether a step already under way is worth
+    # finishing. The step completed, its result is kept and reported as what
+    # ran, and the turn ends late rather than empty.
+    assert clock.now == 40.0
+    assert result.tool_result == ToolResult(
+        success=True, output="tool output"
+    )
+    assert "What ran: workspace list." in (result.response or "")
+    assert result.budget == "time"
+
+
+def test_a_capability_proposed_after_the_deadline_is_never_dispatched() -> None:
+    clock = FakeClock()
+    tool = RecordingTool()
+    brain = SteppingSequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "first"},
+                capability="record",
+            ),
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "late"},
+                capability="record",
+            ),
+            Decision(DecisionKind.ANSWER),
+        ],
+        clock,
+        20.0,
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        max_tool_steps=8,
+        turn_time_limit_seconds=30,
+        clock=clock,
+    )
+
+    result = stella.process(Context(user_input="Two more steps."))
+
+    # A decision that arrives at 20 s is still worth asking for; the
+    # capability it proposes must not execute at 40 s.
+    assert tool.arguments == [{"message": "first"}]
+    assert result.budget == "time"
+    assert result.decision.arguments == {"message": "late"}
+    assert result.step_trace[-1].tool_result is None
+
+
+def test_a_turn_answered_after_the_deadline_keeps_its_answer() -> None:
+    clock = FakeClock()
+    brain = SteppingSequenceBrain(
+        [Decision(DecisionKind.ANSWER)], clock, 40.0
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(response="the answer"),
+        RecordingTool(),
+        InMemoryMemory(),
+        turn_time_limit_seconds=30,
+        clock=clock,
+    )
+
+    result = stella.process(Context(user_input="Answer slowly."))
+
+    # An ANSWER is not new work: nothing further is dispatched, so the
+    # deadline cannot take a reply that arrived, however late.
+    assert result.budget is None
+    assert result.response == "the answer"
+
+
+def test_user_cancel_outranks_the_time_budget_at_both_checkpoints() -> None:
+    clock = FakeClock()
+    tool = RecordingTool()
+    # The loop top: the clock is already out and the user has cancelled, and
+    # a cancel still discards the turn in silence, exactly as it did before
+    # any budget existed.
+    brain = SteppingSequenceBrain(
+        [Decision(DecisionKind.ANSWER)], clock, 40.0
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        turn_time_limit_seconds=30,
+        clock=clock,
+    )
+
+    cancelled_early = stella.process(
+        Context(user_input="stop"), should_cancel=lambda: True
+    )
+
+    assert cancelled_early.cancelled is True
+    assert cancelled_early.budget is None
+    assert cancelled_early.response is None
+    assert brain.contexts == []
+
+    # After the decision: the deadline passes while the call is in flight,
+    # and the cancel that lands on the same checkpoint is the one answered.
+    late_tool = RecordingTool()
+    late_brain = SteppingSequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "late"},
+                capability="record",
+            )
+        ],
+        clock,
+        40.0,
+    )
+    late_stella = Stella(
+        late_brain,
+        RecordingLLM(),
+        ToolDispatcher([late_tool]),
+        InMemoryMemory(),
+        turn_time_limit_seconds=30,
+        clock=clock,
+    )
+    ticks = iter([False, True])
+
+    cancelled_late = late_stella.process(
+        Context(user_input="stop mid-call"),
+        should_cancel=lambda: next(ticks),
+    )
+
+    assert cancelled_late.cancelled is True
+    assert cancelled_late.budget is None
+    assert cancelled_late.response is None
+    assert late_tool.arguments == []
+
+
+def test_no_time_budget_leaves_the_clock_unconsulted() -> None:
+    reads: list[float] = []
+
+    def counting_clock() -> float:
+        reads.append(1.0)
+        return 10_000.0
+
+    stella = Stella(
+        SequenceBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    arguments={"message": "first"},
+                    capability="record",
+                ),
+                Decision(DecisionKind.ANSWER),
+            ]
+        ),
+        RecordingLLM(response="the answer"),
+        ToolDispatcher([RecordingTool()]),
+        InMemoryMemory(),
+        clock=counting_clock,
+    )
+
+    result = stella.process(Context(user_input="Work without a deadline."))
+
+    assert result.budget is None
+    assert result.response == "the answer"
+    assert reads == []
+
+
+@pytest.mark.parametrize(
+    "limit", [0, 0.0, -1, -0.5, "30", True]
+)
+def test_a_time_budget_must_be_a_positive_number(limit: object) -> None:
+    with pytest.raises(ValueError):
+        Stella(
+            RecordingBrain(Decision(DecisionKind.ANSWER)),
+            RecordingLLM(),
+            RecordingTool(),
+            InMemoryMemory(),
+            turn_time_limit_seconds=limit,  # type: ignore[arg-type]
+        )
 
 
 def test_stella_feeds_failed_tool_result_to_next_brain_decision() -> None:

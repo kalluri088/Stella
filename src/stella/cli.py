@@ -411,6 +411,8 @@ def format_trace(result: StellaResult) -> list[str]:
                 lines.append(
                     _trace_line("final", "needs more information")
                 )
+            elif event.budget == "time":
+                lines.append(_trace_line("final", "stopped at time limit"))
             elif event.max_steps_reached:
                 lines.append(_trace_line("final", "stopped at step limit"))
     return lines

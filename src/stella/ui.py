@@ -38,6 +38,8 @@ from tkinter import ttk
 
 from stella import config, provider_keys
 from stella.app import (
+    MAX_TOOL_CALLS_LIMIT,
+    MAX_TURN_TIME_LIMIT_SECONDS,
     StellaBridge,
     StellaSettings,
     TurnOutcome,
@@ -69,6 +71,22 @@ from stella.wake import (
 #: The wake-phrase dropdown entry that arms every classifier found in
 #: the model directory (empty ``wake_models`` — detection, not a list).
 _WAKE_EVERYTHING = "everything detected on this machine"
+
+
+def _panel_number(raw: str, fallback: float) -> float:
+    """The number typed into a Settings entry, or the value already saved.
+
+    Reading is deliberately tolerant: ``_draft_settings`` also runs for Test
+    connection, where a half-typed field must not break the button. What a
+    number may say is enforced by ``_budget_refusal``, which stops Apply
+    before anything is rebuilt or saved.
+    """
+
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return fallback
+
 
 # Display labels for the semantic embedding choice; the menu is the only
 # writer of the variable, and the reverse map carries the selection back.
@@ -1979,6 +1997,36 @@ class StellaWindow:
         self._wake_choice_var.trace_add("write", self._refresh_wake_hint)
         self._wake_phrase_var.trace_add("write", self._refresh_wake_hint)
         self._refresh_wake_hint()
+        # The two budgets one turn may spend. These are the panel's first
+        # numeric entries, so they follow the wake row's shape: a frame of
+        # label-and-entry pairs plus one dim line saying what the numbers do.
+        calls_row = ttk.Frame(frame)
+        calls_row.pack(padx=6, pady=(6, 0), anchor="w")
+        ttk.Label(calls_row, text="Tool calls per turn:").pack(side="left")
+        self._tool_calls_var = tk.StringVar(
+            value=f"{settings.max_tool_calls:d}"
+        )
+        ttk.Entry(
+            calls_row, textvariable=self._tool_calls_var, width=4
+        ).pack(side="left", padx=(4, 0))
+        seconds_row = ttk.Frame(frame)
+        seconds_row.pack(padx=6, pady=(2, 0), anchor="w")
+        ttk.Label(seconds_row, text="Seconds per turn:").pack(side="left")
+        self._turn_seconds_var = tk.StringVar(
+            value=f"{settings.turn_time_limit_seconds:g}"
+        )
+        ttk.Entry(
+            seconds_row, textvariable=self._turn_seconds_var, width=4
+        ).pack(side="left", padx=(4, 0))
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="Whichever limit comes first ends the turn, and she then "
+            "says what ran and that the request may not be finished. The "
+            "seconds limit stops a turn from starting another step; a step "
+            "already running always finishes.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         ttk.Label(
             frame,
             style="Dim.TLabel",
@@ -2230,6 +2278,20 @@ class StellaWindow:
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],
+            # The two budgets. Read tolerantly because this method also runs
+            # for Test connection, where a half-typed field must not break the
+            # button: an out-of-range number only ever reaches the settings
+            # through _budget_refusal, which blocks Apply before that.
+            max_tool_calls=int(
+                _panel_number(
+                    self._tool_calls_var.get(),
+                    self._panel_settings.max_tool_calls,
+                )
+            ),
+            turn_time_limit_seconds=_panel_number(
+                self._turn_seconds_var.get(),
+                self._panel_settings.turn_time_limit_seconds,
+            ),
         )
 
     def _entered_key(self) -> str:
@@ -2349,6 +2411,37 @@ class StellaWindow:
             )
         return None
 
+    def _budget_refusal(self) -> str | None:
+        """Refuse turn budgets the settings could not carry.
+
+        The two numbers are checked here rather than corrected on the way in:
+        a value outside the range would be dropped to the default by the
+        config loader on the next launch, which would quietly undo what the
+        owner just typed. Saying so at Apply is the only honest option.
+        """
+
+        calls_text = self._tool_calls_var.get().strip()
+        try:
+            calls = int(calls_text)
+        except ValueError:
+            calls = 0
+        if not 1 <= calls <= MAX_TOOL_CALLS_LIMIT:
+            return (
+                "Tool calls per turn must be a whole number between 1 and "
+                f"{MAX_TOOL_CALLS_LIMIT} — nothing was applied."
+            )
+        seconds_text = self._turn_seconds_var.get().strip()
+        try:
+            seconds = float(seconds_text)
+        except ValueError:
+            seconds = 0.0
+        if not 0.0 < seconds <= MAX_TURN_TIME_LIMIT_SECONDS:
+            return (
+                "Seconds per turn must be a number above 0 and up to "
+                f"{MAX_TURN_TIME_LIMIT_SECONDS:g} — nothing was applied."
+            )
+        return None
+
     def _refresh_wake_hint(self, *_: object) -> None:
         models, phrase = self._wake_selection()
         heard = phrase or (wake_model_label(models[0]) if models else "")
@@ -2374,6 +2467,10 @@ class StellaWindow:
             self._settings_status.configure(text=refusal)
             return
         refusal = self._wake_refusal()
+        if refusal:
+            self._settings_status.configure(text=refusal)
+            return
+        refusal = self._budget_refusal()
         if refusal:
             self._settings_status.configure(text=refusal)
             return

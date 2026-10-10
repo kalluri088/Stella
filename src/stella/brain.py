@@ -187,7 +187,9 @@ class LLMBrain(Brain):
   "capability": "optional tool capability identifier"
 }
 Use null or omit optional fields when they are not needed. Do not execute tools
-or write memory. Choose do_nothing if no action is appropriate.
+or write memory. Choose do_nothing if no action is appropriate — but never to
+abandon a task halfway: choose it only when, after trying, there is genuinely
+nothing appropriate to do.
 For kind=answer, content MUST be a complete, user-facing final response. It is
 used directly as the response, so do not put decision notes or JSON in it.
 

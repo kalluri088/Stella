@@ -18,6 +18,8 @@ import pytest
 
 from stella import app, provider_keys
 from stella.app import (
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_TURN_TIME_LIMIT_SECONDS,
     ApprovalBroker,
     MemoryPanel,
     ReminderTicker,
@@ -1384,6 +1386,81 @@ def test_semantic_provider_choice_follows_the_saved_then_env_path(
     monkeypatch.setenv("STELLA_SEMANTIC_PROVIDER", "openai")
     with pytest.raises(SystemExit):
         StellaSettings.from_environment()
+
+
+def test_turn_budgets_default_to_the_decided_numbers() -> None:
+    # 90 seconds or 8 tool calls, whichever comes first — the numbers the
+    # owner decided, held as defaults in one place so the Settings path has
+    # something to override and the loop never reads a magic number.
+    assert StellaSettings().max_tool_calls == DEFAULT_MAX_TOOL_CALLS == 8
+    assert (
+        StellaSettings().turn_time_limit_seconds
+        == DEFAULT_TURN_TIME_LIMIT_SECONDS
+        == 90.0
+    )
+
+
+def test_the_saved_turn_budget_reaches_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("STELLA_MAX_TOOL_CALLS", raising=False)
+    monkeypatch.delenv("STELLA_TURN_TIME_LIMIT_SECONDS", raising=False)
+    settings = replace(
+        _semantic_settings(tmp_path, False),
+        max_tool_calls=4,
+        turn_time_limit_seconds=12.5,
+    )
+
+    application = build_application(settings)
+    try:
+        stella = application.session.stella
+        assert stella.max_tool_steps == 4
+        assert stella.turn_time_limit_seconds == 12.5
+    finally:
+        application.close()
+
+
+def test_an_environment_turn_budget_replaces_both_numbers_for_one_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STELLA_MAX_TOOL_CALLS", "2")
+    monkeypatch.setenv("STELLA_TURN_TIME_LIMIT_SECONDS", "15.5")
+
+    saved = StellaSettings.from_saved(
+        provider="ollama",
+        model="m",
+        max_tool_calls=9,
+        turn_time_limit_seconds=70.0,
+    )
+    monkeypatch.setenv("STELLA_MODEL", "m")
+    environment = StellaSettings.from_environment()
+
+    assert saved.max_tool_calls == 2
+    assert saved.turn_time_limit_seconds == 15.5
+    assert environment.max_tool_calls == 2
+    assert environment.turn_time_limit_seconds == 15.5
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("STELLA_MAX_TOOL_CALLS", "0"),
+        ("STELLA_MAX_TOOL_CALLS", "33"),
+        ("STELLA_MAX_TOOL_CALLS", "half"),
+        ("STELLA_TURN_TIME_LIMIT_SECONDS", "0"),
+        ("STELLA_TURN_TIME_LIMIT_SECONDS", "-5"),
+        ("STELLA_TURN_TIME_LIMIT_SECONDS", "601"),
+        ("STELLA_TURN_TIME_LIMIT_SECONDS", "soon"),
+    ],
+)
+def test_an_out_of_range_turn_budget_refuses_the_launch(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    # A deliberate environment override that cannot be honoured is said out
+    # loud, not quietly run as a different number.
+    monkeypatch.setenv(name, value)
+    with pytest.raises(SystemExit):
+        StellaSettings.from_saved(provider="ollama", model="m")
 
 
 def _provider_settings(tmp_path: Path, semantic_provider: str) -> StellaSettings:

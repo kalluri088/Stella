@@ -98,6 +98,16 @@ remaining candidates are streaming the answer (#230) so the wait has a
 beginning and an end the user can see, and a faster brain for the turns that
 need no reasoning at all (#237) — not a smaller budget.
 
+This table is also why the turn budget that shipped (#231) stops the loop
+*between* steps rather than inside a call. A 90-second bound that could only
+act at safe points would be a lie if a single call can burn 68 of its 90
+seconds: the runtime cannot cancel a decode it has already asked for, and
+aborting one mid-flight would throw away the answer that is arriving. So the
+clock decides whether another step begins, a call already in flight is read to
+the end, and a turn may therefore finish later than the number in Settings.
+That is written into the Settings hint and `docs/ARCHITECTURE.md`
+(*Turn budgets*) so the figure never promises a deadline it does not keep.
+
 ## Token accounting (`/usage`)
 
 Every provider client can carry one `UsageRecorder` (`stella.llm`), and

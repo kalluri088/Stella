@@ -1552,6 +1552,77 @@ def test_the_wake_checkbox_writes_both_spellings_of_one_choice(
         root.destroy()
 
 
+def test_the_turn_budget_entries_carry_and_refuse_numbers(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The two turn budgets are the first numeric fields the panel persists.
+    # A number the settings could not carry is refused rather than quietly
+    # corrected, because silently rewriting a limit the owner just typed
+    # would hide what her next turn actually runs under. Reading stays
+    # tolerant — _draft_settings also runs for Test connection, where a
+    # half-typed field must not break the button — so the two paths are
+    # pinned together: a malformed entry drafts the saved number and then
+    # stops Apply before anything is rebuilt.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    settings = StellaSettings(
+        model="test", max_tool_calls=4, turn_time_limit_seconds=12.5
+    )
+    root, window, bridge, _ = make_window(settings=settings)
+    try:
+        # A keyless preset so a successful Apply is about the budgets and
+        # not about a key the panel would otherwise refuse.
+        window._provider.set(provider_keys.PRESETS["ollama"].label)
+        window._panel_preset_changed()
+        assert window._tool_calls_var.get() == "4"
+        assert window._turn_seconds_var.get() == "12.5"
+        draft = window._draft_settings()
+        assert draft.max_tool_calls == 4
+        assert draft.turn_time_limit_seconds == 12.5
+
+        window._tool_calls_var.set("6")
+        window._turn_seconds_var.set("30")
+        draft = window._draft_settings()
+        assert draft.max_tool_calls == 6
+        assert draft.turn_time_limit_seconds == 30.0
+        assert window._budget_refusal() is None
+
+        captured: list[StellaSettings] = []
+        monkeypatch.setattr(bridge, "post_apply_settings", captured.append)
+        window._apply_settings()
+        assert len(captured) == 1
+        assert captured[0].max_tool_calls == 6
+        assert captured[0].turn_time_limit_seconds == 30.0
+
+        for calls, seconds in (
+            ("0", "30"),
+            ("33", "30"),
+            ("", "30"),
+            ("6.5", "30"),
+            ("6", "0"),
+            ("6", "601"),
+            ("6", ""),
+        ):
+            window._tool_calls_var.set(calls)
+            window._turn_seconds_var.set(seconds)
+            assert window._budget_refusal() is not None, (calls, seconds)
+            captured.clear()
+            window._apply_settings()
+            assert captured == [], (calls, seconds)
+            assert "nothing was applied" in window._settings_status.cget("text")
+
+        # A refused draft still cannot break Test connection: an
+        # unparseable entry falls back to the number the panel was opened
+        # with, while a parseable-but-wrong one (6.5 above) drafts the
+        # truncated int and is stopped at Apply.
+        window._tool_calls_var.set("many")
+        assert window._draft_settings().max_tool_calls == 4
+        assert window._budget_refusal() is not None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_startup_key_sweep_stays_silent_unless_a_key_is_bad(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

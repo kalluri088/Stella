@@ -59,6 +59,9 @@ class FinalResponseEvent:
     response_chars: int
     needs_more_information: bool
     max_steps_reached: bool
+    # Which turn budget ended the turn, "steps" or "time"; None when the model
+    # finished on its own. Names are the same values as StellaResult.budget.
+    budget: str | None = None
 
 
 @dataclass(frozen=True)

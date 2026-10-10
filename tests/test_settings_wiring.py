@@ -149,17 +149,65 @@ PLAIN_CONFIG_FIELDS = (
 # get the persist/read-back/passthrough checks below.
 ENV_DICT_CONFIG_FIELDS = ("wake_models", "wake_phrase")
 
+# The two turn budgets are the first numeric saved settings. They arrive the
+# same way the wake choices do (an environment value that wins for one launch,
+# otherwise the number the owner saved), but they are not booleans so they
+# cannot join UI_VARS, and the wake test above asserts wake-specific widget
+# names — so they get their own tables and their own end-to-end check.
+NUMERIC_CONFIG_FIELDS = ("max_tool_calls", "turn_time_limit_seconds")
+NUMERIC_UI_VARS = {
+    "max_tool_calls": "self._tool_calls_var",
+    "turn_time_limit_seconds": "self._turn_seconds_var",
+}
+
 
 def test_config_fields_are_exactly_the_tables() -> None:
     assert set(config_module._CONFIG_FIELDS) == (
         set(PLAIN_CONFIG_FIELDS)
         | set(OVERRIDE_FIELDS.values())
         | set(ENV_DICT_CONFIG_FIELDS)
+        | set(NUMERIC_CONFIG_FIELDS)
     ), (
         "a saved-configuration field appeared or vanished; every one is "
         "either a capability opt-in (OVERRIDE_FIELDS), an environment-dict "
-        "wake choice (ENV_DICT_CONFIG_FIELDS) or a plain field "
-        "(PLAIN_CONFIG_FIELDS)"
+        "wake choice (ENV_DICT_CONFIG_FIELDS), a numeric turn budget "
+        "(NUMERIC_CONFIG_FIELDS) or a plain field (PLAIN_CONFIG_FIELDS)"
+    )
+
+
+@pytest.mark.parametrize("field", sorted(NUMERIC_CONFIG_FIELDS))
+def test_numeric_setting_is_wired_end_to_end(field: str) -> None:
+    assert field in _settings_fields(), f"{field} is not a StellaSettings field"
+    assert (
+        field in config_module._CONFIG_FIELDS
+    ), f"{field} never reaches config.json"
+    # from_saved takes the saved number as a parameter and keeps it only when
+    # the environment said nothing, so an unset variable cannot overwrite it.
+    body = inspect.getsource(StellaSettings.from_saved)
+    assert f"{field}:" in body, f"{field} is not a from_saved parameter"
+    assert (
+        f'environment["{field}"]' in body
+    ), f"{field} is not merged into the built settings"
+    assert (
+        f'"{field}"' in inspect.getsource(StellaSettings._environment_fields)
+    ), f"{field} is not supplied from the environment"
+    assert (
+        f'raw.get("{field}"' in inspect.getsource(config_module.resolve_settings)
+    ), f"{field} is not read back from config.json"
+
+
+@pytest.mark.parametrize("field,var", sorted(NUMERIC_UI_VARS.items()))
+def test_ui_entry_writes_the_number_into_the_saved_settings(
+    field: str, var: str
+) -> None:
+    assert f"{var} = tk.StringVar" in UI_SOURCE, f"{field}: no entry var {var}"
+    assert f"{var}.get()" in UI_SOURCE, f"{field}: {var} is never read back"
+    assert f"{field}=" in UI_SOURCE, (
+        f"{field}: the settings panel never writes it into the saved settings"
+    )
+    assert "_budget_refusal" in UI_SOURCE, (
+        "the two numbers are read into the settings without a refusal, so an "
+        "out-of-range value would be silently defaulted at the next launch"
     )
 
 

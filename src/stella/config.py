@@ -28,7 +28,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stella import provider_keys
-from stella.app import StellaSettings, default_data_dir
+from stella.app import (
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_TURN_TIME_LIMIT_SECONDS,
+    MAX_TOOL_CALLS_LIMIT,
+    MAX_TURN_TIME_LIMIT_SECONDS,
+    StellaSettings,
+    default_data_dir,
+)
 from stella.llama_server import DEFAULT_LLAMA_SERVER_BINARY
 from stella.ollama_client import DEFAULT_OLLAMA_BASE_URL
 from stella.portable import harden_private_file
@@ -53,6 +60,12 @@ _CONFIG_FIELDS = (
     "wake_word_enabled",
     "wake_models",
     "wake_phrase",
+    # The first numeric settings this file persists: the two budgets one turn
+    # may spend. They join the save list so a choice made in Settings survives
+    # the next launch, and resolve_settings coerces them rather than trusting
+    # whatever JSON number a hand-edit left behind.
+    "max_tool_calls",
+    "turn_time_limit_seconds",
 )
 
 
@@ -653,6 +666,32 @@ def _openai_error_kind(error: Exception) -> str | None:
     return None
 
 
+def _saved_number(
+    raw: object,
+    *,
+    low: float,
+    high: float,
+    integral: bool = False,
+) -> float | None:
+    """One saved number inside the allowed range, or None when it is not.
+
+    ``low`` is exclusive and ``high`` inclusive, matching the ranges the
+    Settings panel accepts. A JSON boolean is never a number here and a string
+    is never converted. An unusable value means "use the default" rather than
+    "refuse the file", because rejecting the configuration would silently
+    discard every other setting the owner saved — the same drop-malformed rule
+    ``wake_models`` above already follows.
+    """
+
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if integral and not float(raw).is_integer():
+        return None
+    if not low < raw <= high:
+        return None
+    return float(raw) if not integral else float(int(raw))
+
+
 def resolve_settings() -> StellaSettings | None:
     """The configuration Stella should start with, or None for first run.
 
@@ -686,6 +725,20 @@ def resolve_settings() -> StellaSettings | None:
         else ()
     )
     raw_wake_phrase = raw.get("wake_phrase")
+    # The two turn budgets. Both arrive as JSON numbers, and both are checked
+    # against the same ranges the Settings panel refuses outside of: a
+    # hand-edited config.json gets the default, not an unbounded loop.
+    saved_calls = _saved_number(
+        raw.get("max_tool_calls"),
+        low=0,
+        high=MAX_TOOL_CALLS_LIMIT,
+        integral=True,
+    )
+    saved_seconds = _saved_number(
+        raw.get("turn_time_limit_seconds"),
+        low=0,
+        high=MAX_TURN_TIME_LIMIT_SECONDS,
+    )
     return StellaSettings.from_saved(
         provider=raw["provider"],
         preset=preset if isinstance(preset, str) else None,
@@ -719,5 +772,9 @@ def resolve_settings() -> StellaSettings | None:
         wake_models=wake_models,
         wake_phrase=(
             raw_wake_phrase if isinstance(raw_wake_phrase, str) else ""
+        ),
+        max_tool_calls=int(saved_calls or DEFAULT_MAX_TOOL_CALLS),
+        turn_time_limit_seconds=(
+            saved_seconds or DEFAULT_TURN_TIME_LIMIT_SECONDS
         ),
     )

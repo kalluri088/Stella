@@ -22,12 +22,18 @@ break."
 
 1. **Steps per turn.** `Stella.process` runs a bounded
    observe/decide/act loop (`stella.py:385`) and the application composes
-   `max_tool_steps=2` (`app.py:1258`). The bound counts tool dispatches,
-   and since every dispatch follows one model call it effectively bounds
-   decisions too. Hitting it is not silent: the turn returns
-   `"I reached the maximum number of tool steps."` with the last tool
-   result and the full `step_trace` (`stella.py:434-452`), so a four-part
-   request gets two parts done and says so.
+   both turn budgets from Settings: `max_tool_steps=settings.max_tool_calls`
+   (default 8) and `turn_time_limit_seconds` (default 90), persisted in
+   `config.json` (`app.py`, *Turn budgets* in `ARCHITECTURE.md`). The step
+   bound counts tool dispatches, and since every dispatch follows one model
+   call it effectively bounds decisions too; the clock bound decides only
+   whether another step may *start*. Hitting either is not silent: the turn
+   returns *"I reached the limit of 8 tool calls, so I stopped. What ran:
+   outline search. The request may not be finished — raise the tool-call
+   limit in Settings."* with the last tool result and the full `step_trace`,
+   so a four-part request gets as much as its budget allows and says which
+   parts those were. What this ceiling no longer is: a hardcoded 2 that
+   needed a code edit to move.
 2. **One call per decision.** The native tool path takes
    `response.tool_calls[0]` and nothing else (`brain.py:475-476`), and the
    JSON protocol carries exactly one `capability` plus its `arguments`
@@ -80,7 +86,7 @@ tools, which is why several popular answers are rejected below.
 
 | Technique | Demonstrated Stella need? | Cost here | Verdict |
 | --- | --- | --- | --- |
-| Raise `max_tool_steps` | Yes — the two-step bound is the first wall users hit; limit-hit path already reports honestly | One prefill + one model call per extra step; longer observation lists risk the 8192 clip | **Worth trying first, as a knob, not a new engine** |
+| Raise `max_tool_steps` | Yes — the two-step bound was the first wall users hit; limit-hit path already reported honestly | One prefill + one model call per extra step; longer observation lists risk the 8192 clip | **Shipped** — 8 calls and 90 s, both owner-settable in Settings, with the clock stopping only the start of a new step |
 | Verify-state-before-retry (checked side-effect confirmation) | Partly — a failed result already reaches the next decision intact (`stella.py:543-549`) and failures are the first observations kept (`context.py:219-223`), and Outline actions return an `ActionReceipt` (`stella.py:527-536`) | Low: the receipt machinery exists; the gap is reading it before proposing a retry | **Cheap and doctrine-aligned**; mostly a prompt/routing question |
 | Multi-turn task continuation | Yes — "do the rest of it later" has no object today | Needs a real task store: schema, UI, expiry, and the authority question of a stored plan firing tools later | **Do not build a store; use Outline as the store** (below) |
 | Plan-ahead / ReWOO-style batched tool calls (`tool_calls[1:]`) | Not demonstrated — no evidence the 4B model plans a correct multi-call batch; its single-decision accuracy is what was measured | Schema widening + partial-JSON risk, which `ROADMAP.md:709` forbids ("partial structured JSON must never trigger an action") | **Rejected for now** |

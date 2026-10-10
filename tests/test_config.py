@@ -9,7 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from stella import config, provider_keys
-from stella.app import StellaSettings
+from stella.app import (
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_TURN_TIME_LIMIT_SECONDS,
+    StellaSettings,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +27,10 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    # The two turn budgets have environment overrides that outrank a saved
+    # choice, so a developer's shell must not bend a test's numbers.
+    monkeypatch.delenv("STELLA_MAX_TOOL_CALLS", raising=False)
+    monkeypatch.delenv("STELLA_TURN_TIME_LIMIT_SECONDS", raising=False)
 
 
 class _Response:
@@ -108,6 +116,11 @@ def test_configuration_stores_only_non_secret_fields():
         # owner's disk and a display phrase. No audio, no path content.
         "wake_models",
         "wake_phrase",
+        # The two turn budgets: plain numbers, the first numeric settings this
+        # file persists. They are what the owner set in Settings, not a model
+        # name, a path or anything secret.
+        "max_tool_calls",
+        "turn_time_limit_seconds",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):
@@ -137,6 +150,114 @@ POSIX_MODES = pytest.mark.skipif(
     os.name != "posix",
     reason="0600 is a POSIX mode; on Windows the mechanism is an ACL",
 )
+
+
+def test_saved_turn_budgets_roundtrip():
+    # The first numeric settings this file persists: what the owner typed in
+    # Settings comes back out of config.json.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            max_tool_calls=3,
+            turn_time_limit_seconds=45.5,
+        )
+    )
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.max_tool_calls == 3
+    assert resolved.turn_time_limit_seconds == 45.5
+
+
+@pytest.mark.parametrize(
+    "field,value,expected",
+    [
+        # A count of tool calls is a whole number from 1 to 32: half a call is
+        # not a call, and neither is a string, a boolean or a bound the
+        # runtime would refuse to build.
+        ("max_tool_calls", None, DEFAULT_MAX_TOOL_CALLS),
+        ("max_tool_calls", -1, DEFAULT_MAX_TOOL_CALLS),
+        ("max_tool_calls", 0, DEFAULT_MAX_TOOL_CALLS),
+        ("max_tool_calls", 1.5, DEFAULT_MAX_TOOL_CALLS),
+        ("max_tool_calls", "8", DEFAULT_MAX_TOOL_CALLS),
+        ("max_tool_calls", True, DEFAULT_MAX_TOOL_CALLS),
+        ("max_tool_calls", 999, DEFAULT_MAX_TOOL_CALLS),
+        # Seconds may be fractional, but they must be positive and in scope.
+        ("turn_time_limit_seconds", None, DEFAULT_TURN_TIME_LIMIT_SECONDS),
+        ("turn_time_limit_seconds", -1, DEFAULT_TURN_TIME_LIMIT_SECONDS),
+        ("turn_time_limit_seconds", 0, DEFAULT_TURN_TIME_LIMIT_SECONDS),
+        ("turn_time_limit_seconds", "45", DEFAULT_TURN_TIME_LIMIT_SECONDS),
+        ("turn_time_limit_seconds", True, DEFAULT_TURN_TIME_LIMIT_SECONDS),
+        ("turn_time_limit_seconds", 601, DEFAULT_TURN_TIME_LIMIT_SECONDS),
+    ],
+)
+def test_a_malformed_turn_budget_falls_back_to_the_default(
+    field: str, value: object, expected: float
+):
+    # A bad number is dropped, never fatal: load_configuration returning None
+    # for an unusable file would silently discard every other setting the
+    # owner saved, so this follows the drop-malformed rule wake_models uses.
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="keeper")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw[field] = value
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    assert getattr(resolved, field) == expected
+
+
+def test_an_environment_turn_budget_outranks_the_saved_one(monkeypatch):
+    # The file is written first, so the saved number is genuinely on disk
+    # before the override exists: one launch uses 12 and 30, and reading has
+    # no part in rewriting what the owner saved.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            max_tool_calls=3,
+            turn_time_limit_seconds=45.5,
+        )
+    )
+    monkeypatch.setenv("STELLA_MAX_TOOL_CALLS", "12")
+    monkeypatch.setenv("STELLA_TURN_TIME_LIMIT_SECONDS", "30")
+
+    resolved = config.resolve_settings()
+    saved = config.load_configuration()
+
+    assert resolved is not None
+    assert resolved.max_tool_calls == 12
+    assert resolved.turn_time_limit_seconds == 30.0
+    # Reading never rewrites what was saved: the override is for this launch.
+    assert saved is not None
+    assert saved["max_tool_calls"] == 3
+    assert saved["turn_time_limit_seconds"] == 45.5
+
+
+def test_an_unset_environment_leaves_the_saved_turn_budget_alone():
+    # The trap this pins: the environment path always supplies a value for
+    # every field it owns, so an absent variable used to overwrite the saved
+    # budget with the shipped default at the next launch.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            max_tool_calls=3,
+            turn_time_limit_seconds=45.5,
+        )
+    )
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.max_tool_calls == 3
+    assert resolved.turn_time_limit_seconds == 45.5
 
 
 @POSIX_MODES

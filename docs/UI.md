@@ -196,6 +196,20 @@ display, and can never approve a tool or change permissions.
   as model keys, shown only as a redacted hint, and never written to
   `config.json` — an exported `TINYFISH_API_KEY` still overrides it for that
   launch. See `WEB.md`, `BROWSER.md` and `SHELL_TOOLS.md`.
+- Turn budgets: under the wake box sit two plain numbers, *Tool calls per
+  turn* (default 8, 1–32) and *Seconds per turn* (default 90, up to 600).
+  These are the first numeric fields the panel persists, and they are the
+  whole reason a turn can keep working: the loop stops at whichever comes
+  first and then says what ran and that the request *may not be finished*
+  (`ARCHITECTURE.md`, *Turn budgets*). The dim hint under the entries states
+  the semantics the number does not have — *"The seconds limit stops a turn
+  from starting another step; a step already running always finishes"* —
+  because one provider call here measures 10–68 s, so a turn can visibly run
+  past the figure typed here. A value the settings could not carry is
+  **refused at Apply with the field named and nothing rebuilt or saved**,
+  never quietly rounded; the same is not true of `config.json`, where a
+  hand-edited malformed number falls back to the default so the rest of the
+  file survives.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt

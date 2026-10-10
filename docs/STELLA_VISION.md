@@ -75,6 +75,18 @@ time, tool calls and tokens per task. Running out of budget is an honest stop
 — "I got this far, this is what's left, this is what blocked me" — and never a
 silent one, and never a success line.
 
+Two of those three axes are in place (#231): 8 tool calls and 90 seconds,
+whichever comes first, both editable in the Settings panel and saved in
+`config.json` rather than fixed in code. The clock acts only between steps —
+a provider call already running is read to the end, because on this machine
+one call can itself spend 68 of those 90 seconds — so the number bounds when
+new work starts, and the panel says exactly that instead of promising a
+deadline it does not keep. What the stop *cannot* honestly say yet is the
+middle clause: the runtime names what ran and warns that the request may not
+be finished, but it holds no model of what remains, so it does not invent one.
+Tokens per task remain unbudgeted (`decision_max_tokens` and
+`answer_max_tokens` cap one call, not a turn).
+
 *Test:* give her a task that needs four or five real steps. She should either
 finish it or report exactly where and why she stopped. "I can't, do it
 yourself" accompanied by *succeeded* is a defect, not an outcome.
@@ -214,7 +226,9 @@ in `AGENTS.md` and in the code rather than in this file:
   reading above;
 - the standing "synchronous execution / bounded multi-step" wording, which
   budgeted persistence revises;
-- the exact budget numbers, and which tools move into which safety tier.
+- the exact budget numbers — decided on 2026-10-10 and built: 90 seconds or 8
+  tool calls, owner-editable in Settings;
+- which tools move into which safety tier (still open, #232).
 
 Nothing in this document authorizes a code change by itself. It changes what
 counts as a defect.
@@ -264,10 +278,13 @@ Built and tested: the loop, four decision kinds, memory with retrieval,
 trusted tools with validation/risk/approval/audit, a voice periphery (push to
 talk, optional wake ear, barge-in, chunked speech, a resident synthesis
 worker), a persona subsystem, opt-in transcripts, reminders and one-shot event
-informs, hosted and local provider presets, and a desktop UI.
+informs, hosted and local provider presets, a desktop UI, and — since #231 —
+a turn that persists inside a budget of 8 tool calls or 90 seconds and stops
+with words naming what ran.
 
-Not built, and required by the six commitments: budgeted multi-step
-persistence, a style baseline that can notice an out-of-character turn,
+Not built, and required by the six commitments: the part of that honest stop
+that says what *remains* (the runtime has no task model to derive it from),
+a style baseline that can notice an out-of-character turn,
 streaming answers on the final-response path, and an interface where nothing
 important is reachable only by an environment variable or a log line.
 

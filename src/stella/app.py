@@ -412,6 +412,56 @@ def _env_token_budget(name: str, default: int) -> int | None:
     return value or None
 
 
+# The two budgets one turn may spend (vision commitment 3: keep working until
+# the task is done or the budget runs out, then stop honestly). Whichever is
+# reached first ends the turn, and both are settings the owner can change in
+# the window rather than numbers baked into code (commitment 6). The clock
+# bounds when new work may START, never whether a provider request already in
+# flight is worth reading — and one call on this machine measures 10-68 s
+# (docs/MODELS.md), so a turn can finish after its deadline. That is what the
+# Settings label says, so the number never promises more than it keeps.
+DEFAULT_MAX_TOOL_CALLS = 8
+DEFAULT_TURN_TIME_LIMIT_SECONDS = 90.0
+MAX_TOOL_CALLS_LIMIT = 32
+MAX_TURN_TIME_LIMIT_SECONDS = 600.0
+
+
+def _env_tool_calls() -> int | None:
+    """``STELLA_MAX_TOOL_CALLS``, or None when it says nothing."""
+
+    raw = os.environ.get("STELLA_MAX_TOOL_CALLS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if not 1 <= value <= MAX_TOOL_CALLS_LIMIT:
+        raise SystemExit(
+            "STELLA_MAX_TOOL_CALLS must be a whole number of tool calls "
+            f"between 1 and {MAX_TOOL_CALLS_LIMIT}"
+        )
+    return value
+
+
+def _env_turn_seconds() -> float | None:
+    """``STELLA_TURN_TIME_LIMIT_SECONDS``, or None when it says nothing."""
+
+    raw = os.environ.get("STELLA_TURN_TIME_LIMIT_SECONDS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not 0.0 < value <= MAX_TURN_TIME_LIMIT_SECONDS:
+        raise SystemExit(
+            "STELLA_TURN_TIME_LIMIT_SECONDS must be a number of seconds "
+            f"between 0 and {MAX_TURN_TIME_LIMIT_SECONDS:g}"
+        )
+    return value
+
+
 def transcripts_env_override() -> bool | None:
     """The STELLA_TRANSCRIPTS override, or None when it says nothing.
 
@@ -670,6 +720,10 @@ class StellaSettings:
     wake_threshold: float = 0.5
     decision_max_tokens: int | None = DEFAULT_DECISION_MAX_TOKENS
     answer_max_tokens: int | None = DEFAULT_ANSWER_MAX_TOKENS
+    # The turn's two budgets, persisted like the rest of what the owner chose
+    # (unlike the token caps above, which stay environment-only).
+    max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
+    turn_time_limit_seconds: float = DEFAULT_TURN_TIME_LIMIT_SECONDS
     ollama_think: bool | None = None
 
     def __post_init__(self) -> None:
@@ -851,6 +905,13 @@ class StellaSettings:
             "answer_max_tokens": _env_token_budget(
                 "STELLA_ANSWER_MAX_TOKENS", DEFAULT_ANSWER_MAX_TOKENS
             ),
+            # The two turn budgets. On this path the environment is the whole
+            # story; from_saved re-merges these so an unset variable cannot
+            # overwrite what the owner saved in Settings.
+            "max_tool_calls": _env_tool_calls() or DEFAULT_MAX_TOOL_CALLS,
+            "turn_time_limit_seconds": (
+                _env_turn_seconds() or DEFAULT_TURN_TIME_LIMIT_SECONDS
+            ),
             # Absent means "send nothing": report 26's kill gate says the
             # reasoning channel stays the shipped default until a corpus
             # run on THIS provider line proves think-off costs nothing.
@@ -889,6 +950,11 @@ class StellaSettings:
         # as setting nothing at all.
         wake_models: tuple[str, ...] = (),
         wake_phrase: str = "",
+        # The two turn budgets, as the owner saved them. The matching
+        # environment variables still win for a single launch, exactly like
+        # the wake choices above.
+        max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
+        turn_time_limit_seconds: float = DEFAULT_TURN_TIME_LIMIT_SECONDS,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -917,6 +983,18 @@ class StellaSettings:
         environment["wake_phrase"] = (
             environment["wake_phrase"] or wake_phrase
         )
+        # The same merge the wake choices use, and for the same reason: the
+        # splat below happens last, so leaving the budget at whatever
+        # _environment_fields defaulted to would silently overwrite the
+        # number the owner set in Settings with the shipped default. Only an
+        # explicit environment value outranks the saved one, and only for the
+        # launch that carries it.
+        env_calls = _env_tool_calls()
+        if env_calls is None:
+            environment["max_tool_calls"] = max_tool_calls
+        env_seconds = _env_turn_seconds()
+        if env_seconds is None:
+            environment["turn_time_limit_seconds"] = turn_time_limit_seconds
         return cls(
             provider=provider,
             preset=preset,
@@ -1262,7 +1340,8 @@ def build_application(settings: StellaSettings) -> StellaApplication:
         llm=llm,
         tool=tools,
         memory=memory,
-        max_tool_steps=2,
+        max_tool_steps=settings.max_tool_calls,
+        turn_time_limit_seconds=settings.turn_time_limit_seconds,
         semantic_retriever=semantic_retriever,
     )
     # Barge-in is explicitly opt-in and its absence must never affect

@@ -299,6 +299,7 @@ development, or running several configurations side by side:
 | `STELLA_WAKE_WORD` | Hands-free wake word (`on`/`off`) for this launch only; the *Wake word* box in Settings is what is saved (`wake_word_enabled`), and this variable wins over it either way. Arms the always-open detection ear, which needs the `wake` extra and models under `~/models/openwakeword`. There is deliberately no `auto`. | off |
 | `STELLA_VOICE_SOCKET` | Where `stella voice --toggle` finds the resident conversation server's one-word control socket. A test seam; normally untouched. | `$XDG_RUNTIME_DIR/stella-voice-<uid>.sock` |
 | `STELLA_DECISION_MAX_TOKENS` / `STELLA_ANSWER_MAX_TOKENS` | Per-call-kind output-token caps: the decision call and the answer call each stop decoding at their budget (`0` removes the cap) | `8192` / `2048` |
+| `STELLA_MAX_TOOL_CALLS` / `STELLA_TURN_TIME_LIMIT_SECONDS` | This launch's turn budget: how many tool calls one turn may dispatch, and how many seconds may pass before it starts another step (the seconds never cut off a call already running). What is saved is the *Tool calls per turn* / *Seconds per turn* boxes in Settings; these win over it for one launch, and an out-of-range value refuses the launch (`ARCHITECTURE.md`, *Turn budgets*) | `8` / `90` |
 | `STELLA_OLLAMA_THINK` | Force Ollama hybrid reasoning (`qwen3`-class models) on/off (`1`/`0`); unset keeps the model's own default | unset |
 
 Normal users never need any of these. One environment fact no setting

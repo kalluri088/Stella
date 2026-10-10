@@ -2,6 +2,89 @@
 
 ## Unreleased
 
+### A turn keeps working until its budget runs out, and then says so
+
+- **What changed.** A turn carries two bounds and stops at whichever comes
+  first: 8 tool calls and 90 seconds. Both are owner-settable — two numeric
+  entries in the Settings panel, persisted in `config.json` — and neither is
+  a code edit or an environment variable any more. `Stella` gained
+  `turn_time_limit_seconds` and an injectable `clock`, and checks the clock at
+  exactly the two points where new work could start: at the top of the loop,
+  and after a `tool` decision but before its dispatch. `max_tool_steps` is no
+  longer hardcoded to 2 in `app.py`. An exhausted budget ends the turn with one
+  honest sentence, built only from facts the runtime knows — the limit in
+  force and the capabilities that actually got a tool result: *"I reached the
+  limit of 8 tool calls, so I stopped. What ran: workspace list. The request
+  may not be finished — raise the tool-call limit in Settings."*
+  `StellaResult.budget` (`"steps"` / `"time"`) names which bound fired, the
+  same value rides on `FinalResponseEvent`, and the CLI traces a time stop as
+  `stopped at time limit` beside the existing step line. The `do_nothing`
+  prompt line now forbids using it to abandon a task halfway.
+- **Why these semantics.** The owner decided the boundary explicitly: the
+  clock stops the loop from *starting* new work and never abandons a request
+  already in flight. Measurement made anything else dishonest
+  (`docs/MODELS.md`): a trivial turn is exactly one provider call, prefill is
+  cached at ~0.07 s, and the whole 10–68 s is decoding the model's thinking
+  channel — a length the runtime cannot set, so one call can consume most of a
+  90-second budget. A turn may therefore finish later than the number in
+  Settings, which is what the panel's hint and the docs say in those words
+  rather than promising a deadline the code does not keep. Cancelling an
+  in-flight request stays the provider client's business and was not extended.
+- **Safety.** The stop is a normal result (`cancelled=False`) composed of
+  runtime literals: no model prose, no second LLM call, no new authority. A
+  refused proposal is recorded as what it is — a decision the runtime did not
+  execute — and nothing dispatches after it. A user cancel outranks both
+  budgets at both checkpoints and stays as silent as it was. The deadline lives
+  in the `process` frame, never on the instance, so a second concurrent turn
+  cannot inherit the first one's clock. `budget` is display and trace material
+  only; it never changes what is authorized. Numbers are range-checked where
+  they are read: an out-of-range `STELLA_MAX_TOOL_CALLS` /
+  `STELLA_TURN_TIME_LIMIT_SECONDS` refuses the launch, matching the token
+  budget doctrine, while the panel refuses an impossible value at Apply before
+  anything is rebuilt or saved.
+- **Known consequence.** Raising the production step bound from 2 to 8 means a
+  model that keeps trying can now spend ~80 s where it used to spend ~20 s.
+  That is the owner's decision, and the 90-second bound is what makes it
+  finite.
+- **Unchanged.** Precedence follows the wake-word merge, not the environment
+  splat: an environment value wins for one launch, otherwise the validated
+  saved value, otherwise the default — so an unset variable can no longer
+  silently overwrite what the owner typed. A malformed number in
+  `config.json` drops to the default instead of refusing the file, because a
+  rejected load would discard every other saved setting (the same doctrine as
+  `wake_models`). ANSWER/ASK/DO_NOTHING paths are untouched: a reply that
+  arrives after the deadline is kept. `max_tool_steps` still defaults to 1 for
+  every existing call site, the 8192/2048 token caps are untouched, and there
+  is still no per-turn token budget and no task-progress model — the stop says
+  *may not be finished* precisely because the runtime cannot honestly name
+  what remains.
+- **Proof.** Two real `qwen3:4b` turns through the dev-sandbox CLI, no extra
+  models loaded. At `STELLA_TURN_TIME_LIMIT_SECONDS=5` the first proposed
+  `datetime` call was refused past the deadline: the trace read
+  `decision TOOL -> datetime` then `final stopped at time limit`, and the
+  response the user saw read *"I reached the 5-second limit for this turn…
+  What ran: nothing."* At 40 seconds the turn got real work done first —
+  `workspace_list` succeeded (42 chars of output), the second decision
+  (`datetime`) arrived too late to dispatch, and the sentence named what had
+  actually run: *"What ran: workspace list."* A control run at 1 call /
+  300 seconds answered normally, so the new checkpoints did not disturb the
+  existing one-step flow. Model unloaded with `keep_alive: 0`; `/api/ps`
+  verified empty. Then the suites: `tests/test_stella.py` (88) — the clock
+  stops a turn between steps, a call running past the deadline is read to the
+  end, a proposal after the deadline is never dispatched, a late answer keeps
+  its answer, cancel outranks the clock at both checkpoints, `None` means no
+  bound, and a non-positive limit is rejected; `tests/test_config.py` (74) —
+  both numbers round-trip, a malformed one falls back to the default with the
+  rest of the file surviving, and an unset environment leaves the saved budget
+  alone; `tests/test_app.py` (95), `tests/test_ui.py` (79) — the entries read
+  back and a refusal blocks Apply before any rebuild;
+  `tests/test_settings_wiring.py` (60) — the new numeric fields are wired at
+  every touchpoint; `tests/test_cli.py` + `tests/test_trace.py` +
+  `tests/test_conformance.py` (169 passed, 4 skipped) and
+  `tests/test_tool_fast_path.py` + `tests/test_brain.py` (81) green, so the
+  retargeted stop sentence did not weaken anything around it.
+  `uv run ruff check .` clean, `git diff --check` clean.
+
 ### A turn that could not be read no longer ends in silence
 
 - **What changed.** `Decision` carries one new flag, `unreadable`, set only by

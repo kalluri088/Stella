@@ -747,9 +747,12 @@ agentic-work review kept its own document):
   recorded in `docs/AGENTIC_TASKS.md`: the four real ceilings are the
   two-step bound, one tool call per decision, nothing surviving the turn
   and one approval per dangerous action, each drawn deliberately from
-  measurement. Of the techniques reviewed, only a raised `max_tool_steps`
-  (as a knob, after measuring which step requests actually die on) and
-  reading the existing `ActionReceipt` before a retry are candidates;
+  measurement. The first of those is now closed (#231, 2026-10-10): the loop
+  runs on two owner-settable turn budgets — 8 tool calls and 90 seconds,
+  saved in `config.json` and edited in Settings — and an exhausted budget
+  stops with a sentence naming what ran instead of a hardcoded two-step
+  message. Of the techniques reviewed, reading the existing `ActionReceipt`
+  before a retry remains a candidate;
   batched plan-ahead calls, plan-level approval, critic passes and
   sub-agents are rejected here. Cross-turn tasks are not a new engine: the
   doctrine's answer is an Outline item that the existing reminder tick

@@ -173,6 +173,19 @@ DEFAULT_THEME = "dark"
 # Frame characters for the working-status spinner (100 ms tick).
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+# Text-side narration for a turn in flight: the label says what phase Stella
+# is in, in her voice, instead of a bare stopwatch. Application-authored and
+# keyed by the activity kinds the core already emits — never model text. It
+# deliberately does not reuse ``NARRATION_PHRASES``: that map is what the
+# voice panel speaks, it has no "answering" entry because the reply itself is
+# that phase's speech, and a window has no reply yet while it is being
+# written. A kind missing here simply keeps the previous line.
+_STATUS_PHASES = {
+    "thinking": "thinking about that",
+    "working": "working on that",
+    "answering": "composing the answer",
+}
+
 # A paste this big collapses to a colored chip in the composer and the
 # transcript; the full text is still sent to Stella unchanged.
 _PASTE_COLLAPSE_LINES = 4
@@ -1438,9 +1451,10 @@ class StellaWindow:
         seconds = int(time.monotonic() - self._turn_started)
         # A quiet braille spinner says "alive" between the whole-second
         # updates; with no activity named yet the asserted prefix stays
-        # exactly "Stella is working · ". A calling:<capability> event
-        # upgrades "working" to "calling memory list" mid-turn, so the
-        # long tool+synthesis stretch never reads as a dead pane.
+        # exactly "Stella is working · ". An activity event upgrades that to
+        # a phase ("thinking about that") or to the capability she is using
+        # ("calling memory list") mid-turn, so the long tool+synthesis
+        # stretch never reads as a dead pane.
         self._pulse = (self._pulse + 1) % len(_SPINNER)
         self._status.configure(
             text=(
@@ -1455,9 +1469,13 @@ class StellaWindow:
         if kind == "turn":
             self._handle_turn(payload)
         elif kind == "activity":
-            # Core-known capability name, never model text.
-            phase = str(payload).removeprefix("calling:").replace("_", " ")
-            self._turn_activity = f"calling {phase}" if phase else ""
+            # Core-known phase, never model text.
+            phase = str(payload)
+            if phase.startswith("calling:"):
+                named = phase.removeprefix("calling:").replace("_", " ")
+                self._turn_activity = f"calling {named}" if named else ""
+            elif phase in _STATUS_PHASES:
+                self._turn_activity = _STATUS_PHASES[phase]
         elif kind == "reminder_delivered":
             # One Outline reminder this process claimed. Stella keeps no
             # reminder store, so every line here names its source.

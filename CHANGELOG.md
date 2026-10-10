@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### The window says what Stella is doing, not only for how long
+
+- **What changed.** The status label now renders the activity phases the
+  runtime already emits: `thinking` becomes "Stella is thinking about that",
+  `working` becomes "Stella is working on that", and `answering` becomes
+  "Stella is composing the answer". `calling:<capability>` keeps its older,
+  more specific rendering, a kind with no phrase leaves the previous line
+  standing, and `_begin_turn_timer` still clears it for the next turn.
+- **Why.** The owner asked for exactly this: while the model is taking its
+  time, say a few words — "wait, I am thinking". The CLI had it
+  ("Stella is calling workspace list..."), voice had `NARRATION_PHRASES`, and
+  the desktop window — the surface the owner actually uses — showed a
+  stopwatch. Commitment one of `docs/STELLA_VISION.md` is that Stella feels
+  like a person in the room, and "Stella is working · 14 s" is a progress bar
+  wearing her name.
+- **Deliberately not reused.** The window map is new rather than
+  `NARRATION_PHRASES`, because that one is what the voice panel speaks and
+  has no `answering` entry on purpose — the reply itself is that phase's
+  speech. Sharing it would have made Stella say "composing the answer" out
+  loud. Both maps hold application-authored text keyed by core-emitted kinds;
+  neither ever renders model output.
+- **What a real turn actually shows.** Two turns against the real
+  `qwen3:4b`: "what is 2 plus 2?" emitted `thinking` and answered in 16.8 s;
+  "list the files in my workspace" emitted `thinking, working,
+  calling:workspace_list, thinking` and answered in 17.1 s. So the window now
+  says "thinking about that" for the wait instead of "working", and
+  "composing the answer" is present for the synthesis path a text turn
+  normally skips — honest to have, not something to claim she shows.
+- **Unchanged.** Approval gates, the turn itself, narration for voice, and
+  the asserted generic prefix "Stella is working · " that a fresh turn falls
+  back to.
+- **Proof.** `tests/test_ui.py`: 78 passed, including two new tests driving
+  the real Tk window — every phase renders its own label, and an unknown kind
+  cannot blank a named capability. `uv run ruff check .`: clean.
+
 ### A refusal no longer ends with a tick
 
 - **What changed.** `outcome_status` gives a receipt-less success the kind

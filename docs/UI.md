@@ -89,9 +89,16 @@ display, and can never approve a tool or change permissions.
   plain editable text, a deliberate Tk trade-off over non-atomic widgets.
   While a turn runs, the status line counts elapsed seconds
   ("Stella is working · 12 s") so a slow local model reads as slow, not
-  broken; once the runtime validates a tool call, the line upgrades to
-  name the capability ("Stella is calling memory list · 7 s") — the
-  application's own knowledge, never model text — and a **Cancel**
+  broken, and it names the phase the runtime is actually in as it goes:
+  "Stella is thinking about that" while a decision is being made, "Stella is
+  working on that" between steps, and once the runtime validates a tool call
+  the line upgrades to name the capability ("Stella is calling memory list ·
+  7 s"). "Stella is composing the answer" is available for the synthesis
+  phase, which a text turn normally never reaches — a decision that already
+  carries its answer is returned as it is. Every one of those strings is the
+  application's own knowledge keyed by the activity kinds `stella.py`
+  already emits, never model text, and an unknown kind leaves the previous
+  line standing. A **Cancel**
   button appears beside Send. Cancel stops the
   turn at the next safe point between steps and — since A7 — also
   interrupts a provider request that is still in flight: the native

@@ -625,6 +625,46 @@ def test_activity_event_names_the_capability_on_the_status_line() -> None:
         root.destroy()
 
 
+def test_window_names_the_phase_not_just_the_clock() -> None:
+    """A long turn should read as a person thinking, not a progress bar: the
+    window already received the CLI's phase events and showed only seconds."""
+
+    root, window, bridge, _ = make_window()
+    try:
+        window._begin_turn_timer()
+        window._busy = True
+        for phase, expected in (
+            ("thinking", "Stella is thinking about that · "),
+            ("working", "Stella is working on that · "),
+            ("answering", "Stella is composing the answer · "),
+        ):
+            window._handle_event(UiEvent("activity", phase))
+            window._render_working_status()
+            assert str(window._status.cget("text")).startswith(expected)
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_an_unknown_activity_kind_never_blanks_the_label() -> None:
+    """A named capability is more specific than a phase, and a kind this
+    surface has no phrase for must leave the previous line standing."""
+
+    root, window, bridge, _ = make_window()
+    try:
+        window._begin_turn_timer()
+        window._busy = True
+        window._handle_event(UiEvent("activity", "calling:workspace_search"))
+        window._handle_event(UiEvent("activity", "some_future_kind"))
+        window._render_working_status()
+        assert str(window._status.cget("text")).startswith(
+            "Stella is calling workspace search · "
+        )
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_activity_event_carries_no_authority_and_ignores_blank_capability() -> None:
     root, window, bridge, _ = make_window()
     try:

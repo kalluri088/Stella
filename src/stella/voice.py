@@ -773,6 +773,14 @@ class CommandSpeechProvider(SpeechProvider):
         shutil.rmtree(self._directory, ignore_errors=True)
 
 
+class _WorkerExited(Exception):
+    """The worker process is gone; only its exit code is left to say so."""
+
+    def __init__(self, code: int | None) -> None:
+        super().__init__(f"speech worker exited ({code})")
+        self.code = code
+
+
 class ResidentSpeechProvider(SpeechProvider):
     """Render text through ONE long-lived synthesis worker process.
 
@@ -804,6 +812,11 @@ class ResidentSpeechProvider(SpeechProvider):
     click. A valid-but-unsupported shape is passed through untouched
     rather than rejected — this check exists to catch a broken
     worker, not to police every WAV a future worker might produce.
+
+    Dying and being slow are reported as the two different things they
+    are. One message covering both explains neither, and it cost a real
+    session its audio before anyone could tell a broken worker from a
+    reply that asked more of a sentence than the worker's budget covers.
     """
 
     def __init__(
@@ -832,22 +845,26 @@ class ResidentSpeechProvider(SpeechProvider):
         self._request_id = 0
         self._process: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] | None = None
-        self._cancel_requested = False
         self._lock = threading.Lock()
         self._request_lock = threading.Lock()
 
     def cancel(self) -> None:
-        """Abort a running synthesis; the worker is retired, not reused."""
+        """Abort a running synthesis; the worker is retired, not reused.
+
+        Retirement is the signal a waiting request reads: ``speak()`` holds
+        the process it wrote to and compares, so a cancel that finds
+        nothing in flight costs the next sentence a warm worker and nothing
+        else.
+        """
 
         with self._lock:
+            # Drop the reference first, so a request waiting on this process
+            # reads "retired under me" before the kill even lands.
             process = self._process
-            self._cancel_requested = True
+            self._process = None
+            self._lines = None
         if process is not None:
             _cancel_process_tree(process)
-            with self._lock:
-                if self._process is process:
-                    self._process = None
-                    self._lines = None
 
     def speak(self, output: SpeechOutput) -> SpeechArtifact:
         bounded = output.text[:MAX_SPEECH_TEXT_CHARS]
@@ -884,17 +901,33 @@ class ResidentSpeechProvider(SpeechProvider):
                     raise VoiceError(
                         f"Resident speech worker broke ({error})."
                     ) from error
-            reply = self._await_reply(lines, process, request_id)
+            reply: dict | None
+            exit_code: int | None = None
+            try:
+                reply = self._await_reply(lines, process, request_id)
+            except _WorkerExited as exited:
+                reply = None
+                exit_code = exited.code
             with self._lock:
-                cancelled = self._cancel_requested
-                self._cancel_requested = False
+                # Retirement of the very process this request was written to
+                # is the only thing that has ever meant "cancelled" here. A
+                # flag with no owner let an unrelated interrupt — a "stop
+                # speaking" that arrived a beat late, a cancelled narration
+                # phrase — silence the next sentence instead.
+                cancelled = self._process is not process
             if cancelled:
                 raise VoiceError("Resident speech was cancelled.")
             if reply is None:
                 with self._lock:
-                    self._retire_locked()
+                    if self._process is process:
+                        self._retire_locked()
+                if exit_code is None:
+                    raise VoiceError(
+                        "The resident speech worker did not answer within"
+                        f" {self._timeout:g} s."
+                    )
                 raise VoiceError(
-                    "Resident speech took too long or stopped answering."
+                    f"The resident speech worker stopped (exit code {exit_code})."
                 )
             if not reply.get("ok"):
                 detail = str(reply.get("error", ""))[:120] or "worker refused"
@@ -959,7 +992,14 @@ class ResidentSpeechProvider(SpeechProvider):
         threading.Thread(
             target=self._pump_stdout, args=(process.stdout, lines), daemon=True
         ).start()
-        ready = self._await_line(lines, process, self._ready_timeout)
+        try:
+            ready = self._await_line(lines, process, self._ready_timeout)
+        except _WorkerExited as exited:
+            self._retire_locked()
+            raise VoiceError(
+                "The resident speech worker did not become ready"
+                f" (exit code {exited.code})."
+            ) from exited
         payload = _json_line(ready)
         if payload is None or not payload.get("ready"):
             reason = str((payload or {}).get("error", ""))[:120]
@@ -975,7 +1015,11 @@ class ResidentSpeechProvider(SpeechProvider):
         process: subprocess.Popen[str],
         request_id: int,
     ) -> dict | None:
-        """Next good reply for this id; stale or unreadable lines are skipped."""
+        """Next good reply for this id; stale or unreadable lines are skipped.
+
+        ``None`` now means one thing only — the deadline passed while the
+        worker stayed alive. A worker that died raises :class:`_WorkerExited`.
+        """
 
         while True:
             raw = self._await_line(lines, process, self._timeout)
@@ -993,16 +1037,18 @@ class ResidentSpeechProvider(SpeechProvider):
         process: subprocess.Popen[str],
         timeout: float,
     ) -> str | None:
+        """One line from the worker: ``None`` if the wait ran out first."""
+
         try:
             line = lines.get(timeout=timeout)
         except queue.Empty:
             return None
-        if line is None:  # worker EOF mid-request
+        if line is None:  # the pump saw stdout close: the worker is gone
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover
                 process.kill()
-            return None
+            raise _WorkerExited(process.returncode)
         return line
 
     def _pump_stdout(self, stream, sink: queue.Queue[str | None]) -> None:

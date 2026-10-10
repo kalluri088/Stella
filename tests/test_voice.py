@@ -35,7 +35,12 @@ from stella.app import (
     outcome_status,
 )
 from stella.audio import TranscriptionProvider
-from stella.audio_output import SpeechArtifact, SpeechOutput, SpeechProvider
+from stella.audio_output import (
+    MAX_SPEECH_CHUNK_CHARS,
+    SpeechArtifact,
+    SpeechOutput,
+    SpeechProvider,
+)
 from stella.brain import Brain, Decision, DecisionKind
 from stella.childproc import recording_finalized_ok
 from stella.context import Context, InputModality, InputPart, InputProvenance
@@ -1864,6 +1869,36 @@ def test_chunked_reply_synthesizes_and_plays_every_sentence_in_order() -> None:
     bridge.stop()
 
 
+def test_a_list_reply_reaches_the_worker_as_bounded_requests() -> None:
+    # Measured, not theorised: twenty bullets used to be one 2329-character
+    # request, and a resident worker with a sentence's budget was killed at
+    # sixty seconds for a job that needed seventy — losing the reply's audio
+    # while its text stayed on screen.
+    reply = "\n".join(
+        f"- step {i} rewrites the artifact in place and reports the "
+        f"difference back to the next turn"
+        for i in range(20)
+    )
+    speech = FakeSpeech()
+    player = FakePlayer()
+    panel = make_panel(speech=speech, player=player)
+    panel.speech_enabled = True
+    bridge = make_voice_bridge(
+        make_chunked_stella(
+            [Decision(kind=DecisionKind.ANSWER, content=reply)]
+        ),
+        panel,
+    )
+
+    bridge.post_turn("hello")
+    events = wait_for_voice_state(bridge, "idle")
+
+    assert len(speech.spoken) == 20
+    assert all(len(text) <= MAX_SPEECH_CHUNK_CHARS for text in speech.spoken)
+    assert not any(event.kind == "voice_error" for event in events)
+    bridge.stop()
+
+
 def test_stop_playback_silences_the_remaining_chunks() -> None:
     hold = threading.Event()
     player = FakePlayer(hold=hold)
@@ -2603,6 +2638,8 @@ for line in sys.stdin:
         continue
     if req["text"] == "silent":
         continue
+    if req["text"] == "die":
+        sys.exit(7)
     _emit(req["output"])
     print(json.dumps({"id": req["id"], "ok": True}), flush=True)
 """
@@ -2645,7 +2682,7 @@ def test_resident_worker_refusal_surfaces_honestly() -> None:
 def test_resident_worker_timeout_retires_it_and_the_next_call_recovers() -> None:
     provider = _resident(timeout=0.5)
     try:
-        with pytest.raises(VoiceError, match="too long or stopped"):
+        with pytest.raises(VoiceError, match="did not answer within"):
             provider.speak(SpeechOutput(text="silent"))
         # A retired worker is replaced, not trusted: the next sentence
         # starts a fresh process and succeeds.
@@ -2654,6 +2691,48 @@ def test_resident_worker_timeout_retires_it_and_the_next_call_recovers() -> None
             assert os.path.exists(artifact.reference)
         finally:
             provider.dispose()
+    finally:
+        provider.dispose()
+
+
+def test_a_worker_that_is_still_thinking_is_reported_as_a_timeout() -> None:
+    # The two failures used to share one sentence, and that is why a session
+    # lost its audio with no way to tell a dead worker from a slow one. A
+    # worker that is alive and computing must never be described as gone.
+    provider = _resident(timeout=0.4)
+    try:
+        with pytest.raises(VoiceError) as raised:
+            provider.speak(SpeechOutput(text="silent"))
+        message = str(raised.value)
+        assert "did not answer within" in message
+        assert "stopped" not in message
+    finally:
+        provider.dispose()
+
+
+def test_a_worker_that_exits_is_reported_as_a_death_with_its_code() -> None:
+    provider = _resident(timeout=5.0)
+    try:
+        with pytest.raises(VoiceError) as raised:
+            provider.speak(SpeechOutput(text="die"))
+        message = str(raised.value)
+        assert "stopped (exit code 7)" in message
+        assert "did not answer" not in message
+    finally:
+        provider.dispose()
+
+
+def test_a_cancel_with_nothing_in_flight_does_not_silence_the_next_sentence() -> None:
+    # "Stop speaking", a barge-in, or a narration phrase that finished a beat
+    # before its cancel arrived all reach cancel() between requests. The flag
+    # it used to set had no owner, so the next unrelated sentence answered for
+    # it and a whole reply went quiet.
+    provider = _resident()
+    try:
+        provider.speak(SpeechOutput(text="first"))
+        provider.cancel()
+        artifact = provider.speak(SpeechOutput(text="second"))
+        assert os.path.exists(artifact.reference)
     finally:
         provider.dispose()
 

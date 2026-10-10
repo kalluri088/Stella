@@ -1,6 +1,7 @@
 import pytest
 
 from stella.audio_output import (
+    MAX_SPEECH_CHUNK_CHARS,
     MAX_SPEECH_TEXT_CHARS,
     MIN_SPEECH_CHUNK_CHARS,
     SpeechArtifact,
@@ -117,7 +118,7 @@ def test_digits_ending_a_period_like_run_do_not_split() -> None:
     ) == ["We saw exactly 5. Nothing more happened after that."]
 
 
-def test_blank_lines_break_paragraphs_and_wrapping_does_not_matter() -> None:
+def test_every_line_break_splits_and_a_wrapped_clause_breathes_there() -> None:
     assert sentence_chunks(
         "First paragraph line.\nWrapped line here.\n\n"
         "Second paragraph text."
@@ -125,6 +126,16 @@ def test_blank_lines_break_paragraphs_and_wrapping_does_not_matter() -> None:
         "First paragraph line.",
         "Wrapped line here.",
         "Second paragraph text.",
+    ]
+    # A clause carried over a line without any punctuation of its own now
+    # gets a breath at the break instead of becoming one longer request.
+    # That is the price of a worker that can answer every request it is
+    # given, and it is paid in prosody rather than in lost audio.
+    assert sentence_chunks(
+        "the model wrote this clause a little long\nand carried it over"
+    ) == [
+        "the model wrote this clause a little long",
+        "and carried it over",
     ]
 
 
@@ -148,6 +159,50 @@ def test_a_reply_without_a_split_point_is_exactly_one_chunk() -> None:
     assert sentence_chunks("") == []
 
 
+def test_a_line_broken_list_is_one_request_per_item_not_one_for_the_reply() -> None:
+    # The shape that cost a real session its audio: a list has no
+    # sentence-ending punctuation, so twenty items reached the resident
+    # worker as a single 2329-character request and lost the whole reply to
+    # a budget sized for a sentence.
+    reply = "\n".join(
+        f"- step {i} rewrites the artifact in place and reports the "
+        f"difference back to the next turn"
+        for i in range(20)
+    )
+
+    chunks = sentence_chunks(reply)
+
+    assert len(chunks) == 20
+    assert all(len(chunk) <= MAX_SPEECH_CHUNK_CHARS for chunk in chunks)
+
+
+def test_an_unpunctuated_run_on_paragraph_is_bounded_between_words() -> None:
+    text = (
+        "the worker keeps answering while the player keeps draining "
+        "and nothing ever breaks the flow at all "
+    ) * 12
+
+    chunks = sentence_chunks(text)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= MAX_SPEECH_CHUNK_CHARS for chunk in chunks)
+    # Word order survives the split, and a token is never halved: cutting
+    # "flowing" into "flo" and "wing" would show up here as extra words.
+    assert " ".join(chunks).split() == text.split()
+
+
+def test_a_token_longer_than_the_bound_is_never_cut_in_half() -> None:
+    # A base64 blob or one enormous URL has nowhere honest to break. It
+    # stays whole — one request that can still overrun the budget, now
+    # reported as a timeout rather than as a dead worker.
+    blob = "x" * (MAX_SPEECH_CHUNK_CHARS + 900)
+
+    chunks = sentence_chunks(f"see {blob} here")
+
+    assert any(blob in chunk for chunk in chunks)
+    assert " ".join(chunks).split() == f"see {blob} here".split()
+
+
 def test_chunks_conserve_the_reply_modulo_whitespace_and_stay_bounded() -> (
     None
 ):
@@ -160,3 +215,6 @@ def test_chunks_conserve_the_reply_modulo_whitespace_and_stay_bounded() -> (
 
     assert " ".join(chunks).split() == text.split()
     assert all(len(chunk) <= MAX_SPEECH_TEXT_CHARS for chunk in chunks)
+    # The bound that actually matters to a worker: no reply, however
+    # punctuated, is ever asked of it as one longer request than this.
+    assert all(len(chunk) <= MAX_SPEECH_CHUNK_CHARS for chunk in chunks)

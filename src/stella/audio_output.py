@@ -8,6 +8,13 @@ from stella.spoken_form import speakable
 
 MAX_SPEECH_TEXT_CHARS = 4000
 MIN_SPEECH_CHUNK_CHARS = 12
+#: The longest stretch of reply one synthesis request may be asked for.
+#: Measured on the installed Kokoro worker (2026-10-10), rendering costs
+#: about 0.03 s per character on an idle machine, so a 2300-character
+#: "sentence" needs ~70 s — past the resident provider's 60 s budget, which
+#: then kills a healthy worker mid-calculation and silences the whole reply.
+#: The bound is what makes that impossible to ask in the first place.
+MAX_SPEECH_CHUNK_CHARS = 600
 
 
 @dataclass(frozen=True)
@@ -52,7 +59,7 @@ class SpeechProvider(ABC):
         """Render the supplied response text and return its artifact."""
 
 
-_CHUNK_PARAGRAPH = re.compile(r"\n[ \t]*\n+")
+_CHUNK_PARAGRAPH = re.compile(r"\n+")
 _SENTENCE_END = re.compile(r"[.!?…]+[\"'”’)\]]*(?=\s|\Z)")
 _INITIALISM = re.compile(r"^(?:[A-Za-z]\.)+[A-Za-z]?$")
 _ABBREVIATIONS = frozenset(
@@ -101,12 +108,16 @@ def _false_boundary(prefix: str, terminators: str) -> bool:
 def sentence_chunks(text: str) -> list[str]:
     """Split one reply into speakable sentences, preserving punctuation.
 
-    Deterministic and dependency-free: paragraph breaks always split;
+    Deterministic and dependency-free: every line break splits, so a
+    bullet, a numbered step or a table row is spoken on its own;
     otherwise a split follows a run of ``.!?…`` (plus optional closing
     mark) that whitespace succeeds, unless it looks like an abbreviation,
     an initial or a decimal. Fragments below the minimum chunk length are
-    absorbed into their neighbour, so a reply with no split point returns
-    exactly one chunk.
+    absorbed into their neighbour, and anything still longer than
+    :data:`MAX_SPEECH_CHUNK_CHARS` is split once more between words, so no
+    reply is ever handed to a worker as one request it cannot answer in
+    time. A reply with no split point and no length returns exactly one
+    chunk.
     """
 
     chunks: list[str] = []
@@ -131,4 +142,43 @@ def sentence_chunks(text: str) -> list[str]:
     if len(merged) > 1 and len(merged[0]) < MIN_SPEECH_CHUNK_CHARS:
         merged[1] = f"{merged[0]} {merged[1]}"
         del merged[0]
-    return merged
+    bounded: list[str] = []
+    for chunk in merged:
+        for part in _bounded(chunk):
+            # The absorption rule again: a tail too short to be a phrase of
+            # its own rides on the part before it, even when that leaves the
+            # pair a few characters over the bound. A slightly long chunk is
+            # a worse breach of this module than a broken word.
+            if bounded and len(part) < MIN_SPEECH_CHUNK_CHARS:
+                bounded[-1] = f"{bounded[-1]} {part}"
+            else:
+                bounded.append(part)
+    return bounded
+
+
+def _bounded(chunk: str) -> list[str]:
+    """Split one over-long chunk between words, never inside one.
+
+    A run-on paragraph and a list whose items end without punctuation are
+    both speakable units a sentence splitter cannot help with, and one of
+    2300 characters is a job the resident worker is killed for. The break
+    lands on the last whole word that fits; a single token longer than the
+    bound (a URL, a base64 blob) goes whole rather than in halves, because
+    half a word read aloud is worse than a long one.
+    """
+
+    if len(chunk) <= MAX_SPEECH_CHUNK_CHARS:
+        return [chunk]
+    parts: list[str] = []
+    rest = chunk
+    while len(rest) > MAX_SPEECH_CHUNK_CHARS:
+        index = MAX_SPEECH_CHUNK_CHARS
+        while index > 0 and not rest[index - 1].isspace():
+            index -= 1
+        if index == 0:
+            index = len(rest.split(maxsplit=1)[0])
+        parts.append(rest[:index].strip())
+        rest = rest[index:].strip()
+    if rest:
+        parts.append(rest)
+    return parts

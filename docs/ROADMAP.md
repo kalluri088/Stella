@@ -147,6 +147,18 @@ working and helping me, even if not the fastest."
   what they have plus one honest error line, and single-sentence
   replies take the byte-identical legacy path. Token-level streaming
   and barge-in stay out of scope.
+  **A9b — every request fits its budget (2026-10-10).** A session lost a
+  whole reply's audio to `Resident speech took too long or stopped
+  answering`: a 20-bullet answer has no punctuation and used to split only
+  on *blank* lines, so it reached the resident worker as one 2329-character
+  request, synthesis costs ~0.03 s per character, and the 60 s budget killed
+  a healthy worker at 60.1 s. `sentence_chunks` now breaks on every line and
+  bounds any remaining chunk (`MAX_SPEECH_CHUNK_CHARS`, 600) at a word; the
+  timeout did not move — the job was made to fit it. Death and slowness are
+  reported separately ("stopped (exit code N)" vs "did not answer within
+  60 s"), and a cancel is recognized by the request whose process it retired
+  instead of by a flag with no owner that the next unrelated sentence used to
+  trip over.
 - **A10. Stella owns its llama.cpp brain — done.** The systemd-topology
   research found the real gap: the measured brain launch line had no
   supervisor. `stella/llama_server.py` now spawns `llama-server` as a

@@ -70,13 +70,25 @@ per-request cancel), and its result is never used.
 
 A multi-sentence reply is spoken sentence by sentence (A9). The final response
 is split deterministically with the standard library (`sentence_chunks` in
-`stella/audio_output.py`: terminal punctuation and blank-line paragraph breaks,
-with abbreviation, initial and decimal guards, and tiny fragments absorbed into
-their neighbour). The worker thread synthesizes one chunk at a time while a
-playback thread plays and removes each artifact as it arrives — because local
-synthesis runs faster than real time, the first sentence starts speaking after
-one sentence of rendering instead of after the whole reply. A single-sentence
-reply takes the ordinary whole-file path unchanged.
+`stella/audio_output.py`: terminal punctuation, **every line break**, with
+abbreviation, initial and decimal guards, tiny fragments absorbed into their
+neighbour, and any chunk still longer than `MAX_SPEECH_CHUNK_CHARS` (600
+characters) split once more between words). The worker thread synthesizes one
+chunk at a time while a playback thread plays and removes each artifact as it
+arrives — because local synthesis runs faster than real time, the first sentence
+starts speaking after one sentence of rendering instead of after the whole reply.
+A single-sentence reply takes the ordinary whole-file path unchanged.
+
+The bound exists because of a measurement, not a preference. Rendered on this
+machine's installed Kokoro worker (2026-10-10), synthesis costs about **0.03 s
+per character** — 14 s for 423 characters, 41 s for 1410, 71 s for 2397, 88 s for
+2961 — while the resident worker's budget for one request is a flat 60 s. Before
+the bound, a 20-bullet reply (no punctuation, so no sentence boundary, and only
+*blank* lines used to split) reached the worker as **one** 2329-character
+request: it timed out at 60.1 s, and because the reply had been a single chunk,
+all of its audio was lost while its text stayed on screen. The same reply now
+arrives as 20 requests of ~115 characters; the slowest took 6.4 s of the 60 s
+budget. Nothing about the timeout was widened — the job was made to fit it.
 
 The consequences users should know:
 
@@ -90,6 +102,9 @@ The consequences users should know:
   fully available.
 - Chunk order is reply order; every artifact is removed once heard, and a
   newer reply retires the previous reply's unplayed queue.
+- A reply the model hard-wrapped in the middle of a clause now takes a breath
+  at that line break instead of flowing through it. The price of the bound is
+  paid in prosody, never in lost audio.
 
 ## Resident synthesis worker
 
@@ -112,6 +127,22 @@ worker degrades to no speech with the text reply still fully available, and
 the plain `STELLA_SPEECH_COMMAND` path is one env var away. (On this
 machine `~/tools/stella-speak-server` is such a worker for the local Kokoro
 install; it lives outside the repository like all bench/tooling scripts.)
+
+The two ways a request goes unanswered are named as the two different things
+they are: **"the resident speech worker stopped (exit code N)"** means the
+process is gone, and **"the resident speech worker did not answer within 60
+s"** means it is alive and behind. They used to share one sentence — *"took
+too long or stopped answering"* — and that conflation is exactly why a
+session that lost its audio could not be diagnosed from the report: one
+message covering both causes explains neither.
+
+A cancel retires the worker rather than reusing it, because an interrupted
+worker may be mid-write on an artifact. It no longer leaves a flag for the
+next unrelated sentence to trip over: a waiting request recognizes itself by
+the process it wrote to, so a "stop speaking" that arrives a beat late, or a
+cancelled narration phrase whose synthesis had already returned, silences
+only what it was aimed at. (The flag was owned by nothing, and a proven
+result was a spoken reply that died for a cancel it never received.)
 
 An `ok` reply is a promise about a file, not proof of audible sound. Before
 the artifact reaches the player, Stella opens it as a WAV and rejects the
@@ -643,6 +674,17 @@ which is the one this laptop cannot offer on command, is proven against recorded
   reply keeps at most a few synthesized sentences ahead of the speakers.
   Synthesis is one process per sentence unless the resident worker is enabled.
   There is still no mixing, ducking, or overlap between artifacts.
+- One unbroken token longer than the chunk bound — a base64 blob, one
+  enormous URL — is still a single request, and can still overrun the 60 s
+  budget. Stella will not halve a word to meet a deadline, so that reply
+  loses its audio and now says *"did not answer within 60 s"* rather than
+  implying the worker died. It is a rare shape in prose a person dictated.
+- The installed worker answers any failure inside a request with a reply
+  naming that request's id — except a failure while *reading* the line, where
+  the id is unknown and its own handler raises again, ending the process.
+  That script lives outside this repository and Stella does not edit it; what
+  Stella does now is report the death with its exit code instead of hiding it
+  behind a timeout's words.
 - Voice mode is desktop-UI only; the CLI remains text-only.
 - A Bluetooth headset's microphone is also a mode switch, and any capture that
   holds it flips it. While *any* capture holds that device, PipeWire must keep

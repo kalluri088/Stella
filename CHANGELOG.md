@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### A reply is never asked of the worker as more than a sentence can cost
+
+- **What changed.** `sentence_chunks` now breaks on *every* line, not only on
+  blank ones, and bounds what is left: anything over `MAX_SPEECH_CHUNK_CHARS`
+  (600 characters) is split once more, at the last whole word that fits. A
+  worker that goes unanswered is reported as the two different failures it can
+  be — *"the resident speech worker stopped (exit code N)"* when the process is
+  gone, *"the resident speech worker did not answer within 60 s"* when it is
+  alive and behind — and a cancel is recognised by the request whose process it
+  retired rather than by a flag that any later sentence could trip over.
+- **Why.** Measured here on 2026-10-10, against the installed Kokoro worker and
+  production defaults: a 20-bullet reply — no punctuation, so no sentence
+  boundary, and only blank lines used to split — reached the resident worker as
+  **one** 2329-character request. Synthesis costs about 0.03 s per character
+  (71 s for 2397, 88 s for 2961), so the flat 60 s budget killed a healthy
+  worker at 60.1 s and, the reply having been a single chunk, all of its audio
+  was lost while its text stayed on screen. That is the report the owner could
+  not act on: one sentence covering both causes explains neither.
+- **The fix is the job, not the deadline.** The 60 s budget is right for a
+  sentence, so it did not move; the same reply now arrives as 20 requests of
+  ~115 characters and the slowest took 6.4 s. Chunking also pays back in the
+  other direction — the first bullet is audible after about two seconds of
+  synthesis rather than after a whole reply.
+- **Safety.** Nothing new may authorize anything, and nothing is configurable:
+  speech is presentation, and a broken worker still degrades to no speech with
+  the text reply fully available (D2). A timed-out request now retires only the
+  process it was written to, so it can never kill a fresh worker another call
+  started. `dispose()` racing an in-flight request reads as cancelled, which is
+  the truth of a shutdown.
+- **Unchanged.** `CommandSpeechProvider` and the OpenAI path (a per-sentence
+  process has no such budget to overspend); the chunked-reply orchestration in
+  `_speak_chunks`; the artifact's shape, loudness, trim and fade rules; the
+  additive `voice`/`speed` request keys; the worker script itself, which lives
+  outside this repository and is not edited from here.
+- **Honest limits.** A model that hard-wraps a clause now takes a breath at that
+  break — paid in prosody, never in lost audio. One unbroken token over the
+  bound (a base64 blob, an enormous URL) is still a single request that can
+  overrun the budget, and now says so as a timeout rather than implying the
+  worker died: Stella will not halve a word to meet a deadline.
+- **Proof.** `tests/test_audio_output.py` (14) pins the list shape, the bound,
+  word conservation under the bound, and the unbroken token that stays whole;
+  `tests/test_voice.py` gained a death named by exit code, a timeout that is not
+  described as a death, a cancel between requests that leaves the next sentence
+  speaking, and the bullet-list reply reaching the provider as 20 bounded
+  requests through the real bridge. The before and after are the same measured
+  command line: 60.1 s and lost audio, then 20 chunks with 6.4 s to spare.
+
 ### The wake ear listens on a microphone of its own choosing
 
 - **What changed.** A new module, `stella/capture_target.py`, decides which

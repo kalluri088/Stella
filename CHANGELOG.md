@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### The day-one memory test was run for real, and the brain that refused it said why
+
+- **What changed.** `OllamaLLMClient._native_chat` no longer throws away the
+  body of a rejected request: `native_error_detail` lifts Ollama's own reason
+  out of it, collapses it to one line and repeats up to 220 characters of it in
+  the `OSError` the owner reads. And `docs/OUTCOME_MEMORY.md`
+  gained the first real run of commitment 4 — *one small true fact on Monday,
+  something related on Friday, in a fresh session* — with what passed, what
+  stopped it, and what the run does not prove.
+- **Why.** Because the sentence *"Ollama native chat request failed: HTTP 400"*
+  named no cause, the memory test took two hours and a `/usage` reading to
+  diagnose. Measured on this machine against the local brain: with OS, shell and
+  browser capabilities enabled, the decision prompt is **8,151 tokens against
+  `num_ctx=8192`** — 41 tokens of room — and one recalled memory costs **58**,
+  so the one turn in the test that *finds something* is the turn Ollama refuses
+  (8,209 > 8,192, `exceed_context_size_error`) while the identical turn that
+  finds nothing answers normally. The mechanism was never the store: the write
+  was volunteered for a plain statement of fact, stored on one `yes`, survived
+  into a new process, and was retrieved and *used* ("Yes, you are allergic to
+  penicillin") the moment the prompt had room for it.
+- **Safety.** The detail is a server's error text, and it is treated as such:
+  bounded, whitespace-collapsed, taken only from the `error` field when the body
+  parses, and shown to the owner as the reason a turn did not finish. It
+  authorizes nothing, changes no decision, and is never fed back to the Brain.
+  The status code and the existing exception type are unchanged, so every
+  caller that catches the failure still catches it.
+- **Unchanged.** No default was switched. Semantic recall stays opt-in
+  (`semantic_memory_enabled` is off in both the tree's and the release's
+  `config.json`), the memory write keeps its approval gate, and `num_ctx` stays
+  at 8192 — enlarging the context or shrinking the prompt is a decision with a
+  cost attached, recorded rather than spent.
+- **Honest limits.** The run tested a process restart, not a week; the CLI, not
+  the desktop window the owner talks to; and a local brain, because the router
+  the configuration names (`localhost:3001`) was unreachable all day. What the
+  store does with fifty facts, and whether the cloud brain has this ceiling, are
+  open. Paraphrase recall at shipped settings is a documented failure, not a
+  fixed one: two shared normalized terms is what keyword matching needs.
+- **Proof.** `tests/test_ollama_native_client.py` (20) now replays Ollama's
+  real overflow body and asserts the reason reaches the message, and that an
+  unstructured body is collapsed and cut to the bound. The live turn that
+  motivated it now reads
+  *`HTTP 400 ({"error":{"code":400,"message":"request (8209 tokens) exceeds the
+  available context size (8192 tokens)…`*.
+
 ### A reply is never asked of the worker as more than a sentence can cost
 
 - **What changed.** `sentence_chunks` now breaks on *every* line, not only on

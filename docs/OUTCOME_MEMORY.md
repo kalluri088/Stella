@@ -57,6 +57,63 @@ failure and irrelevant outcomes do not automatically write, SQLite persistence
 survives a fresh Stella instance, and retrieved outcome memory changes a later
 response.
 
+## The day-one test, run for real (2026-10-10)
+
+Commitment 4 of `docs/STELLA_VISION.md` asks for an experience, not a unit
+test: *tell her one small true fact about yourself on Monday. Ask something
+related to it on Friday, in a fresh session, without repeating it.* That had
+never been done. It was run today through `bin/stella-dev chat` against the
+tree's own `.dev` state — a new process per "day", the fact stored by one and
+asked about by the next — against this machine's local Ollama brain, because
+the brain the configuration names (the router on `localhost:3001`) answered
+nothing all day.
+
+**The mechanism works.** Told *"Just so you know, I am allergic to
+penicillin"* — no request to remember, just a statement — the Brain volunteered
+`memory_write` with the compact third-person form *"The user is allergic to
+penicillin."*, the runtime asked for a `yes`, and on approval the row landed in
+`stella_memory.db`. A second process, asked *"Am I allergic to anything in the
+penicillin family?"*, reported `memory retrieved 1` and answered *"Yes, you
+are allergic to penicillin based on your stored memory"* — the fact was used,
+not merely found. Nothing about the store, the write gate, the restart, or the
+Brain's willingness to notice a durable fact was the problem.
+
+Three things stood in the way, and they are separate:
+
+- **One approval per fact.** The write is gated (`rule 10`: the model proposes,
+  the owner authorizes), so the Monday sentence produces a prompt — *"Type
+  'yes' to allow this"* — not a silent store. A test that pipes one line and no
+  answer records `approval denied` and stores nothing. This is the design
+  working, and it is the reason the commitment is not yet invisible.
+- **A paraphrase finds nothing at shipped settings.** *"Can I take amoxicillin
+  for my sinus infection?"* retrieved zero: recall without the opt-in is
+  lexical, and `relevance_score` needs **two** shared normalized terms, so even
+  *"Is penicillin something I should avoid?"* — one shared word — found
+  nothing and got a generic leaf about penicillin being "generally safe for
+  most people". With the existing `STELLA_SEMANTIC_MEMORY=1` opt-in
+  (`local-hash`, no model to load) the same paraphrase retrieved the allergy
+  and Stella answered *"No… Amoxicillin is a penicillin-type antibiotic"*. The
+  Vision's test is written as a paraphrase, so as shipped it fails; one switch
+  makes it pass, and nobody has decided that switch should be on.
+- **On a local brain, a recalled memory can be the token that overflows the
+  context.** With OS, shell and browser capabilities enabled, this machine's
+  decision prompt measures **8,151 tokens against `num_ctx=8192`** (41 tokens
+  of room; the same turn with those families off measures 6,191). One recalled
+  memory adds **58**. So the recall turn sends 8,209 and Ollama refuses it —
+  `exceed_context_size_error` — while the identical turn that retrieves
+  nothing succeeds. Until today the client discarded the server's reason and
+  the window said only *"Ollama native chat request failed: HTTP 400"*, which
+  is why this took measurement rather than reading. It now repeats the bounded
+  reason (`native_error_detail`, `src/stella/ollama_client.py`).
+
+**What this does not prove.** No calendar time passed — "Friday" was the next
+process, and nothing in the store ages, expires or decays, so the days-between
+half of the test is untested rather than passed. The desktop window, where the
+owner actually says things, was not used; the CLI was. The router path was
+never exercised, because it was down, so whether the same recall turn survives
+against a cloud brain is unknown. And the store held one fact: what recall
+looks like with fifty of them is `test_memory_scale.py`'s claim, not this run's.
+
 ## Real `gpt-5.6` validation
 
 The complete flow was run with two explicit tool steps, a fresh temporary

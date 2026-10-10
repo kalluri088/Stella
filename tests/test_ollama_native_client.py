@@ -13,6 +13,7 @@ from stella.llm import (
     UsageRecorder,
 )
 from stella.ollama_client import (
+    NATIVE_ERROR_DETAIL_CHARS,
     NATIVE_REQUEST_TIMEOUT_SECONDS,
     OllamaLLMClient,
     native_chat_url,
@@ -97,14 +98,21 @@ class ConnectionRecorder:
         status: int = 200,
         wait_timeouts: int = 0,
         extra: dict | None = None,
+        raw_body: bytes | None = None,
     ) -> None:
         # ``extra`` carries the sibling fields of ``message`` the real
         # endpoint returns — token counts among them — so a test can prove
         # the client reads them instead of discarding the payload.
+        # ``raw_body`` replaces the whole body, which is how an error
+        # response (a shape with no ``message`` in it at all) is replayed.
         payload: dict = {"message": message}
         if extra:
             payload.update(extra)
-        body = json.dumps(payload).encode("utf-8")
+        body = (
+            raw_body
+            if raw_body is not None
+            else json.dumps(payload).encode("utf-8")
+        )
 
         def factory(host, port=None, timeout=None, **_kwargs):
             connection = FakeConnection(
@@ -286,6 +294,64 @@ def test_native_error_status_raises(connections) -> None:
 
     # The failed exchange still closes its connection.
     assert connections.connections[-1].closed == 1
+
+
+#: Ollama's own answer to a request whose prompt is bigger than the loaded
+#: context, recorded from the live endpoint on 2026-10-10. The nested JSON
+#: string is what the server really sends.
+_CONTEXT_OVERFLOW_BODY = json.dumps(
+    {
+        "error": json.dumps(
+            {
+                "code": 400,
+                "message": (
+                    "request (8427 tokens) exceeds the available context "
+                    "size (8192 tokens), try increasing it"
+                ),
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 8427,
+                "n_ctx": 8192,
+            }
+        )
+    }
+).encode("utf-8")
+
+
+def test_a_refused_request_repeats_why_the_server_refused_it(connections) -> None:
+    connections.install(
+        {"role": "assistant", "content": "x"},
+        status=400,
+        raw_body=_CONTEXT_OVERFLOW_BODY,
+    )
+    client = make_client(native=True)
+
+    with pytest.raises(OSError) as raised:
+        client.chat([Message(role="user", content="hi")])
+
+    message = str(raised.value)
+    # The status alone told the owner nothing: the reason the request died
+    # (a recalled memory pushed the prompt past num_ctx) is in the body.
+    assert "HTTP 400" in message
+    assert "exceeds the available context size (8192 tokens)" in message
+
+
+def test_an_unstructured_error_body_is_collapsed_and_bounded(
+    connections,
+) -> None:
+    connections.install(
+        {"role": "assistant", "content": "x"},
+        status=400,
+        raw_body=b"  line one\n" + b"y" * 2000 + b"\nline three",
+    )
+    client = make_client(native=True)
+
+    with pytest.raises(OSError) as raised:
+        client.chat([Message(role="user", content="hi")])
+
+    detail = str(raised.value).partition("(")[2].rstrip(")")
+    assert len(detail) <= NATIVE_ERROR_DETAIL_CHARS
+    assert "\n" not in detail
+    assert detail.startswith("line one y")
 
 
 def test_native_cancel_while_waiting_aborts_the_wait(connections) -> None:

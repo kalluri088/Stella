@@ -432,6 +432,27 @@ working and helping me, even if not the fastest."
   *Unparked and accepted 2026-09-28: see D4's measured outcome
   below — the stretch did not reproduce under instrumentation and
   the double-talk acceptance passed.*
+- **B8. The day-one memory test, run for real — passes, with three
+  conditions.** Commitment 4 of `docs/STELLA_VISION.md` had only ever been
+  unit-tested: state one small true fact, restart, ask something related
+  without repeating it. Run through `bin/stella-dev chat` against the
+  tree's own state on 2026-10-10, the mechanism held end to end — the
+  Brain volunteered a write for a plain statement of fact, the runtime
+  stored it only after a `yes`, the row survived into a fresh process, and
+  a later turn retrieved it and answered *from* it ("Yes, you are allergic
+  to penicillin"). Three things stood in the way, and none is the store:
+  a fact needs one approval (rule 10, working as designed); retrieval at
+  shipped settings is lexical and needs two shared normalized terms, so
+  the paraphrased Friday question found nothing until the existing
+  `STELLA_SEMANTIC_MEMORY` opt-in was switched on — then it worked; and
+  with the desktop capability families enabled the decision prompt measures
+  **8,151 tokens against `num_ctx=8192`**, so the **58 tokens one recalled
+  memory adds overflow the request and the recall turn is the only one
+  that dies** (measured: 8,209 > 8,192, `exceed_context_size_error`).
+  Full write-up in `docs/OUTCOME_MEMORY.md`; the backlog's two open
+  latency and setup items — A/B-ing the local brain against the router,
+  and loading capability descriptions lazily instead of every turn — now
+  carry a demonstrated problem rather than a suspected one.
 
 ## Stage C — personality (complete — released in 1.2.0)
 

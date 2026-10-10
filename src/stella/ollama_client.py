@@ -22,6 +22,31 @@ from stella.openai_client import OpenAILLMClient
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 NATIVE_REQUEST_TIMEOUT_SECONDS = 600
 NATIVE_CANCEL_POLL_SECONDS = 0.25
+#: How much of an error body the client repeats back. Long enough for
+#: Ollama's own reason (a context-overflow is ~90 characters), short enough
+#: that a server talking nonsense cannot fill a sentence of the user's
+#: reply with it.
+NATIVE_ERROR_DETAIL_CHARS = 220
+
+
+def native_error_detail(raw: bytes) -> str:
+    """One bounded line naming why the server refused, as it said itself.
+
+    Ollama answers a rejected /api/chat request with ``{"error": ...}``, and
+    the value is itself often a JSON string carrying the real reason. Only
+    that one field is lifted out; anything else stays the text it arrived
+    as, collapsed to single spaces and cut to
+    :data:`NATIVE_ERROR_DETAIL_CHARS`.
+    """
+
+    text = raw.decode("utf-8", errors="replace").strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+        text = payload["error"]
+    return " ".join(text.split())[:NATIVE_ERROR_DETAIL_CHARS]
 
 
 def native_chat_url(base_url: str) -> str:
@@ -204,9 +229,11 @@ class OllamaLLMClient(OpenAILLMClient):
                     connection, should_cancel
                 )
             if response.status >= 400:
+                detail = native_error_detail(response.read())
                 raise OSError(
                     "Ollama native chat request failed: "
                     f"HTTP {response.status}"
+                    + (f" ({detail})" if detail else "")
                 )
             payload = json.loads(response.read().decode("utf-8"))
         finally:

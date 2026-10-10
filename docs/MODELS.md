@@ -120,6 +120,20 @@ call count, tokens in and out, and the largest single prompt this session
 sent — that last number is the one to watch against `num_ctx=8192`, since
 a clipped prompt was measured as a real failure mode here (report 15).
 
+Measured on this machine on 2026-10-10 with the local brain, that number is
+not comfortable: **6,191 tokens** with the desktop capability families off
+and **8,151** with OS, shell and browser tools on — 41 tokens of headroom
+before the ceiling. One recalled memory costs 58. So a turn that *finds
+something in memory* is the turn that can overflow, and Ollama answers it
+with `exceed_context_size_error` and nothing else. The client now repeats
+that reason (`HTTP 400 (request (8209 tokens) exceeds the available context
+size (8192 tokens) …)`, bounded to 220 characters of the server's own
+body); before that it said only `HTTP 400`, which named no cause at all.
+The ceiling itself is a standing choice, not a bug to patch here: either
+the prompt gets smaller (the backlog's plan to load capability
+descriptions lazily) or `num_ctx` gets bigger, which costs the memory the
+card does not freely have.
+
 The rules that keep the numbers honest: nothing is persisted, nothing is
 estimated, a cancelled or failed request records nothing, and a provider
 that reports no counts still counts the call and then says so out loud on

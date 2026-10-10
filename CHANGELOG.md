@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### A refusal no longer ends with a tick
+
+- **What changed.** `outcome_status` gives a receipt-less success the kind
+  `nothing_changed` with a neutral `·` instead of `succeeded` with a `✓`, and
+  the window drops the "Action outcome" line entirely for that kind. Only a
+  verified receipt can now render as a success.
+- **Why this is a defect.** Live on 2026-10-06: a turn that spent 154 seconds
+  and then refused the task — "open the outline and add the task manually" —
+  printed `Action outcome: ✓ succeeded`. The last thing to run had been a
+  read, and a read had been folded into the same vocabulary as a mutation.
+  Stella was telling the owner that work happened when she had just said it
+  would not, which is a trust failure, not a display one. The rule the docstring
+  already claimed ("an unverified mutation never renders as a verified
+  success") had a loophole: `succeeded` was defined as "a success that needs
+  no state verification", so anything that never bothered to verify itself
+  won a free tick.
+- **Why muting reads is safe.** An audit of every `ToolResult(success=True)`
+  in `tools.py`, `outline_tools.py` and `web_tools.py` found exactly 16
+  receipt-less successes and every one belongs to a read, an echo or the
+  Outline health probe: `EchoTool`, `SystemInfoTool`, `DateTimeTool`,
+  `WorkspaceList/Find/SearchTool`, `MemoryListTool`, `OutlineProbe`. No
+  capability that alters state returns one, so nothing real loses its line —
+  `filesystem_write`, `filesystem_edit` and `filesystem_delete` all go
+  through `_write_outcome`, which always attaches a receipt. Risk level was
+  the wrong axis for this gate and deliberately not used: `filesystem_read`
+  is *sensitive* and `network_read` is *dangerous* while changing nothing,
+  so gating on risk would have kept tonight's exact bug alive.
+- **Unchanged.** Every other kind, the durable action history and `/history`
+  (which still records the read, because recording is not the same as
+  claiming), the approval layer, and what Stella does — this only changes
+  what the window is allowed to say about it.
+- **Proof.** `tests/test_app.py`: 85 passed, with the status table retargeted
+  to the new kind. `tests/test_ui.py`: 76 passed, including two new tests that
+  drive the real window — a refusal turn with a read behind it renders no
+  outcome line, and a verified mutation still renders `✓ verified`.
+
 ### The clock stopped costing a second every minute
 
 - **What changed.** `LLMBrain._system_prompt` no longer embeds the current

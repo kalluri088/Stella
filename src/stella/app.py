@@ -168,9 +168,10 @@ class OutcomeStatus:
 
     ``kind`` is exactly one of: ``verified``, ``unverified``,
     ``inconclusive``, ``failed``, ``missing``, ``invalid``, ``denied``,
-    ``succeeded`` (a success that needs no state verification), or ``none``.
-    Only ``verified`` and ``succeeded`` carry the success symbol; an
-    unverified mutation never renders as a verified success.
+    ``nothing_changed`` (a call that ran cleanly and proved no change), or
+    ``none``. Only ``verified`` carries the success symbol: a mutation
+    without a receipt is not a success the runtime can stand behind, and a
+    read claims nothing about the world at all.
     """
 
     kind: str
@@ -193,7 +194,13 @@ def outcome_status(result: ToolResult | None) -> OutcomeStatus:
         )
     receipt = result.action_receipt
     if receipt is None:
-        return OutcomeStatus("succeeded", "✓", result.output)
+        # No receipt means the runtime has no claim that anything changed,
+        # so this path may not print a success symbol. It is the reads, the
+        # echo and the Outline health probe: audited, no capability that
+        # alters state returns a receipt-less success. Reporting them as
+        # "succeeded" is how a turn that refused the request still ended
+        # with a tick, because the last thing that ran was a search.
+        return OutcomeStatus("nothing_changed", "·", result.output)
     if receipt.status == "verified":
         return OutcomeStatus("verified", "✓", result.output)
     if receipt.status == "unverified":

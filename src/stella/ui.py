@@ -1392,7 +1392,12 @@ class StellaWindow:
             self._line(f"Stella has nothing to add.{tail}", role="stella")
         if outcome.result is not None and outcome.result.tool_result is not None:
             status = outcome_status(outcome.result.tool_result)
-            self._line(f"Action outcome: {status.symbol} {status.kind}")
+            if status.kind != "nothing_changed":
+                # A call that proved no change gets no line at all: reading
+                # a file is not an outcome of the request, and saying
+                # "succeeded" about one made a turn that refused the request
+                # look like a turn that did it.
+                self._line(f"Action outcome: {status.symbol} {status.kind}")
 
     @staticmethod
     def _duration_tail(outcome: TurnOutcome) -> str:

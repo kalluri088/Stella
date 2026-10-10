@@ -271,10 +271,13 @@ persistence, a style baseline that can notice an out-of-character turn,
 streaming answers on the final-response path, and an interface where nothing
 important is reachable only by an environment variable or a log line.
 
-Known-broken as of today, from live use rather than theory: a turn that took
-154 seconds and then refused the task while reporting `succeeded`; the resident
+Known-broken as of today, from live use rather than theory: the resident
 speech worker timing out twice in one session; and the always-open microphone
-silently downgrading a Bluetooth headset's own audio (`docs/VOICE.md`).
+silently downgrading a Bluetooth headset's own audio (`docs/VOICE.md`). The
+third one on that list — a 154-second turn that refused the task while
+reporting `succeeded` — is fixed: only a verified receipt can carry the
+success tick, and a call that changed nothing is no longer reported as an
+outcome at all.
 
 Details live in `docs/ARCHITECTURE.md` (structure) and `docs/ROADMAP.md`
 (status and scope). This file does not duplicate them.

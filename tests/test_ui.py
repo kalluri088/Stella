@@ -35,9 +35,10 @@ from stella.brain import Brain, Decision, DecisionKind
 from stella.context import Context
 from stella.llm import LLMClient
 from stella.memory import InMemoryMemory, MemoryItem
-from stella.stella import Stella
+from stella.stella import Stella, StellaResult
 from stella.tools import (
     ActionPreview,
+    ActionReceipt,
     EchoTool,
     RiskLevel,
     Tool,
@@ -659,6 +660,61 @@ def test_window_shows_a_delivered_outline_reminder_in_the_chat() -> None:
             if "Stretch" in line
         )
         assert "alert" in window._chat.tag_names(f"{line_no}.0")
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_never_marks_a_refused_request_as_succeeded() -> None:
+    """Observed live 2026-10-06: Stella refused a task and the window still
+    printed "Action outcome: ✓ succeeded", because the last thing that ran
+    was a read. A read changes nothing, so it earns no outcome line."""
+
+    root, window, bridge, _ = make_window()
+    try:
+        refusal = TurnOutcome(
+            result=StellaResult(
+                decision=Decision(
+                    DecisionKind.ANSWER, content="I cannot do that."
+                ),
+                response="I cannot do that.",
+                tool_result=ToolResult(True, "3 files mention the gym"),
+            ),
+            response="I cannot do that.",
+        )
+        window._handle_turn(refusal)
+        transcript = window._chat.get("1.0", "end")
+        assert "I cannot do that." in transcript
+        assert "Action outcome" not in transcript
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_window_reports_a_verified_mutation_as_an_action_outcome() -> None:
+    """The muted line above must not mute a real action with a receipt."""
+
+    root, window, bridge, _ = make_window()
+    try:
+        done = TurnOutcome(
+            result=StellaResult(
+                decision=Decision(
+                    DecisionKind.TOOL,
+                    capability="filesystem_write",
+                    arguments={"path": "note.md"},
+                ),
+                response="I wrote the note.",
+                tool_result=ToolResult(
+                    True,
+                    "File written and verified.",
+                    action_receipt=ActionReceipt("write", "verified"),
+                ),
+            ),
+            response="I wrote the note.",
+        )
+        window._handle_turn(done)
+        transcript = window._chat.get("1.0", "end")
+        assert "Action outcome: ✓ verified" in transcript
     finally:
         bridge.stop()
         root.destroy()

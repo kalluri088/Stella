@@ -183,7 +183,7 @@ def test_display_response_prefers_answer_then_tool_then_questions() -> None:
         (tool_result(receipt_status="inconclusive"), "inconclusive", "?"),
         (tool_result(receipt_status="missing"), "missing", "✗"),
         (tool_result(receipt_status="invalid"), "invalid", "✗"),
-        (tool_result(), "succeeded", "✓"),
+        (tool_result(), "nothing_changed", "·"),
         (
             tool_result(success=False, output="boom"),
             "failed",

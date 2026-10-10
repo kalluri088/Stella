@@ -128,7 +128,10 @@ display, and can never approve a tool or change permissions.
   contents and tool output never appear.
 - Action outcomes: each tool result is rendered with the honest status from
   `outcome_status` (verified ✓, unverified ✗, inconclusive ?, failed ✗,
-  denied ✗). An unverified action is never shown as verified.
+  denied ✗). An unverified action is never shown as verified, and a call
+  that carried no receipt — a read, an echo, a health probe — proves nothing
+  changed, so it gets no outcome line at all. Reporting one as `succeeded`
+  was how a turn that refused the request still ended with a tick.
 - Settings: change the provider preset (which fixes provider, endpoint and
   key slot), the model, the Ollama endpoint, and — for "Other
   OpenAI-compatible" only — a base URL; the API key field is masked and

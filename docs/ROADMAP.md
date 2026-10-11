@@ -1174,6 +1174,33 @@ The doctor, the config keys and the dev tree are for whoever builds Stella.
   headset's reduces the clutter in a real transcript is the owner's next
   listening test, not a claim from here.
 
+- **D11. An echo-cancelled capture can be chosen (#253, landed 2026-10-11).**
+  Discovery used to accept only names beginning `alsa_input.`, which quietly
+  decided that the one source worth aiming a microphone at was out of reach: the
+  cancelled pair this repository's own recipe builds (`source_name=ec_mic`) has a
+  name the *owner* picks, so no pattern could have recognised it anyway. The
+  filter is now `media.class=Audio/Source`, plus one guard that a `.monitor` is
+  never offered as a microphone, and a node outside ALSA is classified
+  `virtual`. Listed is not chosen: `pick_preferred_source` skips `virtual`
+  however high WirePlumber ranks it — a filter exists only while its module is
+  loaded, and one bound to a sink nobody is playing through records the
+  loudspeaker, the measured 23%-of-playback-frames failure this module exists to
+  avoid. So it is reachable from the row and never from the default, and the dim
+  line says which of the two the owner is looking at. Proof: `ec_mic` at
+  priority 9000 sits in the dropdown, writes its name into the draft, survives a
+  launch where the node is gone as `ec_mic (not connected now)`, and never
+  appears in the automatic pick's sentence about the microphone it took; the
+  probe tests hold the same rule one layer lower. Live on this machine, with no
+  filter module loaded, discovery still answers with exactly one node —
+  `alsa_input.pci-0000_00_1f.3.analog-stereo`, `kind=builtin` — and
+  `resolve_capture_source("ec_mic")` hands the name straight through
+  unexamined, so nothing here changed what today's captures do.
+  **Deliberately not done:** Stella does not load `module-echo-cancel` for the
+  owner. That is a change to this machine's live audio graph rather than to her
+  configuration, so the recipe stays a command in `VOICE.md` she runs when she
+  wants it, and a barge-in capture that must read the cancelled pair is still
+  named by `STELLA_BARGE_SOURCE` alone (see *What is still not true*).
+
 ### What is still not true
 
 - **The rest of the voice configuration is still environment-only.** The three

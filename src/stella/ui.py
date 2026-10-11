@@ -51,6 +51,7 @@ from stella.app import (
 )
 from stella.capture_target import (
     BLUETOOTH,
+    VIRTUAL,
     CaptureSource,
     discover_capture_sources,
     kind_of,
@@ -2616,6 +2617,18 @@ class StellaWindow:
                 f"{source.label} is a Bluetooth headset's own microphone. "
                 "While the ear listens there, that headset loses stereo and "
                 "full volume — phone-call sound where music was."
+            )
+        if source.kind == VIRTUAL:
+            # Said because this row is the only place the owner can see what a
+            # filter node costs her: it is not a microphone she plugged in, and
+            # it stops existing when its module unloads. Stella never loads one
+            # herself (docs/VOICE.md), so this is a choice she has to set up.
+            return (
+                f"{source.label} is not a microphone but a filter Stella was "
+                "told to read — an echo-cancelled capture, most likely. It "
+                "cancels whichever speakers it is paired with, and when the "
+                "module behind it is gone she falls back to the system "
+                "default."
             )
         if picked is not None and any(
             candidate.kind == BLUETOOTH for candidate in self._wake_sources

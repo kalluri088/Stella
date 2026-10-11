@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### An echo-cancelled microphone can be chosen from Settings
+
+- **What changed.** Input discovery accepts a filter's capture, not just ALSA
+  hardware. `capture_target.capture_sources` now keeps every `Audio/Source` node
+  except one whose name ends in `.monitor`, and a node outside the `alsa_input.`
+  prefix is classified by the new `VIRTUAL` kind. The *Microphone* row lists
+  those nodes and the dim line under the row says what one is — not a
+  microphone, a filter, cancels whichever sink it was paired with, falls back to
+  the default when the module behind it is gone. `pick_preferred_source` skips
+  `virtual` however high WirePlumber's `priority.session` ranks it, so a filter
+  source is reachable only by the owner naming it.
+- **Why.** This repository's own echo-cancel recipe names the source
+  `source_name=ec_mic`, and the previous filter (`name.startswith("alsa_input.")`)
+  could never list it — so the setup `docs/VOICE.md` recommends as
+  make-or-break for interrupting Stella by voice, and as the one thing that
+  takes *music out of the middle of a recording* rather than trimming its edges,
+  was reachable only as `STELLA_BARGE_SOURCE` from a terminal. Matching on a name
+  would not have worked either: the name is the owner's choice.
+- **What is deliberately not done.** Stella does not load `module-echo-cancel`.
+  Loading it rewrites the live audio graph on the owner's daily driver — default
+  sink, default source, codec routing — which is her command to run, not a
+  side effect of a settings panel opening. And the cancelled pair is never the
+  automatic answer, because a filter bound to a sink nobody is playing through
+  records the loudspeaker: the measured failure is 23% of playback frames
+  reading as speech, which is worse than the clutter it was meant to remove.
+- **Proof.** `test_capture_target.py` 21: a filter source is listed as `virtual`,
+  `.monitor` nodes are never offered, and `ec_mic` at priority 9000 loses the
+  automatic pick to the built-in — with a virtual-only machine answering
+  `None`, which is the same "name nothing" every other doubt about the probe
+  gives. `test_ui.py` 89: the row lists the filter, writes its name into the
+  draft, describes it as a filter when chosen, keeps a saved `ec_mic` visible as
+  `(not connected now)` when the module is unloaded, and never mentions it in the
+  sentence about the automatic pick. Live, with no filter loaded, discovery still
+  returns exactly one node — `alsa_input.pci-0000_00_1f.3.analog-stereo`,
+  `kind=builtin` — and an explicit `ec_mic` passes through untouched, so no
+  capture on this machine changes today. `uv run ruff check .` and
+  `git diff --check` are clean. Not pushed.
+
 ### The microphone in Settings is now the microphone she records on
 
 - **What changed.** Push-to-talk records the microphone the *Microphone* row

@@ -370,6 +370,15 @@ pactl set-default-source ec_mic
 ```
 
 Stella's playback and recordings then follow the cancelled pair automatically.
+The Settings panel can also be pointed at it directly: a loaded filter source is
+listed in the *Microphone* row as the node it is named, and choosing it applies
+to the ear and to push-to-talk alike. Stella never loads the module herself —
+that changes the machine's live audio graph rather than her own configuration,
+so it is the owner's command to run, and the row keeps working with the pair
+absent. Choosing it is not a free win either: whichever sink the module was
+bound to is the only playback it cancels, so music played through a different
+output arrives at the microphone unchanged, and a capture named after a filter
+that has since been unloaded falls back to the default source.
 Under `auto` you should still pass `STELLA_BARGE_SOURCE=ec_mic`: naming the
 cancelled source is what arms the ear, because Stella cannot tell a
 cancelled pair from a raw mic on its own — and the measured cost of getting
@@ -534,12 +543,20 @@ three rules:
   path, and an owner with no microphone but the headset keeps voice rather
   than getting a rule applied to her.
 
-Discovery reads only `Audio/Source` nodes whose name starts with
-`alsa_input.`, which is what leaves out playback streams, monitors, the
-echo-cancelled filter, MIDI and video. Each one is classified from the device
-segment of its name — `pci-` built-in, `usb-`, `bluez_` Bluetooth, anything
-else other — and a PipeWire node name is hardware identity, not a secret: it
-is safe in a command line and in `config.json`.
+Discovery reads `Audio/Source` nodes and nothing else, which is what leaves out
+playback streams, MIDI and video; a node whose name ends in `.monitor` is
+dropped too, because a monitor is the loudspeaker's side of a device however it
+is classed. Each survivor is classified from the device segment of its name —
+`pci-` built-in, `usb-`, `bluez_` Bluetooth, anything else under `alsa_input.`
+other — and a name outside `alsa_input.` is **`virtual`**: a filter's capture
+rather than a piece of hardware. That is the shape an echo-cancelled source
+arrives in, and it is listed on purpose: the name of that source is whatever the
+owner told the module to call it (`ec_mic`, `echo-cancel_capture`, anything), so
+no name pattern could recognise it, and a pair she set up by hand is a pair she
+must be able to point Stella at. Being listed is not being chosen — see
+*Which microphone the ear takes* and `pick_preferred_source`, which skips
+`virtual` however high WirePlumber ranks it. A PipeWire node name is hardware
+identity, not a secret: it is safe in a command line and in `config.json`.
 
 The answer is **recomputed each time a capture opens**, not once per process.
 A resident voice server lives for hours; the microphones do not. The tap, the

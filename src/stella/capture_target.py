@@ -22,6 +22,11 @@ Three rules keep this small enough to trust:
   ``priority.session`` decides which non-Bluetooth input wins, so a
   deliberately plugged USB microphone can beat the built-in instead of losing
   to a hardcoded device ranking.
+* A node that is not ALSA hardware — an echo-cancelled capture, any filter
+  source — is listed for the owner to choose and never chosen for her. Such a
+  node exists only while its module is loaded, and which playback it cancels is
+  not visible from its properties, so a wrong automatic pick records the
+  loudspeaker instead of the room.
 * Ignorance is the answer to any doubt. No ``pw-dump``, a probe that stalls,
   unparsable output, no candidate at all, a machine whose only input *is* a
   headset — all of it means ``None``, which is what the callers already did
@@ -50,14 +55,27 @@ from stella.childproc import guarded_popen
 #: a stalled PipeWire is not worth a slow launch — or a hung one.
 PROBE_TIMEOUT_SECONDS = 1.0
 
-#: ALSA capture nodes only. This prefix is what excludes monitor streams, the
-#: echo-cancelled ``ec_mic`` filter, MIDI and video devices from the list.
+#: ALSA capture nodes only. This prefix is what identifies real hardware;
+#: a node outside it is a filter or virtual device (see ``VIRTUAL``), which
+#: the panel may offer and the automatic pick never names.
 INPUT_PREFIX = "alsa_input."
+
+#: A monitor is the *playback* side of a device, never a microphone. On this
+#: machine every monitor node already carries ``media.class=Audio/Sink`` and so
+#: is filtered out before this leg; it stays because a node that answers with
+#: the name of a monitor is not something to hand a recording.
+MONITOR_SUFFIX = ".monitor"
 
 BUILTIN = "builtin"
 USB = "usb"
 BLUETOOTH = "bluetooth"
 OTHER = "other"
+#: A source that is not a piece of hardware: the echo-cancelled capture a
+#: filter module made, a virtual sink's input, anything else with no ALSA
+#: device behind its name. Selectable, because an owner who set up that pair
+#: has to be able to point Stella at it; never automatic, because a filter is
+#: there only while its module is loaded.
+VIRTUAL = "virtual"
 
 
 @dataclass(frozen=True)
@@ -75,8 +93,16 @@ class CaptureSource:
 
 
 def kind_of(node_name: str) -> str:
-    """Classify from the device segment of the node name."""
+    """Classify from the device segment of the node name.
 
+    A name outside ``alsa_input.`` has no ALSA device segment to read at all:
+    an echo-cancelled capture is named whatever its module was told to call it
+    (``ec_mic``, ``echo-cancel_capture``, anything), so the only honest answer
+    about a name like that is that it is not hardware.
+    """
+
+    if not node_name.startswith(INPUT_PREFIX):
+        return VIRTUAL
     tail = node_name[len(INPUT_PREFIX) :]
     if tail.startswith("pci-"):
         return BUILTIN
@@ -98,10 +124,21 @@ def _props_of(obj: object) -> dict[str, object] | None:
 
 
 def capture_sources(dump: str) -> tuple[CaptureSource, ...]:
-    """Every ALSA capture node in a ``pw-dump`` document.
+    """Every capture node in a ``pw-dump`` document, hardware or filter.
 
     Pure text in, data out, and ``()`` for anything that is not understood —
     this is the part tested without a running PipeWire.
+
+    ``media.class=Audio/Source`` is what does the excluding: it leaves out
+    playback, MIDI and video, and on this machine it also leaves out every
+    monitor, because PipeWire reports a monitor as an ``Audio/Sink``. Names
+    outside ``alsa_input.`` are kept rather than dropped, and marked
+    :data:`VIRTUAL`: an echo-cancelled capture is named whatever the owner told
+    the module to call it, so no name pattern can recognise it, and a source
+    she set up by hand is a source she must be able to choose. Nothing is
+    *selected* from that group automatically — see
+    :func:`pick_preferred_source` — so widening what is listed costs an owner
+    who never opens the row nothing at all.
     """
 
     try:
@@ -117,7 +154,9 @@ def capture_sources(dump: str) -> tuple[CaptureSource, ...]:
         if props is None or props.get("media.class") != "Audio/Source":
             continue
         name = props.get("node.name")
-        if not isinstance(name, str) or not name.startswith(INPUT_PREFIX):
+        if not isinstance(name, str) or not name:
+            continue
+        if name.endswith(MONITOR_SUFFIX):
             continue
         label = props.get("node.description") or props.get("node.nick") or name
         raw_priority = props.get("priority.session")
@@ -148,17 +187,26 @@ def pick_preferred_source(
 ) -> CaptureSource | None:
     """The input to aim at, or ``None`` when there is nothing to aim at.
 
-    Any non-Bluetooth input is worth naming by hand, because the alternative
-    is a capture that follows PipeWire's default source — and a default left
-    over from a headset's hands-free profile creates that profile the moment
-    it is read, which is the thing the owner can neither see nor hear coming.
-    A machine whose only inputs are Bluetooth keeps them: refusing there would
-    take voice away rather than protect it.
+    Any non-Bluetooth *hardware* input is worth naming by hand, because the
+    alternative is a capture that follows PipeWire's default source — and a
+    default left over from a headset's hands-free profile creates that profile
+    the moment it is read, which is the thing the owner can neither see nor hear
+    coming. A machine whose only inputs are Bluetooth keeps them: refusing there
+    would take voice away rather than protect it.
+
+    A :data:`VIRTUAL` source is never the automatic answer, however high its
+    priority. A filter node exists only while the module that made it is
+    loaded, and it is not self-evident which playback it was paired with: an
+    echo-cancelled capture bound to a sink nobody is playing through records the
+    loudspeaker — the measured failure this module exists to avoid, with 23% of
+    playback frames reading as speech. So the cancelled pair is offered to the
+    owner and chosen on purpose, or not used at all.
     """
 
     for source in ranked(sources):
-        if source.kind != BLUETOOTH:
-            return source
+        if source.kind in (BLUETOOTH, VIRTUAL):
+            continue
+        return source
     return None
 
 

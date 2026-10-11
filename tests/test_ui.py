@@ -225,6 +225,15 @@ BUILT_IN_MIC = CaptureSource(
     kind="builtin",
     priority=2007,
 )
+#: An echo-cancelled capture, which is not ALSA hardware and outranks every
+#: real input in ``priority.session`` — the shape that makes the automatic
+#: rule's exclusion visible in the panel rather than only in the probe.
+EC_MIC = CaptureSource(
+    name="ec_mic",
+    label="Echo-Cancel Source",
+    kind="virtual",
+    priority=9000,
+)
 
 
 def test_window_conversation_round_trip() -> None:
@@ -1572,6 +1581,50 @@ def test_the_mic_picker_writes_the_chosen_node_into_the_draft(
         assert window._draft_settings().wake_source == HEADSET_MIC.name
         window._wake_source_var.set(stella_ui._WAKE_SOURCE_AUTOMATIC)
         assert window._draft_settings().wake_source is None
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_panel_offers_a_filter_source_without_ever_choosing_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two halves of one rule, both visible here. An owner who set up the
+    # echo-cancel pair must be able to name it, because a filter source has no
+    # recognisable name pattern and Stella will not load the module for her; and
+    # the same node, which outranks real hardware in WirePlumber's own
+    # preference, must not become the microphone by itself.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        stella_ui,
+        "discover_capture_sources",
+        lambda: (EC_MIC, BUILT_IN_MIC),
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        assert EC_MIC.label in window._wake_source_map
+        hint = window._mic_hint.cget("text")
+        assert BUILT_IN_MIC.label in hint
+        assert EC_MIC.label not in hint
+        window._wake_source_var.set(EC_MIC.label)
+        assert window._draft_settings().wake_source == EC_MIC.name
+        assert "not a microphone" in window._mic_hint.cget("text")
+        # A saved choice survives a launch where the node has gone away, and is
+        # shown as itself rather than quietly reverted to automatic.
+        monkeypatch.setattr(
+            stella_ui, "discover_capture_sources", lambda: (BUILT_IN_MIC,)
+        )
+        saved = StellaSettings(model="test", wake_source=EC_MIC.name)
+        root2, window2, bridge2, _ = make_window(settings=saved)
+        try:
+            assert window2._wake_source_var.get() == (
+                f"{EC_MIC.name} (not connected now)"
+            )
+            assert window2._draft_settings().wake_source == EC_MIC.name
+        finally:
+            bridge2.stop()
+            root2.destroy()
     finally:
         bridge.stop()
         root.destroy()

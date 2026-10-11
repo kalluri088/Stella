@@ -186,7 +186,15 @@ display, and can never approve a tool or change permissions.
   spelled out; an automatic step off a headset names the microphone taken
   instead. Discovery is live on reopen, so a microphone plugged in after the
   last launch shows up, while a saved node that is not connected now is still
-  listed as itself rather than silently reverted. The choice is saved in
+  listed as itself rather than silently reverted. A filter's capture — an
+  echo-cancelled source like `ec_mic` — is listed too, because its name is the
+  owner's choice and no pattern could recognise it, and choosing it is the only
+  way to point Stella at that pair; the dim line under the row names it as a
+  filter rather than a microphone and says what happens when the module behind
+  it is gone. Nothing is ever *chosen* from that group automatically: an
+  echo-cancelled source usually outranks real hardware in WirePlumber's own
+  preference, and one bound to the wrong sink records the loudspeaker. The
+  choice is saved in
   `config.json` as `wake_source`, `STELLA_WAKE_SOURCE` outranks it for one
   launch, and a machine with nothing to discover offers only *let Stella
   choose* — an empty list, never a broken-looking widget.

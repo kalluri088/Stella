@@ -17,6 +17,7 @@ from stella.capture_target import (
     BLUETOOTH,
     BUILTIN,
     USB,
+    VIRTUAL,
     CaptureSource,
     automatic_capture_source,
     capture_sources,
@@ -72,14 +73,45 @@ def test_capture_sources_reads_audio_source_nodes_only() -> None:
         # The monitor of the built-in input: an alsa_input name, but a sink.
         _node(f"{BUILT_IN}.monitor", 2000, "Audio/Sink"),
         _node("v4l2_input.pci-0000_00_14_0-usb-0_6_1_0", 1000, "Video/Source"),
+        # A filter source is not ALSA hardware and is not a name pattern can
+        # recognise (its owner chooses it), so it is listed and classified.
         _node("echo-cancel_capture", 2000, "Audio/Source"),
         client,
         _node(BUILT_IN, 2009, "Audio/Source", "Built-in Audio Analog Stereo"),
     )
     sources = capture_sources(dump)
-    assert [source.name for source in sources] == [BUILT_IN]
-    assert sources[0].label == "Built-in Audio Analog Stereo"
-    assert sources[0].priority == 2009
+    assert [source.name for source in sources] == [
+        "echo-cancel_capture",
+        BUILT_IN,
+    ]
+    assert sources[1].label == "Built-in Audio Analog Stereo"
+    assert sources[1].priority == 2009
+
+
+def test_a_filter_source_is_listed_as_something_that_is_not_hardware() -> None:
+    # The distinction the panel and the automatic pick both need: a cancelled
+    # capture can be chosen, and is never chosen on the owner's behalf.
+    sources = capture_sources(
+        _dump(
+            _node("ec_mic", 9000, "Audio/Source", "Echo-Cancel Source"),
+            _node(BUILT_IN, 2009),
+        )
+    )
+    assert [source.kind for source in sources] == [VIRTUAL, BUILTIN]
+    assert kind_of("ec_mic") == VIRTUAL
+    assert kind_of("echo-cancel_capture") == VIRTUAL
+
+
+def test_a_monitor_is_never_offered_as_a_microphone() -> None:
+    # A monitor is the playback side of a device. PipeWire reports the ones on
+    # this machine as ``Audio/Sink``, so the class filter already drops them;
+    # this leg is the guard for a node that answers with the class of a source
+    # and the name of a monitor, which is a recording of the loudspeaker.
+    assert capture_sources(
+        _dump(_node("alsa_output.pci-0000_00_1f.3.analog-stereo.monitor", 5000))
+    ) == ()
+    assert capture_sources(_dump(_node("ec_out.monitor", 5000))) == ()
+    assert capture_sources(_dump(_node("echo-cancel_capture", 5000))) != ()
 
 
 def test_capture_sources_classifies_builtin_usb_bluetooth() -> None:
@@ -155,6 +187,43 @@ def test_pick_leaves_a_headset_for_the_leading_non_bluetooth_input() -> None:
         USB_MIC,
         BUILT_IN,
     ]
+
+
+def test_the_automatic_pick_never_names_a_filter_source() -> None:
+    # A cancelled capture usually *outranks* hardware in ``priority.session``,
+    # which is exactly how an automatic rule would take it first. It is not the
+    # device to fall into by default: it exists only while its module is loaded,
+    # and a pair bound to the wrong sink records the loudspeaker rather than the
+    # room — the failure worth 23% of playback frames reading as speech.
+    sources = (
+        _source("ec_mic", 9000),
+        _source(BUILT_IN, 2009),
+    )
+    picked = pick_preferred_source(sources)
+    assert picked is not None
+    assert picked.name == BUILT_IN
+
+
+def test_a_machine_with_only_a_filter_source_records_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing safe to name means nothing named, which is the same answer every
+    # other doubt about the probe gives. The owner who loaded the echo-cancel
+    # module and then unloaded it keeps a working microphone rather than one
+    # aimed at a node that is gone.
+    sources = capture_sources(_dump(_node("ec_mic", 9000)))
+    assert pick_preferred_source(sources) is None
+    monkeypatch.setattr(
+        "stella.capture_target.discover_capture_sources", lambda: sources
+    )
+    assert automatic_capture_source() is None
+    assert resolve_capture_source(None) is None
+
+
+def test_an_owner_chose_filter_source_is_used_exactly_as_written() -> None:
+    # The row's whole purpose: a name the owner typed or picked is handed to the
+    # capture with no second guess about whether it is hardware.
+    assert resolve_capture_source("ec_mic") == "ec_mic"
 
 
 def test_ranking_breaks_a_priority_tie_by_name() -> None:

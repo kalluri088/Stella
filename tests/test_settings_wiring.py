@@ -39,6 +39,13 @@ OVERRIDE_FIELDS = {
     "shell_tools_env_override": "shell_tools_enabled",
     "browser_tools_env_override": "browser_tools_enabled",
     "wake_env_override": "wake_word_enabled",
+    # The two voice switches that used to be reachable only by environment
+    # variable. They join the opt-in family rather than the environment-dict
+    # one, because a field whose value the environment owns outright cannot
+    # have a saved half: each has a named override that distinguishes "the
+    # variable said nothing" from "the variable said no".
+    "speech_resident_env_override": "speech_resident",
+    "barge_in_env_override": "voice_barge_in",
 }
 
 # Settings checkbox that writes each opt-in field into the save dict.
@@ -51,6 +58,7 @@ UI_VARS = {
     "shell_tools_enabled": "self._shell_tools_var",
     "browser_tools_enabled": "self._browser_tools_var",
     "wake_word_enabled": "self._wake_var",
+    "speech_resident": "self._resident_speech_var",
 }
 
 
@@ -160,6 +168,11 @@ NUMERIC_UI_VARS = {
     "turn_time_limit_seconds": "self._turn_seconds_var",
 }
 
+# The one saved voice switch whose widget is not a checkbox: barge-in has
+# three named modes, so it is a dropdown and no BooleanVar. Its field still
+# gets every OVERRIDE_FIELDS leg above; only the widget leg lives here.
+VOICE_UI_VARS = {"voice_barge_in": "self._barge_mode_var"}
+
 
 def test_config_fields_are_exactly_the_tables() -> None:
     assert set(config_module._CONFIG_FIELDS) == (
@@ -248,3 +261,16 @@ def test_plain_config_field_is_wired_end_to_end(field: str) -> None:
     assert (
         f'raw.get("{field}")' in resolve_body or f'raw["{field}"]' in resolve_body
     ), f"{field} is not read back from config.json"
+
+
+@pytest.mark.parametrize("field,var", sorted(VOICE_UI_VARS.items()))
+def test_ui_writes_the_voice_switch_into_the_saved_settings(
+    field: str, var: str
+) -> None:
+    assert re.search(rf"{re.escape(var)} = tk\.(Boolean|String)Var\(", UI_SOURCE), (
+        f"{field}: no panel variable {var}"
+    )
+    assert f"{var}.get()" in UI_SOURCE, f"{field}: {var} is never read back"
+    assert f"{field}=" in UI_SOURCE, (
+        f"{field}: the settings panel never writes it into the saved settings"
+    )

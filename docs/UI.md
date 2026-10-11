@@ -225,6 +225,23 @@ display, and can never approve a tool or change permissions.
   never quietly rounded; the same is not true of `config.json`, where a
   hand-edited malformed number falls back to the default so the rest of the
   file survives.
+- Voice switches: below the microphone row sit the two settings that used to
+  exist only as exports. *Keep the voice worker warm between sentences* is
+  `STELLA_SPEECH_RESIDENT`, off by default; it changes nothing until a speech
+  command is written down, so the dim line under it says so rather than
+  implying every machine gets a faster second sentence. *Listen for you
+  talking over her* is `STELLA_VOICE_BARGE_IN`, a readonly three-way dropdown —
+  **only where I chose a microphone** (the shipped `auto`), **never watch for
+  it**, **always, on whatever microphone she takes** — and the line under it
+  states why the middle answer is the default: the ear also hears Stella
+  speaking, so a machine that plays her back through the capture it chose will
+  have her interrupt herself. Both save into `config.json` as
+  `speech_resident` and `voice_barge_in`, and both keep the rule every other
+  row obeys: the environment variable outranks the saved answer for one launch
+  and never rewrites it. `voice_barge_in` is the one saved switch shown as a
+  dropdown rather than a checkbox, because it has three answers, and the label
+  table in `ui.py` is held to exactly `BARGE_MODES` by a test: a fourth mode
+  cannot reach a panel row unnamed.
 - Persona: chat style changes go through the normal `persona_edit`
   approval dialog with a real diff. If `stella reflect` has queued style
   proposals, the window shows each one as an ordinary approval prompt

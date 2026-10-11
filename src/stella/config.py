@@ -29,6 +29,7 @@ from pathlib import Path
 
 from stella import provider_keys
 from stella.app import (
+    BARGE_MODES,
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_TURN_TIME_LIMIT_SECONDS,
     MAX_TOOL_CALLS_LIMIT,
@@ -76,6 +77,14 @@ _CONFIG_FIELDS = (
     # whatever JSON number a hand-edit left behind.
     "max_tool_calls",
     "turn_time_limit_seconds",
+    # The two voice switches that used to live only in a shell profile: the
+    # resident synthesis worker, and when the barge-in ear arms. They are saved
+    # for the same reason as the microphone row — a setting the owner can only
+    # reach by environment variable is a setting she does not have, and a
+    # reboot that quietly changes what the ear does is exactly what
+    # commitment 6 of docs/STELLA_VISION.md forbids.
+    "speech_resident",
+    "voice_barge_in",
 )
 
 
@@ -728,6 +737,23 @@ def _saved_number(
     return float(raw) if not integral else float(int(raw))
 
 
+def _saved_barge_mode(raw: object) -> str:
+    """The saved barge-in mode, or ``auto`` when the file says anything else.
+
+    Deliberately tolerant rather than fatal: an unrecognised value in a
+    hand-edited ``config.json`` falls back to the shipped default, because
+    raising here would discard every other setting the owner saved — the same
+    drop-malformed rule ``wake_models`` above already follows. The mode still
+    cannot reach a microphone by accident: ``StellaSettings.__post_init__``
+    refuses any name outside ``auto``, ``on``, ``off`` whoever constructs it,
+    and ``auto`` is the spelling that arms nothing without a chosen capture.
+    """
+
+    if isinstance(raw, str) and raw.strip().casefold() in BARGE_MODES:
+        return raw.strip().casefold()
+    return "auto"
+
+
 def resolve_settings() -> StellaSettings | None:
     """The configuration Stella should start with, or None for first run.
 
@@ -823,4 +849,9 @@ def resolve_settings() -> StellaSettings | None:
         turn_time_limit_seconds=(
             saved_seconds or DEFAULT_TURN_TIME_LIMIT_SECONDS
         ),
+        # A config that predates these keys gets the shipped defaults: no
+        # resident worker for a speech command that was never written down,
+        # and an ear that arms only where a capture was named by hand.
+        speech_resident=raw.get("speech_resident") is True,
+        voice_barge_in=_saved_barge_mode(raw.get("voice_barge_in")),
     )

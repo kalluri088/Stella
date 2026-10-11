@@ -604,6 +604,38 @@ def wake_env_override() -> bool | None:
     return raw == "on"
 
 
+def barge_in_env_override() -> str | None:
+    """The STELLA_VOICE_BARGE_IN mode, or None when it says nothing.
+
+    Barge-in is the ear that watches for the owner talking over Stella, so
+    its modes are named rather than boolean: ``auto`` arms only where a
+    capture was chosen by hand, ``on`` arms on whatever microphone this
+    launch resolves to, ``off`` never. A value outside those three is refused
+    here rather than defaulted, because ``build_barge_in`` reads anything that
+    is neither ``off`` nor ``auto`` as ``on`` — a typo must not arm an ear on
+    an unnamed capture. ``None`` means the variable said nothing, which is how
+    a saved Settings choice survives a launch that carries no environment.
+    """
+
+    raw = os.environ.get("STELLA_VOICE_BARGE_IN", "").strip().casefold()
+    if not raw:
+        return None
+    if raw not in BARGE_MODES:
+        raise SystemExit("STELLA_VOICE_BARGE_IN must be 'auto', 'on' or 'off'")
+    return raw
+
+
+def speech_resident_env_override() -> bool | None:
+    """The STELLA_SPEECH_RESIDENT toggle, or None when it says nothing.
+
+    The general ``_env_toggle`` spelling, named so this switch has an override
+    like every other saved setting: ``0`` means "not for this launch", not
+    "never", and an unset variable leaves the checkbox in charge.
+    """
+
+    return _env_toggle("STELLA_SPEECH_RESIDENT")
+
+
 SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
 
 
@@ -736,7 +768,21 @@ class StellaSettings:
     speech_command: str | None = None
     speech_local_voice: str | None = None
     speech_local_speed: float | None = None
+    # Two switches the owner used to be able to reach only by environment
+    # variable. Both are now saved settings (``config.py``'s write list) with
+    # the variable still outranking the saved choice for one launch, because
+    # commitment 6 of ``docs/STELLA_VISION.md`` says a setting that lives only
+    # in a shell profile is a setting the owner does not have.
+    # ``speech_resident`` keeps ONE synthesis worker alive between sentences
+    # instead of paying interpreter start-up and model load every time. It
+    # changes nothing unless ``speech_command`` is set: the worker Stella
+    # finds at ``~/tools`` is always resident already (``_build_speech_provider``).
     speech_resident: bool = False
+    # ``voice_barge_in`` is ``auto`` (arm only where a capture was named),
+    # ``on`` (arm on whatever microphone this launch resolves to) or ``off``.
+    # ``auto`` stays the shipped default because an ear that watches for
+    # speech over Stella hears Stella's own voice unless the machine echoes
+    # that back to the capture (``docs/VOICE.md``).
     voice_barge_in: str = "auto"
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
@@ -767,6 +813,13 @@ class StellaSettings:
                 "semantic_provider must be "
                 + ", ".join(sorted(SEMANTIC_PROVIDERS))
             )
+        # The one value a nonsense mode would put at risk is the microphone:
+        # ``build_barge_in`` treats anything that is not ``off`` or ``auto`` as
+        # ``on``, so a hand-edited or hand-built mode string would arm an ear on
+        # an unnamed capture. Refuse the value instead of guessing a privacy
+        # setting from a typo.
+        if self.voice_barge_in not in BARGE_MODES:
+            raise SystemExit("voice_barge_in must be 'auto', 'on' or 'off'")
 
     @staticmethod
     def _environment_fields() -> dict:
@@ -788,11 +841,6 @@ class StellaSettings:
         if speech_mode not in VOICE_MODES:
             raise SystemExit(
                 "STELLA_VOICE_SPEECH must be 'auto', 'openai' or 'off'"
-            )
-        barge_mode = os.environ.get("STELLA_VOICE_BARGE_IN", "auto").casefold()
-        if barge_mode not in BARGE_MODES:
-            raise SystemExit(
-                "STELLA_VOICE_BARGE_IN must be 'auto', 'on' or 'off'"
             )
         raw_threshold = os.environ.get("STELLA_BARGE_THRESHOLD", "0.5")
         try:
@@ -912,8 +960,11 @@ class StellaSettings:
             "speech_local_voice": os.environ.get("STELLA_SPEECH_LOCAL_VOICE")
             or None,
             "speech_local_speed": speech_local_speed,
-            "speech_resident": _env_toggle("STELLA_SPEECH_RESIDENT") is True,
-            "voice_barge_in": barge_mode,
+            # ``speech_resident`` and ``voice_barge_in`` are deliberately not
+            # keys here: both now have a saved Settings half, and a field the
+            # environment owns outright cannot have one. Both constructors read
+            # them through their own override function, so "the variable said
+            # nothing" stays distinguishable from "the variable said no".
             "vad_model": os.environ.get(
                 "STELLA_VAD_MODEL", default_vad_model()
             ),
@@ -994,6 +1045,12 @@ class StellaSettings:
         # the wake choices above.
         max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
         turn_time_limit_seconds: float = DEFAULT_TURN_TIME_LIMIT_SECONDS,
+        # The two voice switches, as the owner saved them. Their environment
+        # variables still win for one launch and never rewrite the saved
+        # value, which is what makes ``stella voice`` behave the same on a
+        # machine whose shell profile nobody remembers.
+        speech_resident: bool = False,
+        voice_barge_in: str = "auto",
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -1006,6 +1063,8 @@ class StellaSettings:
         shell_override = shell_tools_env_override()
         browser_override = browser_tools_env_override()
         wake_override = wake_env_override()
+        resident_override = speech_resident_env_override()
+        barge_override = barge_in_env_override()
         # One decision with two spellings: the checkbox is what the owner
         # saved, the mode is what this launch runs, and every consumer
         # reads the mode. So the mode follows the bool — which is also how
@@ -1080,6 +1139,20 @@ class StellaSettings:
                 else provider_override
             ),
             wake_word_enabled=wake_enabled,
+            # The two voice switches, one decision with two spellings like the
+            # wake checkbox above: the saved setting is what the owner wants,
+            # the variable is what this launch runs, and an unset variable says
+            # nothing rather than no — which is the whole reason both have a
+            # named override function instead of arriving through
+            # ``_environment_fields`` with the voice fields that are still
+            # environment-only (modes, models, commands).
+            speech_resident=(
+                speech_resident if resident_override is None
+                else resident_override
+            ),
+            voice_barge_in=(
+                voice_barge_in if barge_override is None else barge_override
+            ),
             **environment,
         )
 
@@ -1128,6 +1201,13 @@ class StellaSettings:
             semantic_provider=(
                 semantic_provider_env_override() or "local-hash"
             ),
+            # The two voice switches, read straight from the environment. On
+            # this path there is no saved choice to fall back to, so an unset
+            # variable is the shipped default: no resident worker for a speech
+            # command that was never written down, and an ear that arms only
+            # where a capture was named by hand.
+            speech_resident=speech_resident_env_override() is True,
+            voice_barge_in=barge_in_env_override() or "auto",
             **cls._environment_fields(),
         )
 

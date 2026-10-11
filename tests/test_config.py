@@ -31,6 +31,10 @@ def isolated_data_dir(tmp_path, monkeypatch):
     # choice, so a developer's shell must not bend a test's numbers.
     monkeypatch.delenv("STELLA_MAX_TOOL_CALLS", raising=False)
     monkeypatch.delenv("STELLA_TURN_TIME_LIMIT_SECONDS", raising=False)
+    # So do the two voice switches, which became saved settings exactly so
+    # they could be launched around — but only when this launch says so.
+    monkeypatch.delenv("STELLA_VOICE_BARGE_IN", raising=False)
+    monkeypatch.delenv("STELLA_SPEECH_RESIDENT", raising=False)
 
 
 class _Response:
@@ -125,6 +129,11 @@ def test_configuration_stores_only_non_secret_fields():
         # name, a path or anything secret.
         "max_tool_calls",
         "turn_time_limit_seconds",
+        # The two voice switches, now saved like everything else the owner
+        # chose: one bool and one mode name. No command line, no model name,
+        # no path and no key reaches config.json for either of them.
+        "speech_resident",
+        "voice_barge_in",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):
@@ -1092,3 +1101,143 @@ def test_startup_key_health_report_does_not_false_reject_anthropic(monkeypatch):
     monkeypatch.setattr(provider_keys, "stored_presets", lambda: ("openai",))
     assert config.startup_key_health_report() == []
     assert seen["chat_dialect"] is False
+
+
+def test_saved_voice_switches_roundtrip():
+    # The two switches the owner used to be able to reach only by exporting
+    # an environment variable: what Settings saves comes back out of the
+    # file, and the file holds the plain shapes and nothing else.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            speech_resident=True,
+            voice_barge_in="on",
+        )
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+
+    assert raw["speech_resident"] is True
+    assert raw["voice_barge_in"] == "on"
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.speech_resident is True
+    assert resolved.voice_barge_in == "on"
+
+
+def test_a_configuration_older_than_the_voice_switches_still_resolves():
+    # A file written before these two existed carries neither key, and the
+    # answer is the shipped behaviour — worker as asked for, ear armed only
+    # where a microphone was chosen — not a rejected file.
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="keeper")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    del raw["speech_resident"]
+    del raw["voice_barge_in"]
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    assert resolved.speech_resident is False
+    assert resolved.voice_barge_in == "auto"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("maybe", "auto"),
+        ("", "auto"),
+        ("   ", "auto"),
+        (None, "auto"),
+        (True, "auto"),
+        (7, "auto"),
+        (["on"], "auto"),
+        ({"mode": "on"}, "auto"),
+        # A mode is a name, spelled any way a hand-edit leaves it: case and
+        # stray spaces are normalised rather than dropped, exactly as a saved
+        # microphone node is trimmed.
+        ("ON", "on"),
+        (" off ", "off"),
+        ("Auto", "auto"),
+    ],
+)
+def test_a_saved_barge_mode_is_read_as_a_name_not_an_invention(
+    value: object, expected: str
+):
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="keeper")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["voice_barge_in"] = value
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    assert resolved.voice_barge_in == expected
+
+
+@pytest.mark.parametrize("value", [None, "", "true", "True", 1, 1.0, ["on"]])
+def test_only_a_real_boolean_wakes_the_resident_worker(value: object):
+    # The saved half of this switch is written by a checkbox, so it is a
+    # JSON bool. `"true"` and `1` are the *environment* spellings and are
+    # deliberately not accepted here: a hand-edit this file cannot read as a
+    # bool leaves the worker as asked for, which is the shape that cannot
+    # misfire. A real `true` is proven by the round-trip above.
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="keeper")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["speech_resident"] = value
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    assert resolved.speech_resident is False
+
+
+def test_the_environment_outranks_a_saved_voice_switch_in_both_directions(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The saved answer is what the machine does by default; one launch may
+    # say otherwise without rewriting it — including saying the opposite.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            speech_resident=True,
+            voice_barge_in="on",
+        )
+    )
+    monkeypatch.setenv("STELLA_SPEECH_RESIDENT", "0")
+    monkeypatch.setenv("STELLA_VOICE_BARGE_IN", "off")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.speech_resident is False
+    assert resolved.voice_barge_in == "off"
+    # Saving is untouched by the override: the file still says what the
+    # owner chose in Settings.
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    assert raw["speech_resident"] is True
+    assert raw["voice_barge_in"] == "on"
+
+    monkeypatch.setenv("STELLA_SPEECH_RESIDENT", "1")
+    monkeypatch.setenv("STELLA_VOICE_BARGE_IN", "auto")
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="m", voice_barge_in="off"
+        )
+    )
+    resolved = config.resolve_settings()
+    assert resolved.speech_resident is True
+    assert resolved.voice_barge_in == "auto"

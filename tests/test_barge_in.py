@@ -22,6 +22,7 @@ from stella.app import (
     StellaSession,
     StellaSettings,
     VoicePanel,
+    barge_in_env_override,
     build_barge_in,
     default_vad_model,
 )
@@ -227,19 +228,36 @@ def test_barge_in_defaults_are_auto_and_conservative(
 ) -> None:
     clear_voice_env(monkeypatch)
     fields = StellaSettings._environment_fields()
-    assert fields["voice_barge_in"] == "auto"
     assert fields["barge_threshold"] == 0.5
     assert fields["barge_source"] is None
     assert fields["vad_model"] == default_vad_model()
+    # ``voice_barge_in`` left the environment dict the day it gained a saved
+    # half: a field the environment owns outright cannot have a Settings
+    # checkbox. The two constructors still give it the same shipped answer an
+    # unset variable always did, and these are the lines that prove it.
+    assert barge_in_env_override() is None
+    monkeypatch.setenv("STELLA_MODEL", "test-model")
+    monkeypatch.setenv("STELLA_LLM_PROVIDER", "ollama")
+    assert (
+        StellaSettings.from_environment().voice_barge_in == "auto"
+    ), "an unset variable must not arm or silence the ear by itself"
 
 
 def test_invalid_barge_in_settings_exit_at_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clear_voice_env(monkeypatch)
+    monkeypatch.setenv("STELLA_MODEL", "test-model")
+    # The mode is validated by its own reader now, because both paths have to
+    # consult it: the environment path to get this launch's mode, the saved
+    # path to tell "said nothing" from "said off". A nonsense name would
+    # otherwise reach build_barge_in, which reads anything that is neither
+    # ``auto`` nor ``off`` as ``on``.
     monkeypatch.setenv("STELLA_VOICE_BARGE_IN", "maybe")
     with pytest.raises(SystemExit, match="STELLA_VOICE_BARGE_IN"):
-        StellaSettings._environment_fields()
+        barge_in_env_override()
+    with pytest.raises(SystemExit, match="STELLA_VOICE_BARGE_IN"):
+        StellaSettings.from_environment()
     monkeypatch.setenv("STELLA_VOICE_BARGE_IN", "on")
     monkeypatch.setenv("STELLA_BARGE_THRESHOLD", "1.5")
     with pytest.raises(SystemExit, match="STELLA_BARGE_THRESHOLD"):
@@ -281,6 +299,50 @@ def test_build_barge_in_auto_arms_only_on_a_named_source(
     )
     with pytest.raises(VoiceError):
         build_barge_in(settings)
+
+
+def test_a_saved_barge_mode_reaches_the_ear_with_no_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # The whole point of saving the switch: a launch from a desktop session,
+    # where no shell profile ran and nothing was exported, still behaves the
+    # way Settings said. Nothing here touches the environment's own spelling.
+    clear_voice_env(monkeypatch)
+    monkeypatch.setenv("STELLA_VAD_MODEL", str(tmp_path / "absent.onnx"))
+    saved = StellaSettings.from_saved(
+        provider="ollama", model="m", voice_barge_in="on"
+    )
+    assert saved.voice_barge_in == "on"
+    with pytest.raises(VoiceError):
+        build_barge_in(saved)
+
+    # One launch may say otherwise, and says it without rewriting the file.
+    monkeypatch.setenv("STELLA_VOICE_BARGE_IN", "off")
+    assert (
+        StellaSettings.from_saved(
+            provider="ollama", model="m", voice_barge_in="on"
+        ).voice_barge_in
+        == "off"
+    )
+
+
+def test_a_bad_barge_mode_name_is_refused_by_every_door(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Silence about the ear is allowed; a name this runtime does not know is
+    # not, because the one thing a nonsense mode would otherwise do is arm an
+    # ear on an unnamed capture — exactly what the owner's headset paid for.
+    clear_voice_env(monkeypatch)
+    monkeypatch.setenv("STELLA_MODEL", "test-model")
+    with pytest.raises(SystemExit, match="voice_barge_in"):
+        StellaSettings(model="m", voice_barge_in="maybe")
+    with pytest.raises(SystemExit, match="voice_barge_in"):
+        StellaSettings.from_saved(
+            provider="ollama", model="m", voice_barge_in="maybe"
+        )
+    monkeypatch.setenv("STELLA_VOICE_BARGE_IN", "maybe")
+    with pytest.raises(SystemExit, match="STELLA_VOICE_BARGE_IN"):
+        StellaSettings.from_environment()
 
 
 # ------------------------------------------------------------------ bridge

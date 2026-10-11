@@ -185,8 +185,12 @@ answers exactly as before. Making the choice effective is an edit to that
 script, which lives outside this repository.
 
 `STELLA_SPEECH_RESIDENT` still only matters when `STELLA_SPEECH_COMMAND` is set
-— there is nothing to make resident otherwise — and like all voice
-configuration it is environment-only.
+— there is nothing to make resident otherwise. It is now also a
+Settings checkbox (*Keep the voice worker warm between sentences*) saved in
+`config.json` like every other choice the panel holds, and the environment
+variable outranks that saved answer for a single launch without rewriting it
+(the worker Stella finds at `~/tools` is already resident, which is why the
+saved default is off).
 
 Honest latency: with the resident Kokoro worker the first audio of a reply
 lands roughly half a second to a second after the reply text is finished,
@@ -317,14 +321,22 @@ uv sync --extra barge-in            # adds onnxruntime only
 STELLA_BARGE_SOURCE=ec_mic uv run stella-ui   # auto-arms the ear
 ```
 
-Environment variables (voice config is environment-only and is never written
-to `config.json`):
+Environment variables (voice configuration is read from the environment. Two
+of these switches — `STELLA_VOICE_BARGE_IN` and `STELLA_SPEECH_RESIDENT` — have
+a saved half in Settings and are written to `config.json`, so a launch from a
+desktop session, where no shell profile ever ran, still behaves the way the
+owner last said; the rest, including every path, model and command below, stay
+environment-only and never reach that file):
 
 - `STELLA_VOICE_BARGE_IN` — `auto` (default: arms only when
   `STELLA_BARGE_SOURCE` names a capture), `on` (arm on a chosen capture — and
   where none is chosen, on whatever `capture_target` resolves, which is a
   wired input whenever this machine has one: see *Which microphone the ear
-  takes*) or `off` (never).
+  takes*) or `off` (never). Anything else is refused at configuration, naming
+  the variable, rather than defaulted: the runtime reads any fourth word as
+  `on`, and `on` with no chosen capture is the setting that made Stella
+  interrupt herself. Settings shows the same three as
+  *Listen for you talking over her*.
 - `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file.
 - `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic`. Under `auto`
   this doubles as the enable switch; unset, the ear never arms. Under `on`,

@@ -84,6 +84,19 @@ _WAKE_EVERYTHING = "everything detected on this machine"
 #: (``capture_target.py``). Every other entry names one node exactly.
 _WAKE_SOURCE_AUTOMATIC = "let Stella choose"
 
+#: The three spellings of the barge-in ear, in the order the panel shows
+#: them: the mode name maps to ``voice_barge_in``, and ``auto`` comes first
+#: because it is the shipped default — the same convention as the microphone
+#: row, where *let Stella choose* leads.
+_BARGE_MODE_LABELS = {
+    "auto": "only where I chose a microphone",
+    "off": "never watch for it",
+    "on": "always, on whatever microphone she takes",
+}
+_BARGE_MODE_BY_LABEL = {
+    label: mode for mode, label in _BARGE_MODE_LABELS.items()
+}
+
 
 def _panel_number(raw: str, fallback: float) -> float:
     """The number typed into a Settings entry, or the value already saved.
@@ -2031,6 +2044,53 @@ class StellaWindow:
         self._mic_hint.pack(padx=6, anchor="w")
         self._wake_source_var.trace_add("write", self._refresh_wake_hint)
         self._refresh_wake_hint()
+        # The two voice switches that used to exist only as environment
+        # variables. They are saved like every other choice the panel holds,
+        # so a launch from a desktop session — where no shell profile ran —
+        # behaves the way the owner last told it to.
+        self._resident_speech_var = tk.BooleanVar(
+            value=settings.speech_resident
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Keep the voice worker warm between sentences",
+            variable=self._resident_speech_var,
+        ).pack(padx=6, pady=(6, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="Only changes a speech command you wrote down: the worker "
+            "Stella finds in ~/tools is always warm. Warmth is what makes "
+            "the second sentence start as fast as the first.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
+        barge_row = ttk.Frame(frame)
+        barge_row.pack(padx=6, pady=(6, 0), anchor="w")
+        ttk.Label(barge_row, text="Listen for you talking over her:").pack(
+            side="left"
+        )
+        # Total: ``__post_init__`` guarantees one of the three names, and a
+        # test holds this table to exactly ``BARGE_MODES``, so a mode can
+        # never reach the panel without a label of its own.
+        self._barge_mode_var = tk.StringVar(
+            value=_BARGE_MODE_LABELS[settings.voice_barge_in]
+        )
+        ttk.Combobox(
+            barge_row,
+            textvariable=self._barge_mode_var,
+            values=list(_BARGE_MODE_LABELS.values()),
+            state="readonly",
+            width=34,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="The ear that watches for you interrupting also hears Stella "
+            "speaking, so by default it only arms where you chose a "
+            "microphone yourself. A machine that plays her back into that "
+            "microphone will have her interrupt herself.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         # The two budgets one turn may spend. These are the panel's first
         # numeric entries, so they follow the wake row's shape: a frame of
         # label-and-entry pairs plus one dim line saying what the numbers do.
@@ -2310,6 +2370,13 @@ class StellaWindow:
             wake_models=wake_models,
             wake_phrase=wake_phrase,
             wake_source=self._wake_source_selection(),
+            # The two voice switches, read straight from the panel. Saving the
+            # widget rather than ``self._panel_settings`` is the point: an
+            # Apply writes down what the owner is looking at, and the
+            # environment variable that outranked it for this launch stays
+            # what it was — a choice for one run, not a new saved answer.
+            speech_resident=self._resident_speech_var.get(),
+            voice_barge_in=self._barge_mode(),
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],
@@ -2456,6 +2523,18 @@ class StellaWindow:
 
         source = self._wake_source_map.get(self._wake_source_var.get())
         return source.name if source is not None else None
+
+    def _barge_mode(self) -> str:
+        """The mode the barge-in row shows, named the way the runtime names it.
+
+        Total because the dropdown is readonly and offers exactly this table,
+        which a test holds to exactly ``BARGE_MODES`` — so the row cannot show a
+        mode the runtime would read as something else. That matters more here
+        than anywhere else in the panel: the one thing a fourth spelling would
+        do is arm an ear on an unnamed capture.
+        """
+
+        return _BARGE_MODE_BY_LABEL[self._barge_mode_var.get()]
 
     def _microphone_hint(self) -> str:
         """What listening on this microphone costs, said plainly.

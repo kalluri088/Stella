@@ -180,7 +180,8 @@ where, and a swap there requires its stated evidence bar.
   per-sentence cost is a >3 s fixed process+model-load floor (idle
   A/B median 3.65 s vs 1.80 s steady inference).* D2 shipped as
   `ResidentSpeechProvider` (`STELLA_SPEECH_RESIDENT=on`,
-  environment-only): one line-JSON worker per session, retired and
+  environment-only when it landed, and a saved Settings checkbox since): one
+  line-JSON worker per session, retired and
   restarted on death or timeout, degrading to no speech with the
   text reply untouched. The Cancel path is unchanged — it kills the
   in-flight worker call and the queue drains as before.
@@ -1087,13 +1088,29 @@ The doctor, the config keys and the dev tree are for whoever builds Stella.
 
 ### What is still not true
 
-- **Two switches are reachable only by an environment variable**, which is
-  this commitment's first rule and a live violation of it:
-  `STELLA_SPEECH_RESIDENT` (D2 shipped the resident speech worker
-  environment-only) and `STELLA_VOICE_BARGE_IN` (B7, D4). Neither name appears
-  anywhere in `src/stella/ui.py` — checked 2026-10-11 — and voice settings
-  never enter `config.json` at all, which is B7's deliberate design and also
-  the reason a reboot can change what the ear does.
+- **The rest of the voice configuration is still environment-only.** The two
+  switches this bullet used to name as a live violation — `STELLA_SPEECH_RESIDENT`
+  (D2) and `STELLA_VOICE_BARGE_IN` (B7, D4) — became saved Settings on
+  2026-10-11, in the same shape every other saved choice uses: a row in the
+  panel, one key in `config.json`, and the environment variable outranking the
+  saved answer for a single launch without rewriting it. What is left is the
+  deliberate half: `STELLA_VAD_MODEL`, `STELLA_BARGE_SOURCE`,
+  `STELLA_SPEECH_COMMAND` and the transcription and speech commands are still
+  reachable only by export, still absent from `src/stella/ui.py`, and so still
+  unsettable from a machine whose owner never opens a terminal. Neither saved
+  default was flipped. `voice_barge_in` stays `auto` because the ear also hears
+  Stella speaking, and `on` is the spelling that arms it on a capture nobody
+  chose; `speech_resident` stays off because the worker Stella finds at
+  `~/tools` is already resident, so a shipped `True` would change nothing on
+  the one machine this project runs on and promise something the checkbox
+  cannot keep. Proof: `tests/test_settings_wiring.py` (both names walked
+  through every touchpoint a saved setting needs, including the panel variable
+  that writes the save dict), `tests/test_config.py` (round
+  trip, a file older than the keys, a hand-edited mode read as a name not an
+  invention, the environment outranking the file in both directions),
+  `tests/test_ui.py` (the rows open on the saved answer and write the widget's
+  current answer), `tests/test_barge_in.py` (a nonsense mode refused at every
+  door, including the one that would otherwise have armed the ear).
 - **A cold desktop still needs a screen.** The #240 bullet above names this
   from the doctor's side: `config.json` is written only by the Tk window, so
   `install.sh`'s closing advice — run `stella doctor`, configure in

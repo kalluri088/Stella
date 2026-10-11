@@ -22,6 +22,7 @@ from stella import config as stella_config
 from stella import provider_keys
 from stella import ui as stella_ui
 from stella.app import (
+    BARGE_MODES,
     StellaApplication,
     StellaBridge,
     StellaSession,
@@ -2449,6 +2450,63 @@ def test_window_usage_shows_what_the_client_observed() -> None:
         assert "model calls:  1" in transcript
         assert "3,050 in · 71 out" in transcript
         assert brain.inputs == []
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_barge_row_offers_exactly_the_modes_the_runtime_accepts() -> None:
+    # The panel's label table and app's BARGE_MODES are one list seen twice.
+    # A fourth mode added on the runtime side must fail here, before the
+    # settings panel renders a row that cannot name it.
+    assert set(stella_ui._BARGE_MODE_LABELS) == BARGE_MODES
+    assert len(set(stella_ui._BARGE_MODE_LABELS.values())) == len(BARGE_MODES)
+    assert stella_ui._BARGE_MODE_BY_LABEL == {
+        label: mode for mode, label in stella_ui._BARGE_MODE_LABELS.items()
+    }
+
+
+def test_the_voice_rows_start_at_the_shipped_answers(tmp_path, monkeypatch) -> None:
+    # A machine that has never been told otherwise shows the two switches at
+    # the defaults: no warm worker asked for, and the ear armed only where a
+    # microphone was chosen by hand.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    root, window, bridge, _ = make_window()
+    try:
+        assert window._resident_speech_var.get() is False
+        assert window._barge_mode_var.get() == stella_ui._BARGE_MODE_LABELS["auto"]
+        draft = window._draft_settings()
+        assert draft.speech_resident is False
+        assert draft.voice_barge_in == "auto"
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
+def test_the_voice_rows_show_and_write_the_saved_choices(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    root, window, bridge, _ = make_window(
+        settings=StellaSettings(
+            model="test", speech_resident=True, voice_barge_in="off"
+        )
+    )
+    try:
+        # The panel opens on what the owner saved, not on the defaults.
+        assert window._resident_speech_var.get() is True
+        assert window._barge_mode_var.get() == stella_ui._BARGE_MODE_LABELS["off"]
+        assert window._draft_settings().speech_resident is True
+        assert window._draft_settings().voice_barge_in == "off"
+        # And an Apply writes what the widgets say now, not what they started
+        # with: the two switches behave like every other row in this panel.
+        window._resident_speech_var.set(False)
+        window._barge_mode_var.set(stella_ui._BARGE_MODE_LABELS["on"])
+        draft = window._draft_settings()
+        assert draft.speech_resident is False
+        assert draft.voice_barge_in == "on"
     finally:
         bridge.stop()
         root.destroy()

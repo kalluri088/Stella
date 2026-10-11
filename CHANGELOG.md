@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### The two voice switches that only a terminal could reach
+
+- **What changed.** `STELLA_SPEECH_RESIDENT` and `STELLA_VOICE_BARGE_IN` are
+  saved Settings. The panel gained a checkbox (*Keep the voice worker warm
+  between sentences*) and a readonly three-way dropdown (*Listen for you
+  talking over her*), both writing one key into `config.json`, both following
+  the rule every other row already obeys: the environment variable outranks the
+  saved answer for that launch and never rewrites it. `voice_barge_in` is now
+  validated where it is constructed — `StellaSettings.__post_init__` refuses any
+  name outside `auto`, `on`, `off`, and `barge_in_env_override()` refuses a bad
+  export by naming the variable instead of defaulting it. Structurally, both
+  fields left `_environment_fields()`'s returned dict and became named overrides
+  passed as explicit `from_saved` / `from_environment` arguments, because a field
+  the environment owns outright cannot also have a saved half — it would be
+  handed to the constructor twice.
+- **Why.** The owner's demand was "make some things default", and these were the
+  two names `docs/ROADMAP.md` had recorded as a live violation of commitment 6's
+  first rule: reachable only by an export, absent from `src/stella/ui.py`, so a
+  launch from a desktop session — where no shell profile ever ran — silently did
+  something the owner could neither see nor set. The validation is the same
+  defect's second half: `build_barge_in` reads anything that is neither `off` nor
+  `auto` as `on`, which meant a misspelled mode armed an ear on a capture nobody
+  chose, and an ear on an unnamed capture is exactly what cost the owner her
+  headset's stereo an hour earlier.
+- **What did not move.** Neither shipped default was flipped, and saying so is
+  the honest part of this entry. `voice_barge_in` stays `auto`, because `on` is
+  the spelling that arms the ear wherever the microphone came from and the ear
+  also hears Stella speaking. `speech_resident` stays off, because it changes
+  nothing unless a speech command was written down — the worker Stella finds at
+  `~/tools` is already resident, so a shipped `True` would alter no latency on
+  this machine and make the checkbox promise something it cannot keep. Every
+  other voice name (paths, models, `STELLA_BARGE_SOURCE`, `STELLA_SPEECH_COMMAND`
+  and the rest) is still environment-only by the design `docs/VOICE.md` records.
+- **Proof.** `test_settings_wiring.py` holds both names to the six touchpoints a
+  saved setting must walk (a named `*_env_override`, the `Settings` field,
+  `from_saved`, `from_environment`, `_CONFIG_FIELDS`, `resolve_settings`) plus
+  the panel variable that writes the save dict, and `test_config.py` covers
+  the round trip, a file older than either key, a hand-edited mode read as a name
+  rather than an invention, and the environment outranking the file in both
+  directions; `test_ui.py` shows the rows opening on the saved answer and writing
+  the widget's current one, and its label table is held to exactly `BARGE_MODES`
+  so a fourth mode cannot reach a row unnamed; `test_barge_in.py` refuses a
+  nonsense mode at every door. Batches, each under `timeout` and bracketed by
+  `free -m`: `test_barge_in.py` + `test_settings_wiring.py` 93, `test_config.py`
+  105, `test_ui.py` 88, `test_voice.py` 129, `test_app.py` +
+  `test_headless_voice.py` 164. `uv run ruff check .` and `git diff --check` are
+  clean. Not pushed.
+
 ### A default that lies no longer picks the microphone
 
 - **What changed.** Two things in the ear's choice of capture node, both found
@@ -45,8 +93,9 @@
   program always built, `STELLA_WAKE_SOURCE` and `STELLA_BARGE_SOURCE` still
   outrank everything for the launch that carries them, the probe's one-second
   bound and its "doubt means silence" answer to no `pw-dump` are untouched, and
-  nothing in the module raises into a user's path. Voice config remains
-  environment-only and never enters `config.json`.
+  nothing in the module raises into a user's path. Everything else about the ear
+  stays environment-only — the entry above is the one that changed what a
+  desktop launch reads.
 - **Proof.** A two-second run of the real tap against the named built-in
   delivered frames, `wpctl status` showed that source-output's `target.object`
   as the built-in node while the card stayed on `a2dp-sink` with both stereo

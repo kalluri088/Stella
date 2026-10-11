@@ -22,6 +22,7 @@ from stella.capture_target import (
     capture_sources,
     discover_capture_sources,
     kind_of,
+    live_capture_target,
     pick_preferred_source,
     ranked,
     resolve_capture_source,
@@ -262,3 +263,50 @@ def test_the_automatic_answer_when_there_is_nothing_to_choose(
 ) -> None:
     monkeypatch.setattr("stella.capture_target.discover_capture_sources", lambda: ())
     assert resolve_capture_source(None) is None
+
+
+def test_a_saved_name_is_carried_to_the_capture_and_skips_the_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Push-to-talk aims at the microphone the owner named, unchanged.
+
+    The recorder takes a function rather than a string precisely because it
+    opens the device again on every press; a name the owner wrote down is the
+    answer, and asking PipeWire about a deliberate choice would let a vanished
+    node be silently replaced by the default source.
+    """
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "stella.capture_target.discover_capture_sources",
+        lambda: calls.append(1) or (_source(BUILT_IN, 2009),),
+    )
+    target = live_capture_target("ec_mic")
+    assert target() == "ec_mic"
+    assert target() == "ec_mic"
+    assert calls == []
+
+
+def test_an_unnamed_capture_chooses_again_at_every_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The other half of the same rule: with no name saved, the device that
+    # exists when the button is pressed is the device that gets recorded, so a
+    # USB microphone plugged in after Stella launched is used by the very next
+    # recording rather than never.
+    asks: list[tuple[CaptureSource, ...]] = [
+        (_source(BUILT_IN, 2007),),
+        (_source(BUILT_IN, 2007), _source(USB_MIC, 2010)),
+    ]
+    calls: list[int] = []
+
+    def _discover() -> tuple[CaptureSource, ...]:
+        found = asks[min(len(calls), len(asks) - 1)]
+        calls.append(1)
+        return found
+
+    monkeypatch.setattr("stella.capture_target.discover_capture_sources", _discover)
+    target = live_capture_target(None)
+    assert target() == BUILT_IN
+    assert target() == USB_MIC
+    assert len(calls) == 2

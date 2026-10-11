@@ -177,7 +177,10 @@ display, and can never approve a tool or change permissions.
   unarmed ear takes whatever the system defaults to, and on a laptop with a
   Bluetooth headset that default is the headset's own microphone — which costs
   that headset stereo and full volume for as long as the ear holds it
-  (`VOICE.md`, *Which microphone the ear takes*). The dim line under the row
+  (`VOICE.md`, *Which microphone the ear takes*). It is the choice for **every**
+  voice capture, not only the ear's: when the wake word is off there is no
+  shared tap and push-to-talk opens its own recording, and that path now names
+  the same node (`VOICE.md`, *One microphone*). The dim line under the row
   therefore says what the choice costs rather than only what it is: the
   headset's microphone named, by hand or because nothing else exists, is
   spelled out; an automatic step off a headset names the microphone taken

@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from stella.childproc import guarded_popen
@@ -206,3 +207,20 @@ def resolve_capture_source(explicit: str | None) -> str | None:
     if explicit:
         return explicit
     return automatic_capture_source()
+
+
+def live_capture_target(explicit: str | None) -> Callable[[], str | None]:
+    """A microphone choice re-probed at the moment a capture opens.
+
+    The raw-stream listeners are handed :func:`barge_in.live_capture_command`
+    because they build a whole command line; a capture that writes its audio to
+    a file needs only the node name to append to a command line it already
+    owns, and this is the same decision without the argv. A recorder built with
+    a name frozen at startup records the microphone that existed when Stella
+    launched, which is the bug this shape exists to prevent.
+    """
+
+    def resolve() -> str | None:
+        return resolve_capture_source(explicit)
+
+    return resolve

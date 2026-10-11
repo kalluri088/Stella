@@ -39,6 +39,7 @@ from stella.barge_in import (
 )
 from stella.brain import LLMBrain
 from stella.browser_tools import build_browser_tools
+from stella.capture_target import live_capture_target
 from stella.childproc import sweep_orphaned_children
 from stella.commands import action_history_lines
 from stella.context import (
@@ -1950,7 +1951,17 @@ def build_voice(
     except Exception:  # noqa: BLE001, S110 - cleanup must not break voice
         pass
     recorder: Recorder = (
-        TapRecorder(tap) if tap is not None else SubprocessRecorder()
+        TapRecorder(tap)
+        if tap is not None
+        # With no shared tap this recorder opens the microphone itself, and an
+        # unnamed capture follows PipeWire's remembered default source — which
+        # is the path that both degrades a Bluetooth headset's playback and
+        # ignores the *Microphone* row the owner set. The name is asked for at
+        # each press, not resolved here, for the reason ``capture_target``
+        # gives: this process outlives the devices it is choosing between.
+        else SubprocessRecorder(
+            target=live_capture_target(settings.wake_source)
+        )
     )
     player = SubprocessPlayer()
     input_notice: str | None = None

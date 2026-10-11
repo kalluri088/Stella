@@ -940,6 +940,111 @@ def test_the_fallback_recorder_pins_16k_mono_wav(
     assert seen[0][-1].endswith("capture.wav")
 
 
+class _SilentCapture:
+    """A capture child that is started, never writes a file, and stops cleanly."""
+
+    def __init__(self, seen: list[list[str]]) -> None:
+        self.seen = seen
+
+    def __call__(self, argv: list[str], **_kwargs: object) -> "_SilentCapture":
+        self.seen.append(list(argv))
+        return self
+
+    def send_signal(self, signal: int) -> None:
+        return None
+
+    def terminate(self) -> None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def _patch_capture(
+    monkeypatch: pytest.MonkeyPatch, present: str, seen: list[list[str]]
+) -> None:
+    monkeypatch.setattr(
+        "stella.voice.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name == present else None,
+    )
+    monkeypatch.setattr(
+        "stella.voice.subprocess.Popen", _SilentCapture(seen)
+    )
+
+
+@pytest.mark.parametrize("present", ["pw-record", "arecord"])
+def test_the_fallback_recorder_names_the_microphone_it_was_given(
+    present: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Push-to-talk is the only capture a desktop owner without the always-open
+    # ear ever runs, and an unnamed ``pw-record`` follows PipeWire's remembered
+    # default source — so the microphone in Settings was the microphone the ear
+    # used and never the one the recording used. A PipeWire node name is a
+    # ``--target``; ``arecord`` has no switch that takes one, so a machine with
+    # no PipeWire keeps the capture it always had rather than a command that
+    # cannot start.
+    seen: list[list[str]] = []
+    _patch_capture(monkeypatch, present, seen)
+    recorder = SubprocessRecorder(target=lambda: "ec_mic")
+    recorder.start()
+    with pytest.raises(VoiceError, match="no recording"):
+        recorder.stop()
+    recorder.dispose()
+
+    argv = seen[0]
+    assert argv[-1].endswith("capture.wav")
+    if present == "pw-record":
+        assert argv[-3:-1] == ["--target", "ec_mic"]
+    else:
+        assert "ec_mic" not in argv and "--target" not in argv
+
+
+def test_the_fallback_recorder_asks_which_microphone_at_every_press(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The voice server lives for hours and the microphones do not. A name
+    # resolved once at startup is a recording that keeps aiming at the device
+    # that existed when Stella launched, which is the mistake
+    # ``capture_target.py`` documents and the ears already avoid.
+    seen: list[list[str]] = []
+    _patch_capture(monkeypatch, "pw-record", seen)
+    answers = ["alsa_input.pci-built_in.analog-stereo", "ec_mic"]
+    asked: list[int] = []
+
+    def target() -> str:
+        asked.append(1)
+        return answers[min(len(asked) - 1, len(answers) - 1)]
+
+    recorder = SubprocessRecorder(target=target)
+    for _ in range(2):
+        recorder.start()
+        with pytest.raises(VoiceError, match="no recording"):
+            recorder.stop()
+    recorder.dispose()
+
+    assert len(asked) == 2
+    assert seen[0][-2] == answers[0]
+    assert seen[1][-2] == answers[1]
+
+
+def test_a_recorder_given_nothing_names_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The default is the historical command line, and it stays the default: a
+    # machine whose probe cannot answer must not have its capture pointed at an
+    # empty ``--target``.
+    seen: list[list[str]] = []
+    _patch_capture(monkeypatch, "pw-record", seen)
+    recorder = SubprocessRecorder(target=lambda: None)
+    recorder.start()
+    with pytest.raises(VoiceError, match="no recording"):
+        recorder.stop()
+    recorder.dispose()
+
+    assert seen[0][:4] == ["pw-record", "--rate", "16000", "--channels"]
+    assert "--target" not in seen[0]
+
+
 def test_build_voice_records_from_the_shared_tap_when_one_exists() -> None:
     settings = StellaSettings(model="test", voice_speech="off")
     tapped = build_voice(settings, tap=MicTap(command=python_writer(0)))
@@ -950,6 +1055,38 @@ def test_build_voice_records_from_the_shared_tap_when_one_exists() -> None:
     finally:
         tapped.dispose()
         own.dispose()
+
+
+def test_voice_without_a_tap_records_the_microphone_the_owner_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The *Microphone* row is a choice about every capture, not only the ear's.
+
+    The shared tap is built for the wake ear; with the ear off, push-to-talk
+    opens its own capture, and that path was the one that ignored the row.
+    """
+
+    handed: list[object] = []
+
+    class FakeRecorder:
+        def __init__(self, target: object = None) -> None:
+            handed.append(target)
+
+        def cancel(self) -> None:
+            return None
+
+        def dispose(self) -> None:
+            return None
+
+    monkeypatch.setattr("stella.app.SubprocessRecorder", FakeRecorder)
+    panel = build_voice(
+        StellaSettings(model="test", voice_speech="off", wake_source="ec_mic")
+    )
+    try:
+        assert panel._recorder.__class__ is FakeRecorder
+        assert handed[0] is not None and handed[0]() == "ec_mic"
+    finally:
+        panel.dispose()
 
 
 # ------------------------------------------------- which transcriber is used

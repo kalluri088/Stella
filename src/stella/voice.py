@@ -169,9 +169,21 @@ class Player(ABC):
 
 
 class SubprocessRecorder(Recorder):
-    """Records one clip through a local capture command (Pipewire/ALSA)."""
+    """Records one clip through a local capture command (Pipewire/ALSA).
 
-    def __init__(self) -> None:
+    ``target`` is a function naming the microphone to record from, asked at the
+    moment the recording starts — never the name resolved when Stella launched.
+    Without a shared tap this recorder is the only thing standing between the
+    owner's *Microphone* choice and the capture, and an unnamed ``pw-record``
+    follows PipeWire's remembered default source, which on a machine with a
+    headset connected is that headset's own microphone. ``None`` (the default)
+    keeps the historical behaviour: name nothing and take the default.
+    """
+
+    def __init__(
+        self, target: Callable[[], str | None] | None = None
+    ) -> None:
+        self._target = target
         self._process: subprocess.Popen[bytes] | None = None
         self._directory: str | None = None
         self._path: str | None = None
@@ -192,6 +204,9 @@ class SubprocessRecorder(Recorder):
                 raise VoiceError("Stella is already listening.")
             self._directory = tempfile.mkdtemp(prefix=f"stella-voice-{os.getpid()}-")
             self._path = os.path.join(self._directory, "capture.wav")
+            # Resolved here, not at construction: the microphone that exists
+            # when the button is pressed is the microphone that gets used.
+            source = self._target() if self._target is not None else None
             argv = (
                 [
                     "pw-record",
@@ -199,7 +214,6 @@ class SubprocessRecorder(Recorder):
                     str(CAPTURE_RATE),
                     "--channels",
                     str(CAPTURE_CHANNELS),
-                    self._path,
                 ]
                 if shutil.which("pw-record")
                 else [
@@ -213,9 +227,16 @@ class SubprocessRecorder(Recorder):
                     str(CAPTURE_CHANNELS),
                     "-t",
                     "wav",
-                    self._path,
                 ]
             )
+            # A PipeWire node name is a ``--target`` and nothing else: an
+            # unnamed capture is the historical path, ``arecord`` has no
+            # equivalent switch, and a target only ever arrives from a
+            # ``pw-dump`` that answered — on a machine with no PipeWire,
+            # there is no name to pass.
+            if source and shutil.which("pw-record"):
+                argv += ["--target", source]
+            argv.append(self._path)
             try:
                 self._process = guarded_popen(
                     argv,

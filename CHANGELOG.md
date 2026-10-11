@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### The microphone in Settings is now the microphone she records on
+
+- **What changed.** Push-to-talk records the microphone the *Microphone* row
+  names. `SubprocessRecorder` accepts a callable —
+  `capture_target.live_capture_target(settings.wake_source)` — and asks it when
+  a recording starts, so `pw-record` is given `--target <node>`; the name is
+  re-probed at every press rather than frozen when Stella launched, which is the
+  rule `capture_target.py` already enforced for the wake ear, the utterance
+  watcher and barge-in.
+- **Why, and it is the bigger half of the clutter complaint.** The shared
+  microphone tap is built only when something listens while Stella is idle,
+  which today means the wake word — and the owner turned the wake word off. With
+  no tap, push-to-talk opened its own capture, and that capture named nothing:
+  it followed PipeWire's remembered default source, which on a laptop with a
+  headset connected is the headset's own microphone. So the recording the
+  recogniser was handed came from a device the owner had already chosen against,
+  and the edge trim shipped hours earlier could only shorten it, never change
+  what was in the middle of it. This is commitment 6's first rule broken in the
+  direction no drift guard can see: the setting existed, was displayed, was
+  saved, and simply did not reach the hardware on one of the two paths.
+- **Two limits, both deliberate.** The node name is added to `pw-record` only;
+  `arecord` has no switch that takes a PipeWire node name, and passing it an
+  unmatched `-D` would break the capture on exactly the machines that need the
+  fallback. And a probe that answers nothing still produces no target, so an
+  unnamed capture remains the default behaviour rather than a new failure mode —
+  a machine whose `pw-dump` stalls records the way it always did.
+- **Proof.** Five new tests hold the argv: `--target` present for `pw-record`,
+  absent for `arecord`, asked again on the second press and answered with a
+  different node, and nothing named when the callable says `None`; one more
+  proves the panel built without a tap is handed the saved `wake_source`.
+  Batches under `timeout`, bracketed by `free -m`: `test_voice.py` 136,
+  `test_capture_target.py` 16, `test_app.py` + `test_headless_voice.py` 164.
+  `uv run ruff check .` and `git diff --check` are clean. **Not proven:** none of
+  this was run against a live microphone. Whether naming the built-in input
+  instead of the default source actually takes the music out of a transcript is
+  the owner's next listening test. Not pushed.
+
 ### The room is cut off the edges of what you say
 
 - **What changed.** One finished capture now passes a voice-activity gate

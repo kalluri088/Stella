@@ -448,6 +448,20 @@ carries on. Barge-in deliberately keeps its own process: it is only ever armed
 while Stella speaks, when the wake ear is suspended, and it may point at a
 different echo-cancelled source.
 
+The shared tap exists only when something listens while Stella is idle, which
+today means the wake word. **With the ear switched off there is no tap, and
+push-to-talk opens its own `pw-record` — which takes the same microphone the
+*Microphone* row names** (`voice.SubprocessRecorder` is handed
+`capture_target.live_capture_target(settings.wake_source)` and asks it at every
+press). Before that, the unnamed capture was the recording path's permanent
+answer: the row chose the ear's device, push-to-talk followed PipeWire's
+remembered default source, and on a machine with a headset connected the two
+are not the same microphone at all. The name is re-probed per press for the
+reason `capture_target.py` gives — a resident server lives for hours and the
+microphones do not — and a `--target` is added to `pw-record` only, because
+`arecord` has no switch that takes a PipeWire node name and a machine whose
+probe cannot answer must keep the capture it always had.
+
 ## What the always-open ear costs
 
 With wake on, the shared melspectrogram and embedding models plus one

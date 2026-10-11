@@ -1145,6 +1145,35 @@ The doctor, the config keys and the dev tree are for whoever builds Stella.
   still points at `~/models/silero/silero_vad.onnx`, which is where this
   machine already keeps it.
 
+- **D10. The microphone in Settings was not the microphone she recorded on
+  (#255, landed 2026-10-11).** Found while looking for the cause of the clutter
+  complaint, and it is the more important half of that answer: the edge trim
+  (D8) can only shorten a recording, not change what is in the middle of it,
+  and what was in the middle was whatever the default source happened to be.
+  `build_mic_tap` returns no tap unless the wake word is on, so for the owner
+  who declined the always-open ear — the choice she actually made —
+  push-to-talk fell back to `SubprocessRecorder`, whose `pw-record` line named
+  no `--target` and therefore followed PipeWire's remembered default source.
+  The *Microphone* row was honoured by the tap path alone: a saved setting the
+  interface shows, that one of the two paths silently ignored, which is
+  commitment 6's first rule broken in the direction nobody tests — the setting
+  exists and is even displayed, and does not reach the hardware.
+  `SubprocessRecorder` now takes a callable and asks it at each press
+  (`capture_target.live_capture_target(settings.wake_source)`), so the device
+  that exists when the button goes down is the device recorded, exactly the way
+  the ears already behaved. Two deliberate limits: the name is added to
+  `pw-record` only, because `arecord` has no switch that accepts a PipeWire node
+  and an unmatched `-D` would kill the capture outright on the machines that
+  need the fallback; and a probe that answers nothing still yields no target, so
+  the historical command line is the default rather than a new risk. Proved by
+  five new tests over the argv (`--target` present for `pw-record`, absent for
+  `arecord`, re-asked on the second press, nothing named when the answer is
+  `None`) and one that the panel without a tap is handed the saved node. **What
+  this did not prove:** it was not run against a live microphone — the argv is
+  what the tests hold, and whether naming the built-in input instead of the
+  headset's reduces the clutter in a real transcript is the owner's next
+  listening test, not a claim from here.
+
 ### What is still not true
 
 - **The rest of the voice configuration is still environment-only.** The three

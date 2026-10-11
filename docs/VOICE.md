@@ -321,10 +321,10 @@ Environment variables (voice config is environment-only and is never written
 to `config.json`):
 
 - `STELLA_VOICE_BARGE_IN` — `auto` (default: arms only when
-  `STELLA_BARGE_SOURCE` names a capture), `on` (arm on a chosen capture —
-  and where none is chosen, on whatever `capture_target` resolves, which is
-  the system default unless that default is a Bluetooth headset's microphone
-  and something else exists) or `off` (never).
+  `STELLA_BARGE_SOURCE` names a capture), `on` (arm on a chosen capture — and
+  where none is chosen, on whatever `capture_target` resolves, which is a
+  wired input whenever this machine has one: see *Which microphone the ear
+  takes*) or `off` (never).
 - `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file.
 - `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic`. Under `auto`
   this doubles as the enable switch; unset, the ear never arms. Under `on`,
@@ -421,26 +421,32 @@ directory), `STELLA_WAKE_PHRASE` (display label),
 ### Which microphone the ear takes
 
 A capture that names no node takes PipeWire's *default source*, and on a
-laptop with a Bluetooth headset connected that source is the headset's own
-microphone — which costs the headset its audio quality for as long as the ear
-is armed (see *Known limitations*). `stella/capture_target.py` now decides
-what to name, in three rules:
+laptop with a Bluetooth headset that source is the headset's own microphone —
+which costs the headset its audio quality for as long as the capture holds it
+(see *Known limitations*). `stella/capture_target.py` decides what to name, in
+three rules:
 
-- **The deviation is narrow.** Nothing is chosen unless the highest-priority
-  input **is** a Bluetooth microphone and some other input exists; then Stella
-  takes the highest-priority input that is not. Every other machine — this
-  laptop with no headset connected, a desktop with one built-in mic, a machine
-  with no PipeWire — gets the identical command line it got before this module
-  existed, with no `--target` at all. That equality is pinned by a test, and
-  it is the reason a change to the default is safe to make.
-- **The ordering is WirePlumber's.** `priority.session` decides which input
-  wins, so a microphone the owner plugs in deliberately can outrank the
-  built-in instead of losing to a ranking hardcoded here.
+- **A Bluetooth input is never automatic while another input exists.** The
+  first version of this rule stepped aside unless a Bluetooth microphone was
+  already the highest-priority candidate, and that was the defect: on this
+  laptop, with the headset connected and playing music in stereo and nothing
+  recording, `pactl info` reported `Default Source: bluez_input…`. The node a
+  capture would take was a headset microphone that no candidate list had been
+  asked about, and the first unnamed capture is what makes PipeWire create it
+  — BlueZ then drops the card to its hands-free profile, so the owner's music
+  becomes mono call audio and Stella's replies become inaudible. Naming any
+  wired input makes the remembered default irrelevant, which is the whole
+  point: the failure was invisible at the moment the decision was made.
+- **The ordering is WirePlumber's.** `priority.session` decides which of the
+  non-Bluetooth inputs wins, so a microphone the owner plugs in deliberately
+  can outrank the built-in instead of losing to a ranking hardcoded here.
 - **Doubt means silence.** No `pw-dump` on PATH, a probe that stalls past one
-  second, output that does not parse, one candidate, a headset and nothing
-  else — all of it means "name no target", which is what the voice path always
-  did with that answer. A probe must never become a reason voice stops
-  working, so nothing in the module raises into a user's path.
+  second, output that does not parse, no candidate at all, or a machine whose
+  only input *is* a headset — all of it means "name no target", which is what
+  the voice path always did with that answer. A probe must never become a
+  reason voice stops working, so nothing in the module raises into a user's
+  path, and an owner with no microphone but the headset keeps voice rather
+  than getting a rule applied to her.
 
 Discovery reads only `Audio/Source` nodes whose name starts with
 `alsa_input.`, which is what leaves out playback streams, monitors, the
@@ -449,18 +455,29 @@ segment of its name — `pci-` built-in, `usb-`, `bluez_` Bluetooth, anything
 else other — and a PipeWire node name is hardware identity, not a secret: it
 is safe in a command line and in `config.json`.
 
+The answer is **recomputed each time a capture opens**, not once per process.
+A resident voice server lives for hours; the microphones do not. The tap, the
+wake ear, its utterance watcher and the barge-in listener are all handed a
+function that builds the command line (`barge_in.live_capture_command`) rather
+than the command line itself, so the device that exists when the microphone is
+picked up is the device that gets picked up. One probe is ~13 ms on this
+machine, and it runs at an open — a session or an armed ear — never per frame.
+If the named node has vanished in between, `pw-record` does not fail: measured
+here, a target PipeWire cannot find falls back to the default source, which is
+the old behaviour for exactly one capture rather than a dead ear.
+
 The owner sees the whole decision. Settings has a **Microphone** row listing
 *let Stella choose* plus every input found when the panel opens (so a
 hot-plugged device appears on reopen even though the running ear already
 decided), and under it one line saying what the choice costs: naming the
 headset's own microphone, whether by hand or because it is the only input
-here, says so; automatic with a headset to step away from says which
-microphone Stella took instead. A deliberate choice is saved in
-`config.json` as `wake_source` and survives the next launch. A node that was
-saved but is not connected now is still listed, marked as such — an unplugged
-microphone must not silently rewrite what the owner picked.
-`STELLA_WAKE_SOURCE` still outranks the saved value, and only for the launch
-that carries it.
+here, says so; automatic says which microphone Stella took, and adds that it
+left a Bluetooth headset alone only when a headset is actually here. A
+deliberate choice is saved in `config.json` as `wake_source` and survives the
+next launch. A node that was saved but is not connected now is still listed,
+marked as such — an unplugged microphone must not silently rewrite what the
+owner picked. `STELLA_WAKE_SOURCE` still outranks the saved value, and only for
+the launch that carries it.
 
 Both the always-open taps and the barge-in watcher resolve through the same
 function, because VOICE.md's own observation was two live captures pinning the
@@ -641,19 +658,27 @@ voxtype progress block described under "Providers and configuration", which
 was polluting every live transcript until it was read out of stdout.
 
 The microphone choice was checked on this machine, read-only, before and after.
-`pw-dump` here reports one capture node, `alsa_input.pci-0000_00_1f.3.analog-stereo`
-at `priority.session` 2009, so the pick is empty and the panel says
-"Stella listens on Built-in Audio Analog Stereo" from the defaulting branch —
-and the built command is `pw-record -a --rate 16000 --channels 1 -`, exactly
-the list `capture_command(None)` produces, which is the assertion the test
-suite pins too. `pw-record --target` was then proven to accept a *node name*
-rather than only a serial: one bounded second of capture against the named
-built-in input delivered 4000 bytes, and a deliberately unknown name delivered
-the same, falling back to the default silently — the reason an absent
-microphone reads as silence rather than as an error, and why the saved value is
-a name the panel showed rather than anything hand-typed. The Bluetooth branch,
-which is the one this laptop cannot offer on command, is proven against recorded
-`pw-dump` text in `tests/test_capture_target.py`.
+`pw-dump` here reports `alsa_input.pci-0000_00_1f.3.analog-stereo` at
+`priority.session` 2009 and, when a WH-CH720N is connected,
+`bluez_input.00:A4:1C:90:B9:B0` at 2010 — the headset outranks the built-in in
+WirePlumber's own ranking, which is why it is the default source. With the
+headset playing music in stereo and nothing recording, `pactl info` still
+reported `Default Source: bluez_input…`, and that is the state the rule has to
+survive: an unnamed capture here is a headset microphone request, not a
+built-in one. The current build therefore names the built-in —
+`pw-record -a --rate 16000 --channels 1 --target
+alsa_input.pci-0000_00_1f.3.analog-stereo -` — and a one-second run of the real
+tap proved both halves of that: frames arrived, the source-output's
+`target.object` was the built-in node (`Source: 59`), and the card stayed on
+`a2dp-sink` with stereo playback links intact for the whole time.
+`pw-record --target` was then proven to accept a *node name* rather than only a
+serial: one bounded second of capture against the named built-in input delivered
+4000 bytes, and a deliberately unknown name delivered the same, falling back to
+the default silently — the reason an absent microphone reads as silence rather
+than as an error, and why the saved value is a name the panel showed rather than
+anything hand-typed. The Bluetooth-only branch, which is the one this laptop
+cannot offer on command, is proven against recorded `pw-dump` text in
+`tests/test_capture_target.py`.
 
 ## Known limitations
 

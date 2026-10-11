@@ -52,8 +52,7 @@ import wave
 from collections.abc import Callable
 
 from stella.app import build_application, build_wake, build_wake_ear
-from stella.barge_in import capture_command
-from stella.capture_target import resolve_capture_source
+from stella.barge_in import live_capture_command
 from stella.config import resolve_settings
 from stella.mic_tap import MicTap
 from stella.portable import has_unix_sockets
@@ -340,9 +339,7 @@ def _serve(application) -> int:
         # Bind first, warm second: the socket is what tells ``--toggle``
         # a server exists, and loading a speech model is the slow part.
         voice.speech_enabled = True
-        tap = MicTap(
-            command=capture_command(resolve_capture_source(settings.wake_source))
-        )
+        tap = MicTap(command=live_capture_command(settings.wake_source))
         voice.attach_tap(tap)
         try:
             ear = build_wake_ear(settings, tap=tap)
@@ -675,9 +672,7 @@ def _make_capture(settings, voice) -> Callable[[], tuple[str, str]]:
     :func:`_capture_from`.
     """
 
-    tap = MicTap(
-        command=capture_command(resolve_capture_source(settings.wake_source))
-    )
+    tap = MicTap(command=live_capture_command(settings.wake_source))
     voice.attach_tap(tap)
     ear = build_wake_ear(settings, tap=tap)
     return _capture_from(ear, voice)

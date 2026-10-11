@@ -119,11 +119,14 @@ Which device those captures read is a separate concern, owned by
 device-ignorant, so the deciding was nowhere: an unnamed capture takes
 PipeWire's default source, which on a laptop with a Bluetooth headset is the
 headset's own microphone, and holding it costs that headset stereo and full
-volume (`VOICE.md`). `capture_target` asks PipeWire once per process, picks a
-node only in that one case — a Bluetooth input leading with something else
-available — and returns `None` for every other answer, including no PipeWire
-and a probe that stalls, because a probe must never become a reason voice
-stops working. The push-to-talk `Recorder` is untouched: a capture that lives
+volume (`VOICE.md`). `capture_target` asks PipeWire afresh every time a capture
+opens and names the highest-ranked non-Bluetooth input whenever this machine has
+one — a machine whose only microphone is the headset keeps it, and so does every
+doubtful answer, including no PipeWire and a probe that stalls, because a probe
+must never become a reason voice stops working. Listeners are handed a function
+that builds the command line (`barge_in.live_capture_command`) rather than the
+command line itself: a resident server lives for hours and its microphones do
+not. The push-to-talk `Recorder` is untouched: a capture that lives
 as long as one utterance does not pin a device across a whole session. The
 owner's chosen node is a saved setting the panel shows, and a node name is
 hardware identity rather than a secret.

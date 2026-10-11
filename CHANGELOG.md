@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### A default that lies no longer picks the microphone
+
+- **What changed.** Two things in the ear's choice of capture node, both found
+  by the owner living with the defect rather than by a test. First, the rule in
+  `stella/capture_target.py` stopped being conditional on a headset *already*
+  leading the candidate list: `pick_preferred_source` now names the first
+  non-Bluetooth input whenever this machine has one, and names nothing when its
+  only inputs are Bluetooth. Second, that answer is **recomputed every time a
+  capture opens** instead of once per process — the memo and its
+  `reset_capture_source_probe()` are gone, and every consumer (the shared
+  `MicTap`, the wake ear, its utterance watcher, the barge-in listener) is now
+  handed a function that builds the command line
+  (`barge_in.live_capture_command`) rather than the command line it should have
+  used forever. `stella_ui`'s hint under the *Microphone* row also lost a
+  sentence it was saying on machines that have no headset to leave alone.
+- **Why.** `docs/ROADMAP.md` recorded D7 as "the deviation is narrow on
+  purpose", and the narrowness was the bug. Measured on this laptop with the
+  owner's WH-CH720N connected, playing music in stereo and nothing recording:
+  `pactl info` reported `Default Source: bluez_input…` for a source node that
+  no candidate list contained, because the first unnamed capture is what makes
+  PipeWire create it and BlueZ answers that capture by dropping the card to its
+  hands-free profile. So the rule that only steps aside when a headset is
+  *already* ranked first was reading a question the machine had not been asked
+  yet, and the command line that looked like the safe do-nothing option was the
+  one that cost the owner her music — mono, call-quality, for as long as the ear
+  stayed armed, with Stella's replies spoken into a headset that had stopped
+  playing stereo and were therefore inaudible. The memo broke the same promise
+  a different way: a headset connecting after `stella voice --serve` started was
+  invisible to a pick made at startup, when nothing was connected.
+- **What it says now.** Automatic means a wired input by name
+  (`pw-record -a --rate 16000 --channels 1 --target
+  alsa_input.pci-0000_00_1f.3.analog-stereo -` here); a machine whose only
+  microphone *is* the headset keeps that microphone, because refusing there
+  takes voice away rather than protecting it; a node the owner named in
+  Settings is still used exactly as written, headset included. `pw-record`'s
+  behaviour with a stale name is load-bearing and measured rather than assumed:
+  a target PipeWire cannot find falls back to the default source silently, so a
+  microphone that vanished mid-session degrades one capture to the old
+  behaviour instead of killing the ear.
+- **What did not move.** `capture_command(None)` still produces the argv this
+  program always built, `STELLA_WAKE_SOURCE` and `STELLA_BARGE_SOURCE` still
+  outrank everything for the launch that carries them, the probe's one-second
+  bound and its "doubt means silence" answer to no `pw-dump` are untouched, and
+  nothing in the module raises into a user's path. Voice config remains
+  environment-only and never enters `config.json`.
+- **Proof.** A two-second run of the real tap against the named built-in
+  delivered frames, `wpctl status` showed that source-output's `target.object`
+  as the built-in node while the card stayed on `a2dp-sink` with both stereo
+  playback links active, and `pw-dump` gave the ranking that explains the old
+  behaviour: `bluez_input.00:A4:1C:90:B9:B0` at `priority.session` 2010 over the
+  built-in's 2009. A probe costs ~13 ms, which is why there is no cache in front
+  of it and why it runs at a capture open, never per frame. Retargeted rather
+  than weakened tests: `test_capture_target.py` 14, `test_mic_tap.py` 10 (new:
+  the tap rebuilds its command at every open), `test_headless_voice.py` 65,
+  `test_app.py` 99, `test_ui.py` 85 (new: the automatic row names the wired mic
+  it will take), `test_wake.py` 58, `test_barge_in.py` 20, `test_voice.py` 129,
+  `test_voice_roundtrip.py` + `test_config.py` 84 passed and 1 skipped — each in
+  its own batch under `timeout`, bracketed by `free -m`. `uv run ruff check .`
+  and `git diff --check` are clean. Not pushed.
+
 ### The roadmap now answers "how close is she to feeling right"
 
 - **What changed.** `docs/ROADMAP.md` is organised around the six commitments

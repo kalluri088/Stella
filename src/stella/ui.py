@@ -2487,9 +2487,13 @@ class StellaWindow:
                 "While the ear listens there, that headset loses stereo and "
                 "full volume — phone-call sound where music was."
             )
-        if picked is not None:
+        if picked is not None and any(
+            candidate.kind == BLUETOOTH for candidate in self._wake_sources
+        ):
             # Said only when it is true: a headset is here, and this is the
-            # microphone chosen instead of its microphone.
+            # microphone chosen instead of its microphone. The automatic pick
+            # names a wired input even when no headset is in sight, so the
+            # rule alone does not make this sentence worth reading.
             return (
                 f"Stella listens on {source.label} and leaves the Bluetooth "
                 "headset's own microphone alone."

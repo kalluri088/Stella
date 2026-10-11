@@ -1062,7 +1062,28 @@ The doctor, the config keys and the dev tree are for whoever builds Stella.
   saved as `wake_source` and `STELLA_WAKE_SOURCE` still outranks it for one
   launch. Consequence stated plainly: on a machine that today silently grabs
   the headset, `stella voice --serve` now captures something else. See
-  `docs/VOICE.md`, *Which microphone the ear takes*.
+  `docs/VOICE.md`, *Which microphone the ear takes*. **Follow-up (owner
+  report, landed 2026-10-11).** It still took the headset, and the narrowness
+  this bullet praised was the defect. Measured with the owner's headset
+  connected, playing stereo, and nothing recording: `pactl info` reported
+  `Default Source: bluez_input…` — a source node that was in no candidate list,
+  because the first unnamed capture is what makes PipeWire create it and BlueZ
+  answers that capture by switching the card profile. A rule that only steps
+  aside when a headset is *already* ranked first was asking "what are the
+  candidates" of a machine that had not been asked yet, so the do-nothing argv
+  was the one that cost the music. `pick_preferred_source` now names the first
+  non-Bluetooth input whenever one exists (a machine whose only microphone is
+  the headset keeps it — refusing there would remove voice, not protect it), and
+  the answer is recomputed at every capture open through a command *factory*
+  (`barge_in.live_capture_command`) rather than frozen argv plus a
+  process-lifetime memo, because a headset that connects after the server
+  started was the second way the same promise broke. `pw-record` makes the
+  fallback safe: a target it cannot find is ignored silently and the default is
+  taken, so a microphone that vanished mid-session degrades one capture instead
+  of killing the ear. Proof: `wpctl status` naming the built-in node as the live
+  source-output's `target.object` while the card stayed `a2dp-sink` with both
+  stereo links up; `pw-dump` ranking bluez 2010 over the built-in's 2009; a
+  ~13 ms probe, which is why no cache stands in front of it.
 
 ### What is still not true
 

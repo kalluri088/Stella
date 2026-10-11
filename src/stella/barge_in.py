@@ -31,17 +31,19 @@ import os
 import shutil
 import subprocess
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from stella.capture_target import resolve_capture_source
 from stella.childproc import guarded_popen
-from stella.mic_tap import read_frame
+from stella.mic_tap import CaptureCommand, capture_argv, read_frame
 from stella.voice import VoiceError, _cancel_process_tree
 
 __all__ = [
     "BargeInListener",
     "SileroVad",
     "capture_command",
+    "live_capture_command",
 ]
 
 SAMPLE_RATE = 16_000
@@ -97,6 +99,23 @@ def capture_command(source: str | None) -> list[str]:
     if source:
         argv += ["-D", source]
     return argv + ["-"]
+
+
+def live_capture_command(explicit: str | None) -> Callable[[], list[str]]:
+    """A capture argv rebuilt from the microphones that exist *now*.
+
+    Handing a listener the argv itself fixes the microphone for as long as
+    the listener lives, and a listener lives as long as Stella does. The
+    owner's headphones, a USB microphone and PipeWire's remembered default
+    source all change mid-session, so every consumer that reopens the device
+    builds the command here instead — see ``capture_target.py`` for why the
+    unnamed capture is the one that degrades a Bluetooth headset's audio.
+    """
+
+    def build() -> list[str]:
+        return capture_command(resolve_capture_source(explicit))
+
+    return build
 
 
 class SileroVad:
@@ -215,13 +234,15 @@ class BargeInListener:
         self,
         *,
         features: Callable[[bytes], tuple[float, float]],
-        command: Sequence[str] | None = None,
+        command: CaptureCommand | None = None,
         threshold: float = VAD_THRESHOLD,
         confirm_frames: int = CONFIRM_FRAMES,
         on_speech: Callable[[], None] | None = None,
     ) -> None:
         self._features = features
-        self._command = list(command) if command is not None else capture_command(None)
+        if command is None:
+            command = live_capture_command(None)
+        self._command = command
         self._judge = BargeInJudge(
             threshold=threshold, confirm_frames=confirm_frames
         )
@@ -247,7 +268,7 @@ class BargeInListener:
             self._judge.reset()
             try:
                 process = guarded_popen(
-                    self._command,
+                    capture_argv(self._command),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,

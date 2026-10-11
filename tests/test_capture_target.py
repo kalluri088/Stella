@@ -4,9 +4,8 @@ Nothing here needs PipeWire. The dump is text written out in these tests in
 the shape ``pw-dump`` really produces (verified against this machine), the
 rule is a pure function over ``CaptureSource`` values, and the probe is
 driven by a fake ``guarded_popen``. What the suite is really guarding is the
-"do nothing" outcome: on a machine with no headset to step away from, the
-command line the voice path builds must be the one it built before this
-module existed.
+outcome the owner hears: a wired input is named, so the capture never follows
+a default source that happens to be a headset's microphone.
 """
 
 import json
@@ -14,7 +13,6 @@ import subprocess
 
 import pytest
 
-from stella import capture_target
 from stella.capture_target import (
     BLUETOOTH,
     BUILTIN,
@@ -58,15 +56,6 @@ def _dump(*nodes: dict) -> str:
 
 def _source(name: str, priority: int) -> CaptureSource:
     return capture_sources(_dump(_node(name, priority)))[0]
-
-
-@pytest.fixture(autouse=True)
-def _fresh_probe() -> None:
-    """The automatic pick is memoized for a process; tests must not share it."""
-
-    capture_target.reset_capture_source_probe()
-    yield
-    capture_target.reset_capture_source_probe()
 
 
 # ------------------------------------------------------------------ parsing
@@ -127,16 +116,28 @@ def test_capture_sources_returns_nothing_for_unparsable_text() -> None:
 # ---------------------------------------------------------------- the rule
 
 
-def test_pick_returns_none_below_two_candidates() -> None:
+def test_pick_returns_none_when_there_is_nothing_to_name() -> None:
     assert pick_preferred_source(()) is None
-    assert pick_preferred_source((_source(HEADSET, 2009),)) is None
-
-
-def test_pick_returns_none_when_the_leading_source_is_not_bluetooth() -> None:
-    # This is the "today's argv is unchanged" pin: a laptop with only its
-    # built-in input above everything else must get no target at all.
-    sources = (_source(BUILT_IN, 2009), _source(USB_MIC, 2000))
+    # A headset-only machine keeps the ear armed on the headset (with the
+    # warning in the panel): refusing here would take voice away entirely.
+    sources = capture_sources(
+        _dump(_node(HEADSET, 2009), _node("alsa_output.fake", 100, "Audio/Sink"))
+    )
     assert pick_preferred_source(sources) is None
+
+
+def test_pick_names_the_built_in_even_when_no_headset_is_in_the_way() -> None:
+    # The pin that changed on 2026-10-11, and the reason is measured rather
+    # than theoretical: on this laptop ``pactl info`` reported ``Default
+    # Source: bluez_input…`` while the headset was connected, playing stereo
+    # and holding no capture. That node was not a source the ear could see
+    # being chosen, so an unnamed capture was the command line that quietly
+    # dragged the card into its hands-free profile. Naming any wired input
+    # is what makes the remembered default irrelevant.
+    sources = (_source(BUILT_IN, 2009), _source(USB_MIC, 2000))
+    picked = pick_preferred_source(sources)
+    assert picked is not None
+    assert picked.name == BUILT_IN
 
 
 def test_pick_leaves_a_headset_for_the_leading_non_bluetooth_input() -> None:
@@ -160,15 +161,6 @@ def test_ranking_breaks_a_priority_tie_by_name() -> None:
     # about the pick depends on it.
     ordered = ranked((_source(USB_MIC, 5), _source(BUILT_IN, 5)))
     assert [source.name for source in ordered] == [BUILT_IN, USB_MIC]
-
-
-def test_pick_leaves_nothing_when_a_headset_is_the_only_input() -> None:
-    # A headset-only machine keeps the ear armed on the headset (with the
-    # warning in the panel): refusing here would take voice away entirely.
-    sources = capture_sources(
-        _dump(_node(HEADSET, 2009), _node("alsa_output.fake", 100, "Audio/Sink"))
-    )
-    assert pick_preferred_source(sources) is None
 
 
 # ------------------------------------------------------------------ probe
@@ -239,21 +231,30 @@ def test_an_explicit_source_beats_the_probe_and_skips_it(
     assert calls == []
 
 
-def test_the_automatic_pick_is_probed_once_per_process(
+def test_the_automatic_pick_is_probed_afresh_on_every_ask(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The resident server lives for hours and the microphones do not. The
+    # first version of this rule remembered its answer for the life of the
+    # process, so a headset that connected after the server started was never
+    # seen by the rule that was supposed to step around it.
+    asks: list[tuple[CaptureSource, ...]] = [
+        (_source(BUILT_IN, 2007),),
+        (_source(HEADSET, 2010), _source(BUILT_IN, 2007)),
+    ]
     calls: list[int] = []
 
     def _discover() -> tuple[CaptureSource, ...]:
+        found = asks[min(len(calls), len(asks) - 1)]
         calls.append(1)
-        return (_source(HEADSET, 2009), _source(BUILT_IN, 2007))
+        return found
 
     monkeypatch.setattr("stella.capture_target.discover_capture_sources", _discover)
     assert automatic_capture_source() == BUILT_IN
     assert automatic_capture_source() == BUILT_IN
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert resolve_capture_source(None) == BUILT_IN
-    assert len(calls) == 1
+    assert len(calls) == 3
 
 
 def test_the_automatic_answer_when_there_is_nothing_to_choose(

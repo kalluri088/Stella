@@ -11,7 +11,7 @@ import time
 import pytest
 
 from stella.barge_in import capture_command
-from stella.mic_tap import FRAME_BYTES, MicTap, TapClient, read_frame
+from stella.mic_tap import FRAME_BYTES, MicTap, TapClient, capture_argv, read_frame
 from stella.voice import VoiceError
 
 
@@ -188,8 +188,37 @@ def test_a_capture_that_dies_reports_once_to_every_subscriber() -> None:
 # ------------------------------------------------------------------ argv
 
 
-def test_the_tap_captures_raw_16k_mono_on_stdout() -> None:
+def test_the_tap_captures_raw_16k_mono_on_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # The shared tap uses barge-in's argv verbatim: one device, one
-    # format, one command every consumer already agrees on.
-    assert MicTap()._command == capture_command(None)
-    assert MicTap(command=["pw-record", "-"])._command == ["pw-record", "-"]
+    # format, one command every consumer already agrees on. The default is
+    # a factory rather than a frozen list, so the answer is what the
+    # microphones say now — here, a machine with nothing to choose.
+    monkeypatch.setattr("stella.capture_target.discover_capture_sources", lambda: ())
+    assert capture_argv(MicTap()._command) == capture_command(None)
+    assert capture_argv(MicTap(command=["pw-record", "-"])._command) == [
+        "pw-record",
+        "-",
+    ]
+
+
+def test_the_tap_rebuilds_its_command_at_every_open() -> None:
+    # The owner's laptop in one test: Stella's server starts, a Bluetooth
+    # headset connects an hour later, and the next capture must not be the
+    # command line frozen at startup. Asking the factory once per open is
+    # what makes a device change that outlives the decision matter.
+    opens: list[int] = []
+
+    def _command() -> list[str]:
+        opens.append(len(opens))
+        return writer(2, keep_open=30)
+
+    tap = MicTap(command=_command)
+    first = tap.subscribe("one")
+    assert take(first, 1)
+    first.close()
+    second = tap.subscribe("two")
+    assert take(second, 1)
+    second.close()
+    assert len(opens) == 2

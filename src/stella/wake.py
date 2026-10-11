@@ -43,10 +43,10 @@ from typing import TYPE_CHECKING
 
 from stella.barge_in import (
     SAMPLE_RATE,
-    capture_command,
+    live_capture_command,
 )
 from stella.childproc import guarded_popen
-from stella.mic_tap import MicTap, TapClient, read_frame
+from stella.mic_tap import CaptureCommand, MicTap, TapClient, capture_argv, read_frame
 from stella.voice import VoiceError, _cancel_process_tree
 
 if TYPE_CHECKING:
@@ -412,14 +412,14 @@ class WakeListener:
         self,
         *,
         feed: Callable[[bytes], bool],
-        command: Sequence[str] | None = None,
+        command: CaptureCommand | None = None,
         on_wake: Callable[[], None] | None = None,
         reset: Callable[[], None] | None = None,
         tap: MicTap | None = None,
     ) -> None:
         self._feed = feed
         self._command = (
-            list(command) if command is not None else capture_command(None)
+            command if command is not None else live_capture_command(None)
         )
         self._tap = tap
         self.on_wake = on_wake
@@ -464,7 +464,7 @@ class WakeListener:
             return client, None, client
         try:
             process = guarded_popen(
-                self._command,
+                capture_argv(self._command),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -535,7 +535,7 @@ class WakeUtteranceEar:
         *,
         features: Callable[[bytes], tuple[float, float]],
         endpoint: WakeEndpoint,
-        command: Sequence[str] | None = None,
+        command: CaptureCommand | None = None,
         threshold: float = 0.5,
         energy_floor: float = 0.01,
         clock: Callable[[], float] | None = None,
@@ -545,7 +545,7 @@ class WakeUtteranceEar:
         self._features = features
         self._endpoint = endpoint
         self._command = (
-            list(command) if command is not None else capture_command(None)
+            command if command is not None else live_capture_command(None)
         )
         self._tap = tap
         self._threshold = threshold
@@ -586,7 +586,7 @@ class WakeUtteranceEar:
             return client, None, client
         try:
             process = guarded_popen(
-                self._command,
+                capture_argv(self._command),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,

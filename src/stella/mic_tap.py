@@ -29,12 +29,19 @@ from __future__ import annotations
 import queue
 import subprocess
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from stella.childproc import guarded_popen
 from stella.voice import VoiceError, _cancel_process_tree
 
-__all__ = ["FRAME_BYTES", "MicTap", "TapClient", "read_frame"]
+__all__ = [
+    "FRAME_BYTES",
+    "CaptureCommand",
+    "MicTap",
+    "TapClient",
+    "capture_argv",
+    "read_frame",
+]
 
 #: One 32 ms frame of 16 kHz mono s16le: the unit every consumer thinks
 #: in (``barge_in.FRAME_BYTES`` and ``wake.FRAME_BYTES`` are this value).
@@ -43,6 +50,18 @@ FRAME_BYTES = 1024
 #: How far a subscriber may fall behind before its oldest frame is
 #: dropped: ~250 ms of audio, well past any real consumer's jitter.
 DEFAULT_BACKLOG = 8
+
+#: What a listener can be handed as its capture: the argv itself, or a
+#: function that builds it. A function is what the voice paths pass, because
+#: a listener lives as long as Stella does and the microphones do not — see
+#: ``barge_in.live_capture_command`` and ``capture_target.py``.
+CaptureCommand = Sequence[str] | Callable[[], Sequence[str]]
+
+
+def capture_argv(command: CaptureCommand) -> Sequence[str]:
+    """The command line to spawn, resolving a factory at the moment of opening."""
+
+    return command() if callable(command) else command
 
 
 def read_frame(stream, frame_bytes: int = FRAME_BYTES) -> bytes | None:
@@ -156,16 +175,19 @@ class MicTap:
     def __init__(
         self,
         *,
-        command: Sequence[str] | None = None,
+        command: CaptureCommand | None = None,
         frame_bytes: int = FRAME_BYTES,
     ) -> None:
         if command is None:
             # Only the default reaches for barge_in's argv builder; a
             # caller that passes a command keeps this module independent.
-            from stella.barge_in import capture_command
+            # The default is a factory, not argv: which microphone exists
+            # changes while Stella runs, and a frozen argv would be frozen
+            # to whatever PipeWire's default source was back then.
+            from stella.barge_in import live_capture_command
 
-            command = capture_command(None)
-        self._command = list(command)
+            command = live_capture_command(None)
+        self._command = command
         self._frame_bytes = frame_bytes
         self._clients: list[TapClient] = []
         self._lock = threading.Lock()
@@ -237,7 +259,7 @@ class MicTap:
     def _open_locked(self) -> None:
         try:
             process = guarded_popen(
-                self._command,
+                capture_argv(self._command),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,

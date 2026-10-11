@@ -1575,6 +1575,39 @@ def test_the_mic_picker_writes_the_chosen_node_into_the_draft(
         root.destroy()
 
 
+def test_the_automatic_row_names_the_wired_mic_it_will_take(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Automatic is a decision with a name now, so the panel has to say
+    # which microphone it picked — and say nothing about a headset that is
+    # not on the machine.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.setattr(
+        stella_ui, "discover_capture_sources", lambda: (BUILT_IN_MIC,)
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        hint = window._mic_hint.cget("text")
+        assert BUILT_IN_MIC.label in hint
+        assert "Bluetooth" not in hint
+    finally:
+        bridge.stop()
+        root.destroy()
+
+    monkeypatch.setattr(
+        stella_ui, "discover_capture_sources", lambda: (HEADSET_MIC, BUILT_IN_MIC)
+    )
+    root, window, bridge, _ = make_window()
+    try:
+        hint = window._mic_hint.cget("text")
+        assert BUILT_IN_MIC.label in hint
+        assert "leaves the Bluetooth headset's own microphone alone" in hint
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_the_mic_picker_says_what_a_headset_microphone_costs(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

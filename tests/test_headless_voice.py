@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import pytest
 
 from stella import headless_voice as hv
+from stella.mic_tap import capture_argv
 from stella.portable import has_unix_sockets
 from stella.tools import ApprovalRequest
 from stella.voice import VoiceError
@@ -205,7 +206,6 @@ def _wire(monkeypatch, voice, ear_factory):
     monkeypatch.setattr(hv, "resolve_settings", lambda: FakeSettings())
     monkeypatch.setattr(hv, "build_application", lambda settings: application)
     monkeypatch.setattr(hv, "MicTap", FakeTap)
-    monkeypatch.setattr(hv, "capture_command", lambda source: ["fake-cmd"])
     monkeypatch.setattr(hv, "build_wake_ear", lambda settings, tap: ear_factory())
     return application, session
 
@@ -331,7 +331,6 @@ class TestRunHeadlessVoice:
         monkeypatch.setattr(hv, "resolve_settings", lambda: FakeSettings())
         monkeypatch.setattr(hv, "build_application", lambda settings: application)
         monkeypatch.setattr(hv, "MicTap", FakeTap)
-        monkeypatch.setattr(hv, "capture_command", lambda source: ["fake-cmd"])
         monkeypatch.setattr(
             hv, "build_wake_ear", lambda settings, tap: FakeEar("complete")
         )
@@ -344,7 +343,6 @@ class TestCapture:
     def test_one_tap_is_shared_across_captures(self, monkeypatch):
         voice = FakeVoice(transcript="first")
         monkeypatch.setattr(hv, "MicTap", FakeTap)
-        monkeypatch.setattr(hv, "capture_command", lambda source: ["fake-cmd"])
         monkeypatch.setattr(
             hv, "build_wake_ear", lambda settings, tap: FakeEar("complete")
         )
@@ -355,10 +353,14 @@ class TestCapture:
         # Reused, never a second handle on the same device.
         assert len(voice.taps) == 1
 
-    def test_the_tap_is_built_for_the_resolved_microphone(self, monkeypatch):
+    def test_the_tap_is_built_for_the_microphone_resolved_when_it_opens(
+        self, monkeypatch
+    ):
         # The saved node is handed to the resolver, and whatever the
         # resolver names is what the capture targets — the resident server
-        # and the one-shot run share this closure.
+        # and the one-shot run share this closure. The resolution happens
+        # when the command is built, not when the tap is, because the
+        # server outlives whatever microphone was plugged in at its start.
         voice = FakeVoice()
         seen: list[str | None] = []
         monkeypatch.setattr(
@@ -369,16 +371,15 @@ class TestCapture:
         )
         monkeypatch.setattr(hv, "MicTap", FakeTap)
         monkeypatch.setattr(
-            hv,
-            "resolve_capture_source",
+            "stella.barge_in.resolve_capture_source",
             lambda explicit: seen.append(explicit) or "resolved-node",
         )
         monkeypatch.setattr(
             hv, "build_wake_ear", lambda settings, tap: FakeEar("complete")
         )
         hv._make_capture(FakeSettings(wake_source="alsa_input.saved"), voice)
-        assert seen == ["alsa_input.saved"]
-        assert voice.taps[0].command == [
+        assert seen == []
+        assert capture_argv(voice.taps[0].command) == [
             "pw-record",
             "-a",
             "--rate",
@@ -389,12 +390,12 @@ class TestCapture:
             "resolved-node",
             "-",
         ]
+        assert seen == ["alsa_input.saved"]
 
     def test_wait_timeout_is_read_as_silence(self, monkeypatch):
         voice = FakeVoice()
         monkeypatch.setattr(hv, "CAPTURE_WAIT_SECONDS", 0.05)
         monkeypatch.setattr(hv, "MicTap", FakeTap)
-        monkeypatch.setattr(hv, "capture_command", lambda source: ["fake-cmd"])
         # The watcher never calls back: a reader that died mid-capture.
         monkeypatch.setattr(
             hv, "build_wake_ear", lambda settings, tap: FakeEar("complete", fire=False)

@@ -47,6 +47,7 @@ from stella.llm import (
     run_cancellable,
 )
 from stella.memory import InMemoryMemory, MemoryItem, SQLiteMemory
+from stella.mic_tap import capture_argv
 from stella.minilm_embedding import MiniLMEmbeddingProvider
 from stella.ollama_embedding import OllamaEmbeddingProvider
 from stella.stella import Stella, StellaResult
@@ -2228,7 +2229,7 @@ def test_the_three_listening_ears_share_the_resolved_microphone(
     monkeypatch.setattr(app, "WakeSpotter", _StubSpotter)
     monkeypatch.setattr(app, "SileroVad", _StubVad)
     monkeypatch.setattr(
-        app, "resolve_capture_source", lambda explicit: "resolved-node"
+        "stella.barge_in.resolve_capture_source", lambda explicit: "resolved-node"
     )
     settings = StellaSettings(model="m", wake_word="on")
     for built in (
@@ -2237,7 +2238,7 @@ def test_the_three_listening_ears_share_the_resolved_microphone(
         build_wake_ear(settings),
     ):
         assert built is not None
-        assert built._command[-3:] == ["--target", "resolved-node", "-"]
+        assert capture_argv(built._command)[-3:] == ["--target", "resolved-node", "-"]
 
 
 def test_the_barge_ear_is_handed_its_own_source(
@@ -2250,27 +2251,27 @@ def test_the_barge_ear_is_handed_its_own_source(
         seen.append(explicit)
         return "resolved-node"
 
-    monkeypatch.setattr(app, "resolve_capture_source", _resolve)
+    monkeypatch.setattr("stella.barge_in.resolve_capture_source", _resolve)
     listener = build_barge_in(
         StellaSettings(
             model="m", voice_barge_in="on", barge_source="ec_mic"
         )
     )
     assert listener is not None
+    # Building the ear asks nothing of PipeWire; opening the capture does,
+    # with the owner's saved node in hand.
+    assert seen == []
+    assert capture_argv(listener._command)[-3:] == ["--target", "resolved-node", "-"]
     assert seen == ["ec_mic"]
-    assert listener._command[-3:] == ["--target", "resolved-node", "-"]
 
 
 def test_the_tap_names_no_target_when_discovery_has_nothing_to_say(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The daily-driver pin: no pw-dump, one microphone, or a PipeWire that
-    # will not answer must all leave the command line exactly as it was.
+    # The doubt pin: no pw-dump, no input but the headset, or a PipeWire
+    # that will not answer must all leave the command line unnamed, because
+    # an owner with one microphone must keep using it.
     monkeypatch.setattr(capture_target, "discover_capture_sources", lambda: ())
-    capture_target.reset_capture_source_probe()
-    try:
-        tap = build_mic_tap(StellaSettings(model="m", wake_word="on"))
-    finally:
-        capture_target.reset_capture_source_probe()
+    tap = build_mic_tap(StellaSettings(model="m", wake_word="on"))
     assert tap is not None
-    assert tap._command == capture_command(None)
+    assert capture_argv(tap._command) == capture_command(None)

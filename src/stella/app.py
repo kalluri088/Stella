@@ -31,10 +31,9 @@ from stella.audio_output import (
     SpeechProvider,
     sentence_chunks,
 )
-from stella.barge_in import BargeInListener, SileroVad, capture_command
+from stella.barge_in import BargeInListener, SileroVad, live_capture_command
 from stella.brain import LLMBrain
 from stella.browser_tools import build_browser_tools
-from stella.capture_target import resolve_capture_source
 from stella.childproc import sweep_orphaned_children
 from stella.commands import action_history_lines
 from stella.context import (
@@ -1846,7 +1845,7 @@ def build_barge_in(settings: StellaSettings) -> BargeInListener | None:
     vad = SileroVad(settings.vad_model)
     return BargeInListener(
         features=vad.features,
-        command=capture_command(resolve_capture_source(settings.barge_source)),
+        command=live_capture_command(settings.barge_source),
         threshold=settings.barge_threshold,
     )
 
@@ -1863,16 +1862,15 @@ def build_mic_tap(settings: StellaSettings) -> MicTap | None:
     process and its own echo-cancelled source.
 
     Constructing the tap opens nothing: the capture starts when the first
-    consumer subscribes and ends when the last one leaves.
+    consumer subscribes and ends when the last one leaves. Which microphone
+    that open takes is decided then, not here — a headset that connects
+    after Stella started is exactly the event the answer has to notice
+    (``capture_target.py``).
     """
 
     if settings.wake_word == "off":
         return None
-    try:
-        command = capture_command(resolve_capture_source(settings.wake_source))
-    except ValueError as error:
-        raise VoiceError(str(error)) from error
-    return MicTap(command=command)
+    return MicTap(command=live_capture_command(settings.wake_source))
 
 
 def build_wake(
@@ -1901,7 +1899,7 @@ def build_wake(
     )
     return WakeListener(
         feed=spotter.feed,
-        command=capture_command(resolve_capture_source(settings.wake_source)),
+        command=live_capture_command(settings.wake_source),
         reset=spotter.reset,
         tap=tap,
     )
@@ -1924,7 +1922,7 @@ def build_wake_ear(
     return WakeUtteranceEar(
         features=vad.features,
         endpoint=WakeEndpoint(),
-        command=capture_command(resolve_capture_source(settings.wake_source)),
+        command=live_capture_command(settings.wake_source),
         tap=tap,
     )
 

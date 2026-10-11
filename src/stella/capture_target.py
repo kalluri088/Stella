@@ -9,16 +9,28 @@ ear should not be paying that price when another microphone exists.
 
 Three rules keep this small enough to trust:
 
-* The deviation is narrow on purpose. Nothing is chosen here unless the
-  highest-priority input **is** a Bluetooth mic and some non-Bluetooth input
-  exists; every other machine gets exactly the argv it got yesterday.
-* The ordering is WirePlumber's, not ours. ``priority.session`` decides which
-  non-Bluetooth input wins, so a deliberately plugged USB microphone can beat
-  the built-in instead of losing to a hardcoded device ranking.
+* A Bluetooth input is never the automatic choice while any other input
+  exists. The reason is not that a headset is a poor microphone, but that
+  the default source lies: measured on this machine, ``pactl info`` reported
+  ``Default Source: bluez_input…`` for a headset that was connected, playing
+  stereo, and holding no capture at all. The first unnamed capture is what
+  makes PipeWire create that node, and BlueZ answers by switching the card's
+  profile. The damage therefore comes from the command line that looked like
+  the safe, do-nothing option, and no reading of "what are the candidates
+  right now" would have seen it coming.
+* The ordering inside that one exclusion is WirePlumber's, not ours.
+  ``priority.session`` decides which non-Bluetooth input wins, so a
+  deliberately plugged USB microphone can beat the built-in instead of losing
+  to a hardcoded device ranking.
 * Ignorance is the answer to any doubt. No ``pw-dump``, a probe that stalls,
-  unparsable output, one candidate — all of it means ``None``, which is what
-  the callers already did with ``None``: name no target. A probe must never
-  become a reason voice stops working.
+  unparsable output, no candidate at all, a machine whose only input *is* a
+  headset — all of it means ``None``, which is what the callers already did
+  with ``None``: name no target. A probe must never become a reason voice
+  stops working, and an owner with no microphone but the headset keeps the
+  headset rather than losing voice entirely.
+
+The owner's own words outrank all three: a node named in Settings is used
+exactly as it was written, headset included.
 
 A node name is hardware identity, not a secret: it is safe in a command line
 and in ``config.json``, and the Settings panel shows it to the owner.
@@ -133,17 +145,17 @@ def ranked(sources: tuple[CaptureSource, ...]) -> tuple[CaptureSource, ...]:
 def pick_preferred_source(
     sources: tuple[CaptureSource, ...]
 ) -> CaptureSource | None:
-    """The input to aim at, or ``None`` when nothing needs aiming.
+    """The input to aim at, or ``None`` when there is nothing to aim at.
 
-    Returns a node only in the one case worth the deviation: the input
-    PipeWire would have taken is a Bluetooth headset's microphone, and there
-    is another input that is not.
+    Any non-Bluetooth input is worth naming by hand, because the alternative
+    is a capture that follows PipeWire's default source — and a default left
+    over from a headset's hands-free profile creates that profile the moment
+    it is read, which is the thing the owner can neither see nor hear coming.
+    A machine whose only inputs are Bluetooth keeps them: refusing there would
+    take voice away rather than protect it.
     """
 
-    ordered = ranked(sources)
-    if len(ordered) < 2 or ordered[0].kind != BLUETOOTH:
-        return None
-    for source in ordered:
+    for source in ranked(sources):
         if source.kind != BLUETOOTH:
             return source
     return None
@@ -172,27 +184,20 @@ def discover_capture_sources() -> tuple[CaptureSource, ...]:
     return capture_sources(stdout or "")
 
 
-_PROBE_RESOLVED = False
-_PROBE_PICK: str | None = None
-
-
 def automatic_capture_source() -> str | None:
-    """The node the ear should take when the owner named none, probed once."""
+    """The node the ear should take when the owner named none.
 
-    global _PROBE_RESOLVED, _PROBE_PICK
-    if not _PROBE_RESOLVED:
-        picked = pick_preferred_source(discover_capture_sources())
-        _PROBE_PICK = picked.name if picked is not None else None
-        _PROBE_RESOLVED = True
-    return _PROBE_PICK
+    Probed on every call rather than remembered for the life of the process:
+    a headset that connects after Stella started is precisely the event the
+    answer has to notice, and the cache was how the first version of this rule
+    still let the ear take the headset — the pick was made at startup, when no
+    headset existed, and the unnamed capture it produced then followed a
+    default that did change. One ``pw-dump`` is ~13 ms on this machine
+    (measured 2026-10-11) and callers ask once per capture open.
+    """
 
-
-def reset_capture_source_probe() -> None:
-    """Forget the probe, for the tests that fake it."""
-
-    global _PROBE_RESOLVED, _PROBE_PICK
-    _PROBE_RESOLVED = False
-    _PROBE_PICK = None
+    picked = pick_preferred_source(discover_capture_sources())
+    return picked.name if picked is not None else None
 
 
 def resolve_capture_source(explicit: str | None) -> str | None:

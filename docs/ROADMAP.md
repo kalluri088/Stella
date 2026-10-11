@@ -509,7 +509,9 @@ someone from paying for the same measurement twice.
   re-opening streaming was measured in the same run and is worse on every
   turn. Table and reasoning in `docs/MODELS.md`; the constraint list above
   still stands for any future attempt, and so does the finding that the
-  remaining lever is a faster brain for turns that need no reasoning (#237).
+  remaining lever is a faster brain for turns that need no reasoning (#237) —
+  since measured, at a 3.20 s median against the local 22.27 s on the same six
+  production turns, and still the owner's decision rather than a default.
 
 **The closing verdict of Stage D, kept whole** — a set of declined
 borrowings, not a backlog:
@@ -525,8 +527,12 @@ piece-by-piece measured budgeting, transfers).
 ### What is still not true
 
 - **The test has never been run as written.** Every latency number in
-  this file is a bench replay or a two-turn smoke through the dev tree, not
-  six ordinary questions from a cold start. What the cold path costs is known
+  this file is a bench replay or a bench run through the dev tree, not
+  six ordinary questions from a cold start. The #237 A/B is closer than a
+  replay was — six questions, each one a real `session.run_turn` with real tool
+  execution and real final words — but it is still a synthetic question set in a
+  temporary state directory, started warm, on one machine in one evening. What
+  the cold path costs is known
   in pieces, and the pieces already break it: a brain Stella supervises itself
   is ready in 4–19 s (A10), and one warm trivial turn costs 10–68 s.
 - **The wait is one call, and its length is not ours to set.** Measurement
@@ -535,11 +541,18 @@ piece-by-piece measured budgeting, transfers).
   stochastic: the same factual question cost 31.4 s once and 67.6 s later
   (`docs/MODELS.md`). #230 removed streaming as an answer to this, #228
   removed the per-minute cache invalidation, and the cap sweep showed that
-  cutting thinking off mid-thought loses the reply instead (#244). What is
-  left is #237 — A/B the local brain against the router, then set a routing
-  policy — and as of 2026-10-11 it cannot run: nothing answers on
-  `localhost:3001`, which is the dead endpoint #240 now makes `stella doctor`
-  say out loud.
+  cutting thinking off mid-thought loses the reply instead (#244). What was
+  left is #237, and its measurement half is now done: the router endpoint that
+  `stella doctor` had been naming as dead is up, and six turns through the
+  production decision path answered correctly at a **3.20 s median against the
+  local brain's 22.27 s**, with the same tool choices on both sides
+  (`docs/MODELS.md`, *The faster brain, measured*). What is left is the policy
+  half, and it is the owner's: the router's candidates are models this machine
+  does not run, so speed bought that way is bought with her words leaving the
+  machine — and two of the five candidates failed all six turns outright on a
+  `413` context-window wall and a `429` exhausted-route wall, with the `auto`
+  arm's own worst turn in an earlier run at 63.98 s. A fast brain that is
+  someone else's availability is not a default a benchmark flips.
 - **Tokens are not a budget axis.** `decision_max_tokens` and
   `answer_max_tokens` cap one call, not a task, so the Vision's three axes
   are two-thirds built (#231).

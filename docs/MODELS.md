@@ -114,7 +114,9 @@ decision is not a `do_nothing`, and it no longer gets to be silent
 this left, streaming the answer (#230) has now been measured and declined —
 see *The tail a stream could have handed over* below — so the one still open
 is a faster brain for the turns that need no reasoning at all (#237), not a
-smaller budget.
+smaller budget. That one has now been measured too, and the speed is real;
+what remains open about it is the owner's decision, not the number (see *The
+faster brain, measured on the turns it would have to answer*).
 
 This table is also why the turn budget that shipped (#231) stops the loop
 *between* steps rather than inside a call. A 90-second bound that could only
@@ -197,6 +199,70 @@ and would not be enough to rank two designs against each other. And the
 cost of a turn rather than a way to hide it, its only speed-adjacent use would
 be speaking untrusted model prose, and with no streaming reader there is
 nothing to attach it to.
+
+### The faster brain, measured on the turns it would have to answer (#237)
+
+This is the one latency lever the table above leaves standing, and as of
+2026-10-11 it can finally be run: `stella doctor` (#240) had been reporting the
+dead `localhost:3001`, the owner brought the router container up, and the A/B
+went through the **production decision path** — `build_application` then
+`application.session.run_turn(text)` — rather than replaying prompts at a
+client. That distinction is the whole point: each turn really built the brain,
+really chose whether to call a capability, really executed it and really
+produced the words she would have heard.
+
+Six questions, chosen to cover both halves of a decision: three that must be
+answered without touching a tool (arithmetic, a one-sentence explanation, a
+current-affairs fact) and three that must not be answered without one (the time
+→ `datetime`, CPU count → `system_info`, the third line of a fixture file →
+`filesystem_read`). A turn counts as passed when the final decision kind is the
+one expected *and* the expected capability actually fired *and* some words came
+out. Wall clock is the turn's own `duration_seconds`.
+
+| Brain | answered correctly | median | worst | how it failed |
+| --- | --- | ---: | ---: | --- |
+| local `qwen3:4b` (incumbent) | 6/6 | 22.27 s | 59.02 s | — |
+| router, `auto` | 6/6 | **3.20 s** | 7.46 s | — |
+| router, `gemini-3.1-flash-lite` | 6/6 | 7.79 s | 10.63 s | — |
+| router, `gpt-oss-20b` | 0/6 | — | — | `413` on every turn: too large for every candidate's context window |
+| router, `qwen3.7-flash` | 0/6 | — | — | `429` "All models exhausted: 1 route checked (1 rate-limited or on cooldown)" |
+
+**The speed is real and it is roughly sevenfold at the median** — 3.20 s against
+22.27 s on the same six questions, with no routing loss: the `auto` arm called
+`datetime`, `system_info` and `filesystem_read` exactly when it should and
+answered the three direct questions directly. The incumbent reproduced what
+this file has been saying all along: the same trivial turn cost 11.7 s once and
+59.0 s later, because the length of the thinking channel is the model's choice.
+
+**And the tail is rarer, not gone.** An earlier run of the same `auto` arm, same
+question set, put one `system_info` turn at **63.98 s** — longer than anything
+the local brain managed. Two dead arms also failed *all six* turns, and both
+failures are the router's, not Stella's: the shipped decision prompt does not
+fit every candidate's window, and one route can be rate-limited with nothing
+behind it. A brain whose speed depends on someone else's availability is a
+different trade from a slow one that is always there. Both of them ended with
+words naming the cause rather than silence, which is #244 doing its job.
+
+Honest limits, stated before any conclusion: **n=6, one machine, one evening.**
+Two earlier outputs of the same script are in `~/bench-out/` and are *not* these
+numbers — one crashed on `StellaApplication.run_turn`, and one carried a judge
+that called every turn a tool call because it counted `step_trace` entries
+instead of their decision kind. Only the paired run is quoted, and six turns
+would not be enough to rank two brains against each other the way ten turns
+settled the streaming gate. What the run does settle is cheaper and more useful
+than a ranking: the router is reachable, it answers this prompt correctly, and
+it answers it several times faster.
+
+**What this deliberately does not do is switch anything.** The router is a
+container on this machine whose candidates are models this machine does not
+run, so a turn through it sends the owner's words — and whatever the tool
+results that follow them put in the prompt — to whoever serves them. That is her
+decision under the vision's tier two (written or sent to a hosted service is
+done visibly and audited), and it is not a default a benchmark gets to flip.
+So #237's measurement half is closed here and its policy half stays open, in
+Settings, where the owner picks a provider and a model per launch. Bench script
+`~/tools/bench_router_ab.py`, raw JSON `~/bench-out/router_ab_*.json` — outside
+the tree, with the other benches.
 
 ## Token accounting (`/usage`)
 

@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### The faster brain was measured on real turns, and it is the owner's call
+
+- **What changed.** Nothing in `src/`, which is the point of writing this down.
+  `docs/MODELS.md` gained *The faster brain, measured on the turns it would have
+  to answer* — the last latency lever the file leaves standing, run at last — and
+  `docs/ROADMAP.md` replaces "as of 2026-10-11 it cannot run: nothing answers on
+  `localhost:3001`" with the numbers and with what is still undecided. Task #237
+  is now measured on half and open on the other half, which is the routing
+  policy.
+- **Why.** Every in-repo answer to a 22-second turn had been weighed and
+  retired: streaming declined at a 0.62 s tail (#230), the token cap loses the
+  reply instead (#244), the per-minute cache miss fixed at a second (#228), the
+  duplicate registry removed (#229, which turned out to be capacity, not speed).
+  A/B against the router was the one lever left that nobody had actually run,
+  because the endpoint was down; the owner started it and `stella doctor` (#240)
+  had been the thing that named it dead out loud.
+- **Numbers.** Paired arms, six questions, each one a real
+  `application.session.run_turn` — so the brain was built, the capability
+  chosen, the tool executed and the final words produced, none of it replayed.
+  Three questions that must not call a tool, three that must. Local
+  `qwen3:4b`: **6/6, median 22.27 s, worst 59.02 s**. Router on `auto`: **6/6,
+  median 3.20 s, worst 7.46 s**, with `datetime`, `system_info` and
+  `filesystem_read` all firing exactly where they should. Router pinned to
+  `gemini-3.1-flash-lite`: 6/6, 7.79 s. Pinned to `gpt-oss-20b`: 0/6, every turn
+  a `413` — the decision prompt does not fit that candidate's window. Pinned to
+  `qwen3.7-flash`: 0/6, every turn a `429` — "All models exhausted: 1 route
+  checked (1 rate-limited or on cooldown)". Roughly seven times quicker at the
+  median, at the cost of an availability that is not hers: one earlier run of the
+  same `auto` arm put a turn at **63.98 s**, so the tail is rarer, not gone.
+- **What is deliberately not done.** No provider default moved, no routing
+  policy was written into code, and no model was chosen for her. The router is a
+  container on this machine whose candidates are models this machine does not
+  run, so a turn through it sends the owner's words — plus the tool results that
+  follow them into the next prompt — to whoever serves them. That is tier two of
+  rule 10, decided visibly by the owner and not by a benchmark that found an
+  attractive median. Provider and model stay one row each in Settings.
+- **Proof.** `~/tools/bench_router_ab.py`, raw JSON in
+  `~/bench-out/router_ab_*.json` — outside the tree, with the other benches. Two
+  earlier outputs in that directory are not these numbers and are named as such
+  in `docs/MODELS.md`: one crashed on `StellaApplication.run_turn`, and one
+  judged every turn a tool call because it counted `step_trace` entries rather
+  than their decision kind. Only the paired run is quoted. n=6, one machine, one
+  evening — enough to retire a dead endpoint and a wrong belief, not enough to
+  rank two designs.
+
 ### The wake row now says which words it armed
 
 - **What changed.** With the *Wake word* checkbox on and no phrase chosen, the

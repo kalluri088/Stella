@@ -246,6 +246,39 @@ class TurnOutcome:
     duration_seconds: float | None = None
 
 
+def _aimed_at(stella: object) -> str:
+    """The three facts a turn was sent to, or an empty string.
+
+    ``Connection error.`` names a failure without naming the thing that
+    failed, which is precisely the diagnosis a cold machine needs: a router
+    that is not running answers every turn with that phrase while the config
+    that points at it stays invisible. The CLI already prints these three
+    lines at startup under a heading that promises no secrets
+    (``cli.format_startup``), taken off the same objects by the same
+    duck-typing, so a base URL here opens no new surface — it is the address
+    ``config.json`` holds in the clear. The key is not reachable from any of
+    these attributes and is never read.
+
+    An object that carries no brain (a test or embedding stub) yields "", and
+    the caller leaves the sentence exactly as it has always read.
+    """
+
+    llm = getattr(getattr(stella, "brain", None), "llm", None)
+    if llm is None:
+        return ""
+    model = str(getattr(llm, "model", "") or "")
+    base_url = str(getattr(getattr(llm, "client", None), "base_url", "") or "")
+    return " · ".join(
+        part
+        for part in (
+            type(llm).__name__,
+            f"model {model}" if model else "",
+            base_url,
+        )
+        if part
+    )
+
+
 class StellaSession:
     """One continuous conversation shared by the CLI and the UI.
 
@@ -329,11 +362,13 @@ class StellaSession:
             return timed(interrupted=True)
         except Exception as error:  # noqa: BLE001 - keep the session alive
             detail = " ".join(str(error).split()) or type(error).__name__
+            aimed = _aimed_at(self.stella)
             return timed(
                 error_message=(
                     f"Stella could not finish that request "
-                    f"({detail[:160]}). Nothing was changed; "
-                    f"{self._error_footer}"
+                    f"({detail[:160]})."
+                    + (f" It was aimed at {aimed}." if aimed else "")
+                    + f" Nothing was changed; {self._error_footer}"
                 )
             )
         if getattr(result, "cancelled", False):

@@ -872,6 +872,32 @@ agentic-work review kept its own document):
   published wheel after verifying its checksum, and a checkout is the
   development copy, kept in its own state directory by `bin/stella-dev`.
   `docs/RELEASE.md` is the whole procedure and what CI proves.
+- **`stella doctor` now asks the endpoint (#240) — done.** The command
+  `install.sh` prints at the end of an install used to answer its most
+  important question with a name: `provider: openai (preset freellmapi)`
+  and `api key: present` both read READY while every turn came back
+  `Connection error.`, because nothing in the report had contacted the
+  address the config pointed at. A configured provider is now probed with
+  the same bounded `GET /models` the Settings panel and the startup key
+  sweep use — key-authenticated, no completion, five seconds — and the
+  address it resolves is the address `build_application` hands to the
+  client (override, then preset, then the SDK's own default), so a green
+  line means the server a turn would reach answered. A dead endpoint reads
+  MISSING and names the URL in both the detail and the fix; a preset with
+  no key is INFO and is not probed at all; a chat-dialect router that
+  guards its model list is reported as unjudgeable rather than as a
+  rejected key, exactly as the launch sweep already does. Two defects in
+  the same function went with it: a llama.cpp box was being told
+  `api key: MISSING — add it in stella-ui` (it takes no key; it is now
+  asked for the GGUF file and the server binary instead), and the report's
+  one sentence about a failed turn names the provider, model and endpoint
+  it was aimed at, so the diagnosis is the same wherever it is read —
+  including the resident ear, which writes it to stderr while still saying
+  only "Sorry, I couldn't do that." out loud.
+  What it still cannot do: `config.json` is written only by the Tk window,
+  so a cold machine's first step remains `stella-ui`. Nothing tonight
+  demonstrated a headless first run, and rule 13 says a second writer needs
+  a demonstrated need.
 
 ## Explicitly out of scope
 

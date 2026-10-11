@@ -883,3 +883,26 @@ class TestToggleClient:
         )
         assert hv.run_voice_stop() == 0
         assert "stopping" in capsys.readouterr().out.lower()
+
+
+def test_a_spoken_failure_still_leaves_a_line_on_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # The resident ear is where a turn is least visible: the diagnosis used to
+    # be thrown away with the apology, so a voice-only failure left nothing
+    # anybody could report. What is said out loud does not change — voicing an
+    # endpoint would put configuration prose into the audio channel. What gets
+    # written down does.
+    spoken: list[str] = []
+    monkeypatch.setattr(
+        hv, "_speak_phrase", lambda _voice, text: spoken.append(text)
+    )
+    hv._fail_turn(
+        object(),
+        "Stella could not finish that request (Connection error.). "
+        "It was aimed at OpenAILLMClient · model m · http://localhost:3001/v1.",
+    )
+    assert spoken == ["Sorry, I couldn't do that."]
+    captured = capsys.readouterr()
+    assert "http://localhost:3001/v1" in captured.err
+    assert captured.out == ""

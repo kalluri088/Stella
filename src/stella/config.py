@@ -42,6 +42,11 @@ from stella.portable import harden_private_file
 
 PROBE_TIMEOUT_SECONDS = 5.0
 _MESSAGE_LIMIT = 160
+# The address the OpenAI SDK dials when it is handed no base URL. Named
+# because two callers have to say it — the endpoint resolver below and the
+# startup key sweep — and a silent second copy spelled out at each call site
+# is how a probe and a runtime end up asking different servers.
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 _CONFIG_FIELDS = (
     "provider",
@@ -327,6 +332,27 @@ def _openai_model_names(payload: object) -> tuple[str, ...] | None:
     return tuple(names)
 
 
+def openai_endpoint(
+    preset: str | None,
+    base_url_override: str | None = None,
+) -> str:
+    """The address the OpenAI client will dial for these settings.
+
+    ``build_application`` hands the SDK
+    ``settings.openai_base_url or provider_keys.base_url_for(preset)``
+    (``app.py``), and a None there is not "no endpoint" — it is the SDK's
+    own default, whatever the preset was called. A probe has to ask the
+    server a turn would actually be sent to, or a green line proves
+    nothing about the next request.
+    """
+
+    return (
+        base_url_override
+        or provider_keys.base_url_for(preset)
+        or DEFAULT_OPENAI_BASE_URL
+    )
+
+
 @dataclass(frozen=True)
 class KeyCheck:
     """Outcome of a lightweight "does this stored key authenticate?" probe.
@@ -424,8 +450,13 @@ def startup_key_health_report(
         preset = provider_keys.PRESETS.get(preset_id)
         if preset is None:
             continue
+        # Deliberately not openai_endpoint(): this sweep walks stored keys
+        # independently of any active settings, so for the slots that name no
+        # endpoint of their own there is nothing to ask. Falling back to the
+        # SDK default here would dial api.openai.com with a FreeLLMAPI key and
+        # nag on a perfectly valid token.
         endpoint = preset.base_url or (
-            "https://api.openai.com/v1" if preset.id == "openai" else None
+            DEFAULT_OPENAI_BASE_URL if preset.id == "openai" else None
         )
         if endpoint is None:
             continue

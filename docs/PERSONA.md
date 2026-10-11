@@ -99,6 +99,14 @@ relationship? What is the one thing she never does?), drafts a full
 "yes" writes it; "edit" opens it in your editor first; anything else
 saves nothing. Leaving the first answer empty skips onboarding forever.
 
+The questions are asked only when standard input is a terminal. A
+scripted run — `stella < commands.txt`, a heredoc, anything piped — has no
+one to answer, and used to have its commands eaten as persona answers
+while the run looked dead. Such a run says so on stderr, asks nothing, and
+**writes no skip marker**: nobody declined, so the next interactive
+session is still asked. (`run_persona_onboarding` itself keeps its
+contract of "ask these three questions"; the gate is at its call site.)
+
 ## Transcripts and `stella reflect`
 
 Reflection needs observed behavior, so Stella can record a **bounded,

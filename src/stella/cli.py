@@ -720,6 +720,38 @@ def _mark_persona_onboarding_skipped(paths: PersonaPaths) -> None:
         pass
 
 
+def _stdin_is_a_terminal() -> bool:
+    """Whether there is a person at this keyboard to ask anything of.
+
+    A scripted run — a pipe, a heredoc, ``stella < commands.txt`` — has no one
+    behind stdin, and the onboarding used to take the terminal anyway: the
+    piped lines became persona answers and the run looked dead. A closed or
+    absent stdin is exactly as non-interactive as a pipe, so it reads as no
+    rather than raising on the way into a session.
+    """
+
+    try:
+        return bool(sys.stdin) and sys.stdin.isatty()
+    except (OSError, ValueError):
+        return False
+
+
+def _persona_wants_onboarding() -> bool:
+    """Whether this is a Stella with no persona and no recorded decline.
+
+    The predicate the questions themselves are gated on, shared with the
+    launch so a scripted run can say *"nothing was asked"* only when that is
+    the truth — an owner who already has a `persona.md` gets no line about
+    one they do not need.
+    """
+
+    paths = _persona_paths()
+    return not (
+        paths.persona.exists()
+        or (paths.directory / ONBOARDING_SKIP_MARKER).exists()
+    )
+
+
 def run_persona_onboarding(
     stella: Stella,
     input_fn: Callable[[str], str] = input,
@@ -733,11 +765,9 @@ def run_persona_onboarding(
     never nags twice; delete it to be asked again.
     """
 
-    paths = _persona_paths()
-    if paths.persona.exists() or (
-        paths.directory / ONBOARDING_SKIP_MARKER
-    ).exists():
+    if not _persona_wants_onboarding():
         return
+    paths = _persona_paths()
     output_fn(
         "Stella has no persona yet. Three quick questions and Stella "
         "will draft one; leave the first answer empty to skip forever."
@@ -1111,7 +1141,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(line)
     print("Ask Stella anything. Type /help for commands, 'exit' to quit.\n")
     try:
-        run_persona_onboarding(application.session.stella)
+        if _stdin_is_a_terminal():
+            run_persona_onboarding(application.session.stella)
+        elif _persona_wants_onboarding():
+            # Nothing is recorded on this path. A piped run is not a decline:
+            # writing the skip marker because nobody was there to answer would
+            # leave the owner's next interactive session never asked.
+            print(
+                "Stella has no persona yet, and did not ask about one: this "
+                "run has no terminal to answer on. An interactive session "
+                "will still ask.",
+                file=sys.stderr,
+            )
         run_cli(
             application.session.stella,
             debug=getattr(args, "debug", False),

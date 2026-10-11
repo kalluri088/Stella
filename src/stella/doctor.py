@@ -11,13 +11,18 @@ workflow runs against a freshly installed wheel.
 Rules this module upholds:
 
 - **Read-only.** No directory is created, no database is opened, nothing is
-  started and no device is touched. The three probes that leave the filesystem
+  started and no device is touched. The four probes that leave the filesystem
   are Ollama's model list (a GET that downloads nothing, reused from
   ``stella.config``), connecting to the voice server's control socket,
   whose handler answers a word it does not recognise and acts on nothing,
-  and Outline's ``/healthz`` — a loopback GET on a quarter-second budget,
+  Outline's ``/healthz`` — a loopback GET on a quarter-second budget,
   run only when the owner has asked for the Outline tools, from the same
-  resolver that decides whether those tools exist.
+  resolver that decides whether those tools exist — and the saved
+  provider's ``GET /models``, also a key-authenticated list request that
+  runs no completion, asked only of the endpoint the configuration would
+  send its next turn to. A saved provider is the owner having asked for
+  that brain, which is the same condition the Outline line applies to its
+  GET.
 - **No secrets, ever.** Keys and named secrets are reported as present or
   absent, and by name. The value is discarded in the same expression that
   asks for it and never reaches a ``Check``.
@@ -55,8 +60,10 @@ from stella.app import (
 )
 from stella.browser_tools import find_browser
 from stella.config import (
+    check_api_key,
     config_path,
     load_configuration,
+    openai_endpoint,
     resolve_settings,
     scan_ollama_models,
 )
@@ -301,6 +308,9 @@ def _model_checks(settings: StellaSettings | None) -> tuple[Check, ...]:
                 )
             )
         return tuple(checks)
+    if settings.provider == "llama":
+        checks += _llama_checks(settings)
+        return tuple(checks)
     key_present = _has_key(settings.preset)
     checks.append(
         Check(
@@ -311,7 +321,135 @@ def _model_checks(settings: StellaSettings | None) -> tuple[Check, ...]:
             fix="add it in stella-ui (Settings → provider)",
         )
     )
+    checks.append(_endpoint_check(settings))
     return tuple(checks)
+
+
+def _llama_checks(settings: StellaSettings) -> tuple[Check, ...]:
+    """What a llama.cpp launch needs: the file and the binary, no key.
+
+    This provider used to fall through to the OpenAI branch above and be
+    told ``api key: MISSING — add it in stella-ui``, on a box configured
+    correctly. The preset itself says a key does not apply here
+    (``provider_keys.PRESETS``, ``key_required=False``) because Stella
+    owns the server and starts it herself, so there is no remote endpoint
+    to authenticate against and nothing to probe. The two things a launch
+    can actually fail on are the GGUF path and the server command, which
+    is exactly what ``config.test_connection`` checks for this provider.
+    """
+
+    # Asked the way the launch asks it: config.test_connection's llama arm
+    # is `os.path.isfile(model)` and LlamaBrainServer is handed the same
+    # string, so a path that exists from here is a path Stella can load.
+    model = settings.model or ""
+    have_model = Path(model).is_file()
+    binary = shutil.which(settings.llama_binary)
+    return (
+        Check(
+            "model",
+            "model file",
+            READY if have_model else MISSING,
+            model
+            if have_model
+            else f"{model or '(unset)'} is not a file — for the llama "
+            "provider the model is the full path to a .gguf",
+            fix="put the full path of the downloaded .gguf in stella-ui "
+            "(Settings → model)",
+        ),
+        Check(
+            "model",
+            "llama-server",
+            READY if binary else MISSING,
+            binary
+            or f"{settings.llama_binary} is not on PATH — Stella starts "
+            "the brain herself and needs the binary to do it",
+            fix="install llama.cpp, or set STELLA_LLAMA_SERVER_BINARY to "
+            "its full path",
+        ),
+    )
+
+
+def _endpoint_check(settings: StellaSettings) -> Check:
+    """Ask the address this configuration would send its next turn to.
+
+    Until this line existed the report could tell a green lie: a saved
+    provider and a stored key both read READY while every turn came back
+    ``Connection error.``, because nothing in the report had asked the
+    endpoint whether it answers. ``config.check_api_key`` is the probe
+    chosen here rather than ``config.test_connection``: a plain
+    ``GET /models`` bounded to ``PROBE_TIMEOUT_SECONDS``, which
+    authenticates a key without running any completion — the most a
+    read-only command may send to a metered server. The one thing
+    ``test_connection`` does beyond it, a 1-token chat probe for routers
+    that guard their model list, belongs to a button a human presses.
+
+    The key never reaches a line; the endpoint does, and is not a secret —
+    the CLI prints it at startup and ``config.json`` holds it in the clear.
+    Naming it is the whole value of the check: "Connection error." says a
+    request failed, this says which address did not answer it.
+    """
+
+    endpoint = openai_endpoint(settings.preset, settings.openai_base_url)
+    key = provider_keys.effective_api_key(settings.preset)
+    if not key:
+        # A request cannot be judged without something to authenticate it,
+        # and check_api_key says so itself rather than probing blind. The
+        # fix is not cosmetic: build_application refuses to build a session
+        # for an OpenAI-shaped provider with no key, even for a local router
+        # that would not check one.
+        return Check(
+            "model",
+            "endpoint",
+            INFO,
+            f"{endpoint} — not probed, no key to send to it",
+            fix=(
+                "Stella will not start without a key, even for an endpoint "
+                "that does not check it — add one in stella-ui "
+                "(Settings → provider); the OPENAI_API_KEY environment "
+                "counts for the OpenAI and custom slots only"
+            ),
+        )
+    result = check_api_key(
+        endpoint,
+        key,
+        # The same dialect rule the launch sweep applies
+        # (config.startup_key_health_report): a chat-dialect router may guard
+        # — or simply not serve — /models while accepting the same key on
+        # chat, so a 401 there is "this cannot be judged from a model list",
+        # not a broken key. Calling it a rejection would nag on a working
+        # configuration, which is the exact mistake that note exists to stop.
+        chat_dialect=provider_keys.tool_dialect_for(settings.preset) == "chat",
+    )
+    outcomes = {
+        "verified": (
+            READY,
+            f"{endpoint} answered and accepted the key",
+            "",
+        ),
+        "rejected": (
+            MISSING,
+            f"{endpoint} refused the stored key ({result.detail})",
+            (
+                "enter a new key for this provider in stella-ui "
+                "(Settings → provider)"
+            ),
+        ),
+        "unreachable": (
+            MISSING,
+            (
+                f"{endpoint} is not answering, so model "
+                f"{settings.model or 'unset'} cannot be asked"
+            ),
+            (
+                f"start whatever serves {endpoint}, or choose another "
+                "provider in stella-ui"
+            ),
+        ),
+    }
+    state, detail, fix = outcomes.get(
+        result.state, (INFO, f"{endpoint}: {result.detail}", "")
+    )
+    return Check("model", "endpoint", state, detail, fix=fix)
 
 
 def _voice_checks(settings: StellaSettings) -> tuple[Check, ...]:
@@ -597,7 +735,6 @@ def collect() -> Report:
                 ),
             )
         )
-    checks = [*_build_checks(), *_state_checks(), *_model_checks(settings)]
     checks = [*_build_checks(), *_state_checks(), *_model_checks(settings)]
     # Voice and desktop shape itself from the machine, not the model choice,
     # so those checks still run against defaults on an unconfigured box: "is

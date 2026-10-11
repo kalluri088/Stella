@@ -1130,6 +1130,118 @@ def test_onboarding_is_silent_when_a_persona_already_exists(
     assert (persona_dir / "persona.md").read_text(encoding="utf-8") == "keep me"
 
 
+# ------------------------------------------------------ the terminal gate
+
+
+class _NotATerminal:
+    def isatty(self) -> bool:
+        return False
+
+
+class _ATerminal:
+    def isatty(self) -> bool:
+        return True
+
+
+class _AClosedStream:
+    def isatty(self) -> bool:
+        raise ValueError("I/O operation on closed file")
+
+
+def test_the_terminal_gate_only_asks_anything_of_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The gate is one helper rather than an inline call, because both of its
+    # shapes have to be provable: a pipe is not a person, and a stdin that
+    # cannot even be answered for is not one either. The second case used to
+    # be able to raise on the machine the CLI was starting on.
+    for stream, expected in (
+        (_NotATerminal(), False),
+        (_ATerminal(), True),
+        (_AClosedStream(), False),
+        (None, False),
+    ):
+        monkeypatch.setattr(cli.sys, "stdin", stream)
+        assert cli._stdin_is_a_terminal() is expected
+
+
+def _fake_main_application(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Drive `main()` down the chat path with no model and no display."""
+
+    from stella import config as stella_config
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_MODEL", raising=False)
+    stella_config.save_configuration(
+        stella_config.StellaSettings(provider="ollama", model="saved-cli-model")
+    )
+    stella = SimpleNamespace(
+        memory=SimpleNamespace(database_path=None),
+        tools=SimpleNamespace(_tools={}),
+    )
+    application = SimpleNamespace(
+        session=SimpleNamespace(stella=stella),
+        proposals=None,
+        close=lambda: None,
+    )
+    monkeypatch.setattr(cli, "build_application", lambda _settings: application)
+    asked: list[str] = []
+    ran: list[str] = []
+    monkeypatch.setattr(
+        cli, "run_persona_onboarding", lambda _stella: asked.append("asked")
+    )
+    monkeypatch.setattr(
+        cli, "run_cli", lambda _stella, **_kwargs: ran.append("ran")
+    )
+    return asked, ran
+
+
+def test_a_piped_run_keeps_its_own_stdin(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, persona_dir, capsys
+) -> None:
+    # The failure this gate exists for: a scripted run handed its commands to
+    # three persona questions and looked dead. Now nothing is asked, the
+    # reason is said on stderr (a scripted stdout stays clean), and the chat
+    # path still runs.
+    asked, ran = _fake_main_application(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli.sys, "stdin", _NotATerminal())
+    cli.main([])
+    assert asked == []
+    assert ran == ["ran"]
+    assert "no terminal" in capsys.readouterr().err
+    # The part that outlives this run: a piped session is not a decline, so
+    # the marker that would silence the question forever is not written.
+    assert not (persona_dir / cli.ONBOARDING_SKIP_MARKER).exists()
+
+
+def test_an_interactive_run_is_still_asked(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, persona_dir, capsys
+) -> None:
+    asked, ran = _fake_main_application(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli.sys, "stdin", _ATerminal())
+    cli.main([])
+    assert asked == ["asked"]
+    assert ran == ["ran"]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_piped_run_stays_quiet_when_the_questions_do_not_apply(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, persona_dir, capsys
+) -> None:
+    # The stderr line explains a question that went unasked. An owner who
+    # already has a persona — or already declined once — must not get persona
+    # prose on every scripted run this machine ever makes.
+    asked, ran = _fake_main_application(monkeypatch, tmp_path)
+    persona_dir.mkdir(parents=True, exist_ok=True)
+    (persona_dir / "persona.md").write_text("keep me", encoding="utf-8")
+    monkeypatch.setattr(cli.sys, "stdin", _NotATerminal())
+    cli.main([])
+    assert asked == []
+    assert ran == ["ran"]
+    assert capsys.readouterr().err == ""
+
+
 # ----------------------------------------------------------- stella reflect
 
 

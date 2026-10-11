@@ -279,6 +279,61 @@ def test_run_turn_error_wording_matches_the_cli_and_hides_details() -> None:
     assert session.history == []
 
 
+def test_run_turn_error_names_the_brain_it_was_aimed_at() -> None:
+    # "Connection error." says a request failed, not to which address — and a
+    # dead local router answers every turn with that phrase. The three facts
+    # the CLI prints at startup now ride along on the one sentence every front
+    # end shows, so the owner is told what to start rather than told to retry.
+    class Client:
+        base_url = "http://localhost:3001/v1"
+
+    class OpenAILLMClient:
+        model = "router-model"
+        client = Client()
+
+    class Brain:
+        llm = OpenAILLMClient()
+
+    class AimedStella:
+        brain = Brain()
+
+        def process(self, context: Context) -> StellaResult:
+            raise ConnectionError("Connection error.")
+
+    outcome = StellaSession(AimedStella()).run_turn("hello")  # type: ignore[arg-type]
+
+    assert outcome.error_message == (
+        "Stella could not finish that request (Connection error.). "
+        "It was aimed at OpenAILLMClient · model router-model · "
+        "http://localhost:3001/v1. Nothing was changed; try again or "
+        "type 'exit' to quit."
+    )
+
+    # A brain carrying no endpoint and no model name is not licence to print
+    # empty separators: each fact appears only when the object has it, and a
+    # stub with no brain at all leaves the sentence exactly as it always read
+    # (which the test above this one still proves, unchanged).
+    class BareLLM:
+        model = None
+
+    class BareBrain:
+        llm = BareLLM()
+
+    class BareStella:
+        brain = BareBrain()
+
+        def process(self, context: Context) -> StellaResult:
+            raise ConnectionError("Connection error.")
+
+    assert StellaSession(BareStella()).run_turn(  # type: ignore[arg-type]
+        "hello"
+    ).error_message == (
+        "Stella could not finish that request (Connection error.). "
+        "It was aimed at BareLLM. Nothing was changed; try again or "
+        "type 'exit' to quit."
+    )
+
+
 def test_run_turn_reports_interruption_without_changes() -> None:
     class InterruptingStella:
         def process(self, context: Context) -> StellaResult:

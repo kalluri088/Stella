@@ -269,7 +269,7 @@ def _run_one_turn(application) -> int:
     _chime(voice, "working")
     outcome = application.session.run_turn(transcript, spoken=True)
     if outcome.error_message is not None:
-        _speak_phrase(voice, "Sorry, I couldn't do that.")
+        _fail_turn(voice, outcome.error_message)
         return 1
     if outcome.cancelled or outcome.result is None:
         return 0
@@ -444,7 +444,7 @@ def _run_session(
         _chime(voice, "working")
         outcome = application.session.run_turn(transcript, spoken=True)
         if outcome.error_message is not None:
-            _speak_phrase(voice, "Sorry, I couldn't do that.")
+            _fail_turn(voice, outcome.error_message)
         elif outcome.result is not None:
             _speak_result(voice, outcome)
 
@@ -774,6 +774,20 @@ def _is_affirmative(transcript: str) -> bool:
 
 def _speak_phrase(voice, text: str) -> None:
     _voice_and_dispose(voice, lambda: voice.synthesize_phrase(text))
+
+
+def _fail_turn(voice, message: str) -> None:
+    """Apologise out loud, and write the reason where it can be read.
+
+    Nothing new is spoken: voicing an endpoint puts configuration prose into
+    the audio channel, and "Sorry, I couldn't do that." is the whole of what
+    the ear should say. The stderr line is the addition — a turn the user
+    cannot see is otherwise a turn nobody can report, and this is the only
+    place a voice-only failure leaves any trace of what it tried.
+    """
+
+    print(message, file=sys.stderr, flush=True)
+    _speak_phrase(voice, "Sorry, I couldn't do that.")
 
 
 def _speak_result(voice, outcome) -> None:

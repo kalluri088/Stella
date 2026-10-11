@@ -777,6 +777,49 @@ def test_connection_test_reports_unreachable_endpoints(monkeypatch):
     assert "could not be reached" in result.message
 
 
+# -------------------------------------------- which address a turn reaches
+
+
+def test_the_endpoint_resolver_names_the_server_a_turn_would_reach():
+    # One function, three cases, in the order the runtime applies them. The
+    # point is that a None base URL is not "no endpoint": it is the SDK's own
+    # default, and a probe that asks a different address is a green line about
+    # a server no turn will ever be sent to.
+    assert config.openai_endpoint("openrouter") == "https://openrouter.ai/api/v1"
+    assert config.openai_endpoint("freellmapi") == "http://localhost:3001/v1"
+    assert (
+        config.openai_endpoint("openrouter", "http://127.0.0.1:9/v1")
+        == "http://127.0.0.1:9/v1"
+    )
+    # A preset with no address of its own — the legacy OpenAI slot and the
+    # hand-typed custom slot — really is the SDK default.
+    assert config.openai_endpoint(None) == config.DEFAULT_OPENAI_BASE_URL
+    assert config.openai_endpoint("custom") == config.DEFAULT_OPENAI_BASE_URL
+
+
+def test_the_launch_sweep_never_borrows_the_default_for_another_key(
+    monkeypatch,
+):
+    # The deliberate asymmetry between the resolver above and the startup
+    # sweep: the sweep walks stored keys with no active settings to resolve
+    # against, so only the slot the default actually belongs to is asked.
+    # Treating every keyless-address preset as api.openai.com would nag on a
+    # perfectly valid FreeLLMAPI token every single launch.
+    asked: list[str] = []
+
+    def fake(endpoint, _key, _timeout=None, **_kw):
+        asked.append(endpoint)
+        return config.KeyCheck("verified", "the endpoint accepted the key")
+
+    monkeypatch.setattr(config, "check_api_key", fake)
+    monkeypatch.setattr(provider_keys, "effective_api_key", lambda _pid: "sk-x")
+    monkeypatch.setattr(
+        provider_keys, "stored_presets", lambda: ("custom", "openai")
+    )
+    assert config.startup_key_health_report() == []
+    assert asked == [config.DEFAULT_OPENAI_BASE_URL]
+
+
 # ----------------------------------------------- key resolution & gates
 
 

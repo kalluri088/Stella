@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+### The command that explains a cold desktop now asks it what is wrong
+
+- **What changed.** `stella doctor` has a new line, `endpoint`, and it is the
+  first line in the report that *asks a question of the configured provider*
+  rather than reading its name. A failed turn's sentence, `stella-ui`'s setup
+  window and the resident ear all gained the same diagnosis, and first-run
+  persona questions are now asked only when there is a terminal to answer
+  them.
+- **Why.** The installed configuration selected a preset whose endpoint is a
+  local router, and the router was not running. Every turn answered
+  `Connection error.` while `stella doctor` — the command `install.sh` prints
+  at the end of an install, and the one CI asserts on — reported the whole
+  `model` group green: `provider: openai (preset freellmapi)` printed the
+  *name* of a provider, `api key: present` answered only that a token exists.
+  The question that mattered was asked exclusively by a Tk button.
+- **What it says now.** `http://localhost:3001/v1 is not answering, so model
+  X cannot be asked`, with the fix `start whatever serves …`, where before
+  there was no line at all. A preset with no stored key reads INFO and is not
+  probed — a request with nothing to authenticate is a wrong answer waiting to
+  nag — and a chat-dialect router that guards its model list reads INFO too,
+  because 401 on `GET /models` says nothing about a key that works on chat.
+  The probe is `config.check_api_key`: key-authenticated, five-second bounded,
+  and it runs no completion, so a read-only diagnostic does not spend a metered
+  request. The address it resolves is the address the launch dials — override,
+  then the preset's own URL, then the OpenAI SDK's default, because a `None`
+  base URL is not "no endpoint".
+- **Two more defects, found in the same function.** A llama.cpp box was being
+  told `api key: MISSING — add it in stella-ui`, advice that can only mislead a
+  correctly configured machine, since that provider takes no key; it is now
+  asked for the GGUF file and the `llama-server` command, which are the two
+  things its launch can actually fail on. And one line of the report's own
+  assembly was dead.
+- **What a failed turn says.** `Stella could not finish that request
+  (Connection error.). It was aimed at OpenAILLMClient · model X ·
+  http://localhost:3001/v1.` — the same three facts the CLI already prints at
+  startup under a heading promising no secrets, and now in the one sentence
+  with four readers: the terminal, the window, and both voice paths. Nothing
+  new is spoken; the resident ear writes the sentence to stderr and still says
+  only "Sorry, I couldn't do that.", because voicing a URL puts configuration
+  prose into the audio channel. A stub or embedded brain that carries none of
+  the three facts produces the sentence unchanged.
+- **What a pipe keeps.** `stella < commands.txt` used to hand its commands to
+  the three persona questions and look dead. A non-tty run now asks nothing,
+  says why on stderr, and writes **no skip marker** — nobody declined, so the
+  next interactive session is still asked.
+- **What is still not done.** `config.json` is written only by the Tk window,
+  so a cold machine's first step remains `stella-ui`. Nothing demonstrated a
+  headless first run, and rule 13 wants a demonstrated need before a second
+  writer. Also recorded rather than fixed: the OpenAI client still runs on the
+  SDK's default timeout and retries, so an endpoint that hangs instead of
+  refusing would sit for minutes — nobody hit that tonight, and a refused port
+  now fails instantly and gets named.
+- **Proof.** 19 doctor cases (six new: the dead endpoint in both output forms,
+  the three branches of the address resolver, the keyless and the
+  list-guarding preset, the llama box in both states), the two wording tests
+  that assert the whole sentence now doubling as the proof that a brain
+  carrying no facts changes nothing, the gate on both sides, and the voice
+  line's stderr. `ruff check .` clean. The manual check that started all this
+  — a temp state directory holding a config for `preset freellmapi` with
+  nothing on port 3001 — now prints the MISSING endpoint line naming
+  `http://localhost:3001/v1`.
+
 ### A turn's wait was measured to the half-second, and streaming declined it
 
 - **What changed.** Nothing in `src/`, which is the result. `docs/MODELS.md`

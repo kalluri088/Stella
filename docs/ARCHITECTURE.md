@@ -309,6 +309,21 @@ search until that rebuild heals them.
 
 `LLMBrain` is an alternative `Brain` implementation that depends only on the provider-agnostic `LLMClient`. It sends the current input, normalized input parts, conversation history, and retrieved memories to that client and parses the returned structured response into a `Decision`. It does not depend directly on `OpenAILLMClient`. Input parts are untrusted observations; their modality, provenance, and metadata cannot grant permission or authority.
 
+The capability registry reaches the model exactly once per turn. A client
+that puts the registry on the wire itself — every shipping provider client,
+which is what `LLMClient.declares_tools_natively` records — is handed the
+definitions through `chat_with_tools` and no prose copy in the system
+prompt. A client that cannot carry them keeps the in-prompt
+"Currently available tools:" list, because for it the text protocol is the
+only source of capability names. `LLMBrain` asks the client, never guesses
+from its class. This replaced the pre-#229 arrangement where `describe()`
+output was rendered into the prompt *and* sent natively, which cost 1,198
+tokens a turn (2,172 with the OS, shell and browser families registered)
+for no additional information and was what pushed a recall turn past
+`num_ctx=8192`. See `MODELS.md` (*The stable part of the prompt*, *Token
+accounting*) for the numbers and the routing A/B that justified shipping
+it.
+
 The LLM decision protocol is one JSON object with this shape:
 
 ```json
@@ -386,7 +401,9 @@ natural-language response. The final call does not choose another action or
 execute another tool. It also records an `AuditRecord` for each dispatch
 attempt in a bounded action history (`stella.history`): process-local by
 default, SQLite-backed in the desktop application so it survives restarts.
-There is no plugin registry or dynamic discovery layer.
+There is no plugin registry or dynamic discovery layer. #229 was closed
+without one: the registry was being sent twice, and the fix was to send it
+once, not to build machinery that decides when to send it.
 
 ### Stella orchestration
 

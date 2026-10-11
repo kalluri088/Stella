@@ -72,6 +72,28 @@ class KwargRecordingLLM(LLMClient):
         return LLMResponse(content='{"kind":"answer","content":"ok"}')
 
 
+class DeclaringResponseLLM(ResponseLLM):
+    """A client that puts the capability registry on the wire itself.
+
+    It keeps the scripted text reply so only the prompt shape differs from
+    ``ResponseLLM``, and it records the definitions it was handed — so a
+    test can require the prompt to carry no second copy of what the
+    request already declares, and still name every capability that copy
+    used to spell out.
+    """
+
+    declares_tools_natively = True
+
+    def __init__(self, response: str) -> None:
+        super().__init__(response)
+        self.declared_tools: list | None = None
+
+    def chat_with_tools(self, messages, tools, tool_choice=ToolUseMode.AUTO):
+        self.messages.append(messages)
+        self.declared_tools = tools
+        return LLMResponse(content=self.response)
+
+
 def test_llm_brain_omits_should_cancel_when_the_turn_has_none() -> None:
     # One-argument client fakes must keep working: an uncancelled turn
     # passes nothing extra through the seam.
@@ -481,6 +503,8 @@ def test_llm_brain_ordinary_answer_has_no_memory_write() -> None:
 
 
 def test_llm_brain_exposes_datetime_tool_schema() -> None:
+    # The text-protocol arm: a client that cannot declare the registry is
+    # handed it in prose, because nothing else names the capabilities.
     llm = ResponseLLM(
         '{"kind": "tool", "capability": "datetime", '
         '"arguments": {"kind": "time"}}'
@@ -501,6 +525,70 @@ def test_llm_brain_exposes_datetime_tool_schema() -> None:
     assert decision.arguments == {"kind": "time"}
 
 
+def test_a_declaring_client_is_not_sent_the_registry_twice() -> None:
+    """The same strings, once. A client that declares the capabilities on
+    the wire is not also handed the prose copy of them — measured here at
+    1,198 tokens for the shipped tool set and 2,172 with the desktop,
+    shell and browser families enabled, against a 8,192-token budget that
+    one recalled memory could overflow."""
+
+    llm = DeclaringResponseLLM(
+        '{"kind": "tool", "capability": "datetime", '
+        '"arguments": {"kind": "time"}}'
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What time is it?"))
+
+    prompt = llm.messages[0][0].content
+    assert "Currently available tools:" not in prompt
+    declared = {tool.name: tool for tool in llm.declared_tools}
+    assert {
+        "datetime",
+        "system_info",
+        "echo",
+        "filesystem_read",
+        "filesystem_write",
+        "workspace_list",
+        "workspace_find",
+        "workspace_search",
+        "network_read",
+    } <= set(declared)
+    assert (
+        declared["datetime"].arguments["kind"] == "date|time|datetime|weekday"
+    )
+    assert (
+        declared["filesystem_write"].arguments["content"] == "UTF-8 string"
+    )
+    assert decision.capability == "datetime"
+    assert decision.arguments == {"kind": "time"}
+
+
+def test_the_routing_check_never_points_at_a_list_that_may_be_absent() -> None:
+    """Both arms read the same rules, so the prompt may not refer to a
+    tool list that only one of the two is sent."""
+
+    for llm in (ResponseLLM("{}"), DeclaringResponseLLM("{}")):
+        prompt = LLMBrain(llm)._system_prompt()
+        assert "listed below" not in prompt
+        assert "listed immediately above" not in prompt
+        assert (
+            "one of the capabilities available to you this turn" in prompt
+        )
+
+
+def test_the_cached_prefix_does_not_move_when_a_capability_is_toggled() -> None:
+    """With the registry on the wire, the system prompt is the rules and
+    nothing else — so the part a server re-reads survives registering or
+    dropping a whole capability family."""
+
+    narrow = LLMBrain(
+        DeclaringResponseLLM("{}"), ToolDispatcher([DateTimeTool()])
+    )
+    wide = LLMBrain(DeclaringResponseLLM("{}"))
+
+    assert narrow._system_prompt() == wide._system_prompt()
+
+
 def test_clock_rides_with_the_request_not_the_stable_prompt_prefix() -> None:
     """The rules and tool list are the part a server can reuse between
     turns; a timestamp inside them made every new minute re-read the whole
@@ -517,6 +605,13 @@ def test_clock_rides_with_the_request_not_the_stable_prompt_prefix() -> None:
     assert "2026-10-06T21:42" not in system
     assert "2026-10-06T21:42" in request
     assert "Currently available tools:" in system
+
+    declaring = DeclaringResponseLLM(llm.response)
+    LLMBrain(declaring, clock=lambda: moment).decide(
+        Context(user_input="Remind me in two minutes")
+    )
+    assert "2026-10-06T21:42" not in declaring.messages[0][0].content
+    assert "2026-10-06T21:42" in declaring.messages[0][1].content
 
 
 def test_system_prompt_is_byte_stable_across_turns() -> None:
@@ -658,6 +753,19 @@ def test_llm_brain_prompt_uses_injected_tool_collection() -> None:
     assert '"capability": "datetime"' in prompt
     assert '"capability": "system_info"' not in prompt
     assert '"capability": "echo"' not in prompt
+
+
+def test_a_declaring_client_receives_the_injected_tool_collection() -> None:
+    """The same narrowing, in the one place a declaring client can see it:
+    the registry on the wire, not the prompt."""
+
+    llm = DeclaringResponseLLM('{"kind": "do_nothing"}')
+
+    LLMBrain(llm, ToolDispatcher([DateTimeTool()])).decide(
+        Context(user_input="What time is it?")
+    )
+
+    assert [tool.name for tool in llm.declared_tools] == ["datetime"]
 
 
 def test_llm_brain_exposes_filesystem_read_schema_without_model_risk_control(

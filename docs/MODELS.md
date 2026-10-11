@@ -31,11 +31,21 @@ decision corpus, and 6 passes per case before it can ship.
 
 ### The stable part of the prompt
 
-A turn's decision prompt is about 6,900 tokens on the default tool set:
-roughly 4,950 for the system prompt (persona, rules, the tool list
-rendered into it, the routing check and the reply-format instruction),
-about 1,850 for the `tools` array, and a few hundred for the request
-payload. Reading all of it from nothing costs ~3.0 s on this machine;
+A turn's decision prompt has two halves, and the capability registry now
+lives in exactly one of them. The system prompt — persona, the rules, the
+routing check and the reply-format instruction — is 4,096 tokens and no
+longer carries a copy of the tool list; the registry travels once, as the
+provider's native `tools` array: 1,176 tokens for the shipped fifteen
+capabilities, 2,139 once the OS, shell and browser families are
+registered. Until #229 both copies went out on every turn — the same
+`ToolDispatcher.describe()` rendered into the prompt as prose **and**
+handed to the provider as the array — which made the system prompt 5,301
+tokens (6,275 with the families on) to say nothing the array had not
+already said. A client that cannot put the array on the wire keeps the
+prose list instead; the Brain asks the client which it is (`LLMClient
+.declares_tools_natively`) and never sends both.
+
+Reading all of it from nothing costs ~3.0 s on this machine;
 reading it again from a server that cached the prefix costs ~0.07 s. That
 cache is the whole difference between a turn that starts instantly and one
 that stalls, and it keys on the *beginning* of the prompt — change one
@@ -51,6 +61,12 @@ which are already different every turn and sit after the cached prefix; the
 same next-minute request costs 0.11 s. The invariant is pinned by
 `tests/test_brain.py`.
 
+Dropping the prose registry moved the same rule in a second direction: the
+system prompt is now 4,096 tokens whether the OS, shell and browser
+families are registered or not, because the only text that changed when a
+family was toggled *was* the registry copy. Toggling a capability no
+longer re-reads the prefix.
+
 This says nothing about *what* the model is told — the runtime reference is
 still context data and never authority, and the datetime tool is still the
 only way Stella answers "what time is it".
@@ -63,8 +79,9 @@ itself reported: **a trivial turn is exactly one request.** Not a
 plan-then-answer pair, not a retry — one call whose whole cost is decoding.
 
 The prompt work above did its job. Prefill is cached and contributes about
-0.07 s, so reading the capability list lazily (#229) could recover at most the
-~0.9 s of a *cold* prefix and cannot fix a turn that already reads warm.
+0.07 s, so #229 could never have been a latency fix — it could recover at
+most the ~0.9 s of a *cold* prefix and cannot fix a turn that already reads
+warm. (It turned out to be a *capacity* fix; see *Token accounting* below.)
 Everything else is decode, at roughly 44 tokens per second on this card. Two
 arms of the same script, the same resident model, the same two questions:
 
@@ -129,10 +146,95 @@ with `exceed_context_size_error` and nothing else. The client now repeats
 that reason (`HTTP 400 (request (8209 tokens) exceeds the available context
 size (8192 tokens) …)`, bounded to 220 characters of the server's own
 body); before that it said only `HTTP 400`, which named no cause at all.
-The ceiling itself is a standing choice, not a bug to patch here: either
-the prompt gets smaller (the backlog's plan to load capability
-descriptions lazily) or `num_ctx` gets bigger, which costs the memory the
-card does not freely have.
+
+The ceiling was a choice, and the cheaper side of it has now been taken
+(#236's follow-up, closed 2026-10-11): **the prompt got smaller**, `num_ctx`
+did not move. What was removed was not a trim — it was a *duplicate*.
+`ToolDispatcher.describe()` was being transmitted twice on every turn, once
+rendered into the system prompt as a "Currently available tools:" block and
+once as the provider's native `tools` array. Both copies came from the one
+source, so one of them carried no information at all. The routing rules then
+pointed at the prose copy ("one of the currently available tools listed
+below", "requires one of the tools listed immediately above"); those two
+phrases now name "the capabilities currently available to you" and reach the
+model whether or not the prose list exists.
+
+Measured with the same ~4-chars-per-token estimator the reports above use:
+
+| Tool set | prose registry | system prompt, both copies | system prompt, one copy |
+| --- | ---: | ---: | ---: |
+| shipped (15 capabilities) | 1,198 tok | 5,301 tok | **4,096 tok** |
+| + OS, shell, browser (22) | 2,172 tok | 6,275 tok | **4,096 tok** |
+
+Applying that to the two readings the owner's session produced predicts
+**8,151 → ~5,979** with the families on and **6,191 → ~4,993** without them —
+which puts the recall turn that used to overflow back inside `num_ctx=8192`
+with room for the memory it found. The prediction was then checked on the
+wire: two real CLI sessions of one shape (store a fact, then ask the question
+that retrieves it), from this tree with only the client's promise flipped,
+`num_ctx=8192` untouched. **7,757 tokens before, 5,949 after — 1,808 real
+tokens gone**, and the retrieval turn answered in both arms. Those sessions
+register fewer capabilities and no persona file, so they read smaller than
+the owner's 8,151 on both sides; what carries across is the saving, which the
+provider measured. The estimator over-states it, as any ~4-chars-per-token
+figure does.
+
+A second, unplanned benefit: with the block gone, the cached prefix no
+longer changes when a capability family is toggled — the system prompt is
+4,096 tokens either way, so registering the desktop tools mid-session stops
+costing a full re-read.
+
+A client whose transport cannot carry the `tools` array keeps the prose list,
+because for it the text protocol is the only thing naming the capabilities;
+the Brain asks the client (`LLMClient.declares_tools_natively`) rather than
+guessing from its class.
+
+What it does *not* change: `_SYSTEM_PROMPT` itself is now the big fixed cost
+(~4,100 tokens of rules, persona and reply format on top of whatever the
+request carries), and cutting it would be a separate decision with its own
+evidence requirement, not a saving smuggled into this one.
+
+### The routing A/B that let this ship
+
+A shorter prompt is only a win if the model still knows what it can do. The
+base capabilities are *also* described in the rules prose, but the desktop,
+shell, browser, web and Outline families are described **only** by the
+registry — so deleting the prose copy could, in principle, delete the model's
+whole idea that `screen_read` or `shell_run` exists. That asymmetry is the
+reason this change was gated on a real-model run rather than on unit tests.
+
+17 tool-dependent turns, at least one per enabled family, run twice per arm
+against real `qwen3:4b` on the local Ollama through the production native
+client, 24 capabilities registered, a fresh temp memory/history/workspace in
+each run. Both arms come from this one tree: the only thing that changes is
+the client's `declares_tools_natively`, so the prose-copy arm is exactly the
+request Stella used to send.
+
+| Arm | decisions | turns whose capability differed between the arms |
+| --- | --- | --- |
+| declared (ships today) | 33 tool, 1 answer | — |
+| prose-copy (before #229) | 34 tool | 2 |
+
+The two disagreements were not wins for the old behaviour:
+
+- `network_read` ("what does that page say?"): the prose-copy arm answered
+  `web_fetch` on **both** passes, the declared arm `network_read` on both.
+  The duplicate was already mis-leading the model; removing it fixed it.
+- `memory_list`: the declared arm answered instead of calling once, in pass
+  two only. Replaying that single turn five times per arm gave
+  `tool:memory_list` **5/5 in both arms** — it is qwen3's own variance, not
+  an arm effect, and it is why the ship gate is written as "no arm loses a
+  capability the other keeps" rather than "no turn ever differs".
+
+Nothing was executed and nothing was approved during the run: it measured
+decisions only, in a temp state directory removed at the end.
+
+Its per-arm `largest_prompt` is *not* evidence of size: Ollama reports the
+tokens it actually evaluated, so an arm whose prefix is already warm reports
+less than it sent (the run read 6,210 for the declared arm and 4,098 for the
+prose-copy arm — the ordering is a cache artifact, not a measurement). The
+two-session run above, where each arm began cold, is the number that means
+something.
 
 The rules that keep the numbers honest: nothing is persisted, nothing is
 estimated, a cancelled or failed request records nothing, and a provider

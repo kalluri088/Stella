@@ -46,6 +46,75 @@
   *`HTTP 400 ({"error":{"code":400,"message":"request (8209 tokens) exceeds the
   available context size (8192 tokens)…`*.
 
+### The capability registry was being sent twice every turn; one copy is enough
+
+- **What changed.** `LLMClient` gained one attribute,
+  `declares_tools_natively`: a promise about what the client puts on the
+  wire (`True` for `OpenAILLMClient`, and so for the Ollama and llama-server
+  clients that inherit its `chat_with_tools`).
+  `LLMBrain._system_prompt()` now renders the
+  "Currently available tools:" block only for a client that cannot carry the
+  registry itself, and two routing-rule sentences that pointed *at that block*
+  ("one of the currently available tools listed below", "requires one of the
+  tools listed immediately above") now name "the capabilities available to you
+  this turn" and read identically either way. Conformance gained
+  `registry-travels-once`, replayed on all five dialects.
+- **Why.** `ToolDispatcher.describe()` fed both transports: the same JSON was
+  inlined into the system prompt as prose *and* passed to the provider as its
+  native `tools` array. Measured on this tree that duplicate cost **1,198
+  tokens** a turn at the shipped tool set and **2,172** with the OS, shell and
+  browser families on — and it was what left the recall turn of the previous
+  entry **41 tokens** of room against `num_ctx=8192`. Backlog #229 had been
+  filed as "load capability descriptions lazily"; #243 had already shown
+  prefill is cached (~0.07 s warm), so lazy loading could at best recover the
+  ~0.9 s of a *cold* prefix. The real problem was capacity, not speed, and it
+  was a duplicate rather than an absence: the fix is one source of truth per
+  transport, not a discovery layer. The architecture's standing non-goal ("no
+  plugin registry or dynamic discovery layer") is why.
+- **Numbers.** Estimator, same ~4 chars/token the reports use: the system
+  prompt goes 5,301 → **4,096** tokens at fifteen capabilities and 6,275 →
+  **4,096** with the families registered. Then measured for real, in two
+  identical CLI sessions from one tree with only the client's promise
+  flipped: the largest prompt the provider reported on the recall turn went
+  **7,757 → 5,949 — 1,808 real tokens gone**, and the turn that retrieves a
+  memory answered instead of overflowing. A side effect nobody asked for:
+  the cached prefix no longer moves when a capability family is toggled,
+  because the only text that changed was the registry copy.
+- **Ship gate, and it was taken.** Because the desktop, shell, browser, web
+  and Outline families are described *only* by the registry — the base
+  capabilities also have prose in `_SYSTEM_PROMPT` — the change had to be
+  proved against a real model, not asserted. 17 tool-dependent turns, at
+  least one per enabled family, two passes per arm, both arms from one tree
+  with only the client's promise flipped, against real `qwen3:4b` on the
+  local Ollama with 24 capabilities registered: 33/34 tool decisions in the
+  shipping arm against 34/34 in the old one, and the only capability that
+  actually disagreed between the arms was `network_read`, where the *old*
+  behaviour answered `web_fetch` on both passes and the new one was right on
+  both. The single answer-instead-of-tool replayed 5/5 as a correct tool call
+  in both arms, so it is qwen3's variance and not the change. Full write-up
+  with the table and the cache caveat: `docs/MODELS.md` (*The routing A/B
+  that let this ship*).
+- **Safety.** Nothing about authorization moved. The model still proposes and
+  the runtime still validates exact capability names and arguments before
+  executing; `tool_choice` REQUIRED and the answer guard are untouched, so an
+  endpoint that ignored the registry would surface as the existing honest
+  refusal rather than as an unauthorized action. No new config key, no new
+  dependency, no default switched, and `num_ctx` stays at 8192.
+- **Honest limits.** `declares_tools_natively` claims what *Stella's* client
+  sends; it cannot audit a remote server that accepts `tools` and ignores them.
+  The estimator is crude and the provider's own count is the truth. This shrinks
+  the prompt by removing a duplicate; it does not make the prompt small in
+  principle — `_SYSTEM_PROMPT`'s ~4,100 tokens of rules are now the biggest
+  fixed cost and would need their own evidence to touch. #245 and #246 are
+  untouched.
+- **Proof.** `tests/test_brain.py` (63) gained four cases: the declaring arm
+  keeps every fact the prose arm pinned (now asserted from `_tool_definitions()
+  ` rather than prompt text), the routing check names no absent list in either
+  arm, the prefix is byte-identical whether or not a family is registered, and
+  an injected dispatcher reaches a declaring client as its `tools`.
+  `tests/test_conformance.py` gained the declaring-arm tripwire sibling, which
+  measures the shipped path for the first time.
+
 ### A reply is never asked of the worker as more than a sentence can cost
 
 - **What changed.** `sentence_chunks` now breaks on *every* line, not only on

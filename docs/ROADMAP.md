@@ -453,6 +453,24 @@ working and helping me, even if not the fastest."
   latency and setup items — A/B-ing the local brain against the router,
   and loading capability descriptions lazily instead of every turn — now
   carry a demonstrated problem rather than a suspected one.
+- **B8a. The registry travels once (#229) — done.** The second of those
+  two items was reframed by the measurements above: the latency premise
+  did not exist (prefill is cached; lazy loading could at best recover the
+  ~0.9 s of a *cold* prefix), while the *capacity* premise did — every turn
+  was sending `ToolDispatcher.describe()` twice, once as prompt prose and
+  once as the provider's own `tools` array. The duplicate is gone: a client
+  that declares the capabilities on the wire (`LLMClient
+  .declares_tools_natively`, true for every shipping client) is no longer
+  handed the prose copy, and a client that cannot carry them still is.
+  1,198 tokens per turn at the shipped tool set, 2,172 with the OS, shell
+  and browser families; measured on the wire in two identical CLI sessions
+  from one tree with only the client's promise flipped, the largest prompt
+  on the turn that retrieves a memory went **7,757 → 5,949 tokens**, and it
+  answered instead of overflowing. No discovery layer was built —
+  `ARCHITECTURE.md` still says there is none, and now says why that is the
+  right answer for #229. Proof: the routing A/B in `docs/MODELS.md` (*The
+  routing A/B that let this ship*) and the conformance case
+  `registry-travels-once`, replayed on all five dialects.
 
 ## Stage C — personality (complete — released in 1.2.0)
 

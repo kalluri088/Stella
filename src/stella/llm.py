@@ -198,9 +198,17 @@ class LLMClient(ABC):
     into. It defaults to None on the class, so a client that never
     attaches one — and a provider that reports no counts — simply
     reports nothing rather than an invented number.
+
+    ``declares_tools_natively`` is this client's promise about the wire:
+    it puts the capability registry into the request itself, so the model
+    can see what it may call without being told in prose as well. The
+    Brain then sends its text copy of the registry only to a client that
+    makes no such promise. The claim covers what Stella's own client
+    sends, never what a remote server chooses to do with it.
     """
 
     usage: UsageRecorder | None = None
+    declares_tools_natively: bool = False
 
     def _note_usage(
         self, prompt_tokens: int | None, completion_tokens: int | None
@@ -225,7 +233,12 @@ class LLMClient(ABC):
         tool_choice: ToolUseMode = ToolUseMode.AUTO,
         should_cancel: CancelCheck | None = None,
     ) -> LLMResponse:
-        """Return text or native calls, falling back to the text protocol."""
+        """Return text or native calls, falling back to the text protocol.
+
+        A client that cannot put ``tools`` on the wire leaves
+        :attr:`declares_tools_natively` False, and the Brain then names
+        the available capabilities in the prompt instead.
+        """
 
         del tools, tool_choice
         if should_cancel is not None:

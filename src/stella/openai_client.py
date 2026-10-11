@@ -35,9 +35,15 @@ class OpenAILLMClient(LLMClient):
     OpenAI-compatible provider (Claude, Grok, Groq, OpenRouter, Gemini,
     an arbitrary gateway) speaks ``chat/completions``. Plain ``chat``
     works on both, so only the tool path branches.
+
+    Both dialects declare the capabilities on the wire with the request,
+    which is what :attr:`declares_tools_natively` promises — so the Brain
+    does not also spell them out in the prompt for this client or the
+    Ollama and llama-server clients that inherit it.
     """
 
     TOOL_DIALECTS = ("responses", "chat")
+    declares_tools_natively = True
 
     def __init__(
         self,

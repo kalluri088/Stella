@@ -47,8 +47,8 @@ def test_openai_client_forwards_llm_brain_routing_contract(monkeypatch) -> None:
         client = OpenAILLMClient(model="test-model")
         system_prompt = (
             "Final routing check: if the user's requested result requires "
-            "one of the tools listed immediately above, the decision MUST "
-            "be kind=tool."
+            "one of the capabilities available to you this turn, the "
+            "decision MUST be kind=tool."
         )
 
         client.chat(

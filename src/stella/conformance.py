@@ -67,6 +67,10 @@ class ConformanceExpectation:
     dispatcher_rejects: bool = False
     request_tool_names: frozenset[str] | None = None
     request_num_ctx: int | None = None
+    # None means "not asked"; True/False requires the prose copy of the
+    # capability registry to be present in (or absent from) the system
+    # message the provider was sent.
+    request_registry_in_system_prompt: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -90,7 +94,12 @@ class ConformanceResult:
 
 
 def conformance_dispatcher() -> ToolDispatcher:
-    """The fixed trusted environment every case is decided against."""
+    """The fixed trusted environment every case is decided against.
+
+    Three capabilities, because a case that asks whether the registry
+    reaches the provider has to be able to tell "declared" apart from
+    "nothing to declare".
+    """
 
     return ToolDispatcher([DateTimeTool(), EchoTool(), SystemInfoTool()])
 
@@ -575,6 +584,23 @@ CONFORMANCE_CASES: tuple[ConformanceCase, ...] = (
             request_tool_names=frozenset({"datetime", "echo", "system_info"}),
         ),
     ),
+    ConformanceCase(
+        name="registry-travels-once",
+        obligation=(
+            "a client that declares the capabilities on the wire is not "
+            "also handed the same registry in prose, and still declares "
+            "every one of them"
+        ),
+        user_input="Say hello.",
+        reply=WireReply(content=ANSWER_JSON),
+        expectation=ConformanceExpectation(
+            decision=_answer(),
+            request_tool_names=frozenset(
+                {"datetime", "echo", "system_info"}
+            ),
+            request_registry_in_system_prompt=False,
+        ),
+    ),
 )
 
 # --- the harness ---------------------------------------------------------
@@ -589,6 +615,21 @@ def _request_tool_names(payload: dict) -> set[str]:
         if isinstance(function, dict) and "name" in function:
             names.add(str(function["name"]))
     return names
+
+
+def _request_system_text(payload: dict) -> str:
+    """The system message the provider was sent, whatever the dialect.
+
+    Chat dialects carry it under ``messages``; the Responses API puts the
+    same role-tagged entries under ``input``.
+    """
+
+    entries = payload.get("messages") or payload.get("input") or []
+    return "\n".join(
+        str(entry.get("content") or "")
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("role") == "system"
+    )
 
 
 def run_case(case: ConformanceCase, dialect: str) -> ConformanceResult:
@@ -655,6 +696,7 @@ def _check_requests(
     if (
         expectation.request_tool_names is None
         and expectation.request_num_ctx is None
+        and expectation.request_registry_in_system_prompt is None
     ):
         return None
     if not requests:
@@ -672,6 +714,14 @@ def _check_requests(
                 f"request options.num_ctx is "
                 f"{options.get('num_ctx')!r}, expected "
                 f"{expectation.request_num_ctx!r}"
+            )
+    if expectation.request_registry_in_system_prompt is not None:
+        present = "Currently available tools:" in _request_system_text(payload)
+        if present is not expectation.request_registry_in_system_prompt:
+            return (
+                f"prose registry in the system message is {present}, "
+                f"expected "
+                f"{expectation.request_registry_in_system_prompt}"
             )
     return None
 

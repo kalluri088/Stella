@@ -69,9 +69,14 @@ fixture only.
 
 ## Decision-prompt routing rules
 
-`LLMBrain` receives the same dispatcher as Stella and serializes approved tool
-metadata (name, description, argument schema) into the decision prompt. The
-prompt explains when each safe capability is relevant, but that text is not
+`LLMBrain` receives the same dispatcher as Stella and passes approved tool
+metadata (name, description, argument schema) to the provider, which carries
+it on the wire as its own `tools` array. A client that cannot do that — the
+base `LLMClient` protocol, and every test double built on it — is instead
+handed the same metadata serialized as a "Currently available tools:" block
+in the prompt; `LLMClient.declares_tools_natively` is the client's promise
+about which of the two it is, and `LLMBrain` never sends both. The prompt
+explains when each safe capability is relevant, but that text is not
 authorization — the exact runtime lookup is. The model must not answer from
 general knowledge when the result depends on live runtime or workspace state:
 current time/date routes to `datetime`, machine information to `system_info`,
@@ -80,9 +85,32 @@ missing without letting the selected capability run, must not invent arguments,
 and if the needed capability is unavailable or arguments are incomplete it
 must ask or do nothing rather than guess. A `ToolResult` exists only after
 trusted dispatch returns it; model prose cannot fabricate one. The routing
-gate is repeated after the serialized tool inventory in the actual system
-message, so the model sees the capabilities and the mandatory-choice rule
-together immediately before the user context.
+gate is the last text in the actual system message either way, and it names
+"the capabilities available to you this turn" rather than pointing at a list
+that may not be there.
+
+### Why the registry travels once
+
+Backlog item #229 was filed as "load capability descriptions lazily instead
+of every turn", under latency. It is closed as "stop transmitting them
+twice", and no discovery layer was built.
+
+Two measurements decided that. The first: prefill is cached and costs about
+0.07 s, so loading the registry lazily could at best recover the ~0.9 s of a
+*cold* prefix — machinery buying a tenth of a second on a warm turn. The
+second: the same `ToolDispatcher.describe()` output went out every turn as
+prompt prose *and* as the provider's `tools` array — 1,198 tokens of
+duplicate (2,172 with the OS, shell and browser families registered), which
+is how a recall turn reached 8,151 tokens against `num_ctx=8192` and died
+with `exceed_context_size_error`. The problem was capacity, and one source
+of truth per transport fixes it; a lazy-discovery layer would have left the
+duplicate in place and added a component the architecture rules already
+exclude.
+
+The A/B that justified shipping it — 17 tool-dependent turns, two passes,
+both arms from one tree with only the client's promise flipped, against real
+`qwen3:4b` — is recorded in `MODELS.md` under *The routing A/B that let this
+ship*.
 
 ## The two SAFE informational tools
 

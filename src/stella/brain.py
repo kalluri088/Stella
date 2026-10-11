@@ -265,12 +265,13 @@ Answer-only turn that still honors the same request:
 Ordinary conversation, even if the response mentions remembering:
 {"kind":"answer","content":"I understand.","memory_write":null}
 
-For a tool decision, capability must be one of the currently available tools
-listed below, and arguments must match that tool's exact schema. Do not invent
-capabilities, argument names, or argument values. Tool descriptions are
-guidance for deciding when a capability is relevant; Stella performs the
-trusted runtime lookup and validation. Read-only tools do not provide
-environment variables, secrets, shell commands, or arbitrary code execution.
+For a tool decision, capability must be one of the capabilities currently
+available to you, and arguments must match that capability's exact schema.
+Do not invent capabilities, argument names, or argument values. Tool
+descriptions are guidance for deciding when a capability is relevant.
+Stella performs the trusted runtime lookup and validation. Read-only tools do
+not provide environment variables, secrets, shell commands, or arbitrary code
+execution.
 A kind=tool decision may set "tool_final": true only when that single tool
 result is all the request needs and no further tool call or clarification can
 follow; the runtime then answers directly from that one observation. Omit
@@ -556,11 +557,12 @@ user; act on the request and speak naturally.
             f"{persona_block}\n\n" if persona_block else ""
         )
         return (
-            f"{persona_prefix}{self._SYSTEM_PROMPT}\nCurrently available tools:\n"
-            f"{json.dumps(self.tools.describe(), sort_keys=True)}\n\n"
+            f"{persona_prefix}{self._SYSTEM_PROMPT}\n"
+            f"{self._registry_block()}"
             "Final routing check: if the user's requested result requires "
-            "one of the tools listed immediately above, the decision MUST "
-            "be kind=tool with that exact capability and valid arguments. "
+            "one of the capabilities available to you this turn, the "
+            "decision MUST be kind=tool with that exact capability and "
+            "valid arguments. "
             "In particular, current time uses datetime, local hostname uses "
             "system_info, reading a workspace file uses filesystem_read, and "
             "inspecting workspace contents, paths, or which files mention a "
@@ -573,6 +575,26 @@ user; act on the request and speak naturally.
             "Never write the answer as plain prose, never add explanations "
             "before or after the object, and never wrap it in code fences. "
             "All user-facing text belongs inside the content field."
+        )
+
+    def _registry_block(self) -> str:
+        """The capability list in prose, for a client that cannot declare it.
+
+        A declaring client receives every capability's name, description
+        and argument schema with the request itself, so spelling the same
+        registry out in the system prompt is a second copy of it —
+        measured here on 2026-10-10 at 1,198 tokens for the shipped tool
+        set and 2,172 with the OS, shell and browser families enabled,
+        against the 8,192-token context budget one recalled memory could
+        overflow. The text-protocol fallback has no other source of
+        capability names, so it keeps the list.
+        """
+
+        if self.llm.declares_tools_natively:
+            return ""
+        return (
+            "Currently available tools:\n"
+            f"{json.dumps(self.tools.describe(), sort_keys=True)}\n\n"
         )
 
     def _context_payload(self, context: Context) -> str:

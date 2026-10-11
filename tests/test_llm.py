@@ -173,3 +173,25 @@ def test_openai_usage_counts_reads_the_shape_the_sdk_returns() -> None:
     assert openai_usage_counts(response) == (12, 3)
     # A response with no usage block is not an error: it yields nothing.
     assert openai_usage_counts(SimpleNamespace(usage=None)) == (None, None)
+
+
+def test_every_shipping_client_promises_to_declare_the_registry() -> None:
+    """The Brain sends its prose capability list only to a client that
+    makes no such promise, so the promise is the whole contract."""
+
+    from stella.llama_server import LlamaServerLLMClient
+    from stella.ollama_client import OllamaLLMClient
+    from stella.openai_client import OpenAILLMClient
+
+    assert LLMClient.declares_tools_natively is False
+    assert FakeLLMClient().declares_tools_natively is False
+    for client in (
+        OpenAILLMClient(model="m", api_key="k"),
+        OpenAILLMClient(model="m", api_key="k", tool_dialect="chat"),
+        OllamaLLMClient(model="m", base_url="http://127.0.0.1:1/v1"),
+        OllamaLLMClient(
+            model="m", base_url="http://127.0.0.1:1/v1", native=True
+        ),
+        LlamaServerLLMClient(model="m", base_url="http://127.0.0.1:1"),
+    ):
+        assert client.declares_tools_natively is True

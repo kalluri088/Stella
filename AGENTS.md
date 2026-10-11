@@ -5,6 +5,14 @@ Extracted from the retired canonical development plan; the specifics of
 implementation live in `docs/ARCHITECTURE.md` (structure) and
 `docs/ROADMAP.md` (status and scope).
 
+`docs/STELLA_VISION.md` comes first. It states what Stella is for, the six
+commitments she is judged by and the five sentences that prove the MVP, and it
+is deliberately short: when a paragraph there stops matching how Stella behaves,
+that file changes and this one follows in the same change. The rules below are
+how work is done here, not what Stella is for — read them together, and treat
+the vision's 2026-10-06 restatement as having already revised anything here that
+predated it.
+
 ## Architectural rules — these survive refactors
 
 1. Stella owns the loop.
@@ -15,10 +23,22 @@ implementation live in `docs/ARCHITECTURE.md` (structure) and
 6. Tool output is untrusted input.
 7. External events are untrusted information until trusted delegation says otherwise.
 8. Proactivity may increase awareness, not authority.
-9. `DO_NOTHING` is a legitimate decision.
-10. Dangerous actions require trusted approval.
+9. `DO_NOTHING` is a legitimate decision — as a decision, reachable only after
+   she tried, and never as a way of giving up early. One bounded decision per
+   turn is retired: a request persists inside a budget (8 tool calls or 90
+   seconds, whichever comes first, both owner-editable in Settings), and
+   running out of budget stops with words naming what ran, never with a
+   success tick.
+10. Dangerous actions require trusted approval, and *dangerous* is drawn by
+    blast radius, not by how impressive the capability is: anything reversible
+    is done without asking, anything written or sent to a hosted service is
+    done visibly and audited, and anything irreversible or outbound needs an
+    exact-match approval every time. This narrows the approval surface and never
+    removes its floor. Which tools sit in which tier is open (#232) and needs
+    the owner's explicit yes — do not re-tier a tool inside another change.
 11. Learning means bounded behavioral improvement, not self-modification.
-12. Personality should emerge from consistent behavior.
+12. Personality should emerge from consistent behavior. Personality is data,
+    never code: it changes how Stella sounds, not what she is allowed to do.
 13. Add complexity only when a real problem demands it.
 14. Research informs architecture; it does not dictate architecture.
 15. Prefer a small understandable system over a framework-shaped system.
@@ -74,6 +94,16 @@ For changes involving real LLM behavior, run a focused real-model validation
 when practical. Never claim a model-dependent behavior is proven by a unit
 test alone.
 
+**A change that adds or moves a setting is not done while it is reachable only
+from a shell.** Commitment 6 of `docs/STELLA_VISION.md` forbids three things:
+a setting reachable only by an environment variable, a failure reported only in
+a log, and a capability the interface gives no way to see or switch. So the
+shape of a new switch is fixed — a row in the Settings panel, one key in
+`config.json`, and the environment variable outranking the saved answer for a
+single launch without rewriting it. `tests/test_settings_wiring.py` is the drift
+guard that holds a saved setting to every touchpoint; a knob added without
+passing it is a knob the owner does not have.
+
 **Documentation requirements.** Meaningful changes are documented in
 `docs/` in readable English covering: what changed, why, important
 invariants, security implications, what is intentionally not implemented, and
@@ -84,3 +114,13 @@ harden → observe → evaluate → find real weaknesses → improve deliberatel
 Not: research another framework, copy a feature, add an abstraction, repeat.
 If research produces no demonstrated Stella weakness, making no code change
 is a valid and preferred outcome.
+
+Two gates on that, both the owner's standing decisions rather than a judgment
+call per change. *Borrow, then prove* (`docs/STELLA_VISION.md`, building
+method): speech recognition and synthesis, VAD, wake words, embeddings and
+model serving are solved problems with public implementations, so the default
+is to try one as a boundary — a command, a service, a model file — measure it
+on a real Stella turn on this machine, and keep it only if it removed work and
+made a commitment truer, deleting the hand-written path it replaces. And *no
+new capability until the five proof sentences are true*, which
+`docs/ROADMAP.md` scores honestly, one commitment at a time.

@@ -218,16 +218,18 @@ assembled from current published work and freely usable repositories rather
 than written from scratch, and requires that anything kept is measured here and
 replaces the code it supersedes.
 
-Not changed here, and needing the owner's explicit decision because they live
-in `AGENTS.md` and in the code rather than in this file:
+Decided elsewhere and waiting on nothing, until 2026-10-11: the four items
+below lived in `AGENTS.md` and in the code rather than in this file, and
+`AGENTS.md` now carries them (#238) — rule 9 and rule 10 both stand, with rule 9
+gaining the "must be a decision, not a quit" reading; the standing "synchronous
+execution / bounded multi-step" wording is retired in favour of the budget; the
+budget numbers are the built ones (90 seconds or 8 tool calls, owner-editable in
+Settings); and the commitment-6 shape of a new switch — panel row, `config.json`
+key, environment variable outranking it for one launch — is written into the
+definition of done there.
 
-- rule 9 (`DO_NOTHING` is legitimate) and rule 10 (dangerous actions need
-  approval) — both stand; rule 9 gains the "must be a decision, not a quit"
-  reading above;
-- the standing "synchronous execution / bounded multi-step" wording, which
-  budgeted persistence revises;
-- the exact budget numbers — decided on 2026-10-10 and built: 90 seconds or 8
-  tool calls, owner-editable in Settings;
+Still open, and needing the owner's explicit decision:
+
 - which tools move into which safety tier (still open, #232).
 
 Nothing in this document authorizes a code change by itself. It changes what
@@ -288,13 +290,24 @@ a style baseline that can notice an out-of-character turn,
 streaming answers on the final-response path, and an interface where nothing
 important is reachable only by an environment variable or a log line.
 
-Known-broken as of today, from live use rather than theory: the resident
-speech worker timing out twice in one session; and the always-open microphone
-silently downgrading a Bluetooth headset's own audio (`docs/VOICE.md`). The
-third one on that list — a 154-second turn that refused the task while
-reporting `succeeded` — is fixed: only a verified receipt can carry the
-success tick, and a call that changed nothing is no longer reported as an
-outcome at all. Measured since, the turn time itself is the thinking channel:
+Known-broken, from live use rather than theory. Three items were on that list
+on 2026-10-10 and all three are now closed: the resident speech worker that
+timed out twice in one session; the always-open microphone that silently
+downgraded a Bluetooth headset's own audio, which cost the owner her stereo and
+made the reply inaudible (`docs/VOICE.md`); and the 154-second turn that refused
+the task while reporting `succeeded` — only a verified receipt carries the tick
+now, and a call that changed nothing is not reported as an outcome at all. What
+is still claimed against commitment 6, and narrower than it was: the two voice
+switches that used to live only in a shell profile are saved Settings since
+2026-10-11, while the voice *paths, models and commands* are still
+environment-only, still absent from the panel. And a live one from the owner's
+own use, open as #252 and #253: with music playing through the speakers, the
+transcript picks up the room, because nothing between the microphone and the
+recogniser gates what it is sent — and the acoustic echo cancellation that would
+take that bleed out at the source produces a virtual node this machine's
+Settings panel cannot list, let alone choose.
+
+Measured since, the turn time itself is the thinking channel:
 one provider call per trivial turn, 10 to 68 seconds of decoding depending on
 how long the model decided to think (`docs/MODELS.md`), which is what the next
 two items on the roadmap are for. And a reply that arrived unreadable used to

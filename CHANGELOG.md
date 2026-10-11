@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### The roadmap now answers "how close is she to feeling right"
+
+- **What changed.** `docs/ROADMAP.md` is organised around the six commitments
+  of `docs/STELLA_VISION.md` instead of Stages A–E, and opens with a new
+  section, *The gate on new work*: the Vision's five proof sentences, each
+  tagged with the commitment it tests and the best evidence this file holds —
+  1 not true yet, 3 half true, 4 true once under conditions, 2 untested, 5 not
+  built — followed by the owner's standing decision that **no new capability
+  lands until those five are true**. Safety keeps its own axis, *The tiers, and
+  what enforces them*, because the Vision's blast-radius table is explicitly
+  not a seventh commitment.
+- **Why.** Status used to read as a count of shipped capabilities — "A2 done,
+  B4 done, D1 measured" — which is a question nobody asks her. The question the
+  owner asks is whether she feels right yet, and that is answerable only one
+  commitment at a time. Writing the gate down is what makes a decision given in
+  one session outlive it: three of the five sentences fail today, and a failing
+  proof sentence now outranks everything else in the backlog.
+- **What did not move.** Every item id (`A9`, `B0`, `D4` …) and the text of
+  every bullet, because documents, tests and commit messages cite the ids — only
+  their address changed. Every measured verdict travelled with its item: the
+  declined answer tail (#230), the rejected think-off (D5), the AUROC 0.550
+  router gate (B0), the borrowings Stage D refused. A restructure that loses a
+  negative result re-prices it. *Where the stages went* keeps each stage's
+  heading and preamble verbatim and maps every id to its new section, which is
+  also what the release history needs: 1.1.0 is Stage A, 1.2.0 is Stages B and
+  C.
+- **What the rewrite surfaced.** Seven closed items had no roadmap line at all
+  and now sit under the commitment they serve: the clock out of the cached
+  prefix (#228), the window's activity phases (#233), the turn budgets (#231),
+  the neutral outcome mark for a receipt-less success (#227), the unreadable
+  turn that no longer ends in silence (#244), the four configuration-surface
+  fixes, and the portable-plumbing/used-on-Linux distinction. #240's doctor
+  bullet moved from *Packaging* to commitment 6, because what the interface can
+  tell you is an interface promise, not a release mechanic.
+- **Two claims were checked rather than assumed.** That only
+  `STELLA_SPEECH_RESIDENT` and `STELLA_VOICE_BARGE_IN` are env-only switches
+  (neither name appears anywhere in `src/stella/ui.py`), and that nothing in the
+  repository records the commitment-1 test — one question, six times, from a
+  cold start — ever having been run. Both are stated in the file as of
+  2026-10-11.
+- **Proof.** The file was assembled by a script that copies the old bullets out
+  of the previous version, and its guard asserts every non-blank line of the
+  original stage body still appears in the result: `lost lines: 0`, with only
+  the introductory paragraph deliberately replaced. No code, no test and no
+  other document changed; `uv run ruff check .` and `git diff --check` are
+  clean. Not pushed.
+
 ### The command that explains a cold desktop now asks it what is wrong
 
 - **What changed.** `stella doctor` has a new line, `endpoint`, and it is the

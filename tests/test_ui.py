@@ -1553,6 +1553,41 @@ def test_the_wake_picker_names_the_phrase_and_the_classifier(
         root.destroy()
 
 
+def test_the_everything_wake_row_names_the_words_it_arms(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The owner switched the ear on with no phrase chosen, the row read
+    # "everything detected on this machine", and what that armed was
+    # openWakeWord's shipped "alexa" — a word a video says. A choice whose
+    # cost is a word has to show the words where it was made.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    monkeypatch.delenv("STELLA_WAKE_WORD", raising=False)
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    for name in (
+        "melspectrogram.onnx",
+        "embedding_model.onnx",
+        "alexa_v0.1.onnx",
+        "hey_jarvis_v0.1.onnx",
+    ):
+        (models_dir / name).write_bytes(b"model")
+    root, window, bridge, _ = make_window(
+        settings=StellaSettings(model="test", wake_model_dir=str(models_dir))
+    )
+    try:
+        assert window._wake_choice_var.get() == stella_ui._WAKE_EVERYTHING
+        hint = window._wake_hint.cget("text")
+        assert '"alexa"' in hint and '"hey jarvis"' in hint
+        assert "video" in hint
+        window._wake_choice_var.set("alexa")
+        hint = window._wake_hint.cget("text")
+        assert 'Say "alexa"' in hint and "hey jarvis" not in hint
+    finally:
+        bridge.stop()
+        root.destroy()
+
+
 def test_the_mic_picker_writes_the_chosen_node_into_the_draft(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

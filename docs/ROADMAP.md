@@ -1201,6 +1201,37 @@ The doctor, the config keys and the dev tree are for whoever builds Stella.
   wants it, and a barge-in capture that must read the cancelled pair is still
   named by `STELLA_BARGE_SOURCE` alone (see *What is still not true*).
 
+- **D12. The wake row hid the words it armed (#253 follow-up, landed
+  2026-10-11).** Found from the owner's complaint, not from a test: while a
+  YouTube video played, Stella started listening on her own, three times.
+  Nothing glitched. *Wake word* defaults to on, the phrase dropdown defaults to
+  `everything detected on this machine`, and detection on this machine is a
+  directory listing that returns `alexa_v0.1.onnx` beside
+  `hey_jarvis_v0.1.onnx` — the classifiers openWakeWord's model folder ships. So
+  Stella was armed with the word "Alexa", and a video saying it is a legitimate
+  wake. The failure is not the wake word answering to a word; it is that the one
+  setting that decides which words she is overheard saying displayed the promise
+  ("everything detected") and never the words, so the arm that went wide could
+  not be seen from the row that set it. That is commitment 6's *see* half, the
+  same half D10 found on the microphone. `_refresh_wake_hint` now spells every
+  armed phrase into the dim line, with the consequence stated in the same
+  sentence — a video or an ad saying one of them wakes her too — and naming one
+  classifier from the dropdown still narrows the line to that word alone.
+  **Deliberately not done:** the default stays detect-all, because a list of
+  allowed words is a new policy nobody asked for and a black list would be a
+  worse guess about someone else's vocabulary; and the row was not changed to
+  "arm nothing", which is how the ignored microphone failed. The fix is
+  legibility at the place the choice is made. Separately, on the owner's machine
+  and with her explicit choice, `wake_word_enabled` is now `false` and the
+  resident voice server is stopped, so `build_wake` returns `None` and there is
+  no open ear to be surprised by — one launch of `STELLA_WAKE_WORD=on` puts it
+  back. Proof: `test_ui.py` 90 passes, including a new test whose model folder
+  holds `alexa_v0.1.onnx` and asserts the hint names both words and warns about
+  a video before the choice is narrowed, then names only "alexa" after it is;
+  `test_wake.py` 58 still pass. Live on this machine, `default_wake_models`
+  answers `('alexa_v0.1.onnx', 'hey_jarvis_v0.1.onnx')` — the surprise this
+  bullet describes, reproduced from the code path that caused it.
+
 ### What is still not true
 
 - **The rest of the voice configuration is still environment-only.** The three

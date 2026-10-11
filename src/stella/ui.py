@@ -2744,6 +2744,18 @@ class StellaWindow:
                 f'Say "{heard}" to start listening; nothing is recorded '
                 "until it fires."
             )
+        elif self._wake_choices_map:
+            # "everything detected on this machine" is a promise about words,
+            # not a list of them: on a machine holding the shipped openWakeWord
+            # classifiers that means "alexa", and a video saying it is a
+            # legitimate wake. Naming them is all of what makes the choice
+            # visible where it was made.
+            named = " or ".join(f'"{label}"' for label in self._wake_choices_map)
+            text = (
+                f"Say {named} to start listening. Every classifier in the "
+                "wake model folder is armed, so a video or an ad saying one "
+                "of these words wakes her too."
+            )
         else:
             text = (
                 "Say any wake phrase detected on this machine; nothing "

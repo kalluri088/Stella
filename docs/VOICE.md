@@ -619,6 +619,15 @@ the device — so it goes dark the moment the microphone is released.
   setup above), and a typed phrase arms the classifier file it names —
   after the owner has placed or trained it there, never by a download
   or a training run of Stella's own.
+  Left on **"everything detected on this machine"**, the line under the row
+  spells out every word that will wake her, because that default arms every
+  classifier in the folder and a folder copied from openWakeWord ships
+  `alexa_v0.1.onnx` and `hey_jarvis_v0.1.onnx`. A video or an advertisement
+  saying one of those words is then a legitimate wake, and it looked like a
+  malfunction until the row named the words it had been listening for. The
+  default is still detect-all — it is what makes a folder holding the owner's
+  own trained classifier work the moment the box is ticked — so the fix is that
+  the choice is legible, never that a word list was added to the runtime.
   Apply arms or stops the ear in the running session, so there is no
   restart to wait for and never a second capture for the same microphone.
   The ear is suspended whenever Stella is speaking, narrating, already

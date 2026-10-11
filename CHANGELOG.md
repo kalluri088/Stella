@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### The wake row now says which words it armed
+
+- **What changed.** With the *Wake word* checkbox on and no phrase chosen, the
+  dim line under the row used to read "Say any wake phrase detected on this
+  machine". It now names them — `Say "alexa" or "hey jarvis" to start
+  listening. Every classifier in the wake model folder is armed, so a video or
+  an ad saying one of these words wakes her too.` The generic sentence survives
+  only for a machine where discovery found nothing to name.
+- **Why.** It was not a metaphor. `default_wake_models` arms every `.onnx` that
+  is not a shared pipeline model, and this machine's folder holds openWakeWord's
+  shipped `alexa_v0.1.onnx` and `hey_jarvis_v0.1.onnx` — there is no
+  `hey_stella` classifier, because Stella never downloads or trains one. So the
+  owner turned on an ear that was listening for *Amazon's* word, three YouTube
+  videos woke her mid-evening, and the panel that made that choice described it
+  as "any wake phrase". Commitment 6's second half — a capability the interface
+  gives no way to see — broken in the one place where seeing it is the whole
+  decision: an always-open microphone whose trigger words are invisible is not a
+  choice the owner made.
+- **Also done, on the owner's machine and not in code.** Her saved
+  `wake_word_enabled` is now `false` and the resident voice server was stopped,
+  so the ear is off and press-and-speak on `Super + D` is the only way she
+  listens. `build_wake` on the resolved live settings returns `None`. The
+  threshold (0.5) and the choice of "everything" are untouched in code — the
+  row shows what each one means now, which is what was missing.
+- **What is deliberately not done.** The default is still "arm every classifier
+  in the folder", and no word is ever blacklisted. That default is why a
+  machine whose owner trained `hey_mira.onnx` works the moment the box is
+  ticked, with nothing else to configure; changing it to "arm nothing unless you
+  name it" would make the checkbox a setting that does nothing on its own, which
+  is the failure this repository already fixed once for the microphone. The fix
+  is visibility at the place of the decision, not a different decision.
+- **Proof.** `test_ui.py` 90 (one new test): a folder holding the two shipped
+  classifiers plus the shared models shows the *everything* choice, names both
+  words in the hint, and after the owner picks one, names only that one — the
+  shared `melspectrogram`/`embedding_model` files appear in neither.
+  `test_wake.py` 58 unchanged. Run against the real `~/.local/share/stella/config.json`:
+  discovery answers `('alexa_v0.1.onnx', 'hey_jarvis_v0.1.onnx')`, which is the
+  sentence the old hint refused to spell out.
+
 ### An echo-cancelled microphone can be chosen from Settings
 
 - **What changed.** Input discovery accepts a filter's capture, not just ALSA

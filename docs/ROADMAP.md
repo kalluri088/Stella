@@ -471,6 +471,19 @@ working and helping me, even if not the fastest."
   right answer for #229. Proof: the routing A/B in `docs/MODELS.md` (*The
   routing A/B that let this ship*) and the conformance case
   `registry-travels-once`, replayed on all five dialects.
+- **B8b. Stream the answer path (#230) — measured, declined, no code.** The
+  last latency idea that #243's measurements left standing was that the wait
+  has no beginning the user can see. Ten real decision prompts streamed from
+  the resident brain say otherwise: reasoning occupies a median 95% of the
+  turn, and the reply's own decode — everything a stream could have delivered
+  early — is a median 0.62 s, under a quarter of a second on the short replies
+  a spoken conversation makes. Chunk-0 synthesis of a first sentence costs more
+  than the decode it would overlap, so the voice gain is negative. The
+  two-pass design that the deferred-designs note makes a precondition of
+  re-opening streaming was measured in the same run and is worse on every
+  turn. Table and reasoning in `docs/MODELS.md`; the constraint list above
+  still stands for any future attempt, and so does the finding that the
+  remaining lever is a faster brain for turns that need no reasoning (#237).
 
 ## Stage C — personality (complete — released in 1.2.0)
 
@@ -803,6 +816,22 @@ agentic-work review kept its own document):
   this needs a Brain design that separates decide from answer for spoken
   turns (which is exactly what the fast path's own comment rejects: an extra
   LLM call for identical authority), not another streaming layer.
+  **Measured from the other side and declined (2026-10-11, #230).** That
+  re-opening condition was tested with numbers instead of an argument. The
+  exact decision prompt of ten turns was replayed against the resident brain
+  with `"stream": true` and every delta timed: the first byte of the decision
+  JSON arrives at a median 95% of the turn, so the only span a stream could
+  hand over early — the reply's own decode — is a median **0.62 s**, and
+  0.16 – 0.21 s on the short replies a spoken turn actually makes. The gate
+  (≥ 2.0 s median tail, ≥ 0.8 s earlier first audio) failed on both limbs, and
+  the two-pass design it names was measured too: a separate prose call makes
+  the first character land later than today's whole reply and the finished
+  reply land at a median 33.0 s against 18.5 s. What the run proved in the
+  negative's favour is recorded in `docs/MODELS.md` (*The tail a stream could
+  have handed over*) so nobody re-measures it: Ollama's deltas are genuinely
+  incremental and `kind` always precedes `content`, so a safe streaming tap
+  is buildable — there is simply nothing in it worth delivering. No code
+  changed.
 - **Fast-path local router** — limited to existing `SAFE` fixed-argument
   capabilities (`datetime` first, `system_info` later, only after observing
   real false-positive behavior), a short documented exact-phrase allowlist

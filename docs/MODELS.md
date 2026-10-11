@@ -110,10 +110,11 @@ Deleting the channel is worse still: `think:false` measured slower and rambled
 
 What the measurement does establish, and what was fixed: an unreadable
 decision is not a `do_nothing`, and it no longer gets to be silent
-(`docs/ARCHITECTURE.md`, `Decision.unreadable`). For the seconds themselves the
-remaining candidates are streaming the answer (#230) so the wait has a
-beginning and an end the user can see, and a faster brain for the turns that
-need no reasoning at all (#237) — not a smaller budget.
+(`docs/ARCHITECTURE.md`, `Decision.unreadable`). Of the two candidates that
+this left, streaming the answer (#230) has now been measured and declined —
+see *The tail a stream could have handed over* below — so the one still open
+is a faster brain for the turns that need no reasoning at all (#237), not a
+smaller budget.
 
 This table is also why the turn budget that shipped (#231) stops the loop
 *between* steps rather than inside a call. A 90-second bound that could only
@@ -124,6 +125,78 @@ clock decides whether another step begins, a call already in flight is read to
 the end, and a turn may therefore finish later than the number in Settings.
 That is written into the Settings hint and `docs/ARCHITECTURE.md`
 (*Turn budgets*) so the figure never promises a deadline it does not keep.
+
+### The tail a stream could have handed over (#230, measured and declined)
+
+Streaming the answer was the last latency idea that the table above did not
+already kill, so it was measured before anything was built. A real `LLMBrain`
+over the shipped 15-tool set produced the exact decision prompt of ten turns;
+those bytes were replayed against the resident `qwen3:4b` with `"stream": true`
+and every Ollama delta timed against the request, with the same bytes
+unstreamed as a control. The spans, in seconds:
+
+| Turn | decision | reply chars | thinking chars | first JSON byte | first reply char | last delta | the tail | content deltas |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| "what is 2 plus 2" | answer | 18 | 1,410 | 6.57 | 6.77 | 6.94 | **0.16** | 19 |
+| prime minister of India | do_nothing | 0 | 5,920 | 28.04 | — | 28.19 | — | 8 |
+| why the sky is blue | answer | 277 | 2,810 | 12.81 | 13.02 | 14.14 | **1.12** | 65 |
+| explain a KV cache | answer | 820 | 7,717 | 33.25 | 33.47 | 36.42 | **2.95** | 147 |
+| what to pack for Kyoto | answer | 241 | 4,674 | 21.50 | 21.71 | 22.73 | **1.02** | 59 |
+| what do you remember | tool | 0 | 6,468 | 28.64 | — | 29.01 | — | 18 |
+| summarise a file read | answer | 43 | 1,105 | 5.87 | 6.08 | 6.28 | **0.21** | 21 |
+| how are you today | answer | 34 | 2,229 | 10.40 | 10.60 | 10.79 | **0.19** | 20 |
+| what time is it | tool (native call) | 0 | 2,507 | — | — | — | — | 0 |
+| remember that Ada… | tool | 0 | 8,299 | 40.80 | — | 41.48 | — | 32 |
+
+**The reply is the last 5% of the wait.** The first byte of the decision JSON
+arrives at a median of 95% of the turn's total time, because everything before
+it is reasoning being decoded — the span #243 measured and the span no
+transport can shorten. `tail` is the whole of what streaming could have handed
+to the user early, and its median is **0.62 s**. The turns a spoken
+conversation actually makes (the arithmetic, the greeting, the summary of a
+read) have a tail of 0.16 – 0.21 s; only the 820-character reply crossed 2 s.
+
+The gate was written before the run: build the streaming path only at a median
+tail of **≥ 2.0 s**, and — the voice form of the same question — a first-audio
+gain of **≥ 0.8 s**. Both failed. The first sentence of a short reply ends
+within about a tenth of a second of the closing brace, so starting to
+synthesise it against the rest of the decode buys nothing: subtracting the
+measured render cost of that first chunk (0.03 s per character) from the decode
+it would have overlapped gives a median gain of **−1.34 s** across the five
+turns whose reply contains a sentence boundary, and not one of them is
+positive. There was no code to write, so none was written.
+
+What the run did settle, and what a future reader should not re-measure:
+
+- **The transport is not the obstacle.** Deltas are genuinely incremental on
+  Ollama 0.33.3 — 147 of them on the longest reply, arriving every ~20 ms — and
+  streaming carried no systematic cost over the unstreamed control (paired
+  difference median +0.41 s, with both large negatives and one +29.9 s outlier
+  that is thinking variance, not the transport).
+- **A safe tap is possible; a useful one is not.** On every answer turn the
+  JSON arrived with `kind` before `content`, so a reader really can know the
+  reply is an answer before it shows a character of it, which was the
+  precondition for ever emitting streamed text. The mechanism works and the
+  prize is missing.
+- **A `tool` decision has no text to stream.** The native tool-call channel
+  carried zero content deltas, and the wait it belongs to is the next step's.
+- **Separating decide from answer — the design `docs/ROADMAP.md` names as the
+  condition for re-opening streaming — was measured and does not pay.** A third
+  arm fired a plain prose-only call after the decision completed. Its first
+  character landed *later* than today's entire reply on every turn, and the
+  reply finished at a median 33.0 s against the fast path's 18.5 s: a second
+  call re-decodes the same text, so the beginning moves barely and the end
+  moves a lot.
+
+Honest limits: this replays decision prompts through the production client's
+wire format rather than running a full Stella process, so no audio was
+synthesised and the first-audio figure is arithmetic on measured character
+timings, not a listening test. Ten turns settle a 0.6-versus-2.0-second gate
+and would not be enough to rank two designs against each other. And the
+`thinking` text Ollama sends alongside the decision stays dropped: it is the
+cost of a turn rather than a way to hide it, its only speed-adjacent use would
+be speaking untrusted model prose, and with no streaming reader there is
+nothing to attach it to.
 
 ## Token accounting (`/usage`)
 

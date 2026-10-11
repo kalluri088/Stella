@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+### A turn's wait was measured to the half-second, and streaming declined it
+
+- **What changed.** Nothing in `src/`, which is the result. `docs/MODELS.md`
+  gained *The tail a stream could have handed over* — the span split of one
+  decision call, timed delta by delta against the resident brain — and
+  `docs/ROADMAP.md` carries the verdict next to the two earlier streaming
+  attempts. Task #230 closes measured-and-declined instead of built.
+- **Why.** Because #243 had already established that a trivial turn is exactly
+  one request whose whole cost is decoding, and had left streaming the answer as
+  the remaining candidate "so the wait has a beginning and an end the user can
+  see". A candidate that costs a new presentation channel, a partial JSON reader
+  and a re-plumbing of the voice queue should not be built on the strength of a
+  sentence. So the ship gate was written first, in numbers: build only at a
+  median answer tail of **≥ 2.0 s**, and a first-audio gain of **≥ 0.8 s** on a
+  spoken turn.
+- **Numbers.** Ten real decision prompts (the shipped 15-tool set, `qwen3:4b`,
+  `num_ctx=8192`, native `/api/chat`, `"stream": true`) with the same bytes
+  unstreamed as a control. The first byte of the decision JSON arrives at a
+  median **95% of the turn**, because everything before it is reasoning. The
+  reply's own decode — the whole of what a stream could have delivered early —
+  is a median **0.62 s**: 0.16 s on "what is 2 plus 2", 0.19 s on a greeting,
+  0.21 s on the summary of a file read; only the 820-character explanation
+  crossed 2 s, at 2.95 s. Overlapped against chunk-0 synthesis at the measured
+  0.03 s per character, the first-audio gain is **−1.34 s** at the median: a
+  short reply's first sentence ends within about a tenth of a second of its
+  closing brace, so speaking it early costs more than it saves.
+- **The design that was not chosen, measured too.** `docs/ROADMAP.md` makes
+  separating decide from answer the precondition for re-opening streaming. A
+  third arm did exactly that — one plain prose-only call after each decision.
+  Its first character landed *later* than today's entire reply on all ten
+  turns, and the finished reply arrived at a median **33.0 s against the fast
+  path's 18.5 s**: a second call re-decodes the same text, so the beginning
+  barely moves and the end doubles. The fast path's own comment was right.
+- **What the run proved in favour of the idea it killed.** The transport is not
+  the obstacle — Ollama 0.33.3 streams genuinely incrementally (147 deltas on
+  one reply, ~20 ms apart, with no systematic cost over the unstreamed control),
+  and the decision JSON always carries `kind` before `content`, so a reader can
+  know a reply is an answer before showing a character of it. A safe streaming
+  tap is buildable on this stack. There is simply nothing in it worth
+  delivering, and recording that is cheaper than rebuilding it once more.
+- **Unchanged.** No callback, no partial JSON parser, no new presentation
+  channel, no config key, no dependency. The invariant that streaming must never
+  carry a Brain decision is untouched because nothing streams. The `thinking`
+  text Ollama sends alongside a decision stays dropped: it is the *cost* of a
+  turn rather than a way to hide it, and the only speed-adjacent use of it would
+  be speaking untrusted model prose into the user's ear.
+- **Honest limits.** Decision prompts were replayed through the production
+  client's wire format rather than a whole Stella process, so no audio was
+  synthesised and the first-audio figure is arithmetic on measured character
+  timings, not a listening test. Ten turns settle a 0.6-versus-2.0-second gate
+  and would not rank two designs against each other. Thinking is stochastic —
+  one arm of the identical prompt cost 41.5 s where the other cost 11.6 s — so
+  every claim here is a median over a table, printed in `docs/MODELS.md` in
+  full. #237 (a faster brain for turns needing no reasoning) is the only
+  latency item this leaves open.
+- **Proof.** `docs/MODELS.md` (*The tail a stream could have handed over*) for
+  the per-turn table; `docs/ROADMAP.md` (deferred designs, *Response streaming*)
+  for both rejections and the constraint list that survives them. The measuring
+  script stayed in `/tmp` deliberately: it edits no repo file and no real Stella
+  state, which is what a Stage-1 measurement is for.
+
 ### The day-one memory test was run for real, and the brain that refused it said why
 
 - **What changed.** `OllamaLLMClient._native_chat` no longer throws away the

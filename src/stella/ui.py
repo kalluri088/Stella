@@ -46,6 +46,7 @@ from stella.app import (
     UiEvent,
     build_application,
     default_data_dir,
+    default_vad_model,
     outcome_status,
 )
 from stella.capture_target import (
@@ -2091,6 +2092,50 @@ class StellaWindow:
             "microphone will have her interrupt herself.",
             wraplength=340,
         ).pack(padx=6, anchor="w")
+        # The third voice switch, and the only one that ships on: the gate
+        # trims a recording down to its speech before the recogniser reads
+        # it. Off is the answer for a room where she stops hearing the
+        # owner's voice, so it has to be a row rather than a memory.
+        self._capture_gate_var = tk.BooleanVar(
+            value=settings.voice_capture_gate
+        )
+        ttk.Checkbutton(
+            frame,
+            text="Cut the room's noise off the edges of what you say",
+            variable=self._capture_gate_var,
+        ).pack(padx=6, pady=(6, 0), anchor="w")
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="Music playing while you hold the button is in the "
+            "recording even when you are not talking, and a recogniser "
+            "turned loose on audio with no words in it invents them. She "
+            "keeps everything between your first word and your last, plus "
+            "a moment either side. Switch this off if your voice starts "
+            "disappearing.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
+        # The file that gate reads. It is the last voice setting that used to
+        # exist only as STELLA_VAD_MODEL, and it is a row rather than a guess
+        # because the gate is silent about a missing model: on a machine that
+        # keeps the detector elsewhere, the symptom was music still getting
+        # into the transcription, with nothing saying why.
+        vad_row = ttk.Frame(frame)
+        vad_row.pack(padx=6, pady=(6, 0), anchor="w")
+        ttk.Label(vad_row, text="Speech detector:").pack(side="left")
+        self._vad_model_var = tk.StringVar(value=settings.vad_model)
+        ttk.Entry(
+            vad_row, textvariable=self._vad_model_var, width=34
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(
+            frame,
+            style="Dim.TLabel",
+            text="The small file that tells Stella's voice apart from the "
+            "room, and the same one she watches for interruptions with. "
+            "Almost everyone leaves this alone; clear it to use the usual "
+            "place, and she will say so if Apply finds no file there.",
+            wraplength=340,
+        ).pack(padx=6, anchor="w")
         # The two budgets one turn may spend. These are the panel's first
         # numeric entries, so they follow the wake row's shape: a frame of
         # label-and-entry pairs plus one dim line saying what the numbers do.
@@ -2377,6 +2422,12 @@ class StellaWindow:
             # what it was — a choice for one run, not a new saved answer.
             speech_resident=self._resident_speech_var.get(),
             voice_barge_in=self._barge_mode(),
+            voice_capture_gate=self._capture_gate_var.get(),
+            # The detector path the gate reads. A cleared row is not "no
+            # detector", it is the same answer a config written before this key
+            # existed gives, so the panel and the loader never disagree about
+            # what blank means.
+            vad_model=self._vad_model_choice(),
             semantic_provider=_SEMANTIC_PROVIDER_BY_LABEL[
                 self._semantic_provider_var.get()
             ],
@@ -2642,6 +2693,36 @@ class StellaWindow:
             )
         return None
 
+    def _vad_model_choice(self) -> str:
+        """The detector path the row shows, or the usual place when blank.
+
+        Reading the row tolerantly is what keeps Test connection working while
+        the owner is mid-edit; Apply is where a written-out path is checked.
+        """
+
+        return self._vad_model_var.get().strip() or default_vad_model()
+
+    def _vad_model_refusal(self) -> str | None:
+        """Refuse a speech-detector path that is not a file.
+
+        The gate and both ears load their small model from exactly this string,
+        and every one of them treats a missing file as its own quiet answer —
+        the gate does nothing at all. A typo saved here is therefore an owner
+        who asked for the room to be trimmed and got the same transcription as
+        before with nothing saying why, so it is stopped at Apply. Blank is
+        never refused: that is the row asking for ``default_vad_model()``,
+        which is a real location on any machine that has voice at all.
+        """
+
+        raw = self._vad_model_var.get().strip()
+        if not raw or os.path.isfile(raw):
+            return None
+        return (
+            f"There is no speech detector at {raw} — type the full path to "
+            f"silero_vad.onnx, or clear the row to use "
+            f"{default_vad_model()} — nothing was applied."
+        )
+
     def _refresh_wake_hint(self, *_: object) -> None:
         models, phrase = self._wake_selection()
         heard = phrase or (wake_model_label(models[0]) if models else "")
@@ -2672,6 +2753,10 @@ class StellaWindow:
             self._settings_status.configure(text=refusal)
             return
         refusal = self._budget_refusal()
+        if refusal:
+            self._settings_status.configure(text=refusal)
+            return
+        refusal = self._vad_model_refusal()
         if refusal:
             self._settings_status.configure(text=refusal)
             return

@@ -30,6 +30,7 @@ from stella.app import (
     TurnOutcome,
     UiEvent,
     VoicePanel,
+    default_vad_model,
 )
 from stella.audio import TranscriptionProvider
 from stella.brain import Brain, Decision, DecisionKind
@@ -2467,18 +2468,20 @@ def test_the_barge_row_offers_exactly_the_modes_the_runtime_accepts() -> None:
 
 
 def test_the_voice_rows_start_at_the_shipped_answers(tmp_path, monkeypatch) -> None:
-    # A machine that has never been told otherwise shows the two switches at
-    # the defaults: no warm worker asked for, and the ear armed only where a
-    # microphone was chosen by hand.
+    # A machine that has never been told otherwise shows the three voice
+    # switches at the defaults: no warm worker asked for, the ear armed only
+    # where a microphone was chosen by hand, and the capture gate on.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
     root, window, bridge, _ = make_window()
     try:
         assert window._resident_speech_var.get() is False
         assert window._barge_mode_var.get() == stella_ui._BARGE_MODE_LABELS["auto"]
+        assert window._capture_gate_var.get() is True
         draft = window._draft_settings()
         assert draft.speech_resident is False
         assert draft.voice_barge_in == "auto"
+        assert draft.voice_capture_gate is True
     finally:
         bridge.stop()
         root.destroy()
@@ -2489,24 +2492,51 @@ def test_the_voice_rows_show_and_write_the_saved_choices(
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
+    detector = tmp_path / "silero_vad.onnx"
+    detector.write_bytes(b"not a real model, only a path the panel can point at")
     root, window, bridge, _ = make_window(
         settings=StellaSettings(
-            model="test", speech_resident=True, voice_barge_in="off"
+            model="test",
+            speech_resident=True,
+            voice_barge_in="off",
+            voice_capture_gate=False,
+            vad_model=str(detector),
         )
     )
     try:
         # The panel opens on what the owner saved, not on the defaults.
         assert window._resident_speech_var.get() is True
         assert window._barge_mode_var.get() == stella_ui._BARGE_MODE_LABELS["off"]
+        assert window._capture_gate_var.get() is False
+        assert window._vad_model_var.get() == str(detector)
         assert window._draft_settings().speech_resident is True
         assert window._draft_settings().voice_barge_in == "off"
+        assert window._draft_settings().voice_capture_gate is False
+        assert window._draft_settings().vad_model == str(detector)
         # And an Apply writes what the widgets say now, not what they started
-        # with: the two switches behave like every other row in this panel.
+        # with: the three switches behave like every other row in this panel.
         window._resident_speech_var.set(False)
         window._barge_mode_var.set(stella_ui._BARGE_MODE_LABELS["on"])
+        window._capture_gate_var.set(True)
         draft = window._draft_settings()
         assert draft.speech_resident is False
         assert draft.voice_barge_in == "on"
+        assert draft.voice_capture_gate is True
+        # The detector row has the one reading the config loader gives a
+        # missing key: blank asks for the usual place, it does not mean no
+        # detector at all, so clearing it cannot leave Stella guessing.
+        window._vad_model_var.set("   ")
+        assert window._draft_settings().vad_model == default_vad_model()
+        # And Apply is where a written-out path is checked, because the gate
+        # and both ears fail quietly: a typo here would be a noise trim that
+        # stopped working with nothing on screen saying why.
+        window._vad_model_var.set(str(tmp_path / "typo.onnx"))
+        refusal = window._vad_model_refusal()
+        assert refusal is not None and "nothing was applied" in refusal
+        window._vad_model_var.set(str(detector))
+        assert window._vad_model_refusal() is None
+        window._vad_model_var.set("")
+        assert window._vad_model_refusal() is None
     finally:
         bridge.stop()
         root.destroy()

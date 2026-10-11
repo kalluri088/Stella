@@ -225,8 +225,8 @@ display, and can never approve a tool or change permissions.
   never quietly rounded; the same is not true of `config.json`, where a
   hand-edited malformed number falls back to the default so the rest of the
   file survives.
-- Voice switches: below the microphone row sit the two settings that used to
-  exist only as exports. *Keep the voice worker warm between sentences* is
+- Voice switches: below the microphone row sit the settings that used to exist
+  only as exports. *Keep the voice worker warm between sentences* is
   `STELLA_SPEECH_RESIDENT`, off by default; it changes nothing until a speech
   command is written down, so the dim line under it says so rather than
   implying every machine gets a faster second sentence. *Listen for you
@@ -235,8 +235,19 @@ display, and can never approve a tool or change permissions.
   it**, **always, on whatever microphone she takes** — and the line under it
   states why the middle answer is the default: the ear also hears Stella
   speaking, so a machine that plays her back through the capture it chose will
-  have her interrupt herself. Both save into `config.json` as
-  `speech_resident` and `voice_barge_in`, and both keep the rule every other
+  have her interrupt herself. *Cut the room's noise off the edges of what you
+  say* is `STELLA_VOICE_CAPTURE_GATE`, and it is the one voice switch that
+  ships **on**: the line under it says what it does in the owner's terms
+  (music playing while you hold the button is in the recording even when you
+  are not, and a recogniser turned loose on audio with no words in it invents
+  them) and what unticking it is for (*Switch this off if your voice starts
+  disappearing*). Last sits *Speech detector*, the path of the small model that
+  gate and both ears load — the row that used to be `STELLA_VAD_MODEL` alone,
+  which matters precisely because a gate with no model does nothing at all and
+  says nothing; a cleared row means the usual place, and Apply **refuses a path
+  it cannot find** rather than saving a trim that would quietly stop working.
+  All four save into `config.json` as `speech_resident`, `voice_barge_in`,
+  `voice_capture_gate` and `vad_model`, and all four keep the rule every other
   row obeys: the environment variable outranks the saved answer for one launch
   and never rewrites it. `voice_barge_in` is the one saved switch shown as a
   dropdown rather than a checkbox, because it has three answers, and the label

@@ -46,6 +46,14 @@ OVERRIDE_FIELDS = {
     # variable said nothing" from "the variable said no".
     "speech_resident_env_override": "speech_resident",
     "barge_in_env_override": "voice_barge_in",
+    # The third voice switch, and the only one of the three that ships on:
+    # the gate that trims a finished capture down to its speech.
+    "capture_gate_env_override": "voice_capture_gate",
+    # And where the small model that does that trimming lives. It joins the
+    # opt-in family for the same structural reason: a path the environment
+    # owned outright could never have a saved half, so it left
+    # ``_environment_fields`` the day it gained a row in the panel.
+    "vad_model_env_override": "vad_model",
 }
 
 # Settings checkbox that writes each opt-in field into the save dict.
@@ -59,6 +67,7 @@ UI_VARS = {
     "browser_tools_enabled": "self._browser_tools_var",
     "wake_word_enabled": "self._wake_var",
     "speech_resident": "self._resident_speech_var",
+    "voice_capture_gate": "self._capture_gate_var",
 }
 
 
@@ -168,10 +177,14 @@ NUMERIC_UI_VARS = {
     "turn_time_limit_seconds": "self._turn_seconds_var",
 }
 
-# The one saved voice switch whose widget is not a checkbox: barge-in has
-# three named modes, so it is a dropdown and no BooleanVar. Its field still
-# gets every OVERRIDE_FIELDS leg above; only the widget leg lives here.
-VOICE_UI_VARS = {"voice_barge_in": "self._barge_mode_var"}
+# The saved voice settings whose widget is not a checkbox: barge-in has three
+# named modes, so it is a dropdown, and the speech-detector path is a text row
+# with a refusal rather than a tick. Their fields still get every OVERRIDE_FIELDS
+# leg above; only the widget leg lives here.
+VOICE_UI_VARS = {
+    "voice_barge_in": "self._barge_mode_var",
+    "vad_model": "self._vad_model_var",
+}
 
 
 def test_config_fields_are_exactly_the_tables() -> None:

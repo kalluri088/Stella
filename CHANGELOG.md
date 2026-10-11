@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+### The room is cut off the edges of what you say
+
+- **What changed.** One finished capture now passes a voice-activity gate
+  before the recogniser reads it. `barge_in.SpeechGate` scores the recording
+  frame by frame with the same small Silero model, the same threshold and the
+  same confirmation window the barge-in ear already uses, keeps every frame
+  between the first *sustained* speech and the last, plus ten frames
+  (~320 ms) at each side, and writes that as a sibling file
+  (`capture.gated.wav`) beside the recording rather than touching it.
+  `VoicePanel.stop_and_transcribe` hands it the clip after `recorder.stop()`
+  and before the audio becomes a request part, so push-to-talk and a
+  wake-initiated recording share the one leg. Two new saved settings come with
+  it: `voice_capture_gate` (a checkbox, shipped **on**) and `vad_model`
+  (a *Speech detector* row — the last voice path that existed only as
+  `STELLA_VAD_MODEL`), both following the rule every other row obeys: the
+  environment variable outranks the saved answer for that launch and never
+  rewrites it. `vad_model` also left `_environment_fields()`, which is the
+  step that grants a field a saved half.
+- **Why, on a measurement.** The owner's complaint was that transcription
+  picks up background clutter. Five seconds of room captured with Stella's own
+  capture command while music played through the headset produced 249 frames:
+  **every one of them above the energy floor** (RMS 0.13–0.28) and
+  **none of them at or over the speech threshold** (probability 0.000–0.046,
+  max 0.046). Loud is not speech, and no silence- or volume-trim can tell the
+  two apart — a trimmer would have found no quiet frame in that whole recording
+  and cut nothing. That number is why this is a learned detector and why a
+  hand-argued alternative was rejected before it was written. A
+  whisper-family decoder handed wordless audio invents words, and what it can
+  be saved from is the music that plays *around* the sentence, between the
+  button press and the release.
+- **The doctrine: a filter, never a veto.** It never shortens a clip voiced at
+  both edges, never cuts inside the speech span, and returns the recording
+  byte-identical whenever no sustained speech is found — deciding nobody spoke
+  is a worse failure than transcribing noise, and that judgement already
+  belongs to `audio.is_transcription_junk`. Every failure (a file of the wrong
+  shape, a raising detector, an unwritable output) costs nothing and leaves the
+  turn exactly as it would have been. A run of frames must confirm before it
+  can anchor the keep, for the same reason a cough is not allowed to interrupt
+  Stella mid-sentence. And unlike the two ears that read this model, which
+  raise `VoiceError` at startup because the owner armed them, the gate returns
+  `None` silently when the file is missing — it is a filter on a path that must
+  keep working. That silence is also the reason the path became a Settings row
+  instead of staying a shell variable a desktop launch never reads.
+- **What the Apply refusal is for.** A typo in the detector row would produce
+  the old behaviour with nothing saying why, so `_vad_model_refusal()` stops it
+  the way `_budget_refusal()` stops a bad number: the field is named, nothing
+  is saved or rebuilt. A cleared row is never refused — blank means "the usual
+  place" (`~/models/silero/silero_vad.onnx`), the same answer a config written
+  before this key existed gives.
+- **What this did not buy, stated honestly.** No real-speech reference clip
+  exists on this machine, so the *false-negative* side of the model is
+  unmeasured here: the tests prove the arithmetic (what a given sequence of
+  probabilities keeps and drops) and the live proof shows the gate engaging and
+  reading the saved path, but neither proves that this microphone renders the
+  owner's voice as speech. `voice_capture_gate` is the escape hatch, and the
+  checkbox dim line says so in the panel's own words.
+- **Proof.** `tests/test_speech_gate.py` (19) covers the arithmetic and every
+  fail-open door; `tests/test_settings_wiring.py` (81) holds both new names to
+  the six touchpoints a saved setting must walk plus their panel variables, and
+  `test_config_fields_are_exactly_the_tables` closes the set in both
+  directions; `test_config.py` (122) covers the round trip, trimming of a
+  hand-edited path, an unreadable value dropped rather than refused, and the
+  environment outranking the file; `test_ui.py` (88) opens the rows on the
+  saved answers and refuses a detector that is not a file; `test_voice.py`
+  (131), `test_wake.py` (58), `test_barge_in.py` (22) and paths + doctor (35)
+  pass. Beyond the unit tests, a live run with `STELLA_VAD_MODEL` absent from
+  the environment read `config.json`'s `vad_model` faithfully: a saved real
+  path produced a gate, a saved absent path produced none.
+  `uv run ruff check .` and `git diff --check` are clean. Not pushed.
+
 ### The two voice switches that only a terminal could reach
 
 - **What changed.** `STELLA_SPEECH_RESIDENT` and `STELLA_VOICE_BARGE_IN` are

@@ -85,6 +85,18 @@ _CONFIG_FIELDS = (
     # commitment 6 of docs/STELLA_VISION.md forbids.
     "speech_resident",
     "voice_barge_in",
+    # And the third: whether one finished capture is trimmed down to its
+    # speech before the recogniser reads it. Saved on, because the clutter
+    # it removes is a live complaint rather than a hypothetical, and saved
+    # at all for the same reason as the two above it.
+    "voice_capture_gate",
+    # Where the small speech detector that does that trimming lives. A path
+    # to a ~2 MB model file the owner downloaded by hand — input to Stella,
+    # not state it keeps, so it is not the kind of path this file otherwise
+    # refuses. It is saved because the gate says nothing when the file is
+    # missing: a machine that keeps silero_vad.onnx elsewhere had one way to
+    # say so, and it was a shell variable a desktop launch never reads.
+    "vad_model",
 )
 
 
@@ -754,6 +766,21 @@ def _saved_barge_mode(raw: object) -> str:
     return "auto"
 
 
+def _saved_vad_model(raw: object) -> str | None:
+    """The saved speech-detector path, or None to use the usual place.
+
+    Trimmed like ``wake_source`` above and dropped the same way when it is not
+    a plain non-empty string, because a value this file cannot read is worth
+    less than every other setting in it. None is not an error: it means Stella
+    looks where it has always looked (``app.default_vad_model``), which is also
+    what a config written before this key existed says. The path is opened as
+    a file and never run, so nothing here needs to police where it points —
+    ``SileroVad`` reports a missing model in one friendly sentence.
+    """
+
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
 def resolve_settings() -> StellaSettings | None:
     """The configuration Stella should start with, or None for first run.
 
@@ -810,6 +837,10 @@ def resolve_settings() -> StellaSettings | None:
         low=0,
         high=MAX_TURN_TIME_LIMIT_SECONDS,
     )
+    # The saved speech-detector path. Nothing is decided here beyond "a string
+    # or nothing": a key this file cannot read is dropped, which sends Stella
+    # to the usual place rather than refusing the rest of what was saved.
+    vad_model = _saved_vad_model(raw.get("vad_model"))
     return StellaSettings.from_saved(
         provider=raw["provider"],
         preset=preset if isinstance(preset, str) else None,
@@ -854,4 +885,9 @@ def resolve_settings() -> StellaSettings | None:
         # and an ear that arms only where a capture was named by hand.
         speech_resident=raw.get("speech_resident") is True,
         voice_barge_in=_saved_barge_mode(raw.get("voice_barge_in")),
+        # Read the other way round than the two above, because this default
+        # is on: an absent key, a hand-edited string, a null all mean the
+        # owner never said no. Only a saved ``false`` switches the gate off.
+        voice_capture_gate=raw.get("voice_capture_gate") is not False,
+        vad_model=vad_model,
     )

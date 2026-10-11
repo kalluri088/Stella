@@ -13,6 +13,7 @@ from stella.app import (
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_TURN_TIME_LIMIT_SECONDS,
     StellaSettings,
+    default_vad_model,
 )
 
 
@@ -35,6 +36,12 @@ def isolated_data_dir(tmp_path, monkeypatch):
     # they could be launched around — but only when this launch says so.
     monkeypatch.delenv("STELLA_VOICE_BARGE_IN", raising=False)
     monkeypatch.delenv("STELLA_SPEECH_RESIDENT", raising=False)
+    # And the two that joined them: the gate a capture passes on its way to
+    # the recogniser, and the path of the model that gate reads. A developer
+    # who keeps silero_vad.onnx elsewhere would otherwise see every test below
+    # answer with their own path instead of the one the file was written with.
+    monkeypatch.delenv("STELLA_VOICE_CAPTURE_GATE", raising=False)
+    monkeypatch.delenv("STELLA_VAD_MODEL", raising=False)
 
 
 class _Response:
@@ -134,6 +141,15 @@ def test_configuration_stores_only_non_secret_fields():
         # no path and no key reaches config.json for either of them.
         "speech_resident",
         "voice_barge_in",
+        # The capture gate likewise: one plain bool saying whether the room
+        # gets trimmed off the edges of a recording.
+        "voice_capture_gate",
+        # The path of the small model that does the trimming. It names a
+        # hand-downloaded file the owner chose, which is input to Stella
+        # rather than state she keeps, and unlike the database paths this file
+        # deliberately never stores it is not a location that holds anything of
+        # hers. No key, no endpoint and no command line reaches it.
+        "vad_model",
     }
     assert raw["openai_base_url"] == "https://gw.example/v1"
     for secret_word in ("api_key", "sk-", "key"):
@@ -1241,3 +1257,138 @@ def test_the_environment_outranks_a_saved_voice_switch_in_both_directions(
     resolved = config.resolve_settings()
     assert resolved.speech_resident is True
     assert resolved.voice_barge_in == "auto"
+
+
+def test_saving_the_gate_off_is_the_way_it_comes_back_on():
+    # The one shipped-on voice switch, so the round trip is the whole story:
+    # a checkbox off in Settings is a `false` in the file and an ungated
+    # capture, and nothing is quietly restored to the default.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="m", voice_capture_gate=False
+        )
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+
+    assert raw["voice_capture_gate"] is False
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.voice_capture_gate is False
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "False", 0, 0.0, ["off"]])
+def test_only_a_saved_no_switches_the_gate_off(value: object):
+    # Read the opposite way round from the resident worker, because this
+    # default is on: a hand-edit that is not a JSON `false` is not the owner
+    # saying no, so the capture stays gated. `0` and `"0"` are the
+    # *environment* spellings and are deliberately not accepted here.
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="keeper")
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["voice_capture_gate"] = value
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "keeper"
+    assert resolved.voice_capture_gate is True
+
+
+def test_the_environment_outranks_a_saved_gate_in_both_directions(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="m", voice_capture_gate=False
+        )
+    )
+    monkeypatch.setenv("STELLA_VOICE_CAPTURE_GATE", "1")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.voice_capture_gate is True
+    # And the saved no is still the saved answer once the run is over.
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    assert raw["voice_capture_gate"] is False
+
+    monkeypatch.setenv("STELLA_VOICE_CAPTURE_GATE", "0")
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="m")
+    )
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.voice_capture_gate is False
+
+
+def test_a_saved_detector_path_survives_the_config_roundtrip():
+    # The gate reads its model from exactly this string, so a machine that
+    # keeps silero_vad.onnx somewhere else has to be able to say it once. A
+    # desktop launch runs no shell profile, which is the whole reason the path
+    # is a saved setting rather than the variable it used to be.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            vad_model="/elsewhere/models/silero_vad.onnx",
+        )
+    )
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.vad_model == "/elsewhere/models/silero_vad.onnx"
+    # Whitespace a hand-edit left behind is trimmed, not trusted verbatim into
+    # the argument of a model loader.
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["vad_model"] = "  /elsewhere/other_vad.onnx  "
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+    assert config.resolve_settings().vad_model == "/elsewhere/other_vad.onnx"
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", 7, ["a"], True])
+def test_an_unreadable_detector_path_is_dropped_not_refused(value: object):
+    # Every other setting the owner saved is worth more than one bad string,
+    # so a value this file cannot read falls back to the usual place instead of
+    # rejecting the configuration — the same rule wake_source follows.
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama",
+            model="m",
+            vad_model="/elsewhere/silero_vad.onnx",
+        )
+    )
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    raw["vad_model"] = value
+    config.config_path().write_text(json.dumps(raw), encoding="utf-8")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.model == "m"
+    assert resolved.vad_model == default_vad_model()
+
+
+def test_an_explicit_detector_path_outranks_the_saved_one_for_one_launch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config.save_configuration(
+        StellaSettings.from_saved(
+            provider="ollama", model="m", vad_model="/saved/silero_vad.onnx"
+        )
+    )
+    monkeypatch.setenv("STELLA_VAD_MODEL", "  /this/launch.onnx  ")
+
+    resolved = config.resolve_settings()
+
+    assert resolved is not None
+    assert resolved.vad_model == "/this/launch.onnx"
+    # And the path the owner wrote down is still what the next launch uses.
+    raw = json.loads(config.config_path().read_text(encoding="utf-8"))
+    assert raw["vad_model"] == "/saved/silero_vad.onnx"

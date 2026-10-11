@@ -31,7 +31,12 @@ from stella.audio_output import (
     SpeechProvider,
     sentence_chunks,
 )
-from stella.barge_in import BargeInListener, SileroVad, live_capture_command
+from stella.barge_in import (
+    BargeInListener,
+    SileroVad,
+    SpeechGate,
+    live_capture_command,
+)
 from stella.brain import LLMBrain
 from stella.browser_tools import build_browser_tools
 from stella.childproc import sweep_orphaned_children
@@ -636,6 +641,33 @@ def speech_resident_env_override() -> bool | None:
     return _env_toggle("STELLA_SPEECH_RESIDENT")
 
 
+def capture_gate_env_override() -> bool | None:
+    """The STELLA_VOICE_CAPTURE_GATE toggle, or None when it says nothing.
+
+    Same spelling as every other saved setting's override, and same
+    reading: ``0`` is "not for this launch", not "never". This one is
+    saved as *on*, so a variable that says nothing leaves the checkbox in
+    charge and an absent checkbox still gates the capture.
+    """
+
+    return _env_toggle("STELLA_VOICE_CAPTURE_GATE")
+
+
+def vad_model_env_override() -> str | None:
+    """The STELLA_VAD_MODEL path, or None when it says nothing.
+
+    The address of the small Silero VAD file every speech reader loads: the
+    barge-in ear, the wake ear and the capture gate. It joins the saved
+    settings for the same reason the gate itself did — the gate silently does
+    nothing when the model is missing, so a machine that keeps the file
+    somewhere else needs to say so somewhere a reboot cannot forget. Blank or
+    absent means "the usual place" (``default_vad_model()``) rather than no,
+    which is what lets a saved path survive a launch with no environment.
+    """
+
+    return os.environ.get("STELLA_VAD_MODEL", "").strip() or None
+
+
 SEMANTIC_PROVIDERS = frozenset({"local-hash", "ollama", "minilm"})
 
 
@@ -784,6 +816,14 @@ class StellaSettings:
     # speech over Stella hears Stella's own voice unless the machine echoes
     # that back to the capture (``docs/VOICE.md``).
     voice_barge_in: str = "auto"
+    # ``voice_capture_gate`` is the VAD edge-trim one finished capture gets
+    # before the recogniser reads it (``barge_in.SpeechGate``). It ships on:
+    # measured on this machine, music with no words in it is loud enough to
+    # look like audio and quiet enough to make a whisper-family decoder
+    # invent sentences. The switch exists for a room where the VAD misses
+    # the owner's voice, and it is a switch rather than an environment
+    # variable for the same reason the two above it are.
+    voice_capture_gate: bool = True
     vad_model: str = field(default_factory=default_vad_model)
     barge_source: str | None = None
     barge_threshold: float = 0.5
@@ -960,14 +1000,14 @@ class StellaSettings:
             "speech_local_voice": os.environ.get("STELLA_SPEECH_LOCAL_VOICE")
             or None,
             "speech_local_speed": speech_local_speed,
-            # ``speech_resident`` and ``voice_barge_in`` are deliberately not
-            # keys here: both now have a saved Settings half, and a field the
-            # environment owns outright cannot have one. Both constructors read
-            # them through their own override function, so "the variable said
-            # nothing" stays distinguishable from "the variable said no".
-            "vad_model": os.environ.get(
-                "STELLA_VAD_MODEL", default_vad_model()
-            ),
+            # ``speech_resident``, ``voice_barge_in``, ``voice_capture_gate``
+            # and ``vad_model`` are deliberately not keys here: all four now
+            # have a saved Settings half, and a field the environment owns
+            # outright cannot have one. Both constructors read them through
+            # their own override function, so "the variable said nothing"
+            # stays distinguishable from "the variable said no" — and for the
+            # model path, from "the variable said nothing" and "the owner
+            # saved one".
             "barge_source": os.environ.get("STELLA_BARGE_SOURCE") or None,
             "barge_threshold": barge_threshold,
             "wake_word": wake_mode,
@@ -1051,6 +1091,17 @@ class StellaSettings:
         # machine whose shell profile nobody remembers.
         speech_resident: bool = False,
         voice_barge_in: str = "auto",
+        # The capture gate, as the owner saved it. Unlike the two above it
+        # arrives already on, so the only way this launch loses it is a
+        # checkbox off or a variable that says no.
+        voice_capture_gate: bool = True,
+        # Where the small speech detector lives, as the owner saved it. None
+        # or blank means the usual place (``default_vad_model()``), and an
+        # explicit STELLA_VAD_MODEL still wins for a single launch. It is saved
+        # because the gate above silently does nothing when this file is not
+        # there, which makes a wrong path invisible on a machine whose shell
+        # profile nobody remembers.
+        vad_model: str | None = None,
     ) -> StellaSettings:
         """Settings from the saved first-run configuration."""
 
@@ -1065,6 +1116,8 @@ class StellaSettings:
         wake_override = wake_env_override()
         resident_override = speech_resident_env_override()
         barge_override = barge_in_env_override()
+        gate_override = capture_gate_env_override()
+        vad_override = vad_model_env_override()
         # One decision with two spellings: the checkbox is what the owner
         # saved, the mode is what this launch runs, and every consumer
         # reads the mode. So the mode follows the bool — which is also how
@@ -1153,6 +1206,21 @@ class StellaSettings:
             voice_barge_in=(
                 voice_barge_in if barge_override is None else barge_override
             ),
+            voice_capture_gate=(
+                voice_capture_gate
+                if gate_override is None
+                else gate_override
+            ),
+            # The model path, resolved the same way as a saved wake choice: an
+            # explicit variable wins for this launch, otherwise what the owner
+            # wrote down, otherwise the usual place. It is never left to the
+            # dataclass default, because ``**environment`` no longer carries a
+            # key for it — which is exactly what gives it a saved half.
+            vad_model=(
+                vad_override
+                or (vad_model.strip() if vad_model else "")
+                or default_vad_model()
+            ),
             **environment,
         )
 
@@ -1208,6 +1276,14 @@ class StellaSettings:
             # where a capture was named by hand.
             speech_resident=speech_resident_env_override() is True,
             voice_barge_in=barge_in_env_override() or "auto",
+            # Default-on, so "the variable said nothing" is on too: only an
+            # explicit no switches the gate off on a path that has no saved
+            # answer to fall back to.
+            voice_capture_gate=capture_gate_env_override() is not False,
+            # Left to no saved answer, this path still honours the variable it
+            # always did and otherwise uses the usual place — the same
+            # behaviour an entry in ``_environment_fields`` used to give.
+            vad_model=vad_model_env_override() or default_vad_model(),
             **cls._environment_fields(),
         )
 
@@ -1613,6 +1689,7 @@ class VoicePanel:
         speech_provider: SpeechProvider | None,
         input_notice: str | None = None,
         output_notice: str | None = None,
+        capture_gate: SpeechGate | None = None,
     ) -> None:
         self._recorder = recorder
         self._player = player
@@ -1620,6 +1697,7 @@ class VoicePanel:
         self._speech = speech_provider
         self._input_notice = input_notice
         self._output_notice = output_notice
+        self._capture_gate = capture_gate
         self.speech_enabled = False
         # Warmed once, and only after speech was asked for.
         self._speech_warmed = False
@@ -1706,9 +1784,13 @@ class VoicePanel:
         the capture process and a cancellable transcription command are
         killed, and :class:`ProviderRequestCancelled` is raised. A
         cancelled transcript is never replaced with invented text.
+
+        Between the recording and the recogniser one capture passes the
+        speech gate, which is allowed to shorten it and never to veto it.
         """
 
         recorder, transcriber = self._recorder, self._transcriber
+        gate = self._capture_gate
         if recorder is None or transcriber is None:
             raise VoiceError(
                 self._input_notice
@@ -1718,6 +1800,8 @@ class VoicePanel:
         def work() -> str:
             try:
                 path = recorder.stop()
+                if gate is not None:
+                    path = gate.trim(path)
                 # The audio part carries only the bounded temporary
                 # reference; raw audio never enters the conversation.
                 part = InputPart(
@@ -1896,7 +1980,34 @@ def build_voice(
         speech,
         input_notice=input_notice,
         output_notice=output_notice,
+        capture_gate=build_capture_gate(settings) if transcriber else None,
     )
+
+
+def build_capture_gate(settings: StellaSettings) -> SpeechGate | None:
+    """The VAD edge-trim one capture gets before the recogniser, or None.
+
+    The saved answer is on, because clutter is the complaint this exists
+    for: measured on this machine, five seconds of room with music in it
+    put every frame above the energy floor while scoring 0.000 to 0.046
+    for speech, and a whisper-family decoder handed audio with no words
+    invents them. Turning it off is the escape hatch for a false negative
+    that costs a spoken request.
+
+    None is returned for every reason the gate cannot exist — the extra
+    missing, the model missing, the model unreadable — with no notice.
+    Unlike barge-in and the wake ear, this is not a feature the owner
+    armed and would expect to hear from; it is a filter on a path that
+    must keep working silently exactly as it did before.
+    """
+
+    if not settings.voice_capture_gate:
+        return None
+    try:
+        vad = SileroVad(settings.vad_model)
+    except Exception:  # noqa: BLE001 - no gate, not no voice input
+        return None
+    return SpeechGate(features=vad.features, reset=vad.reset)
 
 
 def build_barge_in(settings: StellaSettings) -> BargeInListener | None:

@@ -536,9 +536,11 @@ def _voice_checks(settings: StellaSettings) -> tuple[Check, ...]:
             READY if Path(vad).is_file() and onnx else INFO,
             vad
             if Path(vad).is_file()
-            else f"{vad} not found — voice works, you just cannot interrupt it",
-            fix="place silero_vad.onnx there (and the barge-in extra) or set "
-            "STELLA_VAD_MODEL",
+            else f"{vad} not found — voice works, you just cannot interrupt "
+            "it and the room stays in what she hears",
+            fix="place silero_vad.onnx there (and the barge-in extra) or name "
+            "the file in Settings, which is also what STELLA_VAD_MODEL says "
+            "for one launch",
         )
     )
     wake_dir = settings.wake_model_dir or default_wake_model_dir()

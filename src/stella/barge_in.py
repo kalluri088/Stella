@@ -31,17 +31,24 @@ import os
 import shutil
 import subprocess
 import threading
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from stella.capture_target import resolve_capture_source
 from stella.childproc import guarded_popen
 from stella.mic_tap import CaptureCommand, capture_argv, read_frame
-from stella.voice import VoiceError, _cancel_process_tree
+from stella.voice import (
+    CAPTURE_CHANNELS,
+    CAPTURE_WIDTH,
+    VoiceError,
+    _cancel_process_tree,
+)
 
 __all__ = [
     "BargeInListener",
     "SileroVad",
+    "SpeechGate",
     "capture_command",
     "live_capture_command",
 ]
@@ -62,6 +69,12 @@ VAD_THRESHOLD = 0.5
 #: residue measured 0.0105-0.0122, so the gate sits at the residue
 #: floor and only real near-end speech can clear it.
 ENERGY_FLOOR = 0.01
+#: Edge kept on each side of a gated capture: 320 ms, long enough to hold
+#: a soft word onset and the breath before one, short enough that the
+#: music Stella's own microphone hears is not all carried into the
+#: recogniser. The wake endpointer waits 800 ms before deciding an
+#: utterance ended; this is the same clock read the other way.
+PAD_FRAMES = 10
 
 
 def capture_command(source: str | None) -> list[str]:
@@ -134,8 +147,9 @@ class SileroVad:
         if not os.path.isfile(model_path):
             raise VoiceError(
                 f"Barge-in found no Silero VAD model at {model_path}. "
-                "Place silero_vad.onnx there (or point STELLA_VAD_MODEL "
-                "at it) and restart Stella."
+                "Place silero_vad.onnx there (or name the file in "
+                "Settings, which is also what STELLA_VAD_MODEL says for "
+                "one launch) and restart Stella."
             )
         try:
             import numpy as np
@@ -324,3 +338,132 @@ class BargeInListener:
         # One copy of the short-read loop lives in the tap module now: a
         # pipe from a capture and a tap subscriber read identically.
         return read_frame(stream, FRAME_BYTES)
+
+
+@dataclass
+class SpeechGate:
+    """Cut the not-speech off the edges of one finished capture.
+
+    The measurement behind it (this machine, 2026-10-11): five seconds of
+    room with music playing through the headset scored RMS 0.13-0.28 — a
+    hundred percent of frames above the energy floor, so no silence trim
+    can find it — while the same frames scored a speech probability of
+    0.000 to 0.046. Loud is not speech, and the recogniser cannot tell
+    that: a whisper-family decoder handed music with no words in it
+    invents them. What it can be saved from is the music that plays
+    *around* the words, which is what a push-to-talk capture collects
+    between the button press and the button release.
+
+    So this trims edges and nothing else. It keeps every frame between
+    the first and the last sustained speech (measured with the same
+    frames, the same threshold and the same confirmation window the barge
+    ear uses), plus :data:`PAD_FRAMES` at each side, and it writes a
+    second file beside the recording rather than touching it. When the
+    clip holds no sustained speech at all it hands back the original path
+    unchanged: a gate that decides nobody spoke is a worse failure than
+    a transcript of noise, and that judgement already belongs to
+    ``is_transcription_junk``.
+
+    Every error returns the original path. A gate that cannot read the
+    file, cannot score it, or cannot write one leaves the turn exactly as
+    it would have been without this class.
+    """
+
+    features: Callable[[bytes], tuple[float, float]]
+    reset: Callable[[], None] | None = None
+    threshold: float = VAD_THRESHOLD
+    energy_floor: float = ENERGY_FLOOR
+    confirm_frames: int = CONFIRM_FRAMES
+    pad_frames: int = PAD_FRAMES
+
+    def trim(self, path: str) -> str:
+        pcm = self._read(path)
+        if pcm is None:
+            return path
+        count = len(pcm) // FRAME_BYTES
+        try:
+            if self.reset is not None:
+                self.reset()
+            span = self._speech_span(pcm[: count * FRAME_BYTES])
+        except Exception:  # noqa: BLE001 - a gate that fails says nothing
+            return path
+        if span is None:
+            return path
+        start, end = span
+        if start == 0 and end == count:
+            return path
+        return self._write(path, pcm[start * FRAME_BYTES : end * FRAME_BYTES])
+
+    def _speech_span(self, pcm: bytes) -> tuple[int, int] | None:
+        """(first, end) frames of the speech span, or None if there is none.
+
+        A frame only counts as speech inside a run of at least
+        ``confirm_frames`` voiced frames, so one drum beat the VAD
+        misreads cannot anchor the keep and drag the music in front of it
+        along with it — the same budget that stops a cough from
+        interrupting Stella mid-sentence.
+        """
+
+        count = len(pcm) // FRAME_BYTES
+        first = -1
+        last = -1
+        run_start = -1
+        # One extra pass over a frame that cannot exist, so a capture that
+        # ends mid-speech still closes its run instead of losing the end.
+        for index in range(count + 1):
+            voiced = index < count and self._is_speech(
+                pcm[index * FRAME_BYTES : (index + 1) * FRAME_BYTES]
+            )
+            if voiced:
+                if run_start < 0:
+                    run_start = index
+                continue
+            if run_start >= 0 and index - run_start >= self.confirm_frames:
+                if first < 0:
+                    first = run_start
+                last = index - 1
+            run_start = -1
+        if first < 0:
+            return None
+        return (
+            max(0, first - self.pad_frames),
+            min(count, last + 1 + self.pad_frames),
+        )
+
+    def _is_speech(self, frame: bytes) -> bool:
+        probability, rms = self.features(frame)
+        return probability >= self.threshold and rms >= self.energy_floor
+
+    def _read(self, path: str) -> bytes | None:
+        """The capture's PCM, or None if it is not a clip to gate.
+
+        Shape is checked, not assumed: the frame arithmetic is only valid
+        for the 16 kHz mono 16-bit stream every Stella capture writes, and
+        audio from anywhere else is left exactly as it was.
+        """
+
+        try:
+            with wave.open(path, "rb") as source:
+                if (
+                    source.getframerate() != SAMPLE_RATE
+                    or source.getnchannels() != CAPTURE_CHANNELS
+                    or source.getsampwidth() != CAPTURE_WIDTH
+                ):
+                    return None
+                return source.readframes(source.getnframes())
+        except (OSError, ValueError, wave.Error):
+            return None
+
+    def _write(self, path: str, pcm: bytes) -> str:
+        """One gated sibling file, or the original when it cannot be made."""
+
+        gated = os.path.join(os.path.dirname(path), "capture.gated.wav")
+        try:
+            with wave.open(gated, "wb") as sink:
+                sink.setnchannels(CAPTURE_CHANNELS)
+                sink.setsampwidth(CAPTURE_WIDTH)
+                sink.setframerate(SAMPLE_RATE)
+                sink.writeframes(pcm)
+        except (OSError, ValueError, wave.Error):
+            return path
+        return gated

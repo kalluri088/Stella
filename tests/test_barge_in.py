@@ -25,6 +25,7 @@ from stella.app import (
     barge_in_env_override,
     build_barge_in,
     default_vad_model,
+    vad_model_env_override,
 )
 from stella.audio_output import SpeechArtifact
 from stella.barge_in import (
@@ -230,14 +231,18 @@ def test_barge_in_defaults_are_auto_and_conservative(
     fields = StellaSettings._environment_fields()
     assert fields["barge_threshold"] == 0.5
     assert fields["barge_source"] is None
-    assert fields["vad_model"] == default_vad_model()
-    # ``voice_barge_in`` left the environment dict the day it gained a saved
-    # half: a field the environment owns outright cannot have a Settings
-    # checkbox. The two constructors still give it the same shipped answer an
-    # unset variable always did, and these are the lines that prove it.
-    assert barge_in_env_override() is None
+    # ``vad_model`` left the environment dict the day it gained a saved half,
+    # for the same structural reason as the mode below it: a field the
+    # environment owns outright cannot have a Settings row. What the unset
+    # variable always answered is now answered by the constructor instead, so
+    # these two lines are the retargeted version of the dict lookup that used
+    # to be here — the detector still has a usual place and nothing moves it.
+    assert vad_model_env_override() is None
     monkeypatch.setenv("STELLA_MODEL", "test-model")
     monkeypatch.setenv("STELLA_LLM_PROVIDER", "ollama")
+    assert (
+        StellaSettings.from_environment().vad_model == default_vad_model()
+    ), "an unset variable must not move the detector off its usual place"
     assert (
         StellaSettings.from_environment().voice_barge_in == "auto"
     ), "an unset variable must not arm or silence the ear by itself"

@@ -1085,25 +1085,89 @@ The doctor, the config keys and the dev tree are for whoever builds Stella.
   source-output's `target.object` while the card stayed `a2dp-sink` with both
   stereo links up; `pw-dump` ranking bluez 2010 over the built-in's 2009; a
   ~13 ms probe, which is why no cache stands in front of it.
+- **D8. A recording is trimmed down to its speech before she reads it (#252,
+  landed 2026-10-11).** The complaint was transcription rather than latency:
+  *background clutter is wrecking what she hears*. Measured on this machine
+  with Stella's own capture argv while music played through the headset —
+  7.98 s, 249 frames of 32 ms — every single frame sat above the energy floor
+  (RMS 0.13 to 0.28) while the learned detector scored the most speech-like of
+  them 0.046, so 0 of 249 passed any threshold the barge-in ear works to. Loud
+  is not speech, and that is why trimming on silence was rejected before it was
+  written: nothing that measures volume can tell a chord from a vowel.
+  `barge_in.SpeechGate` runs the Silero model the ears already load, keeps the
+  span from the first sustained run of five voiced frames to the last, and
+  hands it over with ~320 ms preserved either side — deliberately shorter than
+  the wake endpointer's 800 ms of trailing silence, because a finished capture
+  is bounded already. It is a filter and never a veto. It does not shorten a
+  clip with speech at both edges, it never cuts inside the span, and when it
+  finds no speech at all it returns the recording byte-identical, leaving the
+  hallucination judgement where it already lived (`audio.is_transcription_junk`).
+  That last rule is not caution for its own sake: no real-speech clip exists on
+  this machine, so the false-negative side of the model is unmeasured here, and
+  a gate that could swallow a spoken request would be a worse defect than the
+  one it answers. One leg covers both callers, because `stop_and_transcribe` is
+  where a push-to-talk capture and a wake capture both hand their file to the
+  recogniser, and the trimmed sibling lives in the recorder's own temporary
+  directory — so the dispose and cancel rules already written still hold, and
+  raw audio still never enters the conversation. Saved as `voice_capture_gate`,
+  shipped **on**, with `STELLA_VOICE_CAPTURE_GATE` outranking the saved answer
+  for one launch and never rewriting it, and a Settings row to switch it off in
+  a room where her voice starts disappearing. Proof: 19 cases in
+  `tests/test_speech_gate.py` driven by a fake detector that scores frames in
+  order (the edge trim, a run reaching the end not cut short, a transient
+  shorter than the confirmation window anchoring nothing, a loud but unvoiced
+  clip left alone, unreadable shapes and a failed write costing nothing, one
+  model call per frame), two cases in `tests/test_voice.py` proving the
+  recogniser is handed the gated file rather than the recorded one, and the
+  config round trip below. **What this did not buy:** anything at all on the
+  way in — no denoise, no beamforming, no cloud speech hop, and no change to
+  what the wake ear or barge-in decide. See `docs/VOICE.md`.
+- **D9. Where the detector lives is a saved setting (#254, landed
+  2026-10-11).** `vad_model` was the last voice choice that arrived only from
+  `STELLA_VAD_MODEL`, and the gate above made that a real problem rather than a
+  tidy-theory one: a machine keeping `silero_vad.onnx` elsewhere would have
+  received a gate that silently never engaged, with nothing on screen saying
+  why the clutter was still there. It left `StellaSettings._environment_fields`
+  — the step that gives any field a saved half, since a value the environment
+  owns outright cannot have one — and now runs the six touchpoints like every
+  other setting: `vad_model_env_override`, a `from_saved` parameter,
+  `config.json`, `resolve_settings`, a Settings row, and the drift guard's
+  tables. A blank row means the usual place, which is the same reading
+  `resolve_settings` gives a file written before the key existed, and Apply
+  refuses a path it cannot find — the gate, the ear and the wake listener all
+  fail quietly or in a sentence the owner may never open, so a typo saved here
+  would be a trim that stopped working with no symptom to trace. Proof, run on
+  this machine with no `STELLA_VAD_MODEL` in the environment at all: a
+  `config.json` naming the real file resolves and builds a panel holding a
+  `SpeechGate`; the same code with the same file naming a path that is not
+  there resolves that path faithfully and builds a panel with no gate. Nothing
+  moved on the owner's disk and no default was flipped — `default_vad_model()`
+  still points at `~/models/silero/silero_vad.onnx`, which is where this
+  machine already keeps it.
 
 ### What is still not true
 
-- **The rest of the voice configuration is still environment-only.** The two
+- **The rest of the voice configuration is still environment-only.** The three
   switches this bullet used to name as a live violation — `STELLA_SPEECH_RESIDENT`
-  (D2) and `STELLA_VOICE_BARGE_IN` (B7, D4) — became saved Settings on
-  2026-10-11, in the same shape every other saved choice uses: a row in the
-  panel, one key in `config.json`, and the environment variable outranking the
-  saved answer for a single launch without rewriting it. What is left is the
-  deliberate half: `STELLA_VAD_MODEL`, `STELLA_BARGE_SOURCE`,
-  `STELLA_SPEECH_COMMAND` and the transcription and speech commands are still
-  reachable only by export, still absent from `src/stella/ui.py`, and so still
-  unsettable from a machine whose owner never opens a terminal. Neither saved
-  default was flipped. `voice_barge_in` stays `auto` because the ear also hears
+  (D2), `STELLA_VOICE_BARGE_IN` (B7, D4) and `STELLA_VOICE_CAPTURE_GATE` (D8) —
+  became saved Settings on 2026-10-11, in the same shape every other saved
+  choice uses: a row in the panel, one key in `config.json`, and the environment
+  variable outranking the saved answer for a single launch without rewriting it.
+  `STELLA_VAD_MODEL` joined them the same day (D9), because a gate that reads a
+  model the owner cannot point at is a gate she cannot turn on. What is left is
+  the deliberate half: `STELLA_BARGE_SOURCE`, `STELLA_SPEECH_COMMAND` and the
+  transcription and speech commands are still reachable only by export, still
+  absent from `src/stella/ui.py`, and so still unsettable from a machine whose
+  owner never opens a terminal. No saved default was flipped.
+  `voice_barge_in` stays `auto` because the ear also hears
   Stella speaking, and `on` is the spelling that arms it on a capture nobody
   chose; `speech_resident` stays off because the worker Stella finds at
   `~/tools` is already resident, so a shipped `True` would change nothing on
   the one machine this project runs on and promise something the checkbox
-  cannot keep. Proof: `tests/test_settings_wiring.py` (both names walked
+  cannot keep; `voice_capture_gate` is the one that ships on, and it is the
+  exception rather than a contradiction — it removes audio rather than adding a
+  capability, it can never refuse a turn, and the complaint it answers is live.
+  Proof: `tests/test_settings_wiring.py` (both names walked
   through every touchpoint a saved setting needs, including the panel variable
   that writes the save dict), `tests/test_config.py` (round
   trip, a file older than the keys, a hand-edited mode read as a name not an

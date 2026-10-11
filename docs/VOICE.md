@@ -321,12 +321,15 @@ uv sync --extra barge-in            # adds onnxruntime only
 STELLA_BARGE_SOURCE=ec_mic uv run stella-ui   # auto-arms the ear
 ```
 
-Environment variables (voice configuration is read from the environment. Two
-of these switches — `STELLA_VOICE_BARGE_IN` and `STELLA_SPEECH_RESIDENT` — have
-a saved half in Settings and are written to `config.json`, so a launch from a
-desktop session, where no shell profile ever ran, still behaves the way the
-owner last said; the rest, including every path, model and command below, stay
-environment-only and never reach that file):
+Environment variables (voice configuration is read from the environment. Four
+of these — `STELLA_VOICE_BARGE_IN`, `STELLA_SPEECH_RESIDENT`,
+`STELLA_VOICE_CAPTURE_GATE` and `STELLA_VAD_MODEL` — have a saved half in
+Settings and are written to `config.json`, so a launch from a desktop session,
+where no shell profile ever ran, still behaves the way the owner last said. The
+variable outranks the saved answer for the launch that carries it and rewrites
+nothing. Everything else — the capture target the ear watches and every model
+name and command line the recogniser and the synthesiser run — stays
+environment-only and never reaches that file):
 
 - `STELLA_VOICE_BARGE_IN` — `auto` (default: arms only when
   `STELLA_BARGE_SOURCE` names a capture), `on` (arm on a chosen capture — and
@@ -337,7 +340,12 @@ environment-only and never reach that file):
   `on`, and `on` with no chosen capture is the setting that made Stella
   interrupt herself. Settings shows the same three as
   *Listen for you talking over her*.
-- `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file.
+- `STELLA_VAD_MODEL` — path to the Silero VAD v6 ONNX file, which Settings
+  holds as *Speech detector* and this variable outranks for one launch. Blank
+  in either place means `~/models/silero/silero_vad.onnx`. The barge-in ear,
+  the wake ear and the capture gate all load this one file, and they do not
+  treat its absence alike: the two ears say so at startup, the gate simply does
+  nothing.
 - `STELLA_BARGE_SOURCE` — capture target name, e.g. `ec_mic`. Under `auto`
   this doubles as the enable switch; unset, the ear never arms. Under `on`,
   unset means resolved-by-default rather than unnamed.
@@ -374,6 +382,58 @@ When barge-in is enabled but cannot work, only the ear is disabled and nothing
 else changes: a missing extra or model reports one friendly error at startup,
 an internal fault retires the ear silently for the rest of the session, and
 text, Listen and speech all keep working.
+
+## The capture gate
+
+One finished recording passes a speech detector on its way to the recogniser.
+`barge_in.SpeechGate` scores the clip frame by frame with the same Silero model
+the ears already load, finds the span from the first run of five voiced frames
+to the last, and writes that span — with ten frames (~320 ms) kept on either
+side — into `capture.gated.wav` beside the original in the recorder's own
+temporary directory. The recogniser is then handed the gated file. What is
+recorded, and what is deleted when the turn is over, follows exactly the rules
+already written for a capture: nothing new is kept and raw audio still enters
+nothing but the one command it is sent to.
+
+Why the switch ships on is a measurement rather than a preference, taken on this
+machine on 2026-10-11 with Stella's own capture argv while music played through
+the owner's headset. Seven point nine eight seconds of room: 249 frames of 32 ms,
+every one of them above the energy floor the ear uses (RMS 0.13 to 0.28), and
+**not one frame at or over** any probability threshold — the most speech-like
+frame in the clip scored 0.046. Loud is not speech. That is also why this trims
+on a learned detector and not on silence: a rule that measures volume would have
+kept the entire clip and changed nothing, which is the failure the owner was
+reporting — a whisper-family decoder handed several seconds of music with no
+words in it invents words.
+
+The gate is a filter and never a decision, which is the doctrine that separates
+it from the two ears above and below it:
+
+- It cannot refuse a turn. No speech found anywhere means the recording is
+  handed over byte-identical, and whether a transcript is junk stays where it
+  already lived (`audio.is_transcription_junk`).
+- It never cuts inside the span, and never trims a clip that has speech at both
+  edges — the pad keeps the breath before the first word and after the last.
+- Anything going wrong costs the turn nothing: a file that is not a 16 kHz mono
+  s16le capture, a detector that raises, a directory it cannot write into, all
+  return the original path. A gate that fails is a launch that transcribes what
+  it always transcribed, not a voice input that stopped working.
+- A missing model is silent here and loud next door. Barge-in and the wake ear
+  report one friendly error at startup because the owner armed them; this is a
+  filter on a path that must keep working as it did, so `build_capture_gate`
+  returns `None` and says nothing.
+
+That last asymmetry, and the fail-open rules above it, are deliberate rather
+than cautious: no real-speech clip exists on this machine, so the false-negative
+side of the detector — a voice the gate would not find — is unmeasured here. The
+unit tests prove the arithmetic against a detector that scores frames in a given
+order; they do not prove that this microphone renders the owner's voice as
+speech. If it ever stops doing so, the fix is the Settings row
+*Cut the room's noise off the edges of what you say*, not a code change.
+
+Environment: `STELLA_VOICE_CAPTURE_GATE` (`0` says not for this launch, and never
+rewrites the saved answer). Settings: the same checkbox, plus *Speech detector*
+for the model path the gate reads.
 
 ## One microphone
 

@@ -288,6 +288,7 @@ def make_panel(
     player: Player | None = None,
     transcriber: TranscriptionProvider | None = None,
     speech: SpeechProvider | None = None,
+    capture_gate: object | None = None,
 ) -> VoicePanel:
     return VoicePanel(
         recorder
@@ -298,6 +299,7 @@ def make_panel(
         if transcriber is not None
         else FakeTranscriber(),
         speech,
+        capture_gate=capture_gate,
     )
 
 
@@ -3088,3 +3090,56 @@ def test_short_surviving_audio_is_not_rewritten(tmp_path) -> None:
     before = path.read_bytes()
     _inspect_speech_artifact(str(path))
     assert path.read_bytes() == before
+
+
+# ------------------------------------------- the capture gate in the panel
+
+
+class RewritingGate:
+    """A gate that hands the recogniser a different file than it was given."""
+
+    def __init__(self, gated: str) -> None:
+        self.gated = gated
+        self.given: list[str] = []
+
+    def trim(self, path: str) -> str:
+        self.given.append(path)
+        return self.gated
+
+
+def test_the_recogniser_reads_the_gated_capture_not_the_raw_one(
+    tmp_path,
+) -> None:
+    # The one place the gate sits in the whole voice path, proved by the
+    # order it happens in: record, gate, then transcribe what the gate
+    # returned. Everything about which frames survive is the gate's own
+    # business (tests/test_speech_gate.py).
+    recorder = FakeRecorder()
+    transcriber = FakeTranscriber()
+    gated = str(tmp_path / "capture.gated.wav")
+    panel = make_panel(
+        recorder=recorder,
+        transcriber=transcriber,
+        capture_gate=RewritingGate(gated),
+    )
+
+    panel.start_listening()
+
+    assert panel.stop_and_transcribe() == "hello voice"
+    assert transcriber.parts[0].reference == gated
+    assert panel._capture_gate.given == [recorder.last_path]
+    assert recorder.last_path != gated
+
+
+def test_a_panel_with_no_gate_transcribes_exactly_what_was_recorded() -> None:
+    # A machine without the barge-in extra, or an owner who switched the
+    # gate off, gets the path that has always been the contract: the
+    # recording, whole, to the recogniser.
+    recorder = FakeRecorder()
+    transcriber = FakeTranscriber()
+    panel = make_panel(recorder=recorder, transcriber=transcriber)
+
+    panel.start_listening()
+
+    assert panel.stop_and_transcribe() == "hello voice"
+    assert transcriber.parts[0].reference == recorder.last_path

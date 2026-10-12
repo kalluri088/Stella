@@ -86,10 +86,20 @@
   `test_brain.py` 148 passed 4 skipped,
   `test_answer_after_observation.py` + `test_tool_fast_path.py` 25,
   `tests/security/test_adversarial_boundaries.py` 18. `ruff check .` and
-  `git diff --check` clean. Not yet run through a real model turn: the reply it
-  replaces came from a live brain, and the fix is a runtime branch a fake brain
-  can reach — a real `qwen3:4b` turn that fumbles again is the proof that
-  matters, and it is stochastic.
+  `git diff --check` clean. **Since validated on a real model turn** (this is
+  the proof the commit said was still outstanding). The #259 cold-start run at
+  14:49 (`~/bench-out/router_ab_1791796765.json`, the six-question local
+  `qwen3:4b` arm through `session.run_turn`) produced exactly this failure on
+  its `cpus` turn: the incumbent answered `{"kind": "tool", "arguments": …}`
+  with **no capability**, and where the pre-fix path would have dispatched the
+  empty name, manufactured a `"Tool capability unavailable."` observation and
+  read it back as *"the tool to check the time is unavailable"*, the shipped
+  runtime instead stopped at the gate and ended with *"That answer asked me to
+  use a tool without saying which one, so I stopped instead of guessing…"* —
+  `steps: 1`, nothing executed, no success tick. The turn still failed (it was
+  graded `passed: false`, as an unnamed-tool turn must be), but it failed
+  honestly, which is the whole point of #258. The fumble is stochastic, so one
+  live sighting is confirmation, not a rate.
 
 ### A faster brain that never leaves this machine, measured twice
 

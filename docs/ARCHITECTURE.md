@@ -855,6 +855,16 @@ because a second proposal was garbled is a different bug and the worse one.
 `tests/test_stella.py` holds both halves, and `tests/test_tool_outcomes.py` holds
 the after-a-real-step half.
 
+The stop has since been seen catching the real thing. The six-question local
+`qwen3:4b` run of 2026-10-12 (`~/bench-out/router_ab_1791796765.json`) fumbled
+on its `cpus` turn exactly as #257 measured: a `tool` decision with no
+capability. It ended at the gate in one step with nothing executed, not with a
+manufactured observation about a tool that never existed. The turn still failed
+— an unnamed proposal cannot answer a question about CPU count, and the run
+graded it as failed, which is honest — and what the guard buys is that the
+failure names itself instead of blaming a capability that is fine. A fumble is
+stochastic, so this is one sighting of the guard working, not a rate.
+
 ## Intentionally not implemented yet
 
 The following are outside the current system (things that have shipped are

@@ -552,9 +552,13 @@ piece-by-piece measured budgeting, transfers).
   execution and real final words, and #257 ran them twice — but they are still a
   synthetic question set in a temporary state directory, started warm, on one
   machine in one evening. What
-  the cold path costs is known
-  in pieces, and the pieces already break it: a brain Stella supervises itself
-  is ready in 4–19 s (A10), and one warm trivial turn costs 10–68 s.
+  the cold path costs is now measured for the shipped brain (#259): the idle
+  reload that starts an intermittent session is **~1.5–3.3 s, once**, inside
+  one turn's noise, and `keep_alive` was rejected for pinning 3.9 GB of a 6.1
+  GB card (`docs/MODELS.md`, *The idle reload, measured*). What remains
+  unmeasured is a genuine cold-desktop six-question run — for that the pieces
+  still break: a supervised brain (llama.cpp, not Ollama) is ready in 4–19 s
+  (A10), and one warm trivial turn costs 10–68 s.
 - **The wait is one call, and its length is not ours to set.** Measurement
   says a trivial turn is exactly one provider request whose whole cost is
   decoding the thinking channel (~44 tok/s), and that the channel is

@@ -125,7 +125,10 @@ smaller budget. That one has now been measured too, and the speed is real;
 what remains open about it is the owner's decision, not the number (see *The
 faster brain, measured on the turns it would have to answer*). It has since
 been measured against a brain that stays on this machine as well (*The
-no-thinking variant of the same weights, measured*).
+no-thinking variant of the same weights, measured*). The last latency term
+that had never been read is the cost of a brain that has left memory between
+turns, and it turned out to need no change (*The idle reload, measured — and
+`keep_alive` rejected*).
 
 This table is also why the turn budget that shipped (#231) stops the loop
 *between* steps rather than inside a call. A 90-second bound that could only
@@ -372,6 +375,49 @@ Bench scripts `~/tools/bench_router_ab.py` (`--local-models`, so a local-only ru
 needs no stored router key) and `~/tools/bench_brain_decisions.py`, raw JSON
 `~/bench-out/router_ab_179178*.json` and `/tmp/brain_decisions_qwen3*.jsonl` —
 outside the tree, with the other benches.
+
+### The idle reload, measured — and `keep_alive` rejected (#259)
+
+`docs/ROADMAP.md` said the cold path's cost was "known in pieces": the pieces
+were A10's supervised-brain start of 4–19 s and a warm trivial turn of 10–68 s,
+and nothing had measured the case an intermittent voice assistant actually hits
+— the first spoken turn after a gap long enough that Ollama had unloaded the
+model. `ollama ps` makes that gap visible: after a request Ollama holds the
+brain for its default **5 minutes** (`qwen3:4b 3.9 GB 100% GPU … UNTIL 4
+minutes from now`), and every later turn starts cold.
+
+The cost is read straight from Ollama's own `load_duration` field, asking the
+`num_ctx=8192`, `num_predict=1` request Stella's client sends so the load is
+isolated from any decode:
+
+| state | `load_duration` | note |
+| --- | --- | --- |
+| warm, resident | 1–3 ms | the turn after a turn |
+| cold, first hit after a long idle | **3311 ms** | `total_ms` 3388 — load is 98% of it |
+| cold, every reload after | ~1475 ms | weights now in the OS page cache |
+| cold at `num_ctx=2048` | ~1480 ms | same as 8192: it is loading the 3.9 GB, not allocating context |
+
+So the whole penalty A10's "4–19 s" feared, for the shipped Ollama brain, is
+**~1.5–3.3 s paid once** on the first turn after a >5-minute gap, and hidden
+inside a single turn's own noise — the six-turn run that started from an
+empty `ollama ps` clocked its first turn at **18.60 s against the same run's
+19.88 s median**, because decode variance (the thinking channel, ~44 tok/s, the
+same question 31.4 s then 67.6 s) swamps a fixed 1.5 s load entirely.
+
+**`keep_alive` is deliberately not adopted.** A per-request `keep_alive`
+(Ollama's field, and Stella sends no such field today —
+`OllamaLLMClient` sets only `num_ctx` and `num_predict`) would erase that
+~1.5–3.3 s on the first turn of a session. It would erase it by pinning
+**3.9 GB of this machine's 6.141 GB card at 100% GPU, permanently** — leaving
+~2.2 GB for everything else on the owner's daily driver, when report 18 already
+found the warm brain (3804 MiB) and resident Laya (1448 MiB) coexisting at
+5745/6141 MiB with no room to spare. That is rule 13 — add complexity only when
+a real problem demands it — meeting a saving that is smaller than one turn's
+noise. Making no code change here is the outcome the measurement produced, and
+it is the right one. A bounded middle ground (a longer `keep_alive` than 5
+minutes, not an infinite one) stays available if real use ever shows a
+*session-opening* turn that reads as slow for a reason the owner can see; it is
+not built on a hypothetical.
 
 ## Token accounting (`/usage`)
 

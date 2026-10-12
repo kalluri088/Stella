@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### What a cold brain costs, measured — and why nothing changed
+
+- **What changed.** No code. `docs/MODELS.md` gained *The idle reload,
+  measured — and `keep_alive` rejected (#259)*, and `docs/ROADMAP.md`'s claim
+  that the cold path "is known in pieces" is replaced by the number.
+- **Why.** The standing question was Stella's speed, and the one latency term
+  nobody had measured is the one an intermittent voice assistant always meets:
+  the first spoken turn after a gap long enough that Ollama had dropped the
+  model. `ollama ps` shows the gap — a request leaves the brain resident for
+  Ollama's default five minutes — and Ollama's own `load_duration` gives the
+  cost in isolation, measured with the request `OllamaLLMClient` actually sends
+  (`num_ctx=8192`, `num_predict=1`, so no decode is counted): **3311 ms** cold
+  after a long idle, **~1475 ms** on every reload after that (the 3.9 GB weights
+  are then in the OS page cache), **1–3 ms** warm, and ~1480 ms at
+  `num_ctx=2048` — identical, because the time is loading weights, not
+  allocating context.
+- **What it buys and what it would cost.** The penalty is ~1.5–3.3 s paid once
+  per cold start, and it is already inside a single turn's noise: a six-turn run
+  started from an empty `ollama ps` clocked its first turn at 18.60 s against
+  the same run's 19.88 s median, since a thinking channel decoding at ~44 tok/s
+  varies far more than a fixed 1.5 s load. A per-request `keep_alive` — a field
+  Stella does not send today — would remove it by pinning **3.9 GB of this
+  machine's 6.141 GB card at 100% GPU permanently**, against the ~2.2 GB the
+  rest of the owner's desktop needs, where report 18 had already found the warm
+  brain (3804 MiB) and resident Laya (1448 MiB) coexisting at 5745/6141 MiB.
+- **The invariants it turns on.** Rule 13 and the standing rule that research
+  producing no demonstrated weakness should produce no change: a saving smaller
+  than the noise it hides in is not a problem the owner has. Rule 10's
+  laptop discipline decides the rest — this machine is her daily driver, not a
+  rig that may hold two thirds of its GPU for a rounding error.
+- **What is deliberately not built.** A `keep_alive` setting, in any form. A
+  bounded one (minutes rather than infinite) stays available if a real
+  session-opening turn is ever seen slow for a reason the owner can see, and
+  would then need a Settings row and `tests/test_settings_wiring.py`, not a
+  default flip. The lever that actually moves a turn is still #237: which brain
+  decodes, ~22 s of thinking against ~1.7 s.
+- **Proof.** Measurements only, in a temporary state directory (`mkdtemp`,
+  removed after) against the owner's running Ollama on 11434, which was never
+  stopped or reconfigured: `~/bench-out/router_ab_1791796765.json`
+  for the six-turn cold-start arm, and the `load_duration` table above from
+  direct `/api/generate` calls with `keep_alive=0` forcing repeated cold loads.
+  `ruff check .` and `git diff --check` clean; no test changed, none needed.
+
 ### A tool decision that names no capability is refused, not apologised for
 
 - **What changed.** `Stella.process` holds a third runtime-owned stop, checked

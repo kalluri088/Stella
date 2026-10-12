@@ -510,8 +510,27 @@ someone from paying for the same measurement twice.
   turn. Table and reasoning in `docs/MODELS.md`; the constraint list above
   still stands for any future attempt, and so does the finding that the
   remaining lever is a faster brain for turns that need no reasoning (#237) —
-  since measured, at a 3.20 s median against the local 22.27 s on the same six
-  production turns, and still the owner's decision rather than a default.
+  since measured twice, at a 3.20 s median against the local 22.27 s on the same
+  six production turns, and still the owner's decision rather than a default.
+- **B8c. The faster brain, but one that stays on the disk (#257) — measured,
+  not switched.** #237's sevenfold median buys itself by sending her words to
+  models this machine does not run, so the same question was asked of an Ollama
+  model already installed: `qwen3:4b-instruct-2507`, the same 4B family with no
+  thinking channel at all — which is a different object from `think:false`, the
+  switch #243 measured slower and wordier. Six production turns, two independent
+  runs: the incumbent 4/6 at 27.13 s and 6/6 at 21.75 s, the candidate **6/6 both
+  times at 1.73 s and 1.69 s**. The retargeted 30-case decision corpus scores them
+  within one case of each other (22/30 against 23/30 passing every pass) at 11.66 s
+  against **0.58 s** per decision, and one single-pass incumbent run scored 28/30,
+  so the corpus ranks nothing and only the clock does. Two rejects measured in the
+  same run failed on words, not speed: `qwen2.5-coder:7b-instruct` invented a
+  prime minister, `qwen3.5:4b` answered `do_nothing`. No default moved — a faster
+  model on her own machine is a tier-one change, which is rule 10's word "owner's"
+  doing its job. What the run uncovered is a defect rather than a model choice: the
+  incumbent put **5 of its 35 tool decisions with no capability named** and the
+  runtime answered *"the tool to check the time is unavailable"*, while the
+  candidate named a capability on all 36. `docs/MODELS.md` carries the tables; the
+  unfixed half is written up there and below.
 
 **The closing verdict of Stage D, kept whole** — a set of declined
 borrowings, not a backlog:
@@ -528,10 +547,11 @@ piece-by-piece measured budgeting, transfers).
 
 - **The test has never been run as written.** Every latency number in
   this file is a bench replay or a bench run through the dev tree, not
-  six ordinary questions from a cold start. The #237 A/B is closer than a
-  replay was — six questions, each one a real `session.run_turn` with real tool
-  execution and real final words — but it is still a synthetic question set in a
-  temporary state directory, started warm, on one machine in one evening. What
+  six ordinary questions from a cold start. The #237 and #257 A/Bs are closer than
+  a replay was — six questions, each one a real `session.run_turn` with real tool
+  execution and real final words, and #257 ran them twice — but they are still a
+  synthetic question set in a temporary state directory, started warm, on one
+  machine in one evening. What
   the cold path costs is known
   in pieces, and the pieces already break it: a brain Stella supervises itself
   is ready in 4–19 s (A10), and one warm trivial turn costs 10–68 s.
@@ -552,7 +572,19 @@ piece-by-piece measured budgeting, transfers).
   machine — and two of the five candidates failed all six turns outright on a
   `413` context-window wall and a `429` exhausted-route wall, with the `auto`
   arm's own worst turn in an earlier run at 63.98 s. A fast brain that is
-  someone else's availability is not a default a benchmark flips.
+  someone else's availability is not a default a benchmark flips. The same lever
+  has since been measured on a brain that costs nothing to keep (#257): a
+  no-thinking build of the same 4B weights, already on this disk, answered all six
+  production turns twice at a **1.69 s and 1.73 s median** against the incumbent's
+  21.75 s, and scored within one case of it on the retargeted decision corpus. So
+  the policy question is now three-way rather than two-way — hosted router, local
+  thinking model, local no-thinking model — and still hers, in Settings, because
+  picking her mind is a decision and not a result. What that measurement found
+  standing on its own is unfixed and worth its own change: **a `tool` decision
+  that names no capability still gets authorized into an apology** ("the tool to
+  check the time is unavailable"), five times out of the incumbent's 35 tool
+  decisions in the corpus and twice on live turns, and a `do_nothing` returned
+  where an argument was missing should have been a question.
 - **Tokens are not a budget axis.** `decision_max_tokens` and
   `answer_max_tokens` cap one call, not a task, so the Vision's three axes
   are two-thirds built (#231).

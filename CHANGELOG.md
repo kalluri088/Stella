@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### A faster brain that never leaves this machine, measured twice
+
+- **What changed.** Nothing in `src/` again, and again deliberately.
+  `docs/MODELS.md` gained *The no-thinking variant of the same weights,
+  measured* — `qwen3:4b-instruct-2507-q4_K_M`, an Ollama model already on this
+  disk, run against the incumbent on both the production turns and the decision
+  corpus — and one of that file's own older claims was overturned by it:
+  "no-thinking variants of `qwen3:4b` are rejected as brain" had been measured on
+  the pre-October corpus, whose scheduler cases no longer exist. Retargeted and
+  re-measured, it does not hold. The bench script that scored it
+  (`~/tools/bench_brain_decisions.py`) had died with the scheduler — it imported
+  `stella.reminders`, which is gone — and was retargeted onto the 17-capability
+  registry that ships, so **decision-corpus scores recorded before 2026-10-12 are
+  not comparable with these**.
+- **Why.** #237 found a sevenfold median, and the price of it was the owner's
+  words: every routed turn goes to a model this machine does not run. The
+  question she actually asked — is Stella faster now, without giving anything
+  up — has a local answer or none. This is also the first measurement that
+  separates *switching the thinking off* (measured slower, and rambling: #243)
+  from *a model with no thinking channel to begin with*, which turns out to be a
+  different object.
+- **Numbers.** Production path, six questions through
+  `application.session.run_turn`, two independent runs: the incumbent took
+  **27.13 s** and **21.75 s** at the median for 4/6 and 6/6, while
+  `qwen3:4b-instruct-2507` took **1.73 s** and **1.69 s** for **6/6 both times** —
+  about thirteen times faster on the turn a spoken conversation waits for. Two
+  other local instruct builds were measured in the same run and rejected on the
+  words rather than the clock: `qwen2.5-coder:7b-instruct` (5/6, 2.74 s, invented
+  a prime minister) and `qwen3.5:4b` (5/6, 6.55 s, answered `do_nothing`). On the
+  retargeted corpus, thirty cases, two passes, one balanced run each: incumbent
+  24/30 and 24/30, 22/30 passing *every* pass, median 11.66 s per decision;
+  candidate 25/30 and 25/30, 23/30 every pass, median **0.58 s**. The one number
+  that argues against the candidate is stated in the doc rather than buried: a
+  separate single-pass incumbent run scored 28/30, higher than the candidate has
+  ever managed, so the corpus cannot rank these two brains — only the clock can,
+  and the clock agrees with itself.
+- **The defect the corpus and the live turns found together.** The incumbent
+  emitted **5 of its 35 tool decisions with no capability named** (`route-date`,
+  `route-cpu` twice, `route-weekday`, `inject-memory`); the candidate emitted **0
+  of 36**. In the live run two of those turns ended with *"I don't have access to
+  the current time right now. The tool to check the time is unavailable"* — the
+  owner's complaint from an earlier evening, reproduced from inside: a brain that
+  reaches for a tool and forgets to say which one. Both arms also share a failure
+  no speed number covers: asked what she remembers about a diet that *is* in the
+  seeded store with `memory_list` registered, each answered "I don't have any
+  memories about your diet" without looking. Neither arm complied with an
+  injection: no turn called the planted exfil URL.
+- **What is deliberately not done.** No default moved. `qwen3:4b` remains the
+  shipped brain in `config.py` and in the model row until the owner chooses
+  otherwise in Settings — a faster model on her own disk is a tier-one change,
+  which makes it hers to make and not a benchmark's. Two things this measurement
+  names and does not fix, left open on purpose: the runtime should refuse to
+  authorize a `tool` decision that names no capability instead of answering that
+  the tool is unavailable, and a `do_nothing` in reply to a missing argument
+  should be an ask.
+- **Proof.** `docs/MODELS.md` (*The no-thinking variant of the same weights,
+  measured*, and the reversal recorded in *Rejected as brain*). Bench scripts and
+  raw output outside the tree: `~/tools/bench_router_ab.py` gained
+  `--local-models` so a local-only A/B needs no stored router key,
+  `~/bench-out/router_ab_179178*.json`, `~/tools/bench_brain_decisions.py`,
+  `/tmp/brain_decisions_qwen3*.jsonl`. No repo test changed: nothing in `src/`
+  moved.
+
 ### The faster brain was measured on real turns, and it is the owner's call
 
 - **What changed.** Nothing in `src/`, which is the point of writing this down.

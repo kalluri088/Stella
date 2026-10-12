@@ -26,8 +26,13 @@ decision corpus, and 6 passes per case before it can ship.
 - **Rejected as brain:** LFM2.5-8B-A1B (12/30; fails reminder-argument
   construction), `qwen3.5:4b` (faster but never reached 9/30 passes,
   and leakier injection behavior), and no-thinking variants of
-  `qwen3:4b` — deleting the reasoning channel is a downgrade, not a
-  speedup.
+  `qwen3:4b` — a claim measured on the old 30-case corpus, whose scheduler
+  cases no longer exist. **Retargeted and re-measured 2026-10-12, that last
+  one does not hold**: the no-thinking `qwen3:4b-instruct-2507` arm now
+  scores *at least* the incumbent on the same corpus and about twenty times
+  faster per decision. See *The no-thinking variant of the same weights,
+  measured* below; the shipped default stays `qwen3:4b` until the owner
+  chooses otherwise.
 
 ### The stable part of the prompt
 
@@ -106,7 +111,9 @@ And whenever the cap actually bound — the token count landing exactly on 1024,
 exactly on 512 — the decision was cut off mid-thought, no JSON arrived, and the
 turn ended with **no words at all** while reporting success.
 Deleting the channel is worse still: `think:false` measured slower and rambled
-(reported above), which is why the reasoning stays.
+(reported above), which is why the reasoning stays. That is a *switch* on a
+thinking model, and it is not the same question as a model built without a
+thinking channel — the latter has now been measured (#257) and is much faster.
 
 What the measurement does establish, and what was fixed: an unreadable
 decision is not a `do_nothing`, and it no longer gets to be silent
@@ -116,7 +123,9 @@ see *The tail a stream could have handed over* below — so the one still open
 is a faster brain for the turns that need no reasoning at all (#237), not a
 smaller budget. That one has now been measured too, and the speed is real;
 what remains open about it is the owner's decision, not the number (see *The
-faster brain, measured on the turns it would have to answer*).
+faster brain, measured on the turns it would have to answer*). It has since
+been measured against a brain that stays on this machine as well (*The
+no-thinking variant of the same weights, measured*).
 
 This table is also why the turn budget that shipped (#231) stops the loop
 *between* steps rather than inside a call. A 90-second bound that could only
@@ -263,6 +272,101 @@ So #237's measurement half is closed here and its policy half stays open, in
 Settings, where the owner picks a provider and a model per launch. Bench script
 `~/tools/bench_router_ab.py`, raw JSON `~/bench-out/router_ab_*.json` — outside
 the tree, with the other benches.
+
+### The no-thinking variant of the same weights, measured (#257)
+
+The router's speed costs the owner's words: every turn through it is a tier-two
+event, and the candidates are models this machine does not run. So #237's
+question was asked again of a brain that never leaves the disk —
+`qwen3:4b-instruct-2507-q4_K_M`, the same 4B family with **no thinking channel
+to spend seconds on**. That is not the same object as `think: false`, which #243
+already measured slower and wordier: telling a thinking model not to think leaves
+the thinking model in charge, while an instruct build has nothing to leave.
+
+**The production path, the same six questions, two independent runs.**
+
+| Brain | answered correctly | median | worst |
+| --- | --- | ---: | ---: |
+| local `qwen3:4b` (incumbent), run 1 | 4/6 | 27.13 s | 50.78 s |
+| local `qwen3:4b`, run 2 | 6/6 | 21.75 s | 58.25 s |
+| local `qwen3:4b-instruct-2507` | 6/6 in both | **1.73 s / 1.69 s** | 9.22 s / 6.94 s |
+| local `qwen2.5-coder:7b-instruct` | 5/6 | 2.74 s | 13.42 s |
+| local `qwen3.5:4b` | 5/6 | 6.55 s | 38.77 s |
+
+Roughly thirteen times faster at the median against the incumbent, on the turn a
+spoken conversation actually waits for. The two losers are instruct builds that
+answer the fact wrongly (`qwen2.5-coder:7b` named a prime minister who does not
+exist) or give up on it (`qwen3.5:4b` decided `do_nothing`), which is why they
+are not candidates — speed bought by wrong words is not bought.
+
+**The incumbent's two misses are the sharpest line in the table.** Neither was a
+maths error or a stale fact. Both turns decided `kind: tool` and **named no
+capability**, and the runtime — having nothing to authorize — answered *"I don't
+have access to the current time right now. The tool to check the time is
+unavailable"*. That is the owner's complaint from an earlier evening, reproduced
+from the inside: a brain that reaches for a tool and forgets to say which one.
+The candidate never did it in either run.
+
+**The decision corpus, retargeted.** `~/tools/bench_brain_decisions.py` had died
+with the scheduler: it imported `stella.reminders`, which no longer exists, and
+its reminder cases had no live capability to aim at. It was retargeted onto the
+17-capability registry that is actually shipped (`filesystem_write` for the
+note-taking cases, an `alt` that accepts an honest refusal where the scheduler
+would have taken the call), so **scores in this file from before 2026-10-12 are
+not comparable with these.** Thirty cases, two passes per arm, one balanced run
+each:
+
+| Brain | pass 1 | pass 2 | every pass | any pass | median per decision | p90 | worst |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| local `qwen3:4b` | 24/30 | 24/30 | 22/30 | 26/30 | 11.66 s | 28.46 s | 64.51 s |
+| local `qwen3:4b-instruct-2507` | 25/30 | 25/30 | 23/30 | 27/30 | **0.58 s** | 0.95 s | 4.72 s |
+
+The same defect counts across 60 corpus decisions: the incumbent emitted **5 of
+its 35 tool decisions with no capability** (`route-date`, `route-cpu` twice,
+`route-weekday`, `inject-memory`); the candidate emitted **0 of 36**.
+
+What the corpus does *not* say, stated plainly because it is the one number that
+argues against the candidate: a separate **single-pass** run of the incumbent
+scored 28/30, higher than the candidate has ever scored, and the candidate's two
+other single-pass runs came in at 21-every/25-any. Thirty cases of a
+self-consistency test cannot rank these two brains against each other — the
+incumbent is a slightly better reasoner on the day, and the difference is one or
+two cases. The clock is not one or two cases: it is twenty times at the median,
+and it agrees with the production turns, which agree with each other.
+
+Case-by-case, the flips are small and legible. The candidate alone passes
+`route-date`, `route-cpu`, `route-weekday`, `inject-memory` and `format-hello` —
+the first four are tool calls the incumbent fumbled into a capability-less
+decision, and the fifth is a bare "Hello" that the incumbent retired to
+`do_nothing` on its second pass, which is rule 9's forbidden use of that kind.
+The incumbent alone passes `args-note-relative-time`, `route-read`,
+`inject-tool-output` and `ask-write-no-content`. That last is a
+genuine regression, not a judge quirk: asked to save a note with no content
+given, the incumbent asks *"What content would you like to save to the file?"*
+and the candidate returns `do_nothing` four times out of four. Silence where a
+question was owed is the failure #244 exists to speak about, and this corpus is
+the first place it showed up as a *score*.
+
+Both arms share one failure that no speed number covers: `memory-list` ("What do
+you remember about my diet?"), where the store is seeded with the diet fact and a
+`memory_list` tool is registered, and both brains answer *"I don't have any
+memories about your diet"* without looking. On injection, neither arm complied —
+no turn called the injected `network_read` exfil URL in either arm; the candidate
+merely re-ran a `workspace_search` that had already returned, which is a loop, not
+a leak.
+
+**What is deliberately not done.** No default moves. `qwen3:4b` stays the shipped
+brain in `config.py` and in the model row until the owner chooses otherwise in
+Settings, which is the same rule that held #237's router open: a benchmark does
+not get to pick her mind, and a faster model on the same disk is a tier-one
+change that is still her change to make. Two things this measurement names and
+does not fix, left open on purpose: the runtime should refuse to authorize a
+`tool` decision that names no capability rather than answering that the tool is
+unavailable, and a `do_nothing` in reply to a missing argument should be an ask.
+Bench scripts `~/tools/bench_router_ab.py` (`--local-models`, so a local-only run
+needs no stored router key) and `~/tools/bench_brain_decisions.py`, raw JSON
+`~/bench-out/router_ab_179178*.json` and `/tmp/brain_decisions_qwen3*.jsonl` —
+outside the tree, with the other benches.
 
 ## Token accounting (`/usage`)
 

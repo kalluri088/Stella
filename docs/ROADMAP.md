@@ -552,7 +552,8 @@ piece-by-piece measured budgeting, transfers).
   execution and real final words, and #257 ran them twice — but they are still a
   synthetic question set in a temporary state directory, started warm, on one
   machine in one evening. What
-  the cold path costs is now measured for the shipped brain (#259): the idle
+  the cold path costs is now measured for any Ollama-backed brain (#259): the
+  idle
   reload that starts an intermittent session is **~1.5–3.3 s, once**, inside
   one turn's noise, and `keep_alive` was rejected for pinning 3.9 GB of a 6.1
   GB card (`docs/MODELS.md`, *The idle reload, measured*). What remains

@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Stella has no default brain, and the docs said she did
+
+- **What changed.** Documentation only, and it was a claim this session nearly
+  acted on. `docs/MODELS.md` said "No default moves. `qwen3:4b` stays the
+  shipped brain in `config.py` and in the model row." There is no shipped
+  default brain in `config.py`, or anywhere else in the code: the model comes
+  from the owner's `config.json` or `STELLA_MODEL`, and a build with neither
+  raises `STELLA_MODEL is required` (`app.py`). `qwen3:4b` is named in `src/`
+  in exactly one place — the text of the "Ollama is running but no models are
+  installed" fix-it message — and every other occurrence is a test fixture or
+  a measurement arm. The *Shipped* bullet in the same file now says what it
+  actually means (the line the measurements ran against, not a baked-in value)
+  and names the owner's real saved answer today, and `docs/ROADMAP.md`'s
+  #259 sentence is re-scoped from "the shipped brain" to any Ollama-backed
+  choice.
+- **Why it matters more than a typo.** It is what #237 turned out to be. The
+  recommendation this session made — "switch the default from the slow local
+  brain to the fast local one, one model name in the code" — described a change
+  that cannot be made, because there is no default to change and because the
+  owner's installed release was already pointed somewhere else: her
+  `config.json` reads `provider=openai, model=auto, preset=freellmapi`, so her
+  day-to-day Stella has been answering through the local router, whose models
+  are not on this machine, since before this session. Reading the saved file is
+  what found it; the docs had been describing a brain she is not running.
+- **The invariants it turns on.** Rule 2 (the model is replaceable) is enforced
+  by there being no default at all, which is a stronger guarantee than a
+  switchable one. Commitment 6 is already satisfied: the model row lists what
+  `GET /models` really reports, so the choice is visible and switchable in
+  Settings rather than env-only. And #259's `keep_alive` conclusion needed this
+  correction to be honest — an idle reload of 1.5–3.3 s is a property of an
+  Ollama brain, and her current brain is not one.
+- **What is deliberately not done.** Nothing was written to the installed
+  release's `config.json`, and no brain was switched on her behalf, including
+  by environment variable: which model answers her turns is the owner's saved
+  choice, and this session found the docs had been guessing about it rather
+  than reading it. No code changed, so `ruff check .` and `git diff --check`
+  are the whole validation.
+- **Proof.** `grep` over `src/` for the model name (one fix-it message, no
+  default), `load_configuration()` in `config.py` (returns `None` without a
+  provider *and* a model), `app.py`'s `STELLA_MODEL is required` path, and the
+  keys of the owner's `config.json` — read, not printed in full, and unchanged.
+  Worth recording so it is not re-derived: a claim in `docs/` about what the
+  software does by default is checked against the code and the saved state
+  before it is acted on again.
+
 ### What a cold brain costs, measured — and why nothing changed
 
 - **What changed.** No code. `docs/MODELS.md` gained *The idle reload,

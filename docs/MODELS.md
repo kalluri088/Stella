@@ -10,7 +10,13 @@ decision corpus, and 6 passes per case before it can ship.
 
 - **Shipped:** `qwen3:4b` Thinking-2507 through Ollama (system
   service), `num_ctx=8192`, temperature 0, per-call-kind output-token
-  caps 8192 decision / 2048 answer (report 45). `STELLA_OLLAMA_THINK`
+  caps 8192 decision / 2048 answer (report 45). "Shipped" here means the
+  brain line every measurement in this file ran against and the one the
+  docs recommend — **not** a value baked into the code, which has none:
+  Stella runs the model her owner's `config.json` names, and as of
+  2026-10-12 that answer is `auto` through the local router, so this
+  sentence and the owner's saved choice are two different things.
+  `STELLA_OLLAMA_THINK`
   is a tri-state knob that sends nothing by default: measured on this
   line, `think:false` was slower and answered with ~1 kB of prose
   ramble per decision — the reasoning channel stays (report 26's
@@ -358,11 +364,20 @@ no turn called the injected `network_read` exfil URL in either arm; the candidat
 merely re-ran a `workspace_search` that had already returned, which is a loop, not
 a leak.
 
-**What is deliberately not done.** No default moves. `qwen3:4b` stays the shipped
-brain in `config.py` and in the model row until the owner chooses otherwise in
-Settings, which is the same rule that held #237's router open: a benchmark does
-not get to pick her mind, and a faster model on the same disk is a tier-one
-change that is still her change to make. Two things this measurement named; one
+**What is deliberately not done.** No saved choice moves — and this sentence
+was corrected on 2026-10-12 because it previously claimed something untrue:
+there is **no shipped default brain anywhere in the code**. Stella only ever
+runs a model the owner supplied, from `config.json` (written by the setup
+window or Settings) or from `STELLA_MODEL`; a tree with neither raises
+`STELLA_MODEL is required` (`app.py`), and `config.py` names `qwen3:4b` in
+exactly one place — the text of the "no models are installed" fix-it message.
+So nothing here could flip a default, and `qwen3:4b` is the incumbent only in
+the sense that it is the model this file's measurements ran against, listed by
+the model row because `GET /models` reports it. Which brain answers her turns
+is a saved answer in Settings and nothing else, which is the same rule that
+held #237's router open: a benchmark does not get to pick her mind, and a
+faster model on the same disk is a tier-one change that is still her change to
+make. Two things this measurement named; one
 is since fixed and one is left open on purpose. **Fixed (#258):** a `tool`
 decision that names no capability is now refused before dispatch and ends in
 words about the proposal, instead of manufacturing an "unavailable" observation

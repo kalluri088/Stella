@@ -2084,7 +2084,7 @@ def test_stella_converts_unexpected_tool_exception_to_failed_result() -> None:
     assert len(llm.messages) == 1
 
 
-@pytest.mark.parametrize("capability", [None, "unknown", "echo"])
+@pytest.mark.parametrize("capability", ["unknown", "echo"])
 def test_stella_fails_closed_for_unavailable_tool_capability(
     capability: str | None,
 ) -> None:
@@ -2104,6 +2104,41 @@ def test_stella_fails_closed_for_unavailable_tool_capability(
         success=False, output="Tool capability unavailable."
     )
     assert tool.arguments == []
+
+
+@pytest.mark.parametrize("capability", [None, "", "   "])
+def test_stella_refuses_a_tool_decision_that_names_no_capability(
+    capability: str | None,
+) -> None:
+    """A proposal with no name is refused, never given one and never a failure.
+
+    Measured on live turns (#257): a brain that answered
+    ``{"kind": "tool", "arguments": {...}}`` with no capability was dispatched
+    anyway, the dispatcher reported "Tool capability unavailable", and the turn
+    ended apologising for a tool that never existed. The runtime cannot
+    authorize what is not named (rule 3), it must not invent a capability from
+    the arguments, and it must not dress the absence up as a tool that ran and
+    failed. So nothing executes, no second call is spent phrasing the refusal,
+    and the user hears words about the proposal.
+    """
+
+    tool = RecordingTool()
+    stella, llm, _ = make_stella(
+        Decision(DecisionKind.TOOL, arguments={"kind": "time"}, capability=capability),
+        tool=tool,
+    )
+
+    result = stella.process(Context(user_input="What time is it?"))
+
+    assert tool.arguments == []
+    assert result.tool_result is None
+    assert llm.messages == []
+    # The refused proposal stays on the record exactly as it arrived.
+    assert result.decision.kind is DecisionKind.TOOL
+    assert (result.decision.capability or "").strip() == ""
+    assert result.response is not None
+    assert "without saying which one" in result.response
+    assert "Nothing ran and nothing was changed" in result.response
 
 
 def test_stella_does_nothing_without_calling_dependencies() -> None:

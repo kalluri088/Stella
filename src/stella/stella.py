@@ -468,6 +468,41 @@ class Stella:
                 ),
             )
 
+        def unnamed_tool_stop(refused: Decision) -> StellaResult:
+            # A tool proposal that names no capability is not a thing the
+            # runtime can authorize: there is no tool to risk-tier, no
+            # approval to ask for and nothing to execute. Dispatching it
+            # anyway manufactured a "Tool capability unavailable"
+            # observation, which the brain then read back as an apology for
+            # a tool that never existed — measured on live turns (#257).
+            # Guessing the missing name from the arguments is not the fix
+            # either: the model proposes and the runtime authorizes (rule
+            # 3), so a capability Stella invented is one nobody asked for.
+            # Reached only when no step has run, because once an observation
+            # exists the user is owed the answer it holds, not a refusal —
+            # the guard below retires the tool loop for that. Same family as
+            # budget_stop: runtime facts only, no model text, no second call.
+            response = (
+                "That answer asked me to use a tool without saying which "
+                "one, so I stopped instead of guessing. Nothing ran and "
+                "nothing was changed — try asking again."
+            )
+            return StellaResult(
+                refused,
+                response=response,
+                tool_result=last_tool_result,
+                retrieved_memories=retrieved_memories,
+                memory_write=memory_write,
+                step_trace=step_trace,
+                interaction_trace=self._complete_trace(
+                    trace,
+                    refused,
+                    response,
+                    memory_write,
+                    memory_write_requested,
+                ),
+            )
+
         def decide_turn(decision_context: Context) -> Decision:
             notify("thinking")
             if should_cancel is not None:
@@ -552,6 +587,14 @@ class Stella:
                     # a proposal the runtime refused on its own clock.
                     step_trace.append(StellaStep(decision))
                     return budget_stop("time", decision)
+                if not observations and not (decision.capability or "").strip():
+                    # Nothing has run and nothing is named: there is no
+                    # observation to answer from and no capability to
+                    # authorize, so it never reaches the dispatcher. Once a
+                    # step has run, the guard below retires the tool loop and
+                    # answers from what came back instead.
+                    step_trace.append(StellaStep(decision))
+                    return unnamed_tool_stop(decision)
 
                 arguments = (
                     decision.arguments

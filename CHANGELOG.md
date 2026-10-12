@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### A tool decision that names no capability is refused, not apologised for
+
+- **What changed.** `Stella.process` holds a third runtime-owned stop, checked
+  after the step and time budgets and before any dispatch: a `tool` decision
+  whose capability is missing, empty or whitespace is not executed and not
+  invented — the turn ends with `unnamed_tool_stop`, which speaks the same
+  family as `budget_stop` (runtime facts, no model text, no second provider
+  call) and keeps the refused proposal as the turn's recorded decision.
+  `docs/ARCHITECTURE.md` gained *A tool decision that names no capability*.
+- **Why.** #257 measured it rather than guessed it: the shipped brain proposed
+  `{"kind": "tool", "arguments": {"kind": "weekday"}}` with no capability on 5
+  of its 35 corpus tool decisions, and on live turns the owner heard *"I don't
+  have access to the current time right now. The tool to check the time is
+  unavailable"*. Stella manufactured that sentence herself: the empty name went
+  to the dispatcher, which correctly answered *"Tool capability unavailable"*,
+  that arrived in the next prompt as a `tool_observations` entry, and the brain
+  — doing exactly what it is told, reporting honestly what it saw — told the
+  user about a tool that had never existed.
+- **The invariants it turns on.** Rule 3 is one-directional, so the runtime does
+  not infer `datetime` from `{"kind": "time"}`: a capability Stella invented
+  would be one nobody asked for, risk-tiered by the wrong party. Nothing
+  dispatches, so nothing is audited as a failure and `outcome_status(None)`
+  reads *"Nothing was executed."* with no success tick (#227). The turn still
+  ends in words (#244) and the proposal stays in the trace as what it was.
+- **The half that is deliberately not refused.** The stop fires only when
+  nothing has run yet. After a real step, an unnamed proposal goes through the
+  existing guard that retires the tool loop and answers from the observation —
+  losing a good answer because a *second* proposal was garbled is the worse bug,
+  and `tests/test_tool_outcomes.py` now holds that case explicitly.
+- **Proof.** `tests/test_stella.py` — the parametrized
+  `capability=None` case moved out of the "unavailable tool capability" list
+  (assertion retargeted, not weakened: nothing became permitted that was not
+  before) into
+  `test_stella_refuses_a_tool_decision_that_names_no_capability`, run over
+  `None`, `""` and `"   "`, asserting no dispatch, no second LLM call, the
+  refused decision intact and the exact honest sentence. Plus
+  `test_an_unnamed_tool_proposal_after_a_real_step_keeps_the_answer`. Batches:
+  `test_tool_outcomes.py` 7 passed, `test_stella.py` 90, `test_conformance.py` +
+  `test_brain.py` 148 passed 4 skipped,
+  `test_answer_after_observation.py` + `test_tool_fast_path.py` 25,
+  `tests/security/test_adversarial_boundaries.py` 18. `ruff check .` and
+  `git diff --check` clean. Not yet run through a real model turn: the reply it
+  replaces came from a live brain, and the fix is a runtime branch a fake brain
+  can reach — a real `qwen3:4b` turn that fumbles again is the proof that
+  matters, and it is stochastic.
+
 ### A faster brain that never leaves this machine, measured twice
 
 - **What changed.** Nothing in `src/` again, and again deliberately.

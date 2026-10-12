@@ -817,6 +817,44 @@ halfway (`brain.py`), which is the whole of the "quitting early" doctrine —
 whether tools already ran is in `step_trace`, so no marker the runtime cannot
 honestly hold was invented.
 
+### A tool decision that names no capability
+
+Alongside the two budgets, the loop holds a third runtime-owned stop, checked
+after them and before any dispatch. A `tool` decision with **no capability
+named** is refused there, by the same kind of ending. It is
+not a rare reply: measured on this machine (#257), a `qwen3:4b` turn proposed
+`{"kind": "tool", "arguments": {"kind": "weekday"}}` five times out of thirty-five
+tool decisions, and the reply on screen was *"the tool to check the time is
+unavailable"*. The old path manufactured that sentence: the empty name went to
+`ToolDispatcher.execute`, which correctly answered *"Tool capability
+unavailable"*, that became a `tool_observations` entry, and the brain — told to
+be honest about what it saw — reported a tool that had never existed. Three
+things follow from that, all runtime rules rather than model fixes:
+
+- **Nothing is guessed.** The runtime does not infer `datetime` from
+  `{"kind": "time"}`. Rule 3 is one-directional: the model proposes, the runtime
+  authorizes, and a capability Stella invented is a capability nobody asked for —
+  it would also carry the risk tier of a tool chosen by the wrong party.
+- **Nothing is dispatched, so nothing is audited as failed.** No `AuditRecord`
+  exists for a call that never was, and `outcome_status(None)` reads
+  *"Nothing was executed."* with no success tick (#227's rule that a refusal
+  never borrows a tick).
+- **The turn ends in words, and the proposal stays on the record.** The refused
+  `Decision` remains the result's decision — `kind=tool`, no capability — so the
+  trace shows what actually happened, and `unnamed_tool_stop` speaks the same
+  family as `budget_stop`: runtime facts only, no model text and no second
+  provider call. *"That answer asked me to use a tool without saying which one,
+  so I stopped instead of guessing. Nothing ran and nothing was changed — try
+  asking again."*
+
+The refusal is gated on **nothing having run yet**. Once a step produced an
+observation, an unnamed proposal is not the end of the turn: the existing guard
+that retires a tool loop on an unregistered capability converts the decision to
+`answer` and the user gets the result they were owed. Losing a good answer
+because a second proposal was garbled is a different bug and the worse one.
+`tests/test_stella.py` holds both halves, and `tests/test_tool_outcomes.py` holds
+the after-a-real-step half.
+
 ## Intentionally not implemented yet
 
 The following are outside the current system (things that have shipped are

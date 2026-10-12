@@ -98,6 +98,36 @@ def test_successful_tool_answers_from_the_observation() -> None:
     assert result.tool_result == ToolResult(True, "tool output")
 
 
+def test_an_unnamed_tool_proposal_after_a_real_step_keeps_the_answer() -> None:
+    """A garbled second proposal does not take back an answer already earned.
+
+    #258 refuses a tool decision that names no capability *before* anything
+    runs. Once a step has run there is an observation to answer from, and the
+    user is owed that answer rather than a refusal — so the tool loop retires
+    and the answer path speaks.
+    """
+
+    class PhraseLLM(LLMClient):
+        def chat(self, messages) -> str:
+            return "The tool reported: tool output"
+
+    brain = SequenceBrain(
+        [
+            tool_decision("record"),
+            Decision(DecisionKind.TOOL, capability=None, arguments={}),
+        ]
+    )
+    tool = RecordingTool()
+
+    result = build(brain, tool, llm=PhraseLLM()).process(
+        Context(user_input="do the thing")
+    )
+
+    assert tool.arguments == [{}]
+    assert result.response == "The tool reported: tool output"
+    assert result.tool_result == ToolResult(True, "tool output")
+
+
 def test_failed_tool_keeps_an_honest_final_answer() -> None:
     brain = SequenceBrain(
         [

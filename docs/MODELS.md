@@ -359,10 +359,15 @@ a leak.
 brain in `config.py` and in the model row until the owner chooses otherwise in
 Settings, which is the same rule that held #237's router open: a benchmark does
 not get to pick her mind, and a faster model on the same disk is a tier-one
-change that is still her change to make. Two things this measurement names and
-does not fix, left open on purpose: the runtime should refuse to authorize a
-`tool` decision that names no capability rather than answering that the tool is
-unavailable, and a `do_nothing` in reply to a missing argument should be an ask.
+change that is still her change to make. Two things this measurement named; one
+is since fixed and one is left open on purpose. **Fixed (#258):** a `tool`
+decision that names no capability is now refused before dispatch and ends in
+words about the proposal, instead of manufacturing an "unavailable" observation
+that the brain reads back as an apology for a tool that never existed — see
+`docs/ARCHITECTURE.md`, *A tool decision that names no capability*. **Still
+open:** a `do_nothing` in reply to a missing argument should be an ask, which is
+a prompt-and-persona question rather than a runtime one, and this file does not
+settle it from one case.
 Bench scripts `~/tools/bench_router_ab.py` (`--local-models`, so a local-only run
 needs no stored router key) and `~/tools/bench_brain_decisions.py`, raw JSON
 `~/bench-out/router_ab_179178*.json` and `/tmp/brain_decisions_qwen3*.jsonl` —

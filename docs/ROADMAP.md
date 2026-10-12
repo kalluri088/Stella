@@ -530,7 +530,7 @@ someone from paying for the same measurement twice.
   incumbent put **5 of its 35 tool decisions with no capability named** and the
   runtime answered *"the tool to check the time is unavailable"*, while the
   candidate named a capability on all 36. `docs/MODELS.md` carries the tables; the
-  unfixed half is written up there and below.
+  defect landed as #258 and is written up in `docs/ARCHITECTURE.md`.
 
 **The closing verdict of Stage D, kept whole** — a set of declined
 borrowings, not a backlog:
@@ -580,11 +580,14 @@ piece-by-piece measured budgeting, transfers).
   the policy question is now three-way rather than two-way — hosted router, local
   thinking model, local no-thinking model — and still hers, in Settings, because
   picking her mind is a decision and not a result. What that measurement found
-  standing on its own is unfixed and worth its own change: **a `tool` decision
-  that names no capability still gets authorized into an apology** ("the tool to
-  check the time is unavailable"), five times out of the incumbent's 35 tool
-  decisions in the corpus and twice on live turns, and a `do_nothing` returned
-  where an argument was missing should have been a question.
+  standing on its own is now fixed (#258): **a `tool` decision
+  that names no capability no longer gets authorized into an apology** ("the tool
+  to check the time is unavailable"), five occurrences in the incumbent's 35
+  corpus tool decisions and two on live turns — it is refused before dispatch and
+  ends in words about the proposal. The companion finding is deliberately not
+  fixed: a `do_nothing` returned where a missing argument owed a question is a
+  prompt-and-persona matter, not a runtime branch, and one corpus case is not
+  enough to write it.
 - **Tokens are not a budget axis.** `decision_max_tokens` and
   `answer_max_tokens` cap one call, not a task, so the Vision's three axes
   are two-thirds built (#231).

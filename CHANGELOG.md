@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### The owner chose the brain: the router stays
+
+- **What changed.** Nothing in the code, and that is the point — #237 was a
+  decision, and it has been made. Her installed `config.json` keeps
+  `provider=openai, model=auto, preset=freellmapi`: Stella answers through the
+  local router at `localhost:3001`, whose models are not on this machine.
+  `qwen3:4b-instruct-2507-q4_K_M` stays pulled, listed by the model row, and
+  selectable in Settings without anyone's help. `docs/ROADMAP.md` B8b and
+  `docs/MODELS.md` now record the choice with its cost instead of describing
+  it as still pending.
+- **What she accepted by keeping it.** Two things, both named out loud rather
+  than discovered later. Her words go to models this machine does not run —
+  that is the tier-two trade rule 10 says is hers, and she has now made it
+  with a measurement in front of her. And a turn fails the moment the router
+  container or its upstream is down: she lived that on 2026-10-11, when every
+  turn answered `Connection error.` because nothing was listening on 3001.
+- **Why that second risk is survivable rather than unmitigated.** Not new
+  work — already shipped. #247 made `stella doctor` prove the brain it was
+  configured with, so the dead endpoint is named instead of inferred, and #248
+  makes a failed turn say what it was aimed at. A dead router now announces
+  itself as a dead router instead of looking like a broken assistant. The
+  fallback she chose not to take is one row in Settings away.
+- **What was deliberately not done.** No config was written, no environment
+  variable was set to smuggle in a fake default, and no turn was spent
+  re-proving a candidate she has just declined. The earlier claim in
+  `docs/MODELS.md` that a faster local model was "a tier-one change that is
+  still her change to make" turns out to have been exactly right: it was hers,
+  and she did not make it.
+- **Proof.** Her saved config read without printing the file (keys only, no
+  secrets present in it), `ollama list` showing the declined candidate still
+  installed, and the router container reported `healthy` with
+  `restart_count=0`. Docs-only change: `ruff check .` and `git diff --check`
+  clean, no test touched.
+
 ### Stella has no default brain, and the docs said she did
 
 - **What changed.** Documentation only, and it was a claim this session nearly

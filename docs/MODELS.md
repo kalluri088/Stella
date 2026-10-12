@@ -125,10 +125,13 @@ What the measurement does establish, and what was fixed: an unreadable
 decision is not a `do_nothing`, and it no longer gets to be silent
 (`docs/ARCHITECTURE.md`, `Decision.unreadable`). Of the two candidates that
 this left, streaming the answer (#230) has now been measured and declined —
-see *The tail a stream could have handed over* below — so the one still open
-is a faster brain for the turns that need no reasoning at all (#237), not a
-smaller budget. That one has now been measured too, and the speed is real;
-what remains open about it is the owner's decision, not the number (see *The
+see *The tail a stream could have handed over* below — so the one that remained
+open was a faster brain for the turns that need no reasoning at all (#237), not
+a smaller budget. That one has now been measured too, and the speed is real;
+what was open about it was the owner's decision, not the number, and she made
+it on 2026-10-12: **the router stays her brain** (`provider=openai, model=auto,
+preset=freellmapi`), with the local no-thinking build left installed and
+selectable as the fallback (see *The
 faster brain, measured on the turns it would have to answer*). It has since
 been measured against a brain that stays on this machine as well (*The
 no-thinking variant of the same weights, measured*). The last latency term

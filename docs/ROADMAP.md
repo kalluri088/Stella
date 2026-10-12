@@ -511,7 +511,20 @@ someone from paying for the same measurement twice.
   still stands for any future attempt, and so does the finding that the
   remaining lever is a faster brain for turns that need no reasoning (#237) —
   since measured twice, at a 3.20 s median against the local 22.27 s on the same
-  six production turns, and still the owner's decision rather than a default.
+  six production turns, and decided by the owner on 2026-10-12: **the router
+  stays her brain.** `qwen3:4b-instruct-2507` (#257) matched or beat the local
+  thinking model on both instruments at a 1.7 s median and never left the
+  machine, and she read that and kept `auto` through the local router anyway —
+  which is the choice this bullet was written to hand over, not a default a
+  benchmark flips. What she accepted by keeping it is recorded plainly: her
+  words go to models this machine does not run, and a turn fails with
+  `Connection error` the moment the container or its upstream is down (the
+  outage she lived through on 2026-10-11). The mitigation is already shipped
+  rather than owed: #247 makes `stella doctor` prove the brain it was
+  configured with and #248 names what a failed turn was aimed at, so a dead
+  router says so instead of looking like a broken assistant. #257's local
+  no-thinking build stays installed and selectable in Settings as the fallback
+  she can switch to without asking anyone.
 - **B8c. The faster brain, but one that stays on the disk (#257) — measured,
   not switched.** #237's sevenfold median buys itself by sending her words to
   models this machine does not run, so the same question was asked of an Ollama

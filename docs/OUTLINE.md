@@ -258,6 +258,57 @@ passport, due on Friday, 2026-10-16 at 16:43."* The list question still answered
 off the `/today` count line rather than the titles, which is a separate defect
 about what that line *says* (#262), not about the window.
 
+## The number that was not today's (#262, 2026-10-13)
+
+`/api/v1/today` returns one round-trip dashboard: today's tasks, today's
+events, what is overdue, what is next up, the day's water total — and
+`open_task_count`, which the server computes over **the whole store**, with no
+date predicate at all (`outline_server/api/today.py`: `SELECT COUNT(*) FROM
+tasks WHERE deleted_at IS NULL AND status = 'open'`). Stella printed that
+number on the line after the words "water today", and on a live turn the owner
+asked "what's on my task list", got `outline_search{when=today}`, and heard:
+
+> Your task list today has two open tasks. There is no water entry for today.
+
+Nothing was due that day. The store held two open tasks — one due in three
+days, one undated — and the render had let a whole-list count borrow the day
+from the clause above it. This was the second sighting of the same line: the
+re-run recorded at the end of *The first live turns* had already produced
+*"Your Outline list today has 4 open tasks"*, at a point when four was simply
+the number of seeded rows and nobody had asked the store for a today-scoped
+count.
+
+**The first fix was one word and it did not work.** Labelling the number
+`open tasks (every date, not only today): 2` left the same turn answering *the
+same sentence*: the day's own state was still missing from the page, so the
+only number on offer still looked like the answer. What does work is stating
+that state first — `water today: 0 ml · nothing is due today · 2 open tasks in
+the whole list` — after which the same brain, on the same question, against the
+same scratch data said:
+
+> Nothing is due today. There are 2 open tasks in your entire task list, but no
+> tasks scheduled for today.
+
+So the today render gained two things, both in `outline_search`:
+
+- **The day says whether it holds anything.** When `today_tasks` and `events`
+  are both empty the summary says `nothing is due today`. It is computed from
+  the payload's own sections, so it cannot contradict them; a day that holds
+  something does not claim it is empty (`test_a_day_that_holds_something_does_
+  not_claim_it_is_empty`).
+- **A count names the list it was counted over.** "in the whole list" replaces
+  the bare number, and the *bound note* for `when=today` was rewritten to
+  match what a dashboard actually is. The generic note ("every line above is
+  inside the window") was false here — a today page shows overdue rows, next-up
+  events from other days, and a store-wide count — so the today window now
+  names its sections and says that a task due on another date, unless it is
+  overdue, is not in the page.
+
+This is the same lesson as #261 in a different place: what an argument *means*
+and what a number *covers* are the runtime's to say, and a small model will
+answer from whatever the result page puts forward as the headline. No new
+argument, no extra request, no new verb.
+
 ## Security notes
 
 - Loopback HTTP with a bearer-equivalent header, over stdlib `urllib` only: no
@@ -313,6 +364,22 @@ about what that line *says* (#262), not about the window.
   2026-10-16 at 16:43."* The scratch server and its data directory were stopped
   and removed afterwards; the owner's `~/.local/share/outline` was again never
   opened for writing.
+- Live, on 2026-10-13 (#262): the same newer build served a **fresh** scratch
+  directory (`/tmp/outline-scratch3`) on `127.0.0.1:8742` with two seeded tasks,
+  one due in three days and one undated, and nothing dated today. The turn was
+  the one that produced the false sentence: before the render change
+  `bin/stella-dev chat` answered *"Your task list today has two open tasks."*;
+  with only the count relabelled it answered the same way again (the recorded
+  reason the day's own state had to be said out loud); with the shipped render
+  it answered *"Nothing is due today. There are 2 open tasks in your entire
+  task list, but no tasks scheduled for today."* 99 offline assertions in
+  `tests/test_outline_tools.py` and 11 in
+  `tests/test_outline_reminder_delivery.py` pass, `ruff check .` and
+  `git diff --check` are clean. The scratch server was stopped and its directory
+  removed; the owner's database was opened **read-only** to confirm its schema
+  is still `user_version = 5` and its file mtime unchanged — the WAL `-shm`
+  sidecar's timestamp moved because opening a WAL database touches shared
+  memory, and no row was written.
 - Not yet validated live: a turn against a running server **holding the
   owner's own data** — which needs her version skew resolved first (see
   `RESEARCH-RUNNING-OUTLINE.md`) — and a due reminder arriving through the pump

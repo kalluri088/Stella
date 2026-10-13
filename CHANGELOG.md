@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### The number on the today page was not today's (#262)
+
+- **What changed.** `outline_search`'s `when=today` render says what the day
+  holds before it says anything else. When `/api/v1/today` returns no task due
+  today and no event on today's date, the summary line now reads
+  `water today: 0 ml · nothing is due today · 2 open tasks in the whole list`;
+  a day that holds something does not claim to be empty. The bound note that
+  closes a windowed result also gained a today-specific form, because the
+  generic one was untrue for a dashboard: a today page shows overdue rows,
+  next-up events from other days, and a store-wide count, so it now names its
+  sections instead of saying every line above is dated inside the window. One
+  tool, no new argument, no tier touched.
+- **Why.** `open_task_count` is computed by the server over the whole store
+  (`status = 'open'`, no date predicate), and Stella printed it directly after
+  the words "water today". On a live turn the owner asked *"what's on my task
+  list"* and heard *"Your task list today has two open tasks. There is no water
+  entry for today."* on a day with nothing due. The same line had already been
+  seen once in #241's re-run ("4 open tasks today" out of four seeded rows).
+- **The one-word fix is recorded as a failure.** Labelling the count
+  `open tasks (every date, not only today): 2` left that turn answering the
+  same sentence — a scope clause on a number did not give the small model
+  anything to answer *from*. What moved the answer was stating the day's own
+  state first. Kept in the docs because it is the useful part: the headline of
+  a result page is what a brain repeats.
+- **Proof.** `tests/test_outline_tools.py` 99 passed (two assertions retargeted
+  to the new render, one test added for the empty-day claim),
+  `tests/test_outline_reminder_delivery.py` 11 passed, `ruff check .` and
+  `git diff --check` clean. Re-checked live against a fresh scratch Outline
+  server (`/tmp/outline-scratch3`, port 8742, two seeded tasks, nothing dated
+  today): the same turn now answers *"Nothing is due today. There are 2 open
+  tasks in your entire task list, but no tasks scheduled for today."* The
+  scratch server was stopped and its directory removed; the owner's database
+  was opened read-only to confirm its schema is still at `user_version = 5`
+  with the file untouched, and no row was written.
+
 ### A date window nobody asked for, measured nine times out of nine (#261)
 
 - **What changed.** `outline_search` stopped letting a date window decide what

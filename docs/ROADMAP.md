@@ -834,7 +834,12 @@ two of those three axes are in place and the third is named as missing below.
   no time, and no wording in the tool description moved that rate. The window
   therefore no longer decides what is fetched — the keyword does, and the
   window labels each hit — so a volunteered window can no longer produce a
-  confident "you have no such task" about a task that exists. What still
+  confident "you have no such task" about a task that exists. #262, the turn
+  that finding left behind, was the same class of defect one line over: the
+  `/today` page printed the store's whole open-task count right after "water
+  today", and the owner was told she had two tasks *today* on a day with
+  nothing due — now the day states whether it holds anything before any number
+  does, and the count names the list it covers. What still
   stands between that and her real workspace is one fact about this machine:
   `~/Projects/Outline` ships migrations to `003` while
   `~/.local/share/outline/outline.db` is at schema `5`, so the older checkout

@@ -525,6 +525,18 @@ def _window_bound_note(when: str | None) -> str | None:
 
     if when is None:
         return None
+    if when == "today":
+        # A today view is a dashboard, not a pure date filter: it shows
+        # what is due today, what is overdue and what is next, and its
+        # leading counts cover more than the day. Saying "everything above
+        # is inside the window" about that page would be false, so this
+        # window names its sections instead.
+        return (
+            "(a today view lists what is due today, what is overdue and "
+            "what is next up; the water and open-task counts are the day's "
+            "total and the whole list, so a task due on another date that "
+            "is not overdue is not here.)"
+        )
     return (
         f"(every line above is inside the '{when}' window: dated items "
         "only. An undated task, or a match in other words, is not here.)"
@@ -747,9 +759,19 @@ class OutlineSearchTool(Tool):
             # summary leads: a few hundred overdue rows must still leave
             # water, today's schedule and what is next visible.
             summary = f"water today: {payload.get('water_total_ml', 0)} ml"
+            # The server's open-task count covers the whole store, and this
+            # line led with "water today", so the two ran together: measured
+            # on a live turn (2026-10-13) the result said "open tasks: 2" and
+            # Stella told the owner "You have two open tasks today" when
+            # nothing was due today at all. A label on the number was tried
+            # first and the same turn still read it as today's, so the day's
+            # own state leads and the count names the list it was counted
+            # over. The scope of a number is part of the number.
+            if not (payload.get("today_tasks") or payload.get("events")):
+                summary += " · nothing is due today"
             open_count = payload.get("open_task_count")
             if isinstance(open_count, int) and not isinstance(open_count, bool):
-                summary += f" · open tasks: {open_count}"
+                summary += f" · {open_count} open tasks in the whole list"
             lines.append(summary)
             lines += _section(
                 payload.get("today_tasks"),

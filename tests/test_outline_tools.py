@@ -1222,8 +1222,24 @@ def test_today_view_includes_upcoming_events_and_open_count():
     }
     tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
     result = tool.execute({"when": "today"})
-    assert "open tasks: 2" in result.output
+    # A live turn read this number as today's and said "you have two open
+    # tasks today" on a day that held nothing. The day's own state leads and
+    # the count names the list it was counted over.
+    assert "nothing is due today" in result.output
+    assert "2 open tasks in the whole list" in result.output
     assert "next up: lunch with Sam" in result.output
+    # the count is never rendered as a today number again
+    assert "today: 2" not in result.output
+    # and a today view says what its page holds, rather than claiming to be
+    # one clean date filter
+    assert "a today view lists what is due today" in result.output
+
+
+def test_a_day_that_holds_something_does_not_claim_it_is_empty():
+    # The empty-day sentence is a claim about the store, so it appears only
+    # when the day's own task and event sections are both empty.
+    tool = OutlineSearchTool(client())
+    assert "nothing is due today" not in tool.execute({"when": "today"}).output
 
 
 def test_today_view_survives_missing_optional_fields():
@@ -1257,7 +1273,7 @@ def test_today_view_keeps_time_sensitive_sections_under_overdue_flood():
     tool = OutlineSearchTool(client(("GET", "/api/v1/today", today)))
     result = tool.execute({"when": "today"})
     lines = result.output.splitlines()[1:]
-    assert lines[0] == "water today: 500 ml · open tasks: 40"
+    assert lines[0] == "water today: 500 ml · 40 open tasks in the whole list"
     assert any("[task#7] standup" in line for line in lines)
     assert any("next up: lunch" in line for line in lines)
     assert any("next up: review" in line for line in lines)

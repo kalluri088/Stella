@@ -56,6 +56,14 @@ already said. A client that cannot put the array on the wire keeps the
 prose list instead; the Brain asks the client which it is (`LLMClient
 .declares_tools_natively`) and never sends both.
 
+One sentence has joined the rules since that was measured. #263 added the
+routing clause that separates what the *owner* keeps from what Stella keeps,
+and the provider's own tokenizer prices it at **+60 tokens** (3,404 → 3,464
+for the rules block with no persona file). It sits inside the cached prefix,
+so it is not a per-turn tax: a turn that reads warm pays nothing extra, and a
+cold read is 60 tokens larger. The two tool descriptions the same change
+redrew cost +58 and +40 on the `tools` array side.
+
 Reading all of it from nothing costs ~3.0 s on this machine;
 reading it again from a server that cached the prefix costs ~0.07 s. That
 cache is the whole difference between a turn that starts instantly and one

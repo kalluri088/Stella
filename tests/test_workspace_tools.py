@@ -244,6 +244,22 @@ def test_workspace_search_tool_reports_no_matches(tmp_path) -> None:
     )
 
 
+def test_workspace_search_names_the_app_it_does_not_read_without_naming_a_tool() -> None:
+    """#263: the owner's "what do I have about X" landed here because this
+    description invited exactly that phrasing. It now hands her material to
+    the app that stores it — without naming ``outline_search``, which is
+    registered only while STELLA_OUTLINE is on, while this tool is registered
+    every turn."""
+
+    description = WorkspaceSearchTool(
+        "stella_workspace"
+    ).description
+
+    assert "files Stella keeps in her own workspace" in description
+    assert "NOT the user's Outline app" in description
+    assert "outline_search" not in description
+
+
 def test_filesystem_read_tool_returns_short_file_completely(
     workspace,
 ) -> None:

@@ -309,6 +309,127 @@ and what a number *covers* are the runtime's to say, and a small model will
 answer from whatever the result page puts forward as the headline. No new
 argument, no extra request, no new verb.
 
+## Whose data is whose (#263, 2026-10-13)
+
+#261 measured date windows and noticed something on the way: four of its eight
+questions never reached the Outline tools at all. "what do I have about car
+insurance", "search my notes for standup", "do I have a note about the
+headphones sounding bad" — each went to `workspace_search`, which reads text
+files in **Stella's own workspace**. Her tasks and notes live in her Outline
+app, so the call that was made could not have found what was asked for, and the
+owner got an honest report about the wrong store.
+
+The reason was in the decision prompt, and it took two sentences to say. The
+"Workspace intelligence" rule tells the model to use `workspace_search` to
+discover *which files mention a term*, and the final routing check — the last
+thing the model reads before the reply format — repeats that invitation.
+Nothing anywhere said what reads the owner's own material.
+
+Three sentences were added, all wording, no new argument, tool, tier or
+request:
+
+- the routing check gained the counterpart of its own workspace clause: a
+  question about what the USER has is about her Outline app, and the workspace
+  tools read files Stella keeps in her own workspace;
+- `outline_search`'s description says the app is her **own** and names the two
+  questions it is the tool for;
+- `workspace_search`'s description, which had been reading as an invitation to
+  search Stella's files whenever the owner used the word "notes", now says
+  whose files these are and hands her material to the app that holds it.
+
+**Measured on the production request path**, decision-only, against the real
+local model, 3 passes over the eight questions, with the Outline tools over a
+stub transport so nothing was dispatched (`~/tools/bench_outline_routing.py`):
+
+| state | reached `outline_search` |
+| --- | --- |
+| before, all three sentences absent | 9/24, 9/24, 9/24 |
+| after, the shipped wording | 18/24, 18/24, 18/24 |
+
+Three runs each, and the committed state produced 9 every time while the
+shipped sentences produced 18 every time: a doubling, with arms that differ by
+three sentences and nothing else. One earlier draft of the same clause scored
+15/24 before its last sentence was redrawn, and a draft that named
+`outline_search` inside `workspace_search`'s description scored 17/24 — the
+same result either way, so the choice between those texts was made on the
+invariant below rather than on a number the model's spread cannot resolve.
+
+Six of the twenty-four stay misrouted, and they are the same six in all three
+runs of the shipped state: *"find everything mentioning the router being down"*
+and *"anything about the dentist"*, three passes apiece. The first is the
+literal trigger phrase of the workspace rule (`which files mention a term`) and
+the second is answered with a clarifying question in every arm, including the
+one before any of this. *"search my notes for standup"*, which the committed
+state never once routed to her app, reached it 3/3 in all three shipped runs.
+Wording does not fix the first two; one is genuinely ambiguous between the two
+stores and the other is a question the model would rather ask about.
+
+**Stronger and weaker wordings were measured or written, and none was
+adopted.** The shipped `workspace_search` description points at *the capability
+that reads her Outline app*; the version that named `outline_search` scored
+17/24 against its 18/24, which is noise, and it is the one the invariant
+rejects. Two further clauses were built into the harness and deliberately never
+run: one naming `outline_search` inside the routing check, which breaks the
+invariant below, and one pointing at "the list you were given", which refers to
+a list only one of the two client arms is ever sent.
+
+**That invariant is the reason the clause says "her Outline app" instead of
+"outline_search".** `STELLA_OUTLINE` gates the integration, and the decision
+prompt is sent every turn whether or not the tools are registered. The cached
+prefix already may not move when a capability family is toggled
+(`test_the_cached_prefix_does_not_move_when_a_capability_is_toggled`), so a
+rule that names a sometimes-absent capability would be a sentence the runtime
+cannot honour. The same reasoning is why `workspace_search` — registered on
+every turn — points at *the capability that reads her Outline app* rather than
+at `outline_search` by name. Measured across five runs with the integration
+switched off — 120 decisions — this costs nothing dangerous and buys honesty:
+the model **never** invented an `outline_search` call. What it does instead
+changes with the sentences. The committed state searched Stella's own files 18
+of 24 times, both times it was run in that state, and asked 6; the shipped
+sentences searched 9 and asked her what she means 15, with the two runs of the
+drafts before them splitting 12 and 12. When the app is not connected there is
+nothing to search, and asking is the truer answer. (A sixth switched-off run is
+in the log and is not counted here: it was measured before the harness stopped
+registering the Outline tools in the dark arms, and its numbers mean nothing.)
+
+The prompt pays for this in tokens, and the three numbers were read off the
+provider's own tokenizer: the routing clause is +60 (the rules block moves
+3,404 → 3,464), `workspace_search`'s description +58, `outline_search`'s +40.
+The routing clause is part of the cached prefix, so it is re-read once per
+cache miss rather than rebuilt per turn; the two descriptions travel on the
+`tools` array, which the client also caches. Against the ~3.0 s it costs to
+read the whole decision prompt from nothing, ~140 tokens is under 5%.
+
+One of the live turns written up below also caught a different defect: asked
+"what do I have about car insurance", Stella issued `outline_search` and
+`workspace_list` in one response, found the car-insurance task, and then
+answered from the second call — *"No files or folders in this workspace dir"*.
+The routing was right and the answer was still wrong. That is the multi-call
+drop already tracked as #264, and it is now recorded against a real turn.
+
+**Live, on the shipped sentences.** The tree was then run end to end against a
+scratch Outline server on port 8743 — its own `OUTLINE_DATA_DIR` under
+`/tmp`, seeded with one task ("Renew car insurance before the policy lapses",
+undated) and one note attached to it. Three questions, one turn each, through
+`bin/stella-dev chat`:
+
+> **what do I have about car insurance** → `outline_search` →
+> *You have an open task to renew your car insurance before the policy lapses,
+> noting a Geico quote of $640/year to compare against your current carrier.
+> Attached to that task is a note stating that your car insurance papers,
+> policy number, and garage phone number are in the glovebox folder.*
+>
+> **do I have a task about renewing my passport** → `outline_search` →
+> *No, you don't have any open tasks about renewing my passport.*
+>
+> **what's on my task list** → `outline_search` →
+> *You have one open task: Renew car insurance before the policy lapses.*
+
+Three for three reached her app, each in a single call, and the second answered
+a question about a task that does not exist without inventing it. The scratch
+server was stopped and its directory deleted afterwards; nothing on this
+machine's real Outline store was read or written by these turns.
+
 ## Security notes
 
 - Loopback HTTP with a bearer-equivalent header, over stdlib `urllib` only: no
@@ -380,6 +501,34 @@ argument, no extra request, no new verb.
   is still `user_version = 5` and its file mtime unchanged — the WAL `-shm`
   sidecar's timestamp moved because opening a WAL database touches shared
   memory, and no row was written.
+- Measured, on 2026-10-13 (#263):
+  `~/tools/bench_outline_routing.py`, 8 keyword questions × 3 passes per arm on
+  the production request path against the real local `qwen3:4b`, Outline tools
+  over a stub transport so **no server was started and nothing was dispatched**.
+  Arms run: the committed state at 9/24 on all three of its runs, the shipped
+  sentences at 18/24 on all three of theirs, one earlier draft of the clause at
+  15/24, the same sentences with `outline_search` named inside
+  `workspace_search` at 17/24, and both states with the integration switched
+  off — five dark runs of 24 decisions each, **zero** of which named
+  `outline_search`; with the sentences in place the model asked rather than
+  searched in 15 of 24, where the committed state searched Stella's own files in
+  18 of 24. (A sixth switched-off run, from before the harness stopped
+  registering the tools in the dark arms, is in the log and excluded.) Then the
+  shipped tree live: a scratch server on `127.0.0.1:8743`
+  with its own `/tmp/outline-scratch7` data directory, one seeded task and one
+  note attached to it, three questions through `bin/stella-dev chat` — three
+  `outline_search` calls, three answers drawn from her data. The server was
+  stopped and its directory deleted; the owner's `~/.local/share/outline` was
+  never opened by these turns. Offline: `tests/test_brain.py` 64 passed,
+  `tests/test_workspace_tools.py` + `tests/test_workspace_brain.py` 51,
+  `tests/test_outline_tools.py` + `tests/test_tools.py` 261,
+  `tests/test_conformance.py` + `tests/test_commands.py` 125 (4 skipped),
+  `tests/test_argument_risk.py` + `tests/test_app.py` 125,
+  `tests/security/` boundary files 42, `tests/test_doctor.py` +
+  `tests/test_settings_wiring.py` 100, `ruff check .` clean.
+  Two failures in `tests/test_web_tools.py` are pre-existing and unrelated: those
+  tests isolate `TINYFISH_API_KEY` from the environment but not from the
+  owner's stored Settings secret, which this machine has (#265).
 - Not yet validated live: a turn against a running server **holding the
   owner's own data** — which needs her version skew resolved first (see
   `RESEARCH-RUNNING-OUTLINE.md`) — and a due reminder arriving through the pump

@@ -651,10 +651,18 @@ class OutlineSearchTool(Tool):
 
     @property
     def description(self) -> str:
+        # The owner's app and Stella's own workspace are two different stores,
+        # and a question about what the OWNER has must reach the first one.
+        # Measured 2026-10-13: with this sentence and the routing check in
+        # brain.py, 18 of 24 keyword questions reached outline_search on each
+        # of three runs, against 9 of 24 on three runs without them.
         return (
-            "Searches the user's Outline app (tasks, events, notes, "
-            "projects, people). Read-only. Give query keywords, a "
-            "when= window (today|upcoming|overdue — dated items only), a "
+            "Searches the user's OWN Outline app — the tasks, notes, events, "
+            "projects and people she keeps there. This is the tool for "
+            "\"what do I have about X\" and \"do I have a note about X\"; the "
+            "workspace tools read files Stella wrote, not her app. "
+            "Read-only. Give query keywords, a when= window "
+            "(today|upcoming|overdue — dated items only), a "
             "tag= for open tasks with that tag, kind=task with no query for "
             "the open list, kind=person for one person's detail plus their "
             "linked items, kind=graph for a named person's or project's "

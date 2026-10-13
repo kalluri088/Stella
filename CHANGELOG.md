@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Whose data is whose (#263)
+
+- **What changed.** Three sentences, no new argument, tool, tier or request.
+  The final routing check in `brain.py` gained the counterpart of its own
+  workspace clause: a question about what the USER has is about her Outline
+  app, and the workspace tools read files Stella keeps in her own workspace.
+  `outline_search`'s description says the app is her *own* and names the two
+  questions it is the tool for; `workspace_search`'s description says whose
+  files it reads and hands her material to the app that holds it.
+- **Why.** Since the integration shipped, "what do I have about car insurance"
+  has been routed to `workspace_search`, which searches text files in Stella's
+  own workspace — a call that cannot find her tasks or notes, and returned an
+  honest report about the wrong store. The invitation was in the prompt: the
+  rules tell the model that *which files mention a term* is
+  `workspace_search`'s, and nothing said what reads the owner's own material.
+  Measured on the production request path over eight keyword questions, 3
+  passes per run: the committed state reached `outline_search` 9 times out of
+  24 on all three of its runs, and the shipped sentences reached it 18 out of
+  24 on all three of theirs.
+- **The invariant chose the wording, not the number.** The candidate sentences
+  scored the same within the model's run-to-run spread, so the one shipped is
+  the one that names no gated capability identifier: the rules and
+  `workspace_search` say "her Outline app", never `outline_search`, because
+  `STELLA_OUTLINE` may be off and those two texts are sent every turn anyway.
+  A draft that did name the identifier measured 17 out of 24, and an earlier
+  draft of the clause 15 — the same result either way, at the cost of a
+  sentence the runtime cannot honour. Across the five valid runs made with the
+  integration switched off — 120 decisions — the model never once invented an
+  `outline_search` call, and the state that searched Stella's own files 18
+  times out of 24 in both of its switched-off runs now searches 9 and asks her
+  what she means 15.
+- **Proof.** `tests/test_brain.py` (the routing check names no capability the
+  owner can switch off, and the owner-data clause is present for both client
+  arms), `tests/test_workspace_tools.py` and `tests/test_outline_tools.py`
+  (each description states whose store it reads and does not claim the
+  other's). Live against a scratch Outline server on `127.0.0.1:8743` with its
+  own `/tmp` data directory: three questions, three single-call
+  `outline_search` turns, and the car-insurance answer quoting the seeded task
+  *and* its attached note. The scratch server and directory were removed; the
+  owner's Outline store was never opened. See `docs/OUTLINE.md`.
+
 ### The number on the today page was not today's (#262)
 
 - **What changed.** `outline_search`'s `when=today` render says what the day

@@ -567,6 +567,20 @@ user; act on the request and speak naturally.
             "system_info, reading a workspace file uses filesystem_read, and "
             "inspecting workspace contents, paths, or which files mention a "
             "term uses workspace_list, workspace_find or workspace_search. "
+            # The sentence above hands "which files mention a term" to the
+            # workspace tools and the model read it as covering the owner's
+            # own material: #261 left four of eight keyword questions routing
+            # to workspace_search, which cannot see her tasks or notes. This
+            # is the counterpart, and it names the app rather than
+            # outline_search — the integration is gated, so a rule that is
+            # sent every turn may not name a capability that is sometimes
+            # absent, and measuring the two side by side found no difference
+            # (#263: 18/24 against 17/24, inside the run-to-run spread).
+            "A question about what the USER has — her tasks, her notes, her "
+            "projects, her schedule — is about her Outline app, and the "
+            "capability that reads her Outline data is the call; the "
+            "workspace tools read files Stella keeps in her own workspace, "
+            "which is not where the owner stores her life. "
             "Do not use kind=answer for these requests, "
             "do not guess their results, and do not claim a file is missing "
             "before the tool runs.\n"

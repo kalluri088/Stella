@@ -1776,13 +1776,27 @@ class WorkspaceSearchTool(FileSystemReadTool):
 
     @property
     def description(self) -> str:
+        # This tool is registered on every turn; the Outline tools are not.
+        # So the sentence that hands the owner's own material over names the
+        # app and what it holds, never outline_search: a description the model
+        # always reads may not point at a capability that is sometimes absent
+        # (the same rule the decision prompt holds itself to). Measured
+        # 2026-10-13 on eight keyword questions, 3 passes: this text reached
+        # her app 18 times out of 24 on each of three runs, the version naming
+        # the identifier 17 — a difference the model's spread cannot resolve,
+        # so the invariant decided it.
         return (
             "Searches UTF-8 text files inside the configured Stella workspace "
             "for a case-insensitive literal phrase and returns matching "
             "path, line number and a short excerpt. Binary, unreadable and "
             "oversized files are skipped. Hidden folders and caches like .git "
-            "or node_modules are skipped. Use for 'files that mention' and "
-            "'where is X configured or implemented' requests."
+            "or node_modules are skipped. This reads files Stella keeps in "
+            "her own workspace — notes, drafts and exports she wrote — and "
+            "NOT the user's Outline app: a question about what the user HAS "
+            "(her tasks, her notes, her projects) is for the capability that "
+            "reads her Outline app. Use this for \"which files mention\" and "
+            "\"where is X configured or implemented\" about this machine's "
+            "workspace."
         )
 
     @property

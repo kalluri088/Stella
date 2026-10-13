@@ -839,7 +839,13 @@ two of those three axes are in place and the third is named as missing below.
   `/today` page printed the store's whole open-task count right after "water
   today", and the owner was told she had two tasks *today* on a day with
   nothing due — now the day states whether it holds anything before any number
-  does, and the count names the list it covers. What still
+  does, and the count names the list it covers. #263 was the third: a keyword
+  question about what the owner *has* ("what do I have about car insurance")
+  routed to `workspace_search`, which reads Stella's own files and so could not
+  answer it, because the routing rules invite that tool by name and said
+  nothing about her app. Three sentences, measured on the production request
+  path: 9 of 24 such questions reached `outline_search` before, 18 of 24 after,
+  three runs each. What still
   stands between that and her real workspace is one fact about this machine:
   `~/Projects/Outline` ships migrations to `003` while
   `~/.local/share/outline/outline.db` is at schema `5`, so the older checkout

@@ -576,6 +576,21 @@ def test_the_routing_check_never_points_at_a_list_that_may_be_absent() -> None:
         )
 
 
+def test_the_routing_check_names_no_capability_the_owner_can_switch_off() -> None:
+    """The Outline tools appear only while ``STELLA_OUTLINE`` is on, so the
+    rules may say the owner's material lives in her Outline app — a fact
+    about her, true either way — but may not name a capability that is not
+    on the wire. Asked how much the name was worth, it was worth nothing:
+    pointing at the app measured the same as pointing at the identifier
+    (#263, 24 decisions per arm on the production request path)."""
+
+    for llm in (ResponseLLM("{}"), DeclaringResponseLLM("{}")):
+        prompt = LLMBrain(llm)._system_prompt()
+        assert "outline_search" not in prompt
+        assert "her Outline app" in prompt
+        assert "what the USER has" in prompt
+
+
 def test_the_cached_prefix_does_not_move_when_a_capability_is_toggled() -> None:
     """With the registry on the wire, the system prompt is the rules and
     nothing else — so the part a server re-reads survives registering or

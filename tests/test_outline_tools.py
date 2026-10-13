@@ -1046,6 +1046,21 @@ def test_remind_action_summary():
 # --------------------------------------------------------------------------
 
 
+def test_search_is_framed_as_the_owner_s_own_store():
+    """#263: a keyword question about what the owner HAS was landing on
+    ``workspace_search``, which reads Stella's own files. The two
+    descriptions are the only place the model learns which store is whose,
+    so each names the other's territory as not its own."""
+
+    tool = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", FakeServer([]))
+    )
+
+    assert "OWN Outline app" in tool.description
+    assert "workspace tools read files Stella wrote" in tool.description
+    assert '"what do I have about X"' in tool.description
+
+
 def test_remind_field_is_framed_as_outline_app_only():
     client = OutlineClient("http://127.0.0.1:8741", "t", FakeServer([]))
     create = OutlineCreateTool(client)

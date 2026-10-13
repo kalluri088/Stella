@@ -21,7 +21,7 @@ back is data rather than instruction (rules 6 and 7).
 
 | Capability | Risk | What it is |
 |---|---|---|
-| `outline_search` | SAFE | the only read: a date window (today / upcoming / overdue), a keyword query, `kind=task` with no keywords for the open list, a tag filter, one person's detail, a project or person's connections as text, recently deleted items |
+| `outline_search` | SAFE | the only read: a keyword query, a date window (today / upcoming / overdue) that *labels* matches rather than hiding them, `kind=task` with no keywords for the open list, a tag filter, one person's detail, a project or person's connections as text, recently deleted items |
 | `outline_create` | SENSITIVE | one new task, event, note, water log, timer, project or person |
 | `outline_update` | SENSITIVE | one action on one existing item, including attaching and detaching a person |
 | `outline_bulk` | SENSITIVE | one action across many tasks in a single request |
@@ -193,9 +193,70 @@ brain volunteers a date window that nobody asked for, so the plain keyword
 search never runs and the titles never reach her. The empty-window sentence made
 the resulting answer honest — *"…for today; a broader search would be needed to
 find older or undated items"* — but did not, in that sample, make her take the
-cheaper second call the hint offered. That is prompt and persona work, it joins
-the other named model-behaviour residuals rather than being fixed sideways
-inside this change, and one sighting each way is not a rate.
+cheaper second call the hint offered. That measured rate is now in *The window
+nobody asked for* below, and the window is no longer able to hide a keyword hit.
+
+## The window nobody asked for (#261, 2026-10-13)
+
+The residual from the section above was turned into a rate before anything was
+changed, because "one sighting each way is not a rate" cuts both ways.
+`~/tools/bench_outline_window.py` registers the production capability list with
+the four Outline tools built over a **stub transport** — no Outline server is
+started, no port is opened, the token is a literal dummy, and any request other
+than the health probe raises — then asks the real local brain eight questions
+that name **no time** ("what do I have about car insurance", "do I have a task
+about renewing my passport", "what's on my task list"), three passes each, and
+records what it proposes.
+
+- **Baseline: 9 of 9.** Every `outline_search` the brain proposed carried a
+  non-empty `when`. The behaviour is not a slip; it is this model's reading of
+  a keyword question.
+- **Prompt work does not move it.** One arm added a sentence to the tool
+  description and the schema ("a `when=` window hides every undated item, so set
+  one only when the owner names that time"). Same eight questions, same three
+  passes: 7 of 9. Two rows out of twenty-four decisions is not a result, and the
+  two questions that matter most — the passport task and the list — never moved
+  at all. That arm is **not** shipped; the description is unchanged.
+- **The other theory was measured and is not the cause.** `LLMBrain.decide`
+  keeps `response.tool_calls[0]` and drops the rest, so a model proposing
+  `{when: "today"}` and `{query: "…"}` as two parallel calls would lose the
+  keyword half. Across 48 decisions the provider returned more than one tool
+  call **zero** times. The hazard is real and recorded as #264; it is not what
+  was happening here.
+
+Since the window cannot be prompted away and the model is the one holding the
+arguments, the fix had to be in what a window *does* — rule 3, the runtime
+decides what an argument means. Two changes, both inside `outline_search`:
+
+- **A keyword and a window together now search by the keyword.** Before this,
+  `when` selected the whole branch: `{"query": "passport", "when": "today"}` ran
+  the today listing and then filtered its rendered lines for the substring, so a
+  match in a task's notes body or an undated match vanished. Now the branch is
+  chosen by the keyword (`/api/v1/search`, or `/api/v1/tasks?search=` for
+  `kind=task`, which is the server's own full-text match — the same index the
+  search route uses), and **the window is a label on each hit**: inside hits
+  come first, dated-but-outside hits are marked `(outside the 'today' window)`,
+  undated ones `(undated, so outside the 'overdue' window)`, and kinds the API
+  gives no date for say the window cannot apply to them. Nothing a keyword
+  matched can be silently dropped by a date filter any more, and the bound is
+  still stated, so an owner who *did* ask "what's due today" is not shown
+  tomorrow's task without being told.
+- **A window that answered names its own bound.** An empty window already
+  explained itself; a full one still looked like a complete list. Now a
+  windowed result with no keyword ends with the line saying every row above is
+  dated items only. It is deliberately the last line, after the overflow marker,
+  so a full page cannot cut it.
+
+The live check, same scratch server as #241 (newer Outline build, its own data
+directory, port 8742, two seeded tasks — one due in three days, one undated),
+real `qwen3:4b` turns through `bin/stella-dev chat`: before the change the
+passport question produced `(nothing matched in the 'upcoming' window…)` and
+Stella said *"No, there is no task about renewing your passport for today"*
+about a task that exists. After it, the same question — and the same volunteered
+window — produced the task and the words *"Yes, you have a task to renew your
+passport, due on Friday, 2026-10-16 at 16:43."* The list question still answered
+off the `/today` count line rather than the titles, which is a separate defect
+about what that line *says* (#262), not about the window.
 
 ## Security notes
 
@@ -211,6 +272,10 @@ inside this change, and one sighting each way is not a rate.
 - Tool output is framed as data and is never an instruction; a reminder title
   that reaches the user passes through the same untrusted-content rendering as
   everything else on screen.
+- The window labels a search result carries (`(outside the 'today' window)`,
+  `(undated, so outside the 'overdue' window)`) are Stella's own words,
+  computed from the row's date fields. Nothing that arrives from the server is
+  read as a bound, and nothing the bound implies is fetched from anywhere else.
 
 ## Validation
 
@@ -229,12 +294,25 @@ inside this change, and one sighting each way is not a rate.
   real token found zero occurrences. That is the state this machine is actually
   in: the workspace, database and token exist and the server is not running, so
   the tools are correctly dark.
-- Live, on 2026-10-13: the newer Outline build (`~/Projects/outline-graph`)
-  served a scratch data directory on `127.0.0.1:8742` with four seeded tasks,
-  and real `qwen3:4b` turns through `bin/stella-dev chat` drove
-  `outline_search` over it. That is the source of the three fixes in *The first
-  live turns* above, and of the re-run that finally listed the list. The owner's
-  real database was not written to, migrated or downgraded at any point.
+- Live, on 2026-10-13 (#241): the newer Outline build
+  (`~/Projects/outline-graph`) served a scratch data directory on
+  `127.0.0.1:8742` with four seeded tasks, and real `qwen3:4b` turns through
+  `bin/stella-dev chat` drove `outline_search` over it. That is the source of
+  the three fixes in *The first live turns* above, and of the re-run that
+  finally listed the list. The owner's real database was not written to,
+  migrated or downgraded at any point.
+- Measured, on 2026-10-13 (#261): `~/tools/bench_outline_window.py`, 8 time-free
+  questions × 3 passes × 2 arms = 48 real `qwen3:4b` decisions through Ollama on
+  `11434`, with the Outline tools over a stub transport so **no server was
+  started and no request left the process**. Baseline 9/9 searches volunteered a
+  window; the hint arm 7/9; multi-call responses 0/48. Then the same scratch
+  server as above, re-seeded with one task due in three days and one undated, and
+  `bin/stella-dev chat` on the shipped code: the passport question that used to
+  answer *"No, there is no task about renewing your passport for today"* now
+  answers *"Yes, you have a task to renew your passport, due on Friday,
+  2026-10-16 at 16:43."* The scratch server and its data directory were stopped
+  and removed afterwards; the owner's `~/.local/share/outline` was again never
+  opened for writing.
 - Not yet validated live: a turn against a running server **holding the
   owner's own data** — which needs her version skew resolved first (see
   `RESEARCH-RUNNING-OUTLINE.md`) — and a due reminder arriving through the pump

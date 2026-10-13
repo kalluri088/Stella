@@ -828,7 +828,13 @@ two of those three axes are in place and the third is named as missing below.
   doctrine's answer for cross-turn work is an Outline item the reminder tick
   already notices (A1). #241 — a real Outline turn with the integration
   switched on — ran on 2026-10-13 against a scratch Outline server and found
-  three defects in `outline_search`, now fixed (`docs/OUTLINE.md`). What still
+  three defects in `outline_search`, now fixed (`docs/OUTLINE.md`). A fourth
+  finding from those turns was measured rather than guessed at (#261): the
+  brain volunteers a date window on nine of nine keyword questions that name
+  no time, and no wording in the tool description moved that rate. The window
+  therefore no longer decides what is fetched — the keyword does, and the
+  window labels each hit — so a volunteered window can no longer produce a
+  confident "you have no such task" about a task that exists. What still
   stands between that and her real workspace is one fact about this machine:
   `~/Projects/Outline` ships migrations to `003` while
   `~/.local/share/outline/outline.db` is at schema `5`, so the older checkout

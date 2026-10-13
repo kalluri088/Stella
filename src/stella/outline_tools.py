@@ -468,7 +468,10 @@ def _section(
 
 
 def _render(
-    lines: list[str], *, empty_body: str | None = None
+    lines: list[str],
+    *,
+    empty_body: str | None = None,
+    window_note: str | None = None,
 ) -> ToolResult:
     body = lines[:MAX_OUTPUT_LINES]
     overflow = len(lines) - len(body)
@@ -477,6 +480,10 @@ def _render(
         output += f"\n({overflow} more lines omitted)"
     if not lines:
         output = RESULT_HEADER + "\n" + (empty_body or "(nothing matched)")
+    elif window_note is not None:
+        # After the budget and the overflow line, so the bound survives a
+        # full result instead of being the first thing cut.
+        output += "\n" + window_note
     return ToolResult(success=True, output=output)
 
 
@@ -500,6 +507,54 @@ def _window_empty_note(when: str | None) -> str | None:
         "words — is outside it. The same query on its own searches "
         "everything.)"
     )
+
+
+def _window_bound_note(when: str | None) -> str | None:
+    """The same bound, stated on a window that *did* return something.
+
+    An empty window now explains itself; a full one still looked like a
+    complete list. Measured on 2026-10-13 (``~/tools/bench_outline_window
+    .py``, 24 decisions per arm against the local brain): every
+    ``outline_search`` the brain proposed for a question naming no time
+    carried a window — nine of nine — and adding a sentence to the tool
+    description moved that by two. The behaviour is this model's reading
+    of a keyword question, not a slip the prompt will correct, so the
+    bound is stated where it cannot be missed: by the runtime, in the
+    result the model has to answer from.
+    """
+
+    if when is None:
+        return None
+    return (
+        f"(every line above is inside the '{when}' window: dated items "
+        "only. An undated task, or a match in other words, is not here.)"
+    )
+
+
+def _window_bounds(when: str | None) -> tuple[int | None, int | None] | None:
+    """A window as a millisecond range, or None when it names no range."""
+
+    if when not in {"today", "upcoming", "overdue"}:
+        return None
+    now = _local_now()
+    if when == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(start.timestamp() * 1000), int(
+            (start + dt.timedelta(days=1)).timestamp() * 1000
+        )
+    stamp = int(now.timestamp() * 1000)
+    if when == "upcoming":
+        return stamp, None
+    return None, stamp
+
+
+def _inside_window(epoch_ms: int, bounds: tuple[int | None, int | None] | None) -> bool:
+    if bounds is None:
+        return True
+    start, end = bounds
+    if start is not None and epoch_ms < start:
+        return False
+    return not (end is not None and epoch_ms >= end)
 
 
 def _local_tz_offset_minutes() -> int:
@@ -658,7 +713,17 @@ class OutlineSearchTool(Tool):
         except OutlineError as error:
             return ToolResult(success=False, output=str(error))
         when = arguments.get("when") if isinstance(arguments.get("when"), str) else None
-        return _render(lines, empty_body=_window_empty_note(when))
+        query = _text(arguments, "query")
+        # With keywords the search itself ran, so an empty result is an
+        # honest nothing rather than a window artefact, and every line that
+        # did come back already carries its own window label.
+        if query is not None and when is not None:
+            return _render(lines)
+        return _render(
+            lines,
+            empty_body=_window_empty_note(when),
+            window_note=_window_bound_note(when),
+        )
 
     def _collect(
         self,
@@ -669,6 +734,10 @@ class OutlineSearchTool(Tool):
     ) -> list[str]:
         client = self._client
         lines: list[str] = []
+        if query is not None and when is not None:
+            # The keyword decides what is fetched; the window only labels
+            # what comes back. See :meth:`_windowed_search`.
+            return self._windowed_search(query, kind, when)
         if when == "today":
             payload = client.request(
                 "GET", "/api/v1/today", query={"tz_offset": _local_tz_offset_minutes()}
@@ -812,10 +881,71 @@ class OutlineSearchTool(Tool):
                 "GET", "/api/v1/search", query={"q": query, "kind": kind, "limit": 15}
             )
             lines = [_search_line(row) for row in _rows(payload)] + _cut(payload)
-        if query is not None and when is not None:
-            needle = query.casefold()
-            lines = [line for line in lines if needle in line.casefold()]
         return lines
+
+    def _windowed_search(
+        self, query: str, kind: str | None, when: str
+    ) -> list[str]:
+        """Every keyword hit, with the window stated on each one.
+
+        This branch exists because of one measured live turn: the brain
+        volunteered ``when=upcoming`` on ``do I have a task about renewing
+        my passport``, the window branch ran instead of the keyword search,
+        and Stella told the owner she had no such task while task #1 in her
+        Outline was exactly that. A window is a date filter, so combining it
+        by *replacing* the search was always wrong; filtering the rendered
+        lines by substring afterwards was wrong in the other direction (a
+        match in the notes body vanished). The keyword is what was asked, so
+        the keyword does the fetching and the window survives as a label.
+        """
+
+        client = self._client
+        bounds = _window_bounds(when)
+        outside = f"(outside the '{when}' window)"
+        if kind == "task":
+            # ``search=`` is the server's own full-text match (title and
+            # notes), the same index /api/v1/search uses; ``q=`` would be a
+            # title substring and quietly find less than the keyword
+            # question deserves.
+            payload = client.request(
+                "GET",
+                "/api/v1/tasks",
+                query={
+                    "status": "open",
+                    "search": query,
+                    "limit": MAX_OUTPUT_LINES,
+                },
+            )
+            inside_lines: list[str] = []
+            rest_lines: list[str] = []
+            for row in _rows(payload):
+                due_at = row.get("due_at")
+                line = _task_line(row)
+                if isinstance(due_at, int) and _inside_window(due_at, bounds):
+                    inside_lines.append(line)
+                elif isinstance(due_at, int):
+                    rest_lines.append(f"{line} {outside}")
+                else:
+                    rest_lines.append(f"{line} (undated, so {outside})")
+            return inside_lines + rest_lines + _cut(payload)
+        payload = client.request(
+            "GET",
+            "/api/v1/search",
+            query={"q": query, "kind": kind, "limit": MAX_OUTPUT_LINES},
+        )
+        lines: list[str] = []
+        for row in _rows(payload):
+            line = _search_line(row)
+            starts_at = row.get("starts_at")
+            if isinstance(starts_at, int) and not _inside_window(starts_at, bounds):
+                line += f" {outside}"
+            elif not isinstance(starts_at, int):
+                # Only events carry a date in a search hit, so for anything
+                # else the window simply cannot be applied — said out loud
+                # rather than quietly deciding the hit does not exist.
+                line += " (no date on this kind, so the window does not apply)"
+            lines.append(line)
+        return lines + _cut(payload)
 
     def _person_lines(self, query: str | None) -> list[str]:
         client = self._client

@@ -285,10 +285,52 @@ def test_search_reports_rejected_request_as_failure():
     assert not result.success and "rejected" in result.output
 
 
-def test_search_filters_when_and_query_combined():
-    result = OutlineSearchTool(client()).execute({"when": "today", "query": "standup"})
-    assert "[task#7] standup" in result.output
-    assert "file taxes" not in result.output
+def test_a_keyword_with_a_window_searches_then_labels():
+    # Retargeted on 2026-10-13. This case used to prove the window ran and
+    # the keyword was applied to its rendered lines as a substring filter;
+    # a live turn showed what that costs — "do I have a task about renewing
+    # my passport" answered *no* while a passport task was sitting in the
+    # workspace. Now the keyword does the fetching and the window labels.
+    srv = FakeServer(
+        server_routes(
+            [
+                ("GET", "/api/v1/tasks", {"items": [
+                    {"id": 30, "title": "renew the passport",
+                     "due_at": 9_999_999_999_000, "status": "open"},
+                    {"id": 31, "title": "passport photos",
+                     "due_at": 1, "status": "open"},
+                ], "next_before_id": None}),
+            ]
+        )
+    )
+    output = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute({"query": "passport", "kind": "task", "when": "upcoming"}).output
+    assert "[task#30] renew the passport" in output  # the hit that used to vanish
+    assert "[task#31] passport photos" in output  # dated, but outside
+    assert "outside the 'upcoming' window" in output
+    assert output.index("[task#30]") < output.index("[task#31]")  # inside first
+    # the keyword reached the server, which is where the filtering happens
+    assert any("search=passport" in path for _, path, _ in srv.calls)
+
+
+def test_a_windowed_keyword_search_undated_hits_are_said_to_be_undated():
+    srv = FakeServer(
+        server_routes(
+            [
+                ("GET", "/api/v1/tasks", {"items": [
+                    {"id": 32, "title": "passport photos to book",
+                     "due_at": None, "status": "open"},
+                ], "next_before_id": None}),
+            ]
+        )
+    )
+    output = OutlineSearchTool(
+        OutlineClient("http://127.0.0.1:8741", "t", srv)
+    ).execute({"query": "passport", "kind": "task", "when": "overdue"}).output
+    assert "[task#32] passport photos to book" in output
+    assert "undated" in output
+    assert "outside the 'overdue' window" in output
 
 
 def test_upcoming_window_includes_tasks_due_later():
@@ -317,13 +359,40 @@ def test_an_empty_window_names_the_window_it_was():
         ("GET", "/api/v1/search", {"items": []}),
     ]
     tool = OutlineSearchTool(client(*routes))
-    windowed = tool.execute({"query": "car insurance", "when": "upcoming"}).output
+    windowed = tool.execute({"when": "upcoming"}).output
     assert "in the 'upcoming' window" in windowed
     assert "items dated inside it" in windowed
     # an empty search with no window is a plain nothing, and says so
     assert tool.execute({"query": "car insurance"}).output.endswith(
         "(nothing matched)"
     )
+    # and so is one *with* a window, now that the keywords do the fetching:
+    # nothing matched means nothing matched, not "the window hid it"
+    assert tool.execute({"query": "car insurance", "when": "upcoming"}).output.endswith(
+        "(nothing matched)"
+    )
+
+
+def test_a_window_that_answered_still_names_its_bound():
+    # Measured on 2026-10-13 (~/tools/bench_outline_window.py, 24 decisions
+    # per arm): every outline_search the brain proposed for a question that
+    # named no time carried a window — 9 of 9 — and one sentence added to
+    # the tool description moved that by two. The bound cannot live in the
+    # prompt's good intentions, so the result states it.
+    routes = [
+        ("GET", "/api/v1/events", {"items": []}),
+        ("GET", "/api/v1/tasks", {"items": [
+            {"id": 30, "title": "renew the passport", "due_at": 9_999_999_999_000},
+            {"id": 31, "title": "undated errand", "due_at": None},
+        ]}),
+    ]
+    output = OutlineSearchTool(client(*routes)).execute({"when": "upcoming"}).output
+    assert "[task#30] renew the passport" in output
+    assert "inside the 'upcoming' window" in output
+    assert "undated" in output.splitlines()[-1]
+    # a result with no window is not apologising for one
+    plain = OutlineSearchTool(client()).execute({"kind": "task"}).output
+    assert "window" not in plain
 
 
 def test_kind_task_without_a_query_lists_the_open_tasks():

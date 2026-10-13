@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### A date window nobody asked for, measured nine times out of nine (#261)
+
+- **What changed.** `outline_search` stopped letting a date window decide what
+  is fetched. When the model sends a keyword *and* a window, the keyword now
+  does the search (`/api/v1/search`, or `/api/v1/tasks?search=` for
+  `kind=task` — the server's own full-text index, the one the search route
+  uses) and the window survives as a label on each hit: inside matches first,
+  then `(outside the 'today' window)`, `(undated, so outside the 'overdue'
+  window)`, or, for kinds the API gives no date for, that the window cannot
+  apply. A window that returned something *without* keywords now ends by naming
+  its own bound, as an empty one already did since #241. Still four tools, no
+  new argument, no tier touched.
+- **Why the fix is in the runtime and not the prompt.** This one was measured
+  first. `~/tools/bench_outline_window.py` builds the production capability list
+  over a stub transport — no server started, no request leaving the process, the
+  token a literal dummy — and asks the real local brain eight questions that
+  name no time, three passes per arm. Baseline: **9 of 9** `outline_search`
+  proposals carried a `when`. An arm that added a sentence to the tool
+  description and schema ("set a window only when the owner names the time")
+  landed at **7 of 9**, and the two questions that matter — the passport task,
+  the list — did not move at all. Two rows of twenty-four decisions is not a
+  result, so no wording was shipped. A third arm tested a different theory:
+  `LLMBrain.decide` keeps `tool_calls[0]` and drops the rest, so parallel calls
+  could be losing the keyword half — across 48 decisions the provider returned
+  more than one call **zero** times. That hazard is real and now has its own
+  task (#264); it was not the cause here.
+- **What the volunteered window was actually costing.** The live check used the
+  same scratch Outline server as #241 — newer build, its own data directory,
+  port 8742, one task due in three days and one undated. Before: the brain
+  proposed `{"query": "passport", "when": "…"}` for *"do I have a task about
+  renewing my passport"*, the window branch ran, the keyword was a substring
+  test over the window's rendered lines, and Stella said *"No, there is no task
+  about renewing your passport for today"* about a task that exists. After: the
+  same decision returns the task and she says *"Yes, you have a task to renew
+  your passport, due on Friday, 2026-10-16 at 16:43."*
+- **What this does not claim.** The list question still answered from the
+  `/today` count line instead of the titles — *"two open tasks today… the list
+  is empty beyond that"* — and the count on that line is every open task, not
+  today's. That is a separate defect about what one summary line says (#262).
+  Four of the eight measured questions never reached Outline at all, routing to
+  `workspace_search` because the decision prompt has a workspace line and no
+  Outline line; recorded as #263, not touched here.
+- **Proof.** `tests/test_outline_tools.py` 98 passed (two tests retargeted to
+  the new combination rather than relaxed, three added),
+  `tests/test_outline_reminder_delivery.py` 11 passed, `ruff check .` and
+  `git diff --check` clean. The scratch server was stopped and its directory
+  removed; the owner's `~/.local/share/outline` was never opened for writing.
+
 ### Two real Outline turns, and the three defects they found (#241)
 
 - **What changed.** Stella finally drove her Outline integration on a real

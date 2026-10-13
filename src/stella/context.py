@@ -16,6 +16,11 @@ MAX_RETRIEVED_MEMORIES = 5
 # so a large store cannot make every turn scan an unbounded list.
 MAX_RECALL_WINDOW = 16
 MAX_TOOL_OBSERVATIONS = 8
+# How many unhandled proposals one report may carry. A reply is
+# model-shaped data, so the list of what it asked for is bounded like the
+# list of what ran; the count beside it stays the true total, so being
+# capped never means being hidden (#264).
+MAX_DROPPED_PROPOSALS = 4
 MAX_TOOL_OUTPUT_CHARS = 4000
 MAX_INPUT_PARTS = 8
 MAX_INPUT_CONTENT_CHARS = 4000
@@ -159,6 +164,26 @@ class RetrievalSource:
     score: int | float
 
 
+@dataclass(frozen=True)
+class DroppedProposal:
+    """A capability the model asked for in the same reply as a kept one.
+
+    One step dispatches one capability, so a reply carrying several calls
+    cannot run them all. Keeping the first and losing the rest without a word
+    is #264: the run answered "No files or folders in this workspace dir" from
+    the call that did run, while the call that held the owner's answer —
+    ``outline_search`` in the same reply — was nowhere in front of her or of the
+    next decision. This is the report of what was not run.
+
+    It is *not* an observation. Nothing executed, so there is no output; the
+    only fact here is that a proposal went unhandled, and the model still has
+    to decide whether it wants it.
+    """
+
+    capability: str
+    arguments: dict[str, object]
+
+
 @dataclass
 class Context:
     """Information currently needed to prepare a response."""
@@ -167,6 +192,9 @@ class Context:
     conversation_history: list[Message] = field(default_factory=list)
     retrieved_memories: list[MemoryItem] = field(default_factory=list)
     tool_observations: list[ToolObservation] = field(default_factory=list)
+    # Proposals the previous reply carried and this runtime did not dispatch.
+    # Reported, never executed on the model's behalf.
+    dropped_proposals: list[DroppedProposal] = field(default_factory=list)
     input_envelope: InputEnvelope | None = None
     # How each retrieved memory was found, keyed by memory id. Populated
     # by the runtime during recall; provenance is reported, never an

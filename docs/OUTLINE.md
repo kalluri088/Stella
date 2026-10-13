@@ -430,6 +430,65 @@ a question about a task that does not exist without inventing it. The scratch
 server was stopped and its directory deleted afterwards; nothing on this
 machine's real Outline store was read or written by these turns.
 
+## The half of an ask that went missing (#264, 2026-10-13)
+
+The live turns above earned a second defect to fix. `outline_search` and
+`workspace_list` in one reply: the first call found the car-insurance task, the
+runtime dispatched only that one, and the model, seeing no result for the
+second, answered the next step as if the question had been about her files —
+*"No files or folders in this workspace dir"*. Nothing said to the owner, to the
+model, or to the trace that half of what she asked for never happened.
+
+**The runtime reports the unhandled proposal; it does not run it.** One step is
+one capability, and the step that could not run the second call does not get to
+decide it should have. Executing a proposal on the model's behalf would spend an
+approval on a call the model might have cancelled the moment it read the first
+observation — for an outbound or irreversible capability that means asking the
+owner for permission she was never asked for — and it would burn budget from the
+8-call/90-second turn bound. Rule 3 is that the runtime authorizes and executes
+what the model proposes; it is not a rule about finishing a half-written
+intention for her.
+
+So the drop is *said* in two places, both already visible:
+
+- the decision's trace event carries the names of what did not run, and
+  `stella --trace` renders `[not run: workspace_list]`;
+- the next decision's request payload gains `unhandled_proposals`, written by
+  the runtime, naming each capability with its arguments and stating that none
+  of them ran and that re-asking is the model's decision.
+
+The second is what made this an Outline question at all, because it is a
+**prompt**. Two boundaries had to hold. It rides in the user payload, never in
+the always-sent rules, so the cached prefix does not move when the situation
+occurs (`test_the_cached_prefix_does_not_move_when_a_capability_is_toggled`),
+and it names no capability of its own beyond the ones the model itself
+proposed — the same reasoning that keeps `workspace_search` pointing at "the
+capability that reads her Outline app" instead of at a gated tool name. And it
+is keyed data with **no `success` and no `output` field**: a reply shaped like a
+result would be the one thing that let a model invent an outcome for a call that
+never left the process. `TOOL_EXECUTION.md`, *One step, one capability*, keeps
+the full contract.
+
+**Measured.** The wiring is proven deterministically by replay against a
+scripted client (`~/tools/check_dropped_proposals.py replay`): the trigger reply
+dispatches exactly one call, the shipped arm puts `unhandled_proposals` in the
+next request with keys `{meaning, proposals, stated_by}` and each proposal
+`{capability, arguments}`, and the arm with the report popped out puts nothing.
+10 new offline tests in `tests/test_brain.py`, `tests/test_stella.py` and
+`tests/test_cli.py` hold the same contract.
+
+Then the same script against the real local model, this time end to end over the
+Outline tools with a stub transport, 8 questions × 3 passes × 2 arms (48 turns).
+**Zero two-call replies, in either arm**, and every one of the questions that
+triggered this — car insurance, passport, standup — reached `outline_search` and
+was answered from the result it came back with. That is not a failure of the
+measurement; it is #263's routing sentences having removed the habit that
+produced the trigger, which is why the fix had to be proven by replay rather
+than by waiting for the model to misbehave on cue. The report is the runtime's
+answer for a case that no longer shows up in a 48-turn sample, and it stays
+because the case is a property of a native reply carrying two calls, not of one
+model's mood.
+
 ## Security notes
 
 - Loopback HTTP with a bearer-equivalent header, over stdlib `urllib` only: no
@@ -529,6 +588,23 @@ machine's real Outline store was read or written by these turns.
   Two failures in `tests/test_web_tools.py` are pre-existing and unrelated: those
   tests isolate `TINYFISH_API_KEY` from the environment but not from the
   owner's stored Settings secret, which this machine has (#265).
+- Measured, on 2026-10-13 (#264):
+  `~/tools/check_dropped_proposals.py`, two modes. `replay` scripts the trigger
+  reply (`outline_search` + `workspace_list` in one response) through the real
+  turn loop: one call dispatched per step, the shipped arm's next request
+  carrying `unhandled_proposals` with keys `{meaning, proposals, stated_by}` and
+  each proposal `{capability, arguments}`, and the arm with the report removed
+  carrying nothing. `live` ran 8 keyword questions × 3 passes × 2 arms = 48 real
+  `qwen3:4b` turns end to end through Ollama on `11434`, Outline tools over a
+  stub transport so **no server was started and nothing of the owner's was
+  read**: `two_call_turns=0` in both arms, 21 dispatches apiece, and every
+  car-insurance / passport / standup question answered from the `outline_search`
+  result it got. The trigger did not recur, which is #263's routing sentences
+  having removed the habit that produced it; the three harness gaps in the log
+  are URLs the stub does not model, recorded so an unmodelled endpoint reads as a
+  harness hole rather than as behaviour. Offline: `tests/test_brain.py` 70,
+  `tests/test_stella.py` 93, `tests/test_cli.py` 88, `ruff check .` and
+  `git diff --check` clean.
 - Not yet validated live: a turn against a running server **holding the
   owner's own data** — which needs her version skew resolved first (see
   `RESEARCH-RUNNING-OUTLINE.md`) — and a due reminder arriving through the pump

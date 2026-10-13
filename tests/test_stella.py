@@ -46,7 +46,7 @@ from stella.tools import (
     ToolDispatcher,
     ToolResult,
 )
-from stella.trace import ApprovalEvent
+from stella.trace import ApprovalEvent, DecisionEvent
 
 
 class FixedBrain(Brain):
@@ -974,6 +974,104 @@ def test_stella_runs_two_steps_and_feeds_observation_to_brain() -> None:
             "output": "tool output",
         }
     ]
+
+
+def test_a_second_proposal_in_one_reply_is_not_run_and_is_reported() -> None:
+    # One step dispatches one capability, so the runtime could run the
+    # first and lose the second (#264). Running the second as well is not
+    # the fix either: an outbound or irreversible call the model would have
+    # cancelled once it saw the first result would then have happened
+    # anyway, without an approval. It is reported, not executed.
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "first"},
+                capability="record",
+                dropped_calls=(("record", {"message": "second"}),),
+            ),
+            Decision(DecisionKind.ANSWER),
+        ]
+    )
+    tool = RecordingTool()
+    stella = Stella(
+        brain,
+        RecordingLLM(response="One step ran."),
+        ToolDispatcher([tool]),
+        InMemoryMemory(),
+        max_tool_steps=2,
+    )
+
+    result = stella.process(Context(user_input="Run the next step."))
+
+    assert tool.arguments == [{"message": "first"}]
+    reported = brain.contexts[1].dropped_proposals
+    assert [(item.capability, item.arguments) for item in reported] == [
+        ("record", {"message": "second"})
+    ]
+    assert result.response == "One step ran."
+
+
+def test_the_unhandled_report_is_said_once_not_every_step() -> None:
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "first"},
+                capability="record",
+                dropped_calls=(("record", {"message": "second"}),),
+            ),
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "third"},
+                capability="record",
+            ),
+            Decision(DecisionKind.ANSWER),
+        ]
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(response="Done."),
+        ToolDispatcher([RecordingTool()]),
+        InMemoryMemory(),
+        max_tool_steps=3,
+    )
+
+    stella.process(Context(user_input="Run the next step."))
+
+    assert len(brain.contexts[1].dropped_proposals) == 1
+    assert brain.contexts[2].dropped_proposals == []
+
+
+def test_the_trace_names_the_capability_that_was_not_run() -> None:
+    brain = SequenceBrain(
+        [
+            Decision(
+                DecisionKind.TOOL,
+                arguments={"message": "first"},
+                capability="record",
+                dropped_calls=(("other", {"message": "second"}),),
+            ),
+            Decision(DecisionKind.ANSWER),
+        ]
+    )
+    stella = Stella(
+        brain,
+        RecordingLLM(response="Done."),
+        ToolDispatcher([RecordingTool()]),
+        InMemoryMemory(),
+        max_tool_steps=2,
+    )
+
+    result = stella.process(Context(user_input="Run the next step."))
+
+    decisions = [
+        event
+        for event in result.interaction_trace.events
+        if isinstance(event, DecisionEvent)
+    ]
+    assert decisions[0].dropped_capabilities == ("other",)
+    assert decisions[1].dropped_capabilities == ()
 
 
 def test_stella_bounds_multi_step_observations_and_keeps_latest() -> None:

@@ -15,6 +15,7 @@ from stella.brain import Brain, Decision, DecisionKind
 from stella.context import (
     MAX_RECALL_WINDOW,
     Context,
+    DroppedProposal,
     InputEnvelope,
     InputModality,
     RetrievalSource,
@@ -275,6 +276,10 @@ class Stella:
             if message.role == "user"
         )
         observations = select_tool_observations(list(context.tool_observations))
+        # Proposals the last reply carried that this runtime could not
+        # dispatch. Reported to the next decision, never run on the model's
+        # behalf (#264).
+        dropped_proposals = list(context.dropped_proposals)
         trace.record(
             InputReceivedEvent(
                 user_input_chars=len(context.user_input),
@@ -539,6 +544,7 @@ class Stella:
                 conversation_history=conversation_history,
                 retrieved_memories=retrieved_memories,
                 tool_observations=list(observations),
+                dropped_proposals=list(dropped_proposals),
                 input_envelope=context.input_envelope,
                 retrieval_sources=dict(retrieval_sources),
             )
@@ -566,8 +572,19 @@ class Stella:
                     ),
                     content_chars=len(decision.content or ""),
                     memory_write_proposed=decision.memory_write is not None,
+                    dropped_capabilities=tuple(
+                        name for name, _ in decision.dropped_calls
+                    ),
                 )
             )
+            # Read here, before any later conversion of this decision: the
+            # report is about what the reply carried. It is cleared by the
+            # next reply that carries one call, so an unhandled proposal is
+            # said once rather than nagging the rest of the turn (#264).
+            dropped_proposals = [
+                DroppedProposal(capability=name, arguments=arguments)
+                for name, arguments in decision.dropped_calls
+            ]
             if should_cancel is not None and should_cancel():
                 # The decision is discarded before any of its effects: no
                 # tool dispatch, no approval request, no memory proposal.

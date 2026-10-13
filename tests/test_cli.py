@@ -612,6 +612,30 @@ def test_format_trace_renders_all_seven_event_types() -> None:
     ]
 
 
+def test_format_trace_says_which_proposal_was_not_run() -> None:
+    # The owner sees that half an ask went unhandled, in the same redacted
+    # shape as the rest of the trace: a name, never the arguments of a call
+    # that did not run (#264).
+    result = StellaResult(
+        decision=Decision(DecisionKind.ANSWER, "done"),
+        response="done",
+        interaction_trace=make_trace(
+            DecisionEvent(
+                "tool",
+                "datetime",
+                ("kind",),
+                0,
+                False,
+                ("system_info",),
+            ),
+        ),
+    )
+
+    assert format_trace(result) == [
+        "  decision  TOOL -> datetime (kind) [not run: system_info]"
+    ]
+
+
 def test_format_trace_shows_denials_proposals_and_skips_noise() -> None:
     result = StellaResult(
         decision=Decision(DecisionKind.ASK, content="why?"),

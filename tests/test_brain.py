@@ -4,7 +4,13 @@ from datetime import UTC, datetime
 import pytest
 
 from stella.brain import Brain, Decision, DecisionKind, LLMBrain, SimpleBrain
-from stella.context import Context, RetrievalSource, ToolObservation
+from stella.context import (
+    MAX_DROPPED_PROPOSALS,
+    Context,
+    DroppedProposal,
+    RetrievalSource,
+    ToolObservation,
+)
 from stella.llm import (
     LLMClient,
     LLMResponse,
@@ -55,6 +61,19 @@ class NativeToolLLM(LLMClient):
         return LLMResponse(
             tool_calls=(LLMToolCall("system_info", {"kind": "hostname"}),)
         )
+
+
+class TwoCallLLM(LLMClient):
+    """A provider whose one native reply asks for two capabilities."""
+
+    def __init__(self, calls: tuple[LLMToolCall, ...]) -> None:
+        self.calls = calls
+
+    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+        raise AssertionError("native tool path should not use text fallback")
+
+    def chat_with_tools(self, messages, tools, tool_choice=ToolUseMode.AUTO):
+        return LLMResponse(tool_calls=self.calls)
 
 
 class KwargRecordingLLM(LLMClient):
@@ -462,6 +481,112 @@ def test_llm_brain_receives_structured_tool_observations() -> None:
             "output": "hello",
         }
     ]
+
+
+def test_a_reply_carrying_two_calls_keeps_one_and_reports_the_other() -> None:
+    # One step dispatches one capability. The second proposal is not run
+    # on the model's behalf and not lost: it is carried so the next
+    # decision can be told (#264).
+    llm = TwoCallLLM(
+        (
+            LLMToolCall("outline_search", {"term": "car insurance"}),
+            LLMToolCall("workspace_list", {}),
+        )
+    )
+
+    decision = LLMBrain(llm).decide(
+        Context(user_input="What do I have about car insurance?")
+    )
+
+    assert decision.kind is DecisionKind.TOOL
+    assert decision.capability == "outline_search"
+    assert decision.dropped_calls == (("workspace_list", {}),)
+
+
+def test_the_reported_proposal_keeps_no_reserved_marker() -> None:
+    llm = TwoCallLLM(
+        (
+            LLMToolCall("workspace_list", {}),
+            LLMToolCall("outline_search", {"term": "x", "tool_final": True}),
+        )
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="anything"))
+
+    assert decision.dropped_calls == (("outline_search", {"term": "x"}),)
+
+
+def test_the_next_decision_is_told_what_was_not_run() -> None:
+    llm = ResponseLLM('{"kind": "answer", "content": "ok"}')
+
+    LLMBrain(llm).decide(
+        Context(
+            user_input="What do I have about car insurance?",
+            dropped_proposals=[
+                DroppedProposal("workspace_list", {}),
+            ],
+        )
+    )
+
+    payload = json.loads(llm.messages[0][1].content)
+    report = payload["unhandled_proposals"]
+    assert report["proposals"] == [
+        {"capability": "workspace_list", "arguments": {}}
+    ]
+    # A report of what did not run, never a result: a proposal shaped like
+    # an observation would let the turn invent an outcome for a call that
+    # was never dispatched.
+    for proposal in report["proposals"]:
+        assert "success" not in proposal
+        assert "output" not in proposal
+    assert "your decision" in report["meaning"]
+
+
+def test_the_unhandled_report_rides_with_the_request_not_the_prefix() -> None:
+    """A drop is a fact about one turn, so it travels where the clock does.
+
+    Putting it in the rules would move the byte-stable prefix on a turn that
+    happened to carry two calls (#264)."""
+
+    llm = ResponseLLM('{"kind": "answer", "content": "ok"}')
+    brain = LLMBrain(llm)
+    prefix = brain._system_prompt()
+
+    brain.decide(
+        Context(
+            user_input="What do I have about car insurance?",
+            dropped_proposals=[DroppedProposal("workspace_list", {})],
+        )
+    )
+
+    assert llm.messages[0][0].content == prefix
+    assert "workspace_list" in llm.messages[0][1].content
+
+
+def test_a_turn_with_no_dropped_proposal_says_nothing_about_one() -> None:
+    llm = ResponseLLM('{"kind": "answer", "content": "ok"}')
+
+    LLMBrain(llm).decide(Context(user_input="hello"))
+
+    payload = json.loads(llm.messages[0][1].content)
+    assert "unhandled_proposals" not in payload
+
+
+def test_a_long_list_of_unhandled_proposals_is_capped_honestly() -> None:
+    llm = ResponseLLM('{"kind": "answer", "content": "ok"}')
+    proposals = [
+        DroppedProposal(f"capability_{index}", {"i": index})
+        for index in range(MAX_DROPPED_PROPOSALS + 2)
+    ]
+
+    LLMBrain(llm).decide(
+        Context(user_input="hello", dropped_proposals=proposals)
+    )
+
+    payload = json.loads(llm.messages[0][1].content)
+    report = payload["unhandled_proposals"]
+    assert len(report["proposals"]) == MAX_DROPPED_PROPOSALS
+    assert report["unhandled_count"] == len(proposals)
 
 
 def test_llm_brain_parses_explicit_memory_write() -> None:

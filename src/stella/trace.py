@@ -30,6 +30,11 @@ class DecisionEvent:
     argument_keys: tuple[str, ...]
     content_chars: int
     memory_write_proposed: bool
+    # Capabilities the same reply proposed that this runtime could not
+    # dispatch, one step being one capability. Names only, like
+    # ``argument_keys``: the owner sees that half an ask went unhandled
+    # without the arguments of a call that never ran (#264).
+    dropped_capabilities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

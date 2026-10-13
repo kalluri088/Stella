@@ -354,6 +354,10 @@ def format_trace(result: StellaResult) -> list[str]:
                 summary += f" -> {event.capability}"
             if event.argument_keys:
                 summary += f" ({', '.join(event.argument_keys)})"
+            if event.dropped_capabilities:
+                summary += (
+                    f" [not run: {', '.join(event.dropped_capabilities)}]"
+                )
             if event.memory_write_proposed:
                 summary += " +memory proposal"
             lines.append(_trace_line("decision", summary))

@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### A proposal the step could not run is said, not lost (#264)
+
+- **What changed.** A native reply that carries more than one tool call still
+  dispatches exactly one capability, and the rest are now reported instead of
+  vanishing. `Decision` gained `dropped_calls`, `Context` gained
+  `dropped_proposals`, the decision trace event gained `dropped_capabilities`
+  (`stella --trace` renders `[not run: workspace_list]`), and the next
+  decision's request payload gains a runtime-written `unhandled_proposals`
+  object. `MAX_DROPPED_PROPOSALS` (4) bounds the list and `unhandled_count`
+  states the true total when it is truncated.
+- **Why.** Asked "what do I have about car insurance", Stella issued
+  `outline_search` and `workspace_list` in one reply, found the car-insurance
+  task, and then answered from the second call — *"No files or folders in this
+  workspace dir"*. The routing was right and the answer was still wrong, because
+  nothing told the model that half of what it asked for had not run, and nothing
+  told the owner.
+- **The choice.** Report, never re-execute. Running the second proposal on the
+  model's behalf would spend an approval and turn budget on a call the model
+  might have cancelled once it read the first observation — for anything
+  outbound or irreversible that means demanding permission the owner was never
+  asked for. Rule 3 says the runtime authorizes and executes what is proposed;
+  it does not complete a half-written intention.
+- **Invariants held.** The report has no `success` and no `output` key, so a
+  call that never ran cannot acquire an invented result; it names no capability
+  the model did not itself propose; and it rides in the per-turn user payload,
+  never in the always-sent rules, so the byte-stable cached prefix does not move
+  when the situation occurs. It is made once — the next single-call reply clears
+  it — so a proposal is mentioned rather than repeated for the rest of the turn.
+- **Proof.** `~/tools/check_dropped_proposals.py replay` drives the trigger
+  through the real turn loop (one dispatch per step; the shipped arm carries
+  `unhandled_proposals`, the arm with it popped carries nothing). The same
+  script live — 8 questions × 3 passes × 2 arms, 48 real `qwen3:4b` turns over
+  a stub Outline transport — recorded `two_call_turns=0`: #263's routing
+  sentences removed the habit that produced the trigger, so the contract is
+  proven by replay, not by waiting for the model to misbehave. Ten new offline
+  tests — six in `tests/test_brain.py`, three in `tests/test_stella.py`, one in
+  `tests/test_cli.py` — over batches of 70, 93 and 88; `ruff check .` and
+  `git diff --check` clean.
+
 ### Two lines that said "local" while the tool was calling a third party (#266)
 
 - **What changed.** `/status` and `stella doctor` now resolve the TinyFish key

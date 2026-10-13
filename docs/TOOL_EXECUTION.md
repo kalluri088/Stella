@@ -37,6 +37,43 @@ execution; Stella never falls back to another tool. Tool exceptions become the
 deterministic `Tool execution failed.` result so the failure is visible to the
 final response path without leaking stack traces, and Stella does not retry.
 
+### One step, one capability: what happens to the rest of a reply
+
+A native reply may carry more than one tool call. The runtime dispatches the
+first and stops there, because one step is one capability and one observation
+(#264).
+
+What it does **not** do is run the others. Executing a second proposal on the
+model's behalf would take an action the model might well have cancelled once it
+saw the first result — for anything outbound or irreversible that means an
+approval demanded and spent for a call that should never have been made, and it
+burns turn budget the model did not ask to spend. The runtime authorizes and
+executes; it does not complete a half-written intention.
+
+What it does instead is *say so*, in two places:
+
+- the trace event for that decision carries `dropped_capabilities`, and
+  `stella --trace` renders them as `[not run: workspace_list]`, so the owner
+  sees that half an ask went unhandled. Names only, like the argument keys
+  beside them — a call that never ran has no arguments to publish.
+- the next decision's request payload gains an `unhandled_proposals` object
+  built by the runtime, naming each proposal with its arguments, and stating
+  that none of them ran and that re-asking is the model's decision.
+
+That report is deliberately **not** shaped like an observation. It has no
+`success` and no `output` key, so nothing can read as the result of a call that
+was never dispatched; and unlike `tool_observations`, whose output the runtime
+truncates and quotes as untrusted data, this is a report *about the model's own
+proposal*. It rides in the per-turn request payload, never in the system rules,
+so a reply that happened to carry two calls does not move the byte-stable
+prefix the provider caches.
+
+The list is capped (`MAX_DROPPED_PROPOSALS`, 4) because a reply is
+model-shaped data; when a reply carried more than the list shows, the report
+also says `unhandled_count`, so being capped is never being hidden. The report
+is made once: the next reply that carries a single call clears it, so a
+proposal is mentioned rather than repeated for the rest of the turn.
+
 The loop is bounded by two turn budgets the owner sets in Settings —
 `max_tool_steps` tool calls (default 8) and a wall-clock bound
 (default 90 s) consulted only between steps (`ARCHITECTURE.md`, *Turn

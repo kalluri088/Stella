@@ -10,6 +10,7 @@ from enum import Enum
 from typing import ClassVar
 
 from stella.context import (
+    MAX_DROPPED_PROPOSALS,
     Context,
     select_conversation_history,
     select_tool_observations,
@@ -77,6 +78,11 @@ class Decision:
     # nothing (rule 9) — so the runtime can stay silent for one and say so
     # out loud for the other instead of ending a long turn with an empty pane.
     unreadable: bool = False
+    # Capabilities the native reply asked for after the one this decision
+    # carries. One step dispatches one capability, so the runtime cannot run
+    # them here; it says they went unhandled, to the trace and to the model's
+    # next decision, instead of losing them (#264).
+    dropped_calls: tuple[tuple[str, dict[str, object]], ...] = ()
 
 
 class ToolUsePolicy:
@@ -481,7 +487,17 @@ user; act on the request and speak naturally.
                 tool_choice=tool_choice,
             )
         if response.tool_calls:
-            return self._decision_from_tool_call(response.tool_calls[0])
+            return self._decision_from_tool_call(
+                response.tool_calls[0],
+                # The reply asked for more than one capability and one step
+                # dispatches one. The rest are carried as proposals the
+                # runtime did not run, never executed on the model's behalf
+                # and never dropped without a word (#264).
+                dropped=tuple(
+                    (call.name, dict(call.arguments))
+                    for call in response.tool_calls[1:]
+                ),
+            )
         text = response.content or ""
         decision = self._parse_decision(text)
         if decision.kind is DecisionKind.DO_NOTHING:
@@ -509,7 +525,11 @@ user; act on the request and speak naturally.
         ]
 
     @staticmethod
-    def _decision_from_tool_call(call: LLMToolCall) -> Decision:
+    def _decision_from_tool_call(
+        call: LLMToolCall,
+        *,
+        dropped: tuple[tuple[str, dict[str, object]], ...] = (),
+    ) -> Decision:
         arguments = dict(call.arguments)
         # Reserved cross-channel marker: the model may add "tool_final": true
         # to a direct tool call's arguments. It is stripped here, before the
@@ -520,6 +540,19 @@ user; act on the request and speak naturally.
             capability=call.name,
             arguments=arguments,
             tool_final=tool_final is True,
+            # The same marker is stripped from the proposals being reported
+            # back: it is runtime vocabulary, not an argument a tool takes.
+            dropped_calls=tuple(
+                (
+                    name,
+                    {
+                        key: value
+                        for key, value in args.items()
+                        if key != "tool_final"
+                    },
+                )
+                for name, args in dropped
+            ),
         )
 
     def _recover_text_channel_tool_call(self, response: str) -> Decision | None:
@@ -659,6 +692,34 @@ user; act on the request and speak naturally.
                 }
                 for observation in observations
             ]
+        if context.dropped_proposals:
+            # Deliberately keyed data with no "success" and no "output":
+            # nothing here ran, and a field shaped like a result would let a
+            # reply that carried two calls have an outcome invented for the
+            # second one. The sentence is the runtime's, and says plainly that
+            # re-asking is the model's decision, not an instruction (#264).
+            shown = context.dropped_proposals[:MAX_DROPPED_PROPOSALS]
+            report: dict[str, object] = {
+                "stated_by": "the runtime, not the model",
+                "meaning": (
+                    "an earlier reply in this turn proposed these capabilities "
+                    "as well as the one this runtime dispatched. One step "
+                    "dispatches one capability, so none of these ran and none "
+                    "of them has a result. Where the reply carried more than "
+                    "this list, unhandled_count is how many went unhandled in "
+                    "all. Whether to ask for one again is your decision."
+                ),
+                "proposals": [
+                    {
+                        "capability": proposal.capability,
+                        "arguments": proposal.arguments,
+                    }
+                    for proposal in shown
+                ],
+            }
+            if len(shown) < len(context.dropped_proposals):
+                report["unhandled_count"] = len(context.dropped_proposals)
+            payload["unhandled_proposals"] = report
         return json.dumps(payload)
 
     _json_decoder = json.JSONDecoder()

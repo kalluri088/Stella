@@ -89,6 +89,12 @@ parts and serializes them for the Brain as observations. It does not decode
 media, fetch references, authorize tools, or write memory. Provenance and
 metadata are descriptive data, not permission or approval.
 
+`Context` also carries `dropped_proposals`: the capabilities a previous reply
+asked for that this runtime did not dispatch, because one step runs one
+capability. It is a report, not an observation — nothing executed, so there is
+no success and no output to carry — and the runtime never runs a proposal on
+the model's behalf. See `TOOL_EXECUTION.md`, *One step, one capability*.
+
 ### Audio input boundary
 
 `stella.audio.TranscriptionProvider` is the provider-neutral interface for one
@@ -717,6 +723,14 @@ turn's time budget expires between steps (see *Turn budgets*). A proposal
 after either bound returns the deterministic honest stop without execution or
 another final LLM call. The default bound of one preserves the single-tool
 flow above.
+
+One step dispatches one capability, so a native reply that carries several
+calls cannot have them all run here. The runtime keeps the first and reports
+the rest — to the trace (`[not run: …]`) and to the next decision's request
+payload (`unhandled_proposals`) — rather than losing them or executing them
+without the model having seen the first result (#264). The report is built by
+the runtime from its own dispatch decision, has no `success` or `output` key,
+and is cleared by the next reply that carries one call.
 
 A `kind=tool` decision may carry the reserved marker `"tool_final": true`
 (when calling a tool directly, the same signal is one of its arguments; the

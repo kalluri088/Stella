@@ -845,7 +845,12 @@ two of those three axes are in place and the third is named as missing below.
   answer it, because the routing rules invite that tool by name and said
   nothing about her app. Three sentences, measured on the production request
   path: 9 of 24 such questions reached `outline_search` before, 18 of 24 after,
-  three runs each. What still
+  three runs each. #264 was the fourth defect that same live turn left: the reply
+  that carried `outline_search` and `workspace_list` together dispatched only
+  the first, and the answer came from the second — a call that never ran —
+  because nothing said to the model or the owner that half the ask had been
+  dropped. The runtime now reports it, to the trace and in the next request
+  payload, and never runs a proposal on the model's behalf. What still
   stands between that and her real workspace is one fact about this machine:
   `~/Projects/Outline` ships migrations to `003` while
   `~/.local/share/outline/outline.db` is at schema `5`, so the older checkout

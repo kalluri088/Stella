@@ -39,6 +39,19 @@ environment override). Unlike the Outline tools there is no reachability
 probe, because every backend question is answered per call and each
 answer degrades honestly.
 
+## Saying which backend is live
+
+Two places tell the owner where her query is going before she sends it: the
+`/status` line and `stella doctor`'s web check. Both now ask
+`resolve_tinyfish_key` — the same function the tools call — rather than each
+reading one of its two sources: `/status` read only the environment and doctor
+only the key file, so an owner who stored her key in Settings was told her query
+went to keyless DuckDuckGo while `web_search` was calling api.tinyfish.ai, and
+the owner with only an exported variable was told her web tools say "web is off"
+while they were keyed. One resolver, one answer, in all three places. A stored
+secret is named ("TinyFish key") and never printed: neither output form carries
+its value.
+
 ## Runtime-owned budget
 
 The free-tier limits from the pricing page are enforced by
@@ -103,3 +116,16 @@ titled/link/snippet rows through the same envelope, a
 TinyFish fetch came back marker-wrapped with the page title. Every
 claim in this document has now been exercised from `src/` against
 the real providers.
+
+Measured on this machine, 2026-10-13 (#265, #266): the suite was not neutral
+about the owner's key file. Clearing `TINYFISH_API_KEY` left the stored secret
+reachable, so `build_web_tools({})` answered with a live TinyFish client and two
+keyless assertions failed here and nowhere else — which is also to say those
+tests had been reading her secret. `tests/test_web_tools.py` now isolates the
+store the way `tests/test_provider_keys.py` does (an autouse fixture, with
+`tests/test_isolation.py` holding the Windows mirror line in the new sites); 26
+pass on a machine that has a real key. The divergence that made it visible is
+pinned on both sides: `tests/test_commands.py` proves `/status` names TinyFish
+for a stored secret with the environment empty, and
+`tests/test_doctor.py` proves the same for the environment-only key that doctor
+used to call "web is off", with neither value printed.

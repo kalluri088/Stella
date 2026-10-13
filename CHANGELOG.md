@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### Two lines that said "local" while the tool was calling a third party (#266)
+
+- **What changed.** `/status` and `stella doctor` now resolve the TinyFish key
+  through `web_tools.resolve_tinyfish_key(os.environ)` — the same call the tools
+  make — instead of each reading one of its two sources. `commands.py` read
+  `os.environ` only; `doctor.py` read the stored secret only.
+- **Why.** The key resolution is environment first, then the secret typed into
+  Settings. An owner who stores her key in Settings got `/status` saying
+  `on (keyless DuckDuckGo; your query leaves this machine)` while
+  `web_search` was calling `api.tinyfish.ai`: the line that exists to say who
+  receives her query named the wrong third party, and the approval card was the
+  only other place that told the truth. The mirror error was in doctor, where an
+  environment-only key was reported as "web tools say 'web is off'". Commitment
+  6 is that the interface shows the same state the capability acts on; three
+  readers of one key had drifted into three answers.
+- **Also corrected.** `docs/SECRETS.md` claimed the TinyFish key is
+  "environment-only, never stored by Stella" — untrue since Settings grew the
+  web row, and the file that says which secrets exist cannot say that. The
+  `ui.py` claim that `stella.commands` reads only template files was made true
+  again by naming what `/status` also reads.
+- **Proof.** `tests/test_commands.py` pins the stored-secret-with-empty-env
+  branch (`TinyFish`, value never printed) and isolates the key store;
+  `tests/test_doctor.py` gained `test_the_web_line_lights_for_either_place_its_key_lives`,
+  which covers the environment-only branch doctor used to miss and asserts
+  neither sentinel value reaches either output form. `tests/test_isolation.py`
+  held the Windows mirror line in both new isolation sites. Batches:
+  commands+isolation 44, web+doctor 46, app+cli 186,
+  settings-wiring+conformance 166 (4 skipped), `ruff check .` clean.
+
+### The keyless web path was unreachable in tests (#265)
+
+- **What changed.** `tests/test_web_tools.py` gained an autouse fixture that
+  points `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and the Windows appdata override at
+  a temporary directory, alongside the environment variable it already cleared.
+  No behaviour moved.
+- **Why.** The key resolution in `web_tools` is environment first, then the
+  private secret the owner typed into Settings. The tests only cleared the
+  environment, so on a machine that has that secret — this one does —
+  `build_web_tools({})` returned a live TinyFish client and two assertions about
+  the keyless fallback failed here while passing on a clean machine. The line
+  they check is a privacy line; it has to be reachable from the test that pins
+  it. `tests/test_provider_keys.py` already isolated the same file, which is the
+  idiom this copies.
+- **Proof.** `tests/test_web_tools.py` 26 passed (was 24 of 26 on this machine),
+  `tests/test_ui.py` 90 passed in the same batch, `ruff check .` clean. The
+  divergence it exposed in `/status` and `doctor` is #266, fixed alongside it.
+
 ### Whose data is whose (#263)
 
 - **What changed.** Three sentences, no new argument, tool, tier or request.

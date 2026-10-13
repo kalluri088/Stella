@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from stella import provider_keys
 from stella.commands import (
     ARGUMENTS_TOKEN,
     CommandCall,
@@ -148,10 +149,24 @@ def test_status_never_raises_on_partial_objects() -> None:
 
 
 def test_status_names_the_web_backend(monkeypatch, tmp_path) -> None:
+    # The line has to follow the tools, which read TINYFISH_API_KEY first and
+    # then the secret typed into Settings. Isolating the store is what makes
+    # the keyless arm reachable at all on a machine that has a real key — and
+    # what keeps this test out of the owner's key file (#265, #266).
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "share"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
     settings = type("S", (), {"web_tools_enabled": True})()
     joined = "\n".join(status_lines(settings=settings))
     assert "DuckDuckGo" in joined
+    # A secret in Settings, nothing in the environment: the same tool call
+    # would go to api.tinyfish.ai, so the line must say so.
+    provider_keys.save_secret(provider_keys.TINYFISH_SECRET, "tf-sentinel-value")
+    joined = "\n".join(status_lines(settings=settings))
+    assert "TinyFish" in joined
+    assert "tf-sentinel-value" not in joined
+    monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
     monkeypatch.setenv("TINYFISH_API_KEY", "sk-not-a-real-key")
     joined = "\n".join(status_lines(settings=settings))
     assert "TinyFish" in joined

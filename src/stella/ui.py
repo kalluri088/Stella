@@ -17,8 +17,9 @@ or approvals, and a successful setup grants nothing beyond
 "Stella can talk to this model".
 
 Typed slash commands are intercepted in the view through
-``stella.commands`` (a pure classifier and renderer that reads only the
-user's own template files); a command never reaches the bridge, and a
+``stella.commands`` (a classifier and renderer that reads the user's own
+template files and, for ``/status``, the same key answer the web tools act on);
+a command never reaches the bridge, and a
 template's expansion re-enters as an ordinary turn. Voice transcripts
 take a different path and are never command-parsed.
 """

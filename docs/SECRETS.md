@@ -119,8 +119,12 @@ is gated:
 - No OAuth flows or native per-provider client classes; hosted providers
   ride the OpenAI-compatible path by design.
 - No full key re-display (suffix hint only) and no multi-profile keys.
-- The TinyFish web key is unchanged: environment-only, never stored by
-  Stella.
+- The TinyFish web key is read from two places, in this order:
+  `TINYFISH_API_KEY` in the environment for this launch, then the value the
+  Settings web row stored in this same file under `secrets`. Nothing else
+  changes for it: `0600`, never in `config.json`, never in a log or an
+  approval card, and never printed by `/status` or `stella doctor` — both of
+  which ask the tools' own resolver rather than one source apiece (#266).
 - No file lock around the store: two simultaneous setups writing the
   same preset is last-writer-wins per slot, which is documented rather
   than engineered around.

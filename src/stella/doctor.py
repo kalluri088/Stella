@@ -78,6 +78,7 @@ from stella.persona import persona_directory
 from stella.sandbox import sandbox_available
 from stella.voice import PLAY_BINARIES, RECORD_BINARIES, default_speech_worker
 from stella.wake import SHARED_WAKE_MODELS, default_wake_model_dir
+from stella.web_tools import resolve_tinyfish_key
 
 READY = "ok"
 MISSING = "missing"
@@ -640,7 +641,10 @@ def _capability_checks(settings: StellaSettings) -> tuple[Check, ...]:
     compositor = _on_path(("hyprctl",))
     browser = find_browser(os.environ)
     jailed = sandbox_available()
-    tinyfish = bool(provider_keys.stored_secret(provider_keys.TINYFISH_SECRET))
+    # The key the web tools actually act on, which is the environment first and
+    # then the stored secret. Reading only the store told a machine that exports
+    # TINYFISH_API_KEY that its web tools say "web is off" (#266).
+    tinyfish = resolve_tinyfish_key(os.environ) is not None
     ddgs = _installed("ddgs")
     checks: list[Check] = [
         Check(

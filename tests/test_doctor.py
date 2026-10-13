@@ -27,6 +27,7 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.delenv("STELLA_MODEL", raising=False)
     monkeypatch.delenv("STELLA_SEMANTIC_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
     monkeypatch.delenv("STELLA_TRANSCRIPTION_COMMAND", raising=False)
     monkeypatch.delenv("STELLA_OUTLINE", raising=False)
     # Doctor's network probes are Ollama's model list, the saved provider's
@@ -330,6 +331,33 @@ def test_a_platform_without_unix_sockets_is_reported_not_raised(
 
 def _outline_check(report):
     return next(check for check in report.checks if check.name == "outline")
+
+
+def _web_check(report):
+    return next(check for check in report.checks if check.name == "web search")
+
+
+def test_the_web_line_lights_for_either_place_its_key_lives(
+    tmp_path, monkeypatch
+) -> None:
+    # The web tools read TINYFISH_API_KEY first and then the secret typed into
+    # Settings; doctor read only the store, so an environment-only key was
+    # reported as "web tools say 'web is off'" on a machine whose tools were
+    # calling api.tinyfish.ai (#266). Both sources are one answer here.
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
+
+    provider_keys.save_secret(provider_keys.TINYFISH_SECRET, "tf-sentinel-value")
+    report = collect()
+    assert _web_check(report).state == READY
+    assert _web_check(report).detail == "TinyFish key"
+    assert "tf-sentinel-value" not in render(report)
+
+    provider_keys.delete_secret(provider_keys.TINYFISH_SECRET)
+    monkeypatch.setenv("TINYFISH_API_KEY", "sk-tf-sentinel")
+    report = collect()
+    assert _web_check(report).state == READY
+    assert "sk-tf-sentinel" not in render(report)
 
 
 def test_a_capability_that_is_off_is_not_probed(tmp_path, monkeypatch) -> None:

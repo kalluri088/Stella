@@ -2,6 +2,8 @@
 
 import datetime as dt
 
+import pytest
+
 from stella.app import StellaSettings
 from stella.tools import ApprovalRequest, RiskLevel, action_summary
 from stella.web_tools import (
@@ -17,6 +19,26 @@ from stella.web_tools import (
     build_web_tools,
     web_tool_summaries,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_owner_secret_in_the_way(tmp_path, monkeypatch):
+    """Which arm a web test measures is the test's choice, not this machine's.
+
+    ``TINYFISH_API_KEY`` in the environment is only the first answer: the key
+    resolution falls through to the private secret the owner typed into
+    Settings, and a laptop that has one answers ``build_web_tools({})`` with a
+    live client. On this machine that made the keyless fallback two tests assert
+    unreachable, and it would equally have let any test here read her secret.
+    Isolating the store is what ``tests/test_provider_keys.py`` already does for
+    the same file, to the same base.
+    """
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "share"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.delenv("TINYFISH_API_KEY", raising=False)
+
 
 SEARCH_RESULTS = {
     "results": [

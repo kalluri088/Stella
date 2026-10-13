@@ -38,6 +38,7 @@ from pathlib import Path
 
 from stella.audit import RETAINED_WINDOW, format_line
 from stella.persona import _read_regular_bounded, persona_directory
+from stella.web_tools import resolve_tinyfish_key
 
 COMMAND_DIR_NAME = "commands"
 MAX_COMMAND_BYTES = 8_192
@@ -356,7 +357,11 @@ def status_lines(
     web_enabled = bool(getattr(settings, "web_tools_enabled", False))
     if not web_enabled:
         web_line = "off"
-    elif os.environ.get("TINYFISH_API_KEY"):
+    # The same answer the tools act on. `resolve_tinyfish_key` is environment
+    # first and then the private secret typed into Settings; reading only the
+    # environment told an owner with a stored key that her query was going to
+    # keyless DuckDuckGo while web_search was calling api.tinyfish.ai (#266).
+    elif resolve_tinyfish_key(os.environ) is not None:
         web_line = "on (TinyFish; your query leaves this machine)"
     else:
         web_line = "on (keyless DuckDuckGo; your query leaves this machine)"

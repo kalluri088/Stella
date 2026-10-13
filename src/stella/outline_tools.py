@@ -334,6 +334,27 @@ def _optional_text(arguments: Mapping[str, object], key: str, maxlen: int) -> bo
     return isinstance(value, str) and bool(value.strip()) and len(value) <= maxlen
 
 
+def _blank_strings_are_absent(arguments: dict[str, object]) -> dict[str, object]:
+    """Rewrite ``""`` and ``"   "`` in any field as a missing field.
+
+    A small model fills every slot the schema shows it and sends
+    ``query=""``; rejecting that turned one live turn into a failed call, a
+    repeat of the identical call, and a sentence to the owner blaming the
+    tool for an empty string. ``_text`` already reads a blank as absent, so
+    this is the same rule moved before validation. Only the read side uses
+    it: a blank title is still an invalid task to create.
+    """
+
+    return {
+        key: (
+            None
+            if isinstance(value, str) and not value.strip()
+            else value
+        )
+        for key, value in arguments.items()
+    }
+
+
 def _int_in_range(value: object, low: int, high: int) -> bool:
     return (
         isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
@@ -446,15 +467,39 @@ def _section(
     return lines
 
 
-def _render(lines: list[str]) -> ToolResult:
+def _render(
+    lines: list[str], *, empty_body: str | None = None
+) -> ToolResult:
     body = lines[:MAX_OUTPUT_LINES]
     overflow = len(lines) - len(body)
     output = RESULT_HEADER + "\n" + "\n".join(_line(x) for x in body)
     if overflow > 0:
         output += f"\n({overflow} more lines omitted)"
     if not lines:
-        output = RESULT_HEADER + "\n(nothing matched)"
+        output = RESULT_HEADER + "\n" + (empty_body or "(nothing matched)")
     return ToolResult(success=True, output=output)
+
+
+def _window_empty_note(when: str | None) -> str | None:
+    """What an empty *window* says, as distinct from what an empty search says.
+
+    ``(nothing matched)`` was the whole story until a live turn proved it
+    was not: the brain volunteered ``when=upcoming`` on a plain keyword
+    question, the window held nothing, and Stella told the owner there was
+    nothing in her Outline about the subject — while a task about it sat
+    there undated. A window is a date filter, so an empty one has to name
+    itself and say what it excludes; only then are the model's final words
+    about the right thing.
+    """
+
+    if when is None:
+        return None
+    return (
+        f"(nothing matched in the '{when}' window. A window lists only "
+        "items dated inside it, so an undated item — or a match in other "
+        "words — is outside it. The same query on its own searches "
+        "everything.)"
+    )
 
 
 def _local_tz_offset_minutes() -> int:
@@ -542,8 +587,9 @@ class OutlineSearchTool(Tool):
         return (
             "Searches the user's Outline app (tasks, events, notes, "
             "projects, people). Read-only. Give query keywords, a "
-            "when= window (today|upcoming|overdue), a tag= for open tasks "
-            "with that tag, kind=person for one person's detail plus their "
+            "when= window (today|upcoming|overdue — dated items only), a "
+            "tag= for open tasks with that tag, kind=task with no query for "
+            "the open list, kind=person for one person's detail plus their "
             "linked items, kind=graph for a named person's or project's "
             "connections as text (the UI shows the same data as a graph), or "
             "kind=trash for recently deleted items (restore them with "
@@ -556,8 +602,9 @@ class OutlineSearchTool(Tool):
         return {
             "query": "keywords (optional when 'when' or 'tag' is set; "
                      "a name for kind=person|graph)",
-            "kind": "optional task|event|note|project|person|graph|trash",
-            "when": "optional today|upcoming|overdue",
+            "kind": "optional task|event|note|project|person|graph|trash"
+                    " (task alone = the open list)",
+            "when": "optional today|upcoming|overdue (dated items only)",
             "tag": "optional task tag name [A-Za-z0-9_-]{1,40}",
         }
 
@@ -568,6 +615,7 @@ class OutlineSearchTool(Tool):
     def validate_arguments(self, arguments: dict[str, object]) -> bool:
         if not isinstance(arguments, dict):
             return False
+        arguments = _blank_strings_are_absent(arguments)
         if set(arguments) - {"query", "kind", "when", "tag"}:
             return False
         if not _optional_text(arguments, "query", 200):
@@ -589,12 +637,17 @@ class OutlineSearchTool(Tool):
             bool(_text(arguments, "query"))
             or arguments.get("when") is not None
             or tag is not None
+            # kind=task with no keywords is the open list — the question a
+            # person actually asks ("what is on my list?"), and the listing
+            # branch for it already existed behind this check, unreachable.
+            or arguments.get("kind") == "task"
             or arguments.get("kind") == "trash"
         )
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         if not self.validate_arguments(arguments):
             return ToolResult(success=False, output="Invalid tool arguments.")
+        arguments = _blank_strings_are_absent(arguments)
         try:
             lines = self._collect(
                 _text(arguments, "query"),
@@ -604,7 +657,8 @@ class OutlineSearchTool(Tool):
             )
         except OutlineError as error:
             return ToolResult(success=False, output=str(error))
-        return _render(lines)
+        when = arguments.get("when") if isinstance(arguments.get("when"), str) else None
+        return _render(lines, empty_body=_window_empty_note(when))
 
     def _collect(
         self,
@@ -688,19 +742,42 @@ class OutlineSearchTool(Tool):
             )
             lines = [_task_line(row) for row in _rows(payload)] + _cut(payload)
         elif when == "upcoming":
-            payload = client.request(
+            # "upcoming" is a date window, not an events feed. The web
+            # timeline puts a task due Thursday next to a meeting on
+            # Friday, and the API can page both; an events-only window
+            # answered "nothing is coming up" while a dated task sat in
+            # Outline (measured on a live turn, 2026-10-13). The two lists
+            # merge by when they fall, sharing one line budget.
+            start = int(_local_now().timestamp() * 1000)
+            events = client.request(
                 "GET",
                 "/api/v1/events",
+                query={"start": start, "limit": MAX_OUTPUT_LINES},
+            )
+            tasks = client.request(
+                "GET",
+                "/api/v1/tasks",
                 query={
-                    "start": int(_local_now().timestamp() * 1000),
+                    "status": "open",
+                    "due_after": start,
                     "limit": MAX_OUTPUT_LINES,
                 },
             )
-            lines = [
-                f"[event#{row.get('id')}] {row.get('title')}"
-                f" — {_format_when(row.get('starts_at'))}"
-                for row in _rows(payload)
-            ] + _cut(payload)
+            dated: list[tuple[int, str]] = []
+            for row in _rows(events):
+                starts_at = row.get("starts_at")
+                if isinstance(starts_at, int):
+                    label = (
+                        f"[event#{row.get('id')}] {row.get('title')}"
+                        f" — {_format_when(starts_at)}"
+                    )
+                    dated.append((starts_at, label))
+            for row in _rows(tasks):
+                due_at = row.get("due_at")
+                if isinstance(due_at, int):
+                    dated.append((due_at, _task_line(row)))
+            lines = [line for _, line in sorted(dated, key=lambda item: item[0])]
+            lines += _cut(events) + _cut(tasks)
         elif tag is not None:
             payload = client.request(
                 "GET",

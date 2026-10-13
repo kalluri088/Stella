@@ -826,9 +826,15 @@ two of those three axes are in place and the third is named as missing below.
   stop, and it is the reason sentence 2 is only half true.
 - **A turn that works is not yet a task that crosses sessions.** The
   doctrine's answer for cross-turn work is an Outline item the reminder tick
-  already notices (A1), and #241 — a real Outline turn with the integration
-  switched on — is blocked because nothing answers on `localhost:8741` as of
-  2026-10-11.
+  already notices (A1). #241 — a real Outline turn with the integration
+  switched on — ran on 2026-10-13 against a scratch Outline server and found
+  three defects in `outline_search`, now fixed (`docs/OUTLINE.md`). What still
+  stands between that and her real workspace is one fact about this machine:
+  `~/Projects/Outline` ships migrations to `003` while
+  `~/.local/share/outline/outline.db` is at schema `5`, so the older checkout
+  refuses to start and only the newer `~/Projects/outline-graph` can serve it.
+  Resolving that is the owner's call — nothing here migrates or downgrades her
+  database (see `docs/RESEARCH-RUNNING-OUTLINE.md`).
 - **How much she may do without asking is the owner's open decision.** #232
   is the tier mapping; until it is agreed, the reach recorded in B6 and E1
   runs under today's capability-by-capability risk levels.

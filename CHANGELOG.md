@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### Two real Outline turns, and the three defects they found (#241)
+
+- **What changed.** Stella finally drove her Outline integration on a real
+  model turn, and the turn did not go well in a way that turned out to be
+  Stella's fault rather than the wiring's. Three fixes came out of it, all
+  inside `outline_search`, with no new verb (rule 16 holds at four):
+  **`when=upcoming` now merges future-dated open tasks with events**, ordered
+  by when they fall, instead of reading the events list alone; **an empty date
+  window names itself** — it says which window was empty, that a window lists
+  only items dated inside it, and that the query on its own searches
+  everything — where a plain empty search still says the plain `(nothing
+  matched)`; and a **blank optional argument is read as absent**, so the
+  `"query": ""` a small model sends when it fills every schema slot means "no
+  keywords" instead of a rejected call. `kind=task` with no keywords also
+  reached the open-list branch that had been written and could never run,
+  because the validator in front of it refused the only arguments that branch
+  accepts.
+- **What the first turn actually said.** Asked *"Do I have anything in my
+  Outline about car insurance?"* while a task by that title sat in the
+  database, she volunteered a window nobody had asked for, the window was
+  empty, and she told the owner *"No, there is nothing in your Outline about
+  car insurance."* The observation was not lying — the window genuinely held
+  nothing, because the task has no due date and an upcoming window listed
+  events only. Every honest part of that chain was working; the gap was that
+  an empty window looked identical to no such content anywhere.
+- **What the second turn actually said.** *"The tool call failed because the
+  arguments provided were invalid… could you please clarify?"* — after making
+  the same call twice, the runtime's within-turn duplicate guard stopping the
+  repeat. The trace named the fields sent, so the rejection was about a value,
+  and the empty string was the only plausible one. Re-run after the fix, the
+  same sentence took one call and returned *"Your Outline list today has 4
+  open tasks and no water entry"* — four being the count in the observation,
+  read correctly, which had never been checked against a real brain.
+- **How it was tested without touching her data.** Her two Outline checkouts
+  disagree with her database: `~/Projects/Outline` ships migrations to `003`
+  while `~/.local/share/outline/outline.db` is at schema `5`, so that build
+  refuses to start rather than downgrade it. The newer build beside it
+  (`~/Projects/outline-graph`, migrations to `005`) is what wrote that schema,
+  so the live turns ran it against a scratch `OUTLINE_DATA_DIR` on port 8742
+  with four seeded tasks. **Nothing was migrated, nothing was downgraded, and
+  her database was never opened for writing** — resolving that skew is her
+  call, not a thing to fix from the outside.
+- **What is deliberately not fixed.** The brain still volunteers a date window
+  nobody asked for, so the plain keyword search never runs and the titles never
+  reach her; the new empty-window sentence made the resulting answer honest
+  (*"…for today; a broader search would be needed to find older or undated
+  items"*) but did not, in that sample, make her take the cheaper second call
+  the hint offered. That is prompt and persona territory, recorded in
+  `docs/OUTLINE.md` alongside the other model-behaviour residuals rather than
+  patched sideways here. One sighting each way is not a rate.
+- **Proof.** `tests/test_outline_tools.py` 96 passed (four new: the merged
+  window, the window that names itself, `kind=task` alone, blank arguments)
+  and `tests/test_outline_reminder_delivery.py` 11, with `tests/test_doctor.py`
+  19 and `tests/test_app.py` 99 clean after the description text changed;
+  `ruff check .` and `git diff --check` clean. The turn evidence is the two
+  before-and-after runs above, each one a real `session.run_turn` against a
+  real Outline server with a real `qwen3:4b` proposing the call.
+- **Docs.** `docs/OUTLINE.md` gained *The first live turns*, the capability
+  table row now states what a window is, and `docs/RESEARCH-RUNNING-OUTLINE.md`
+  records the version skew — including the trap that requirement 5's "tell
+  Stella where the checkout lives" now has to name **the newer one** or the
+  managed server dies on boot.
+
 ### The owner chose the brain: the router stays
 
 - **What changed.** Nothing in the code, and that is the point — #237 was a

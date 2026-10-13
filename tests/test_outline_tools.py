@@ -291,6 +291,64 @@ def test_search_filters_when_and_query_combined():
     assert "file taxes" not in result.output
 
 
+def test_upcoming_window_includes_tasks_due_later():
+    # A live turn found "upcoming" reading the events list only, so a task
+    # due in two days was invisible and Stella said nothing was coming up.
+    routes = [
+        ("GET", "/api/v1/events", {"items": [
+            {"id": 21, "title": "dentist", "starts_at": 9_999_999_999_000},
+        ]}),
+        ("GET", "/api/v1/tasks", {"items": [
+            {"id": 30, "title": "renew the passport", "due_at": 9_000_000_000_000},
+            {"id": 31, "title": "undated errand", "due_at": None},
+        ], "next_before_id": None}),
+    ]
+    output = OutlineSearchTool(client(*routes)).execute({"when": "upcoming"}).output
+    assert "[event#21] dentist" in output
+    assert "[task#30] renew the passport" in output
+    assert "undated errand" not in output  # no date, so not in a date window
+    assert output.index("[task#30]") < output.index("[event#21]")  # soonest first
+
+
+def test_an_empty_window_names_the_window_it_was():
+    routes = [
+        ("GET", "/api/v1/events", {"items": []}),
+        ("GET", "/api/v1/tasks", {"items": []}),
+        ("GET", "/api/v1/search", {"items": []}),
+    ]
+    tool = OutlineSearchTool(client(*routes))
+    windowed = tool.execute({"query": "car insurance", "when": "upcoming"}).output
+    assert "in the 'upcoming' window" in windowed
+    assert "items dated inside it" in windowed
+    # an empty search with no window is a plain nothing, and says so
+    assert tool.execute({"query": "car insurance"}).output.endswith(
+        "(nothing matched)"
+    )
+
+
+def test_kind_task_without_a_query_lists_the_open_tasks():
+    tool = OutlineSearchTool(client())
+    assert tool.validate_arguments({"kind": "task"})
+    assert "[task#12] drink water" in tool.execute({"kind": "task"}).output
+
+
+def test_a_blank_optional_argument_means_not_given():
+    # One live turn sent {"kind": "task", "query": "", "when": ""} — the
+    # schema filled in with nothing — and the rejection was followed by the
+    # same call again and an apology to the owner about a failed tool.
+    tool = OutlineSearchTool(client())
+    assert tool.validate_arguments({"kind": "task", "query": "", "when": ""})
+    assert "[task#12] drink water" in tool.execute(
+        {"kind": "task", "query": "", "when": ""}
+    ).output
+    # a blank window is no window: the keyword search still runs
+    assert "[task#12] drink water" in tool.execute(
+        {"query": "drink water", "when": "  "}
+    ).output
+    # and nothing about the vocabulary got looser
+    assert not tool.validate_arguments({"kind": "task", "when": "soon"})
+
+
 # --------------------------------------------------------------------------
 # outline_create
 # --------------------------------------------------------------------------

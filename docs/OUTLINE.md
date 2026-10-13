@@ -21,7 +21,7 @@ back is data rather than instruction (rules 6 and 7).
 
 | Capability | Risk | What it is |
 |---|---|---|
-| `outline_search` | SAFE | the only read: today/upcoming/overdue, a keyword query, a tag filter, one person's detail, a project or person's connections as text, recently deleted items |
+| `outline_search` | SAFE | the only read: a date window (today / upcoming / overdue), a keyword query, `kind=task` with no keywords for the open list, a tag filter, one person's detail, a project or person's connections as text, recently deleted items |
 | `outline_create` | SENSITIVE | one new task, event, note, water log, timer, project or person |
 | `outline_update` | SENSITIVE | one action on one existing item, including attaching and detaching a person |
 | `outline_bulk` | SENSITIVE | one action across many tasks in a single request |
@@ -144,6 +144,59 @@ Every result is framed with a header naming it as stored data, and bounded —
 therefore read as a title, not as an instruction, which is rule 6 stated as a
 rendering decision rather than a hope.
 
+## The first live turns (#241, 2026-10-13)
+
+Until this week the Outline surface had never been driven by a real model turn
+on this machine — the `Validation` list below is honest about how long that
+stayed true. Running it needed a server, and the server that *should* answer is
+the one that cannot start: `~/Projects/Outline` carries migrations to `003`
+while `~/.local/share/outline/outline.db` is at schema `5`, so that checkout
+refuses to boot rather than downgrade her data. The newer build sitting beside
+it, `~/Projects/outline-graph` (migrations to `005`), is what wrote that
+database. Nothing was migrated, and her real database was never opened for
+writing: the test server ran the newer build against a scratch
+`OUTLINE_DATA_DIR` on a spare port, with four throwaway tasks created in it
+through its own API, and Stella's client was pointed there by environment. Two
+real turns later, three defects had surfaced, all of them fixed here.
+
+The first turn asked *"Do I have anything in my Outline about car insurance?"*
+while the scratch database held a task titled exactly that. The brain called
+`outline_search` with a window nobody had asked for — `when=upcoming` — and the
+window answered "(nothing matched)", because an upcoming window read the
+**events** list only and a task with no due date is in no date window at all.
+Her words to the owner were a clean, well-mannered lie: *"No, there is nothing
+in your Outline about car insurance."* The two halves of that failure are now
+separately impossible: **`upcoming` merges future-dated open tasks with
+events**, ordered by when they fall (the API pages both, so this is the server
+being used rather than a second sort invented here), and **an empty window
+names itself** — it says it is the `upcoming` window, that a window lists only
+items dated inside it, and that the same query alone searches everything. An
+empty search with no window still says the plain `(nothing matched)`, because
+there the plain answer is the true one.
+
+The second turn asked *"What is on my Outline list right now?"* and went
+differently: the call was rejected as invalid, the identical call was made
+again, and the owner got *"The tool call failed because the arguments provided
+were invalid… could you please clarify?"* The trace names the fields the model
+sent (`kind, query, when`), so the rejection was about a **value** — a schema
+slot filled with an empty string, which validation read as a violation. A blank
+optional string now means *not given*, the same rule `_text` already applied
+when reading; the open list also became reachable, because `kind=task` with no
+keywords was refused by a validator sitting in front of a listing branch that
+was already written and could never run. The re-run of that exact sentence
+landed in one call and returned *"Your Outline list today has 4 open tasks and
+no water entry"* — four being the number in the observation, which had never
+been checked against a real brain before.
+
+What the two turns did **not** fix is the thing they both started with: the
+brain volunteers a date window that nobody asked for, so the plain keyword
+search never runs and the titles never reach her. The empty-window sentence made
+the resulting answer honest — *"…for today; a broader search would be needed to
+find older or undated items"* — but did not, in that sample, make her take the
+cheaper second call the hint offered. That is prompt and persona work, it joins
+the other named model-behaviour residuals rather than being fixed sideways
+inside this change, and one sighting each way is not a rate.
+
 ## Security notes
 
 - Loopback HTTP with a bearer-equivalent header, over stdlib `urllib` only: no
@@ -176,7 +229,14 @@ rendering decision rather than a hope.
   real token found zero occurrences. That is the state this machine is actually
   in: the workspace, database and token exist and the server is not running, so
   the tools are correctly dark.
-- Not yet validated live: a turn against a *running* Outline server from a real
-  Stella build, and a due reminder arriving through the pump with the browser
-  closed. Both need the server started, which is the owner's call (see
-  `RESEARCH-RUNNING-OUTLINE.md`).
+- Live, on 2026-10-13: the newer Outline build (`~/Projects/outline-graph`)
+  served a scratch data directory on `127.0.0.1:8742` with four seeded tasks,
+  and real `qwen3:4b` turns through `bin/stella-dev chat` drove
+  `outline_search` over it. That is the source of the three fixes in *The first
+  live turns* above, and of the re-run that finally listed the list. The owner's
+  real database was not written to, migrated or downgraded at any point.
+- Not yet validated live: a turn against a running server **holding the
+  owner's own data** — which needs her version skew resolved first (see
+  `RESEARCH-RUNNING-OUTLINE.md`) — and a due reminder arriving through the pump
+  with the browser closed. Both need the server started against the real data
+  directory, which is the owner's call.

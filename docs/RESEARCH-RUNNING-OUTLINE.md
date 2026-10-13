@@ -2,7 +2,10 @@
 
 Research only. Nothing in this file is implemented, and no server, service or
 unit was started while it was written — every fact below came from reading
-files or from read-only status queries.
+files or from read-only status queries. (The 2026-10-13 addendum below is the
+exception: it was written after a scratch Outline server was started on port
+8742, outside the owner's data directory, to drive the live turns recorded in
+`OUTLINE.md`.)
 
 ## The question
 
@@ -41,6 +44,38 @@ this laptop, which is the correct behaviour but not a useful one.
 
 The question this document answers is narrow: **what would it take, and should
 it be Stella that starts the server?**
+
+## Re-checked 2026-10-13: the server can be started, and that is now the least interesting problem
+
+Stella finally drove real Outline turns on this date, which required a running
+server, and the answer to this document's question turned out to be a fact
+nobody had written down: **there are two Outline checkouts on this machine, and
+only the second one can serve the owner's data.**
+
+- `~/.local/share/outline/outline.db` is at SQLite `user_version` **5** and was
+  last written 2026-10-13; `~/.local/share/outline/outline.token` exists. The
+  database is **empty** — `tasks`, `notes`, `people`, `events`, `projects`,
+  `tags`, `timers` and `water_entries` all hold zero rows.
+- `~/Projects/Outline` (HEAD `401b8ac`, 2026-09-30) ships migrations `001`–`003`
+  and therefore **refuses to boot** against that file:
+  `RuntimeError: database schema version 5 is newer than installed migrations
+  (3); refusing to downgrade` (`backend/outline_server/db.py:49`). That refusal
+  is correct behaviour and must not be worked around by editing her database.
+- `~/Projects/outline-graph` (HEAD `bd4ffb4`, 2026-10-03) ships `001`–`005` — it
+  is the build that wrote schema 5 — and starts fine.
+
+So requirement 5 in *What must be solved* ("tell Stella where the Outline
+checkout lives") now has a concrete edge to it: **the path must be the newer
+checkout**, and a managed start that picked the other one would produce a
+server that dies on startup with a schema complaint. Requirement 7's warning
+still holds — and is the reason the live turns in `OUTLINE.md` ran against a
+scratch `OUTLINE_DATA_DIR` on port 8742 rather than this data directory: the
+`user_version`-only migration state means any start against a real directory can
+write migrations, and neither side has a dry-run.
+
+Everything else in this document survived the re-check: no `outline.service`
+unit is installed, `127.0.0.1:8741` answers nothing, and `/healthz` remains
+unauthenticated while every `/api/v1/*` route requires the token header.
 
 ## What "run Outline" has to mean before it can mean anything
 

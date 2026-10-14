@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### A spoken answer is now written knowing it will be heard (#271 — the brevity note was never sent)
+
+- **What was found.** #270 measured how long a spoken reply takes to start and
+  pointed at the one thing that would shorten it: the voice style note, the
+  fixed application-authored instruction that says the answer will be heard once
+  and so must open with the result. `~/tools/bench_spoken_brevity.py` wrapped the
+  real Ollama client and read every request that left for the model on 18 spoken
+  production turns — and found the note on **none of them**. It was attached in
+  `Stella.process` to the call that turns a decision into a final answer, which
+  `LLMBrain.answer_content_is_final` makes unreachable: the shipped brain writes
+  the reply inside its decision, so the runtime never asks for a separate answer
+  and never reaches the line that added the note. Every spoken answer had been
+  written as though it would be read on a screen, which is why the median reply
+  that had to be listened to in full ran 258 characters.
+- **What changed.** The note moved to the request that actually writes the
+  words: `LLMBrain._context_payload` appends it to the per-turn JSON when
+  `context.input_envelope.carries_audio()`, and `Stella.process` still attaches
+  it to the synthesis prompt for a brain whose decision is not final, so a note
+  always rides exactly the one request that produced the reply and never two of
+  one. `InputEnvelope.carries_audio()` is now the single answer to "did this
+  arrive as speech", shared by the runtime's spoken-turn flag and the brain, so
+  the two cannot drift. `VOICE_STYLE_NOTE` moved to `brain.py` beside the code
+  that uses it. The stable prompt prefix is untouched — the note joins the
+  per-turn payload — so this costs #228's prompt cache nothing, and nothing the
+  model decides is affected: it changes how an answer is worded, never what
+  Stella is allowed to do.
+- **What it bought.** Same bench, four arms, 18 spoken turns each: reply median
+  **258 → 186 characters**, turn median **2.33 → 1.73 s**, median wait for first
+  audio **3.62 → 3.23 s**, routing unmoved (both tool questions reached the same
+  capability 3/3 in every arm). After the change a separate run
+  (`~/tools/check_spoken_note.py`) watches the real client on the shipped path
+  and counts what was actually sent: **20 of 20** decision requests carry the
+  note across 12 spoken turns, reply median 176 characters.
+- **Validation.** `tests/test_brain.py` asserts a spoken turn's request carries
+  the note exactly once, outside the system message, with the JSON before it
+  still parseable, and that a typed turn's does not; the cached-prefix test
+  still passes. `tests/test_stella.py`'s existing synthesis-path test is kept —
+  it uses a brain whose decision is not final, and is the test that stayed green
+  while production never ran that path. Batched offline runs: test_brain 75,
+  test_stella 93, test_context + test_conformance 99 passed / 4 skipped. `uv
+  run ruff check .` and `git diff --check` clean.
+- **Documentation.** `docs/VOICE.md`'s **Brevity** bullet now names the defect,
+  the fix and the numbers; ROADMAP **D3** carries a dated correction of its
+  "joins synthesis" claim, since that wording is what hid the bug for three
+  weeks.
+
 ### What a spoken reply really costs before she starts talking (#270 — measured, one promise corrected)
 
 - **What was found.** `docs/VOICE.md` said the first audio of a reply lands

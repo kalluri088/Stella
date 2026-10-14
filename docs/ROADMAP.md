@@ -279,6 +279,15 @@ where, and a swap there requires its stated evidence bar.
   thread, only for true spoken turns (voice input *and* speech output
   on); reply speech, **Cancel** and **Stop speaking** all retire an
   unheard phrase. See `docs/VOICE.md`, "Spoken conversation turns".
+  *Corrected 2026-10-14 (#271):* "joins synthesis" was the one path the
+  shipped brain never takes — `answer_content_is_final` makes the decision's
+  own words the reply, so the note was sent on **0 of 18** real spoken turns
+  and every spoken answer was written as though it would be read on a screen.
+  It now rides the request that writes the words
+  (`LLMBrain._context_payload`, keyed on `input_envelope.carries_audio()`),
+  still joins synthesis for a brain whose decision is not final, and is
+  measured delivered on 20 of 20 requests with a reply median of **176
+  characters** against the 258 it used to run.
 - **#233. The window says what she is doing, not only for how long —
   done.** The status label renders the activity phases the runtime already
   emits: `thinking` becomes "Stella is thinking about that", `working` becomes

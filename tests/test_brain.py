@@ -5,6 +5,7 @@ import pytest
 
 from stella.brain import (
     NOT_INSPECTED_REPLY,
+    VOICE_STYLE_NOTE,
     Brain,
     Decision,
     DecisionKind,
@@ -15,6 +16,10 @@ from stella.context import (
     MAX_DROPPED_PROPOSALS,
     Context,
     DroppedProposal,
+    InputEnvelope,
+    InputModality,
+    InputPart,
+    InputProvenance,
     RetrievalSource,
     ToolObservation,
 )
@@ -805,6 +810,53 @@ def test_system_prompt_is_byte_stable_across_turns() -> None:
     brain = LLMBrain(ResponseLLM("{}"), clock=lambda: next(moments))
 
     assert brain._system_prompt() == brain._system_prompt()
+
+
+def _spoken(content: str) -> Context:
+    return Context(
+        user_input=content,
+        input_envelope=InputEnvelope(
+            (
+                InputPart(
+                    modality=InputModality.AUDIO,
+                    provenance=InputProvenance.USER,
+                    content=content,
+                ),
+            )
+        ),
+    )
+
+
+def test_a_spoken_turn_tells_the_brain_the_answer_will_be_heard() -> None:
+    """#271: the voice note has to ride the request that writes the words.
+
+    `answer_content_is_final` makes the decision itself the reply on the
+    shipped brain, so a note attached only to a later synthesis call is never
+    sent — measured on 18 spoken production turns, 0 carried it, and every
+    spoken answer was written as though it would be read on a screen.
+    """
+
+    llm = ResponseLLM('{"kind": "answer", "content": "Sixteen."}')
+    LLMBrain(llm).decide(_spoken("how many CPUs does this machine have?"))
+
+    request = llm.messages[0][1].content
+    assert request.count(VOICE_STYLE_NOTE) == 1
+    assert VOICE_STYLE_NOTE not in llm.messages[0][0].content
+    # The JSON context stays parseable: the note is said after it.
+    assert json.loads(request[: request.index(VOICE_STYLE_NOTE)])["user_input"]
+
+    typed = ResponseLLM('{"kind": "answer", "content": "Sixteen."}')
+    LLMBrain(typed).decide(Context(user_input="how many CPUs does this machine have?"))
+    assert VOICE_STYLE_NOTE not in typed.messages[0][1].content
+
+
+def test_the_voice_note_costs_the_cached_prefix_nothing() -> None:
+    """A turn being spoken changes the request, never the reusable prefix."""
+
+    brain = LLMBrain(ResponseLLM("{}"))
+    before = brain._system_prompt()
+    brain.decide(_spoken("what is the time?"))
+    assert brain._system_prompt() == before
 
 
 def test_llm_brain_normalizes_native_tool_call_to_existing_decision() -> None:

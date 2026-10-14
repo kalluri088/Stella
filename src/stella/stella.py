@@ -11,13 +11,17 @@ from stella.audio import (
     normalize_input,
 )
 from stella.audio_output import SpeechArtifact, SpeechOutput, SpeechProvider
-from stella.brain import Brain, Decision, DecisionKind
+from stella.brain import (
+    VOICE_STYLE_NOTE,
+    Brain,
+    Decision,
+    DecisionKind,
+)
 from stella.context import (
     MAX_RECALL_WINDOW,
     Context,
     DroppedProposal,
     InputEnvelope,
-    InputModality,
     RetrievalSource,
     ToolObservation,
     limit_tool_output,
@@ -81,19 +85,6 @@ from stella.vision import VisionProvider
 MAX_HANDLED_PROACTIVE_EVENTS = 512
 MAX_SEMANTIC_SUPPLEMENT = 2
 MEMORY_MUTATION_ACTIONS = frozenset({"write", "update", "delete"})
-
-# D3: a voice-asked answer is heard, not read. This fixed, application-
-# authored note is the only style influence the voice path adds; the
-# model never authors narration text.
-VOICE_STYLE_NOTE = (
-    "The user asked by voice and will hear this answer read aloud. Give the "
-    "result in the first sentence, then compress whatever else matters into "
-    "an overview: one or two short spoken sentences, three only when the "
-    "answer genuinely has three parts. Drop the detail that only works on a "
-    "screen. No lists, no code, no markdown, no symbols that cannot be read "
-    "aloud."
-)
-
 
 def _tool_call_key(capability: str | None, arguments: dict) -> str:
     """Canonical identity of one tool call for within-turn duplicate checks."""
@@ -252,10 +243,7 @@ class Stella:
             if self.turn_time_limit_seconds is None
             else self.clock() + self.turn_time_limit_seconds
         )
-        spoken_request = any(
-            part.modality is InputModality.AUDIO
-            for part in context.input_envelope.parts
-        )
+        spoken_request = context.input_envelope.carries_audio()
 
         def notify(kind: str) -> None:
             if on_activity is None:
@@ -518,6 +506,10 @@ class Stella:
 
         def synthesise(messages: list[Message]) -> str:
             notify("answering")
+            # This is the separate-answer call, so it is the only path a brain
+            # whose decision is not final takes. A brain that answers inside its
+            # decision never gets here, and carries the same note on the request
+            # that wrote the words instead (see LLMBrain._context_payload, #271).
             if spoken_request:
                 messages = [
                     messages[0],

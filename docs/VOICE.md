@@ -241,13 +241,28 @@ that call at the trusted application edge, and a spoken turn changes exactly
 two things — both presentation-only:
 
 - **Brevity.** The turn reaches the core with an audio-modality input
-  envelope, and the runtime then attaches one fixed, application-authored
-  style note to the final-answer prompt: the answer will be heard once and
-  cannot be skimmed, so the result comes first and everything else is
-  compressed into an overview — one or two short spoken sentences, three only
-  when the answer genuinely has three parts, and none of the detail that only
-  works on a screen. No lists, code, markdown or unreadable symbols. Voice
-  input with speech output switched off stays
+  envelope, and one fixed, application-authored style note rides the request
+  that writes the answer: the answer will be heard once and cannot be skimmed,
+  so the result comes first and everything else is compressed into an
+  overview — one or two short spoken sentences, three only when the answer
+  genuinely has three parts, and none of the detail that only works on a
+  screen. No lists, code, markdown or unreadable symbols. Which request that
+  is was the whole defect (#271): `LLMBrain` marks its decision's content
+  final, so the runtime never makes a separate answering call, and a note
+  attached only to that call was sent on **0 of 18** spoken production turns —
+  every spoken answer had been written as though it would be read on a screen.
+  The note now joins the decision request when the envelope carries audio
+  modality (`LLMBrain._context_payload`), and still joins the synthesis prompt
+  for a brain whose answer is not final, so it always rides exactly the one
+  request that wrote the words and never two of one. Measured over 18 spoken
+  turns per arm on the shipped path: reply median 258 characters → **186**,
+  turn median 2.33 s → **1.73 s**, first-audio wait a median 3.62 s → 3.23 s,
+  and routing unmoved (both tool questions reached the same capability 3/3 in
+  every arm). After the change a
+  separate run watches the real client and counts what was actually sent:
+  **20 of 20** decision requests carry the note on 12 spoken turns, reply
+  median 176 characters. The stable prompt prefix is untouched, so this costs #228's
+  cache nothing. Voice input with speech output switched off stays
   the ordinary text path — the microphone alone does not make a turn spoken;
   being *heard* does.
 - **Work narration (D3).** The runtime reports the phase a turn has just

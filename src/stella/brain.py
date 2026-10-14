@@ -203,6 +203,22 @@ class Brain(ABC):
         """
 
 
+#: D3: a voice-asked answer is heard, not read. This fixed, application-
+#: authored note is the only style influence the voice path adds; the model
+#: never authors it, and it changes how an answer sounds, never what Stella is
+#: allowed to do. It rides the request that writes the words, which on the
+#: shipped brain is the decision request itself — ``answer_content_is_final``
+#: makes that reply final and the runtime never asks for a separate answer.
+VOICE_STYLE_NOTE = (
+    "The user asked by voice and will hear this answer read aloud. Give the "
+    "result in the first sentence, then compress whatever else matters into "
+    "an overview: one or two short spoken sentences, three only when the "
+    "answer genuinely has three parts. Drop the detail that only works on a "
+    "screen. No lists, no code, no markdown, no symbols that cannot be read "
+    "aloud."
+)
+
+
 class LLMBrain(Brain):
     """Brain that parses a structured decision returned by an LLM client."""
 
@@ -780,7 +796,16 @@ user; act on the request and speak naturally.
             if len(shown) < len(context.dropped_proposals):
                 report["unhandled_count"] = len(context.dropped_proposals)
             payload["unhandled_proposals"] = report
-        return json.dumps(payload)
+        text = json.dumps(payload)
+        if context.input_envelope.carries_audio():
+            # The note belongs on the request that writes the words. It used
+            # to join only the synthesis call, which the shipped brain never
+            # makes: across 18 spoken production turns it was sent 0 times, so
+            # every spoken answer was written as though it would be read on a
+            # screen (#271). The stable prefix is untouched — this rides the
+            # per-turn payload, so #228's prompt cache holds.
+            return f"{text}\n{VOICE_STYLE_NOTE}"
+        return text
 
     _json_decoder = json.JSONDecoder()
 

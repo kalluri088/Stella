@@ -137,6 +137,17 @@ class InputEnvelope:
     def to_payload(self) -> list[dict[str, object]]:
         return [part.to_payload() for part in self.parts]
 
+    def carries_audio(self) -> bool:
+        """Whether any part of this input arrived as speech.
+
+        One question with two answers today — the runtime's spoken-turn flag
+        and the brain's voice style note — and both must mean the same thing,
+        because an answer that will be read aloud is the only answer that has
+        to work out loud.
+        """
+
+        return any(part.modality is InputModality.AUDIO for part in self.parts)
+
 
 @dataclass(frozen=True)
 class ToolObservation:

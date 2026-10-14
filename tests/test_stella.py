@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from stella.brain import Brain, Decision, DecisionKind, LLMBrain
+from stella.brain import (
+    VOICE_STYLE_NOTE,
+    Brain,
+    Decision,
+    DecisionKind,
+    LLMBrain,
+)
 from stella.context import (
     MAX_RETRIEVED_MEMORIES,
     Context,
@@ -28,7 +34,7 @@ from stella.memory import (
     MemoryWriteRequest,
     SQLiteMemory,
 )
-from stella.stella import VOICE_STYLE_NOTE, Stella
+from stella.stella import Stella
 from stella.tools import (
     ActionPreview,
     ActionReceipt,

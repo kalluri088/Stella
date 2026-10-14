@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Semantic recall is on by default (#245 — the owner decided)
+
+- **What was asked.** The Vision's day-one test is a paraphrase: a fact stored
+  on Monday has to surface on Friday when the words do not match.
+  `docs/OUTCOME_MEMORY.md` measured that it does not — *"Can I take amoxicillin
+  for my sinus infection?"* retrieved **zero** at shipped settings, because
+  recall without the index is lexical and `relevance_score` needs two shared
+  normalized terms. Turning `STELLA_SEMANTIC_MEMORY` on made the same question
+  retrieve the allergy and produce the right answer, and the run closed with
+  the honest note that "nobody has decided that switch should be on". On
+  2026-10-14 the owner decided it: *"Yes semantic recall should be on by
+  default."*
+- **What changed.** `semantic_memory_enabled` now defaults to on in all four
+  places a default lives: the bare `StellaSettings` field, `from_saved`,
+  `from_environment` (the variable is `is not False` rather than `is True`, so
+  a launch that says nothing runs with recall and only `STELLA_SEMANTIC_MEMORY=0`
+  stops it), and `config.resolve_settings`, where a `config.json` that predates
+  the key resolves on and only an explicit `false` resolves off — the same
+  shape desktop awareness already used. `semantic_env_override`'s docstring,
+  which claimed the index "never enables by default", says what it now does.
+- **What it does not change.** Memory stays persistence, not authority (rule
+  5): the index alters only which remembered lines arrive as *candidates*,
+  still capped at two supplements, still labelled `local-hash-embedding` with
+  a cosine score that is never compared with the lexical scale, and keyword
+  matches still keep first place. The default embedder loads no model and
+  downloads nothing; the second local file is created only while the switch is
+  on, so the opt-out removes the copy rather than hiding it.
+- **One thing the owner has to do.** Her own install already has
+  `"semantic_memory_enabled": false` written into
+  `~/.local/share/stella/config.json` — a saved answer from when off was the
+  default. A default does not outrank a saved choice, so for that install the
+  Settings checkbox is the one click that actually turns it on (or
+  `STELLA_SEMANTIC_MEMORY=1` for a single launch). Fresh installs get it on.
+- **Validation.** `tests/test_app.py`'s settings-path test now asserts on at
+  the default, on when the variable says nothing, and off for both `=0` and an
+  explicit saved no; `tests/test_config.py` gained a test that a `config.json`
+  missing the key resolves on and an explicit `false` resolves off, plus the
+  variable is cleared in that file's isolation fixture so a developer's own
+  choice cannot bend it. Batches run offline: test_config 123 passed,
+  test_app + test_settings_wiring 180 passed; `uv run ruff check .` and
+  `git diff --check` clean.
+- **Documentation.** `docs/ARCHITECTURE.md`, `docs/OUTCOME_MEMORY.md`,
+  README's feature list and environment table, and ROADMAP's **B2** plus the
+  open question that #245 was.
+
 ### A spoken answer is now written knowing it will be heard (#271 — the brevity note was never sent)
 
 - **What was found.** #270 measured how long a spoken reply takes to start and

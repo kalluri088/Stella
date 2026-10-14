@@ -983,10 +983,11 @@ her own when relevant and written deliberately rather than transcribed.
 - **B2. Semantic memory retrieval — done.** The
   `LocalHashEmbeddingProvider` is wired into memory recall
   (`src/stella/semantic_memory.py`, `src/stella/stella.py`) with the two
-  decisions taken up front: it is **opt-in** (Settings checkbox or
+  decisions taken up front: it was **opt-in** (Settings checkbox or
   `STELLA_SEMANTIC_MEMORY`, because the index duplicates memory content
-  into a second local file, and disabled installs never create it), and
-  recall is **fused, keyword-dominant** — keyword matches keep their
+  into a second local file, and disabled installs never create it) until the
+  owner decided otherwise on 2026-10-14 (#245), and it is
+  **fused, keyword-dominant** — keyword matches keep their
   order, at most two labeled semantic supplements fill the slack, and
   the two score scales are never cross-compared. Provenance is reported
   per memory (`RetrievalSource`, surfaced in the Brain payload), the
@@ -1045,12 +1046,19 @@ her own when relevant and written deliberately rather than transcribed.
 - **"Weeks later" has not been waited out.** B8 is one restart in one
   sitting against the dev tree's own state. Nothing here measures a fact
   surviving an ordinary fortnight of use, which is what the commitment says.
-- **The Friday question needs the switch that is off by default.** At shipped
-  settings recall is lexical and needs two shared normalized terms, so the
-  paraphrased question found nothing until `STELLA_SEMANTIC_MEMORY` was
-  switched on (B8). Whether semantic recall should be on by default is #245 —
-  an owner decision, because the index duplicates memory content into a second
-  local file.
+- **The Friday question needed the switch that is now on by default.** At the
+  settings she shipped with, recall was lexical and needed two shared
+  normalized terms, so the paraphrased question found nothing until
+  `STELLA_SEMANTIC_MEMORY` was switched on (B8). **#245 is decided** (the
+  owner, 2026-10-14): semantic recall is on unless she says otherwise, so a
+  fresh install — and her own, whose `config.json` never wrote that key —
+  builds the index. What the decision weighed is worth keeping in words: the
+  index duplicates memory content into a second local file, and all it changes
+  is which remembered lines reach a turn as *candidates* — capped at two,
+  labelled with their provenance, and read as persistence rather than
+  authority (rule 5), which #268 confirmed costs a turn time and never
+  decisions. Opting back out is one Settings checkbox, or
+  `STELLA_SEMANTIC_MEMORY=0` for a single launch.
 - **A fact about the owner needs an approval to be stored** — B8's first
   condition, and rule 10 working as designed. #246 asks whether that gate
   should stand between the owner and a sentence they simply said; the

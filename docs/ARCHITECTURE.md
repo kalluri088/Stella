@@ -288,8 +288,10 @@ stores vectors and the authorized memory metadata in a separate SQLite table
 and performs a bounded linear cosine scan, which is appropriate for Stella's
 current local scale.
 
-Semantic recall is opt-in (`STELLA_SEMANTIC_MEMORY` or the Settings
-checkbox); disabled installs never create the index file. When enabled,
+Semantic recall is on by default — the owner's decision of 2026-10-14,
+reversible from the Settings checkbox or for one launch with
+`STELLA_SEMANTIC_MEMORY=0`; an install that says no never creates the index
+file. When enabled,
 `Stella.process` performs fused, keyword-dominant recall: lexical matches
 keep their exact order and retrieval slot priority, and at most two semantic
 supplements (`MAX_SEMANTIC_SUPPLEMENT`) may fill the remaining space. Stella

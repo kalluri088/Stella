@@ -518,8 +518,10 @@ def semantic_env_override() -> bool | None:
     """The STELLA_SEMANTIC_MEMORY override, or None when it says nothing.
 
     The semantic index duplicates every stored memory's content into a
-    second local database, so building it is strictly opt-in; this only
-    overrides the saved choice, never enables by default.
+    second local database. It ships on (#245), so this says which way a
+    single launch goes without touching the saved answer — `=0` runs with no
+    index at all, `=1` runs with one even where the checkbox is off, and an
+    unset variable says nothing rather than no.
     """
 
     return _env_toggle("STELLA_SEMANTIC_MEMORY")
@@ -767,7 +769,14 @@ class StellaSettings:
     transcripts_db: str = field(default_factory=default_transcripts_db)
     transcripts_enabled: bool = False
     semantic_db: str = field(default_factory=default_semantic_db)
-    semantic_memory_enabled: bool = False
+    # Semantic recall is on by default (the owner's decision, 2026-10-14). What
+    # it costs is a second local database holding copies of memories Stella
+    # already has, and a local-hash embedder with no model to load or download;
+    # what it changes is which remembered lines reach a turn as candidates,
+    # which is information the runtime still reads as persistence rather than
+    # authority (#5). Turning it off is one Settings checkbox, or
+    # STELLA_SEMANTIC_MEMORY=0 for a single launch.
+    semantic_memory_enabled: bool = True
     # Desktop awareness is on by default: the capability is still doubly
     # gated (a real windowing adapter must be present, and every single
     # use asks for trusted approval), so the checkbox decides whether the
@@ -1056,7 +1065,7 @@ class StellaSettings:
         ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
         openai_base_url: str | None = None,
         transcripts_enabled: bool = False,
-        semantic_memory_enabled: bool = False,
+        semantic_memory_enabled: bool = True,
         semantic_provider: str = "local-hash",
         os_tools_enabled: bool = True,
         outline_tools_enabled: bool = False,
@@ -1251,7 +1260,10 @@ class StellaSettings:
                 "OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL
             ),
             transcripts_enabled=transcripts_env_override() is True,
-            semantic_memory_enabled=semantic_env_override() is True,
+            # On unless the variable says no: the default flipped (#245), so a
+            # launch that says nothing runs with recall, and only an explicit
+            # STELLA_SEMANTIC_MEMORY=0 turns it off for that launch.
+            semantic_memory_enabled=semantic_env_override() is not False,
             # Desktop awareness is the one capability family that defaults ON
             # in both the saved and the pure-environment path: it stays
             # double-gated (a real windowing adapter must be found, and every
@@ -1457,9 +1469,10 @@ def build_application(settings: StellaSettings) -> StellaApplication:
     # recording back off.
     transcripts = TranscriptRecorder(settings.transcripts_db)
     proposals = ReflectionStore(settings.transcripts_db)
-    # The semantic index duplicates every stored memory into a second
-    # local database, so it exists only while the opt-in flag is on;
-    # off means no file is even created.
+    # The semantic index duplicates every stored memory into a second local
+    # database. It is on unless the owner said no (#245); off means no file is
+    # even created, so the opt-out really does remove the copy rather than
+    # stop reading it.
     semantic_retriever = None
     if settings.semantic_memory_enabled:
         Path(settings.semantic_db).parent.mkdir(parents=True, exist_ok=True)

@@ -855,7 +855,12 @@ def resolve_settings() -> StellaSettings | None:
             or endpoint(raw.get("openai_base_url"))
         ),
         transcripts_enabled=raw.get("transcripts_enabled") is True,
-        semantic_memory_enabled=raw.get("semantic_memory_enabled") is True,
+        # On unless the owner saved a no: a config that predates this key, or
+        # says nothing, runs with semantic recall (#245). Only an explicit
+        # false turns it off, and the panel writes that key the moment the
+        # checkbox is clicked.
+        semantic_memory_enabled=raw.get("semantic_memory_enabled", True)
+        is True,
         semantic_provider=raw.get("semantic_provider", "local-hash"),
         os_tools_enabled=raw.get("os_tools_enabled", True) is True,
         outline_tools_enabled=raw.get("outline_tools_enabled") is True,

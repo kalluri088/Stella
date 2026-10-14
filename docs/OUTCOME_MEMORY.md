@@ -40,8 +40,10 @@ non-empty, and one-write gates control persistence.
 - Empty output is not eligible.
 - One explicit write is allowed per interaction.
 - Raw tool output is not automatically stored.
-- Retrieval remains deterministic keyword overlap by default. With the
-  opt-in semantic index enabled, at most two extra items may be appended
+- Retrieval stays deterministic keyword overlap, with the semantic index on
+  by default since #245 (2026-10-14; the Settings checkbox or
+  `STELLA_SEMANTIC_MEMORY=0` still turns it off, and an install that says no
+  never creates the file). With it enabled, at most two extra items may be appended
   after the keyword matches, each reported with its own provenance
   (`RetrievalSource`: `keyword` plus lexical score, or
   `local-hash-embedding` plus cosine score). The scales are never
@@ -94,7 +96,8 @@ Three things stood in the way, and they are separate:
   (`local-hash`, no model to load) the same paraphrase retrieved the allergy
   and Stella answered *"No… Amoxicillin is a penicillin-type antibiotic"*. The
   Vision's test is written as a paraphrase, so as shipped it fails; one switch
-  makes it pass, and nobody has decided that switch should be on.
+  makes it pass, and as of 2026-10-14 the owner has decided that switch is on
+  by default (#245).
 - **On a local brain, a recalled memory can be the token that overflows the
   context.** With OS, shell and browser capabilities enabled, this machine's
   decision prompt measures **8,151 tokens against `num_ctx=8192`** (41 tokens

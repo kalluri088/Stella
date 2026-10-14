@@ -42,6 +42,10 @@ def isolated_data_dir(tmp_path, monkeypatch):
     # answer with their own path instead of the one the file was written with.
     monkeypatch.delenv("STELLA_VOICE_CAPTURE_GATE", raising=False)
     monkeypatch.delenv("STELLA_VAD_MODEL", raising=False)
+    # And semantic recall, which now defaults on: a developer who keeps it off
+    # in their shell would otherwise see every saved-config answer below come
+    # back as their own choice rather than the file's.
+    monkeypatch.delenv("STELLA_SEMANTIC_MEMORY", raising=False)
 
 
 class _Response:
@@ -961,6 +965,31 @@ def test_saved_configuration_roundtrips_the_os_tools_opt_in():
     resolved = config.resolve_settings()
     assert resolved is not None
     assert resolved.os_tools_enabled is True
+
+
+def test_semantic_recall_is_on_by_default_for_a_config_that_says_nothing():
+    # #245: recall runs unless the owner switches it off, so a config.json
+    # that predates the key — or holds no opinion — resolves to on, and only
+    # an explicit false turns it off.
+    config.save_configuration(
+        StellaSettings.from_saved(provider="ollama", model="m")
+    )
+    raw = config.load_configuration()
+    assert raw is not None
+    assert raw["semantic_memory_enabled"] is True
+    assert config.resolve_settings().semantic_memory_enabled is True
+
+    legacy = {
+        key: value
+        for key, value in raw.items()
+        if key != "semantic_memory_enabled"
+    }
+    config.config_path().write_text(json.dumps(legacy), encoding="utf-8")
+    assert config.resolve_settings().semantic_memory_enabled is True
+
+    legacy["semantic_memory_enabled"] = False
+    config.config_path().write_text(json.dumps(legacy), encoding="utf-8")
+    assert config.resolve_settings().semantic_memory_enabled is False
 
 
 def test_environment_toggle_overrides_the_saved_os_tools_choice(monkeypatch):

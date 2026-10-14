@@ -15,8 +15,9 @@ checked that it did.
 - **Chat** — a desktop window or the terminal, with your choice of model.
 - **Remember** — say "remember that …" and she asks first; the Memories tab
   shows exactly what is stored, and you can delete anything, any time.
-- **Find related memories (opt-in)** — the Settings checkbox (or
-  `STELLA_SEMANTIC_MEMORY=1`) adds a local embedding index, so a memory
+- **Find related memories** — on unless you switch it off in Settings (or for
+  one launch with `STELLA_SEMANTIC_MEMORY=0`), this adds a local embedding
+  index, so a memory
   can surface because its words look alike even when your exact keywords
   miss. Keyword matches always keep first place, at most two extra hints
   are added, and each is labeled with how it was found — a similarity
@@ -27,8 +28,8 @@ checked that it did.
   CPU-only). Both stay local, and if the model server is unreachable
   Stella says so and answers from keyword recall alone. (With Ollama the
   embedding model coexists with your chat model, but the first call after
-  a long idle can take a few seconds while it reloads.) Off by default,
-  and while off the index file is never created.
+  a long idle can take a few seconds while it reloads.) While the switch is
+  off, the index file is never created.
 - **Remind** — "in 20 minutes, tell me to take the pan off the stove." Stella
   has no notifier of her own: she writes that as a task or event carrying a
   remind time in your connected Outline workspace, and **Outline** is what
@@ -277,7 +278,7 @@ development, or running several configurations side by side:
 | `STELLA_PERSONA_DIR` | Persona file location | `~/.config/stella` |
 | `STELLA_TRANSCRIPTS` | Transcript recording on/off (`1`/`0`; overrides the saved setting) | off |
 | `STELLA_TRANSCRIPT_DB` | Transcript file location | `~/.local/share/stella/stella_transcript.db` |
-| `STELLA_SEMANTIC_MEMORY` | Semantic memory recall on/off (`1`/`0`; overrides the saved setting) | off |
+| `STELLA_SEMANTIC_MEMORY` | Semantic memory recall on/off (`1`/`0`; overrides the saved setting) | on |
 | `STELLA_SEMANTIC_PROVIDER` | Recall index: `local-hash`, `ollama` or `minilm` (`stella[embed]` extra) | `local-hash` |
 | `STELLA_EMBED_MODEL` | Ollama embedding model name | `nomic-embed-text` |
 | `STELLA_SEMANTIC_DB` | Semantic index file location | `~/.local/share/stella/stella_semantic_index.db` |

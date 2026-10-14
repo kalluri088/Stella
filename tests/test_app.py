@@ -1290,28 +1290,31 @@ def test_transcript_recording_is_opt_in_across_settings_paths(
     )
 
 
-def test_semantic_recall_is_opt_in_across_settings_paths(
+def test_semantic_recall_is_on_by_default_across_settings_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("STELLA_SEMANTIC_MEMORY", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("WIN_PD_OVERRIDE_LOCAL_APPDATA", str(tmp_path / "xdg"))
 
-    # Default everywhere: the duplicated index is off unless requested.
-    assert StellaSettings().semantic_memory_enabled is False
+    # Default everywhere: the duplicated index exists unless someone said
+    # no, which is the owner's decision of 2026-10-14 (#245).
+    assert StellaSettings().semantic_memory_enabled is True
     saved = StellaSettings.from_saved(provider="ollama", model="m")
-    assert saved.semantic_memory_enabled is False
+    assert saved.semantic_memory_enabled is True
     assert Path(saved.semantic_db) == (
         tmp_path / "xdg" / "stella" / "stella_semantic_index.db"
     )
     # The saved checkbox value is respected...
     assert (
         StellaSettings.from_saved(
-            provider="ollama", model="m", semantic_memory_enabled=True
+            provider="ollama", model="m", semantic_memory_enabled=False
         ).semantic_memory_enabled
-        is True
+        is False
     )
-    # ...and the environment can force either way.
+    # ...and the environment can force either way, which is what makes the
+    # default reversible without a code change.
+    monkeypatch.setenv("STELLA_MODEL", "m")
     monkeypatch.setenv("STELLA_SEMANTIC_MEMORY", "off")
     assert (
         StellaSettings.from_saved(
@@ -1319,8 +1322,12 @@ def test_semantic_recall_is_opt_in_across_settings_paths(
         ).semantic_memory_enabled
         is False
     )
+    assert StellaSettings.from_environment().semantic_memory_enabled is False
     monkeypatch.setenv("STELLA_SEMANTIC_MEMORY", "1")
     monkeypatch.setenv("STELLA_MODEL", "m")
+    assert StellaSettings.from_environment().semantic_memory_enabled is True
+    monkeypatch.delenv("STELLA_SEMANTIC_MEMORY")
+    # A variable that says nothing is not a no: the default holds.
     assert StellaSettings.from_environment().semantic_memory_enabled is True
     monkeypatch.setenv(
         "STELLA_SEMANTIC_DB", str(tmp_path / "custom-semantic.db")

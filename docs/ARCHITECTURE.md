@@ -396,9 +396,12 @@ rather than count so the doc cannot drift: the safe
 `DateTimeTool` and `SystemInfoTool`, the workspace-scoped filesystem and
 workspace tools (`filesystem_read` is `SENSITIVE`; `filesystem_write`,
 `filesystem_edit` and `filesystem_delete` are `DANGEROUS` with exact approval),
-`NetworkReadTool` (`DANGEROUS`), the memory tools (`memory_list` is
-`SENSITIVE`, while `memory_write`, `memory_update` and `memory_forget` are
-`DANGEROUS` and require exact application approval before they mutate stored
+`NetworkReadTool` (`DANGEROUS`), the memory tools (`memory_list` and, since
+#246, `memory_write` are `SENSITIVE` — a fact the owner has just said is
+local, reversible and hers, so it stores without a prompt, while a write
+proposed after tool observations is still put to the owner by the runtime's
+provenance guard; `memory_update` and `memory_forget` are `DANGEROUS` and
+require exact application approval before they change or drop stored
 memory), and `PersonaEditTool` (`DANGEROUS`, limited to the two
 persona files; see `PERSONA.md`). The opt-in Outline, web and desktop tools
 below add to this core only when their gates are open. `EchoTool` exists for tests but is

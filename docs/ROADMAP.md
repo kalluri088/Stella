@@ -965,10 +965,12 @@ her own when relevant and written deliberately rather than transcribed.
   without repeating it. Run through `bin/stella-dev chat` against the
   tree's own state on 2026-10-10, the mechanism held end to end — the
   Brain volunteered a write for a plain statement of fact, the runtime
-  stored it only after a `yes`, the row survived into a fresh process, and
+  stored it only after a `yes` — the `yes` is gone as of #246, and the
+  storing did not move — the row survived into a fresh process, and
   a later turn retrieved it and answered *from* it ("Yes, you are allergic
   to penicillin"). Three things stood in the way, and none is the store:
-  a fact needs one approval (rule 10, working as designed); retrieval at
+  a fact needed one approval then (rule 10 as it stood; #246 has since
+  retired that prompt for the owner's own sentence); retrieval at
   shipped settings is lexical and needs two shared normalized terms, so
   the paraphrased Friday question found nothing until the existing
   `STELLA_SEMANTIC_MEMORY` opt-in was switched on — then it worked; and
@@ -1060,10 +1062,16 @@ her own when relevant and written deliberately rather than transcribed.
   decisions. Opting back out is one Settings checkbox, or
   `STELLA_SEMANTIC_MEMORY=0` for a single launch.
 - **A fact about the owner needs an approval to be stored** — B8's first
-  condition, and rule 10 working as designed. #246 asks whether that gate
-  should stand between the owner and a sentence they simply said; the
-  commitment's own test is the argument for changing it, and the answer is the
-  owner's.
+  condition, and rule 10 working as designed. **Decided 2026-10-14 (#246):**
+  the owner said a sentence she just said does not need a gate. `memory_write`
+  is `SENSITIVE` now, so "remember that I'm allergic to penicillin" stores on
+  the spot and the audit row still records it. The floor did not move for
+  provenance: a write proposed after tool observations is shaped by untrusted
+  input (rule 6) and the runtime asks for its exact wording before storing it
+  — declared by the runtime as `require_approval` on the dispatcher, which can
+  add a prompt and never cancel one. `memory_update` and `memory_forget` —
+  which change or drop what is already kept — still demand exact approval, and
+  #232 remains open for the rest of the registry.
 
 ## 5. She notices when you are not yourself
 

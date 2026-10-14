@@ -13,8 +13,9 @@ checked that it did.
 ## What she can do (as of 1.5.0)
 
 - **Chat** — a desktop window or the terminal, with your choice of model.
-- **Remember** — say "remember that …" and she asks first; the Memories tab
-  shows exactly what is stored, and you can delete anything, any time.
+- **Remember** — say "remember that …" and she stores it; the Memories tab
+  shows exactly what is stored, and you can delete anything, any time. A fact
+  taken from something she *read* rather than from you still asks first.
 - **Find related memories** — on unless you switch it off in Settings (or for
   one launch with `STELLA_SEMANTIC_MEMORY=0`), this adds a local embedding
   index, so a memory

@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### Remembering a fact the owner stated is no longer an action she approves (#246)
+
+- **What was asked.** Since the first memory write, `memory_write` carried a
+  `DANGEROUS` floor, so *"Just so you know, I am allergic to penicillin"*
+  ended in *"Type 'yes' to allow this"* — and a turn that pipes one line and
+  no answer stores nothing. `docs/OUTCOME_MEMORY.md` named that prompt as the
+  first of three things standing between the commitment and an invisible
+  memory. On 2026-10-14 the owner decided it: *"No need approval to remember a
+  fact."*
+- **What changed.** `MemoryWriteTool.risk_level` is `SENSITIVE`. By rule 10's
+  own test — blast radius, not how impressive the capability is — a fact the
+  owner has just said is the least dangerous write Stella can make: it is her
+  sentence, it stays on this machine, and the Memories tab deletes it again.
+  The description and the brain prompt no longer promise a prompt that will
+  not come. Audit is untouched: the write still lands in the interaction trace
+  and the audit row with its risk level and whether approval was required.
+- **What did not move.** Rule 6 is the other half of the line, and it is the
+  reason this was not a one-line demotion. A memory write proposed *after* tool
+  output entered the turn is content the owner did not say — a note file, a web
+  page, an email can all shape it — so the runtime still gates that call. The
+  guard is declared by the runtime rather than the model: `Stella._execute_tool`
+  passes `from_observations` and `ToolDispatcher.execute` gained
+  `require_approval`, which joins the authorization test alongside the
+  `DANGEROUS` floor. It can add a prompt and nothing in it can cancel one a
+  floor already demands, so a model that names no provenance still cannot store
+  attacker-shaped text. `memory_update` and `memory_forget` — which change or
+  drop what is already kept — keep their exact-match approvals, and #232 is
+  still open for the rest of the registry: this is the owner's decision about
+  one tool, recorded as its own change rather than slipped into another.
+- **One consequence to know about.** The relaxed sentence lives in the
+  capability notes, which #228 deliberately froze into a cacheable prompt
+  prefix; editing it invalidates that prefix once, so the first turn after this
+  release pays a full prefill before caching resumes.
+- **Validation.** `tests/test_memory_tools.py` asserts the new tier and replaces
+  the old "approval required" test with two: a user-stated fact stores with a
+  refusing provider attached, and a runtime-declared `require_approval` is
+  honoured (refused without approval, refused on a mismatched approval, stored
+  on the exact match); the CLI test drives "remember the tea preference"
+  through a real prompt and asserts no approval prompt appears.
+  `tests/test_stella.py` gained the tool-route pair: no prompt for the owner's
+  own words, and still a prompt — with nothing stored on refusal — after an
+  observation. Batches run offline: test_stella 95, test_memory_tools +
+  test_cli 107, test_approval_previews + security/test_adversarial_boundaries
+  23, test_argument_risk + test_approval_mismatch 44, test_conformance +
+  test_settings_wiring 171 (4 skipped), test_brain + test_memory 91.
+
+
 ### Semantic recall is on by default (#245 — the owner decided)
 
 - **What was asked.** The Vision's day-one test is a paraphrase: a fact stored

@@ -44,6 +44,7 @@ from stella.tools import (
     FileSystemDeleteTool,
     FileSystemReadTool,
     FileSystemWriteTool,
+    MemoryWriteTool,
     NetworkReadTool,
     RiskLevel,
     SystemInfoTool,
@@ -1315,6 +1316,104 @@ def test_user_grounded_memory_write_needs_no_provider() -> None:
     assert result.memory_write is not None
     assert result.memory_write.written is True
     assert "not approved" not in result.response
+
+
+def test_memory_write_capability_needs_no_approval_for_the_owners_fact(
+) -> None:
+    # #246, on the tool route — which is the one the local brain actually
+    # takes when asked to remember something. Nothing in this turn read
+    # untrusted output, so the write is the owner's own sentence: it happens,
+    # and no prompt is raised for it.
+    memory = RecordingMemory()
+    stella = Stella(
+        SequenceBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="memory_write",
+                    arguments={"content": "The user prefers tea."},
+                ),
+                Decision(DecisionKind.ANSWER, content="Noted."),
+            ]
+        ),
+        RecordingLLM(response="Noted."),
+        ToolDispatcher([MemoryWriteTool(memory)]),
+        memory,
+        max_tool_steps=2,
+        # A provider that would refuse: if anything asked, the write below
+        # would not land, so the assertion on `write_count` is the proof.
+        approval_provider=lambda request, _preview=None: ToolApproval(
+            request=request, approved=False
+        ),
+    )
+
+    result = stella.process(Context(user_input="Remember that I prefer tea."))
+
+    assert memory.write_count == 1
+    assert result.memory_write is None or result.memory_write.written
+    assert not [
+        event
+        for event in result.interaction_trace.events
+        if isinstance(event, ApprovalEvent)
+        and event.capability == "memory_write"
+    ]
+
+
+def test_memory_write_capability_still_asks_after_an_observation(
+    tmp_path,
+) -> None:
+    # The other half of #246: what was relaxed is the floor on the owner's
+    # own words, not the provenance guard. A write proposed after tool output
+    # entered the turn is shaped by untrusted input (rule 6), so it is still
+    # put to the owner, and a refusal stores nothing.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text(
+        "The notes mention a fact worth keeping.", encoding="utf-8"
+    )
+    requested: list[ApprovalRequest] = []
+
+    def deny(request: ApprovalRequest, _preview=None) -> ToolApproval:
+        requested.append(request)
+        return ToolApproval(request=request, approved=False)
+
+    memory = RecordingMemory()
+    stella = Stella(
+        SequenceBrain(
+            [
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="filesystem_read",
+                    arguments={"path": "notes.txt"},
+                ),
+                Decision(
+                    DecisionKind.TOOL,
+                    capability="memory_write",
+                    arguments={"content": "INJECTED-MEMORY-FACT"},
+                ),
+                Decision(DecisionKind.ANSWER, content="I read the notes."),
+            ]
+        ),
+        RecordingLLM(response="I read the notes."),
+        ToolDispatcher([FileSystemReadTool(workspace), MemoryWriteTool(memory)]),
+        memory,
+        max_tool_steps=3,
+        approval_provider=deny,
+    )
+
+    result = stella.process(Context(user_input="Read the notes file."))
+
+    assert requested == [
+        ApprovalRequest("memory_write", {"content": "INJECTED-MEMORY-FACT"})
+    ]
+    assert memory.write_count == 0
+    assert "INJECTED-MEMORY-FACT" not in [
+        item.content for item in memory.retrieve()
+    ]
+    # The refusal is reported by the runtime, not phrased by the model: the
+    # turn ends on the action that was declined.
+    assert result.decision.kind is DecisionKind.TOOL
+    assert "not approved" in result.response
 
 
 def test_failed_or_irrelevant_tool_outcomes_do_not_create_memory() -> None:

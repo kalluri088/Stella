@@ -1950,10 +1950,9 @@ class MemoryWriteTool(Tool):
     def description(self) -> str:
         return (
             "Stores one new fact in memory when the user explicitly asks "
-            "Stella to remember it. Requires exactly a content string and "
-            "requires trusted runtime approval. The stored fact is the "
-            "requested change; never propose an additional memory write "
-            "alongside it."
+            "Stella to remember it. Requires exactly a content string. The "
+            "stored fact is the requested change; never propose an additional "
+            "memory write alongside it."
         )
 
     @property
@@ -1962,7 +1961,15 @@ class MemoryWriteTool(Tool):
 
     @property
     def risk_level(self) -> RiskLevel:
-        return RiskLevel.DANGEROUS
+        # #246, on the owner's decision of 2026-10-14. By blast radius (rule
+        # 10) this is the least dangerous write Stella can make: the fact is
+        # the owner's own sentence, it stays on this machine, and she can
+        # delete it in the Memories tab at any time — so it happens without
+        # asking, and the audit row still records it. What is *not* relaxed is
+        # the provenance guard in the runtime: a write proposed after tool
+        # observations is shaped by untrusted input (rule 6) and still needs a
+        # trusted approval for that exact content.
+        return RiskLevel.SENSITIVE
 
     def validate_arguments(self, arguments: dict[str, object]) -> bool:
         return (
@@ -2725,8 +2732,17 @@ class ToolDispatcher:
         capability: str | None,
         arguments: dict[str, object],
         approval: ToolApproval | None = None,
+        require_approval: bool = False,
     ) -> ToolResult:
-        """Validate and execute one exact application-approved capability."""
+        """Validate and execute one exact application-approved capability.
+
+        ``require_approval`` is a declaration by the runtime, not by the
+        model: it adds an approval requirement to a call whose capability
+        floor does not carry one, which is how a memory write proposed after
+        untrusted tool observations is still gated (#246). It can only ever
+        add a prompt; nothing here lets a model, an argument or this flag
+        remove an approval a floor already demands.
+        """
 
         tool = self.get(capability) if capability is not None else None
         risk_level = None
@@ -2757,9 +2773,14 @@ class ToolDispatcher:
             # no model-provided risk value participates in dispatch. The
             # effective risk is the floor maxed with the trusted argument
             # elevation, so elevation can add approvals but never remove
-            # one, and it can fire on validated arguments only.
+            # one, and it can fire on validated arguments only. A runtime
+            # `require_approval` joins the same way: it can add a prompt for
+            # a call whose floor does not demand one, never cancel one that
+            # does.
             risk_level = self.effective_risk_level(capability, arguments) or risk_level
-            approval_required = risk_level is RiskLevel.DANGEROUS
+            approval_required = (
+                risk_level is RiskLevel.DANGEROUS or require_approval
+            )
             if approval_required:
                 if approval is None:
                     approval_granted = False

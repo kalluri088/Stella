@@ -85,6 +85,10 @@ from stella.vision import VisionProvider
 MAX_HANDLED_PROACTIVE_EVENTS = 512
 MAX_SEMANTIC_SUPPLEMENT = 2
 MEMORY_MUTATION_ACTIONS = frozenset({"write", "update", "delete"})
+# The one capability whose whole purpose is to keep something the owner said.
+# Named here because two guards read it: the approval floor it no longer
+# carries (#246) and the provenance guard that still does.
+MEMORY_WRITE_CAPABILITY = "memory_write"
 
 def _tool_call_key(capability: str | None, arguments: dict) -> str:
     """Canonical identity of one tool call for within-turn duplicate checks."""
@@ -658,6 +662,7 @@ class Stella:
                         trace,
                         user_text=context.user_input,
                         history=prior_user_texts,
+                        from_observations=decision_from_observations,
                     )
                     if tool_result.memory_action is not None:
                         action = tool_result.memory_action
@@ -1153,6 +1158,7 @@ class Stella:
         trace: InteractionTrace | None = None,
         user_text: str | None = None,
         history: tuple[str, ...] = (),
+        from_observations: bool = False,
     ) -> tuple[ToolResult, bool]:
         approval = None
         # Ask with the arguments in hand: a trusted argument elevation can
@@ -1160,6 +1166,16 @@ class Stella:
         # effective risk after validation), while a DANGEROUS floor is
         # required approval regardless, so approval can never go missing.
         approval_required = self.tools.requires_approval(capability, arguments)
+        # #246 left the memory-write floor at sensitive, because a fact the
+        # owner just said is local, reversible and hers. Provenance is the
+        # other half of that line: a write proposed after tool observations
+        # was shaped by input the runtime does not trust (rule 6), so this
+        # call — and only this call — keeps asking, and the dispatcher refuses
+        # it without an approval for exactly these arguments.
+        provenance_approval = (
+            capability == MEMORY_WRITE_CAPABILITY and from_observations
+        )
+        approval_required = approval_required or provenance_approval
         # W5 (report 33): a call that can never execute must never be
         # user-visible as "approve?". Malformed model output — an empty
         # argument object, a wrapped {"arguments":…,"function":…}
@@ -1172,6 +1188,7 @@ class Stella:
             tool = self.tools.get(capability)
             if tool is not None and not tool.validate_arguments(arguments):
                 approval_required = False
+                provenance_approval = False
         approval_decision: bool | None = None
         if (
             approval_required
@@ -1210,7 +1227,12 @@ class Stella:
             approval_decision = False
         if trace is not None and approval_required:
             trace.record(ApprovalEvent(capability, approval_decision))
-        result = self.tools.execute(capability, arguments, approval)
+        result = self.tools.execute(
+            capability,
+            arguments,
+            approval,
+            require_approval=provenance_approval,
+        )
         explicitly_denied = (
             isinstance(approval, ToolApproval) and approval.approved is False
         )
@@ -1387,7 +1409,7 @@ class Stella:
             return None, False
         if requires_approval:
             approval_request = ApprovalRequest(
-                "memory_write", {"content": request.item.content}
+                MEMORY_WRITE_CAPABILITY, {"content": request.item.content}
             )
             approved = False
             if self.approval_provider is not None:
@@ -1396,7 +1418,7 @@ class Stella:
                 # unmentioned "remember this" deserves a second glance.
                 warning = approval_mismatch_warning(
                     user_text,
-                    "memory_write",
+                    MEMORY_WRITE_CAPABILITY,
                     {"content": request.item.content},
                     history,
                 )
@@ -1415,7 +1437,9 @@ class Stella:
                     and approval.request == approval_request
                 )
             if trace is not None:
-                trace.record(ApprovalEvent("memory_write", approved))
+                trace.record(
+                    ApprovalEvent(MEMORY_WRITE_CAPABILITY, approved)
+                )
             if not approved:
                 return (
                     MemoryWriteResult(item=request.item, written=False),

@@ -95,7 +95,8 @@ for the orchestration details.
 | `network_read` | DANGEROUS | `NETWORK_READ.md` |
 | `web_search` / `web_fetch` | DANGEROUS (only registered when the web capability is enabled) | `WEB.md` |
 | `memory_list` | SENSITIVE | `OUTCOME_MEMORY.md` |
-| `memory_write` / `memory_update` / `memory_forget` | DANGEROUS | `OUTCOME_MEMORY.md` |
+| `memory_write` | SENSITIVE — a fact the owner just said stores without asking; the same call proposed after tool observations is gated by the runtime's provenance guard (#246) | `OUTCOME_MEMORY.md` |
+| `memory_update` / `memory_forget` | DANGEROUS | `OUTCOME_MEMORY.md` |
 | `persona_edit` | DANGEROUS (two files only) | `PERSONA.md` |
 
 `EchoTool` exists in `tools.py` but is **deliberately not registered**: a

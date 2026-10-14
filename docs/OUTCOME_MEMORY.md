@@ -82,11 +82,17 @@ Brain's willingness to notice a durable fact was the problem.
 
 Three things stood in the way, and they are separate:
 
-- **One approval per fact.** The write is gated (`rule 10`: the model proposes,
-  the owner authorizes), so the Monday sentence produces a prompt — *"Type
+- **One approval per fact.** The write was gated (`rule 10`: the model proposes,
+  the owner authorizes), so the Monday sentence produced a prompt — *"Type
   'yes' to allow this"* — not a silent store. A test that pipes one line and no
-  answer records `approval denied` and stores nothing. This is the design
-  working, and it is the reason the commitment is not yet invisible.
+  answer records `approval denied` and stores nothing. **Corrected
+  2026-10-14 (#246):** the owner decided that a fact she has just said about
+  herself is not an action needing approval — by blast radius it is the least
+  dangerous write Stella can make (local, reversible, hers to delete), so
+  `memory_write` is now `SENSITIVE` and stores without asking. What did not
+  move is the provenance half of rule 6: a write proposed *after tool output
+  entered the turn* is shaped by input nobody trusts, and the runtime still
+  asks for that exact wording before storing it.
 - **A paraphrase finds nothing at shipped settings.** *"Can I take amoxicillin
   for my sinus infection?"* retrieved zero: recall without the opt-in is
   lexical, and `relevance_score` needs **two** shared normalized terms, so even

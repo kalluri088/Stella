@@ -214,7 +214,9 @@ preview read (or report on) anything. Previews are bounded (60 lines /
   stored, the current text replaced by the new text (with the match count
   when several memories match), or the memories that would be deleted —
   read-only store lookups, and a "would do nothing" card when nothing
-  matches;
+  matches. Of these three, only `memory_write` no longer prompts for a fact
+  the owner just said (#246); its card still appears for a write proposed
+  after tool observations, which is the one case the runtime still gates.
 
 The invariant is registry-wide and tested (`tests/test_approval_previews.py`):
 every DANGEROUS capability implements `preview`; the gated desktop tool

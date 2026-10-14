@@ -72,25 +72,55 @@ def test_memory_write_requires_exact_non_empty_content() -> None:
     assert not tool.validate_arguments({})
     assert not tool.validate_arguments({"query": "a", "content": "b"})
     assert not tool.validate_arguments({"content": 7})
-    assert tool.risk_level is RiskLevel.DANGEROUS
+    # #246: the owner's decision of 2026-10-14. Storing a fact she stated is
+    # local, reversible and audited, so by blast radius (rule 10) it is no
+    # longer an asking action. What changed hands is not the write itself:
+    # see the provenance guard tests in test_stella.py.
+    assert tool.risk_level is RiskLevel.SENSITIVE
 
 
-def test_memory_write_requires_approval_and_denial_stores_nothing() -> None:
+def test_memory_write_stores_a_user_stated_fact_without_asking() -> None:
     memory = InMemoryMemory()
     dispatcher = ToolDispatcher([MemoryWriteTool(memory)])
     arguments = {"content": TEA}
 
-    assert dispatcher.requires_approval("memory_write") is True
+    assert dispatcher.requires_approval("memory_write") is False
 
-    refused = dispatcher.execute("memory_write", arguments)
+    stored = dispatcher.execute("memory_write", arguments)
+    assert stored.success is True
+    assert [item.content for item in memory.retrieve()] == [TEA]
+
+
+def test_dispatcher_honours_a_runtime_declared_approval_requirement() -> None:
+    # The provenance guard is declared by the runtime, not by the capability
+    # floor (#246), so the dispatcher must still refuse an unapproved write
+    # and accept only an approval for these exact arguments.
+    memory = InMemoryMemory()
+    dispatcher = ToolDispatcher([MemoryWriteTool(memory)])
+    arguments = {"content": TEA}
+
+    refused = dispatcher.execute(
+        "memory_write", arguments, require_approval=True
+    )
     assert refused.success is False
     assert refused.output == "Approval required."
     assert memory.retrieve() == []
 
-    approval = ToolApproval(
-        ApprovalRequest("memory_write", dict(arguments)), True
+    wrong = ToolApproval(
+        ApprovalRequest("memory_write", {"content": "something else"}), True
     )
-    granted = dispatcher.execute("memory_write", arguments, approval)
+    mismatched = dispatcher.execute(
+        "memory_write", arguments, wrong, require_approval=True
+    )
+    assert mismatched.success is False
+    assert memory.retrieve() == []
+
+    granted = dispatcher.execute(
+        "memory_write",
+        arguments,
+        ToolApproval(ApprovalRequest("memory_write", dict(arguments)), True),
+        require_approval=True,
+    )
     assert granted.success is True
     assert [item.content for item in memory.retrieve()] == [TEA]
 
@@ -329,11 +359,13 @@ def test_cli_forget_flow_deletes_after_approval() -> None:
     assert "Stella: done" in outputs
 
 
-def test_cli_remember_flow_stores_after_approval() -> None:
+def test_cli_remember_flow_stores_without_an_approval_prompt() -> None:
     # Release-blocker regression: explicit "remember" commands previously
     # depended only on the answer-field route, which the local 4B model
-    # dropped about three quarters of the time. The tool route must store
-    # the fact through the same approval broker as every dangerous action.
+    # dropped about three quarters of the time, so the tool route is the one
+    # that must store the fact. #246 changed what happens on that route: a
+    # fact the owner just said is stored without a prompt, and the trace row
+    # is what makes it visible.
     memory = InMemoryMemory()
     stella = build_stella(
         memory,
@@ -349,7 +381,7 @@ def test_cli_remember_flow_stores_after_approval() -> None:
         ),
     )
     outputs: list[str] = []
-    inputs = iter(["remember the tea preference", "yes", "exit"])
+    inputs = iter(["remember the tea preference", "exit"])
 
     run_cli(
         stella,
@@ -359,7 +391,7 @@ def test_cli_remember_flow_stores_after_approval() -> None:
     )
 
     assert [item.content for item in memory.retrieve()] == [TEA]
-    assert any(
+    assert not any(
         "remember this as a permanent fact" in output for output in outputs
     )
     assert "  memory    write 1" in outputs

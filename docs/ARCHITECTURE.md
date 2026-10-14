@@ -66,9 +66,17 @@ inspection/tool information and at least one available tool is relevant by
 description. It never selects a capability or supplies arguments. After a
 successful tool observation, the next Brain pass returns to `AUTO` so the
 model can answer from that observation. If `REQUIRED` produces no native or
-textual tool decision, `LLMBrain` converts an attempted direct answer into a
-clarification rather than accepting it as authoritative. Tool execution and
-all security decisions remain exclusively in `ToolDispatcher`.
+textual tool decision, `LLMBrain` asks once more with the demand stated in the
+request — that reply carried no tool call, conversation text is not a fresh
+observation, answer with `kind=tool` naming the capability — because an
+identical retry re-rolls the same answer while a named demand was measured to
+recover every refusal it was tried on (#269). If even that comes back an
+answer, the turn clarifies with words that say nothing was checked, rather than
+promising an inspection no step performs. Tool execution and
+all security decisions remain exclusively in `ToolDispatcher`: the re-ask asks
+the model to name a capability, and the named call is authorized, validated and
+tiered exactly as a first-reply call would be. Either way the re-ask is one
+request, never a loop, and the guard only fires while no observation exists.
 
 This is the only provider-specific component currently present. Its tests mock the SDK and do not make network calls.
 

@@ -118,12 +118,13 @@ where, and a swap there requires its stated evidence bar.
   while the build-first safety net (a bad config cannot destroy the
   working session) stands for every other change.
 - **B4. Provider conformance suite — done.** One written contract
-  (`CONFORMANCE_CASES` in `src/stella/conformance.py`: 16 named
+  (`CONFORMANCE_CASES` in `src/stella/conformance.py`: 18 named
   obligations) replayed twice. Offline: a loopback simulated provider
   answers in each dialect's real wire shapes (clean/fenced/prose
   decision JSON, stringified and malformed tool arguments, the
   reserved `tool_final` marker, invented capabilities, REQUIRED-guard
-  overrides, empty replies, HTTP 500s) while the actual client classes
+  overrides and the re-ask they now trigger, empty replies, HTTP 500s)
+  while the actual client classes
   and `LLMBrain` decide — 61 case×dialect checks across OpenAI-compat
   (Responses API), Ollama compat, Ollama native and llama-server
   compat, deterministic and GPU-free (`tests/test_conformance.py`),
@@ -132,7 +133,7 @@ where, and a swap there requires its stated evidence bar.
   fifth dialect — `openai-chat-compat`, the same `OpenAILLMClient`
   asked to use Chat Completions function tools, which is how every
   hosted preset other than OpenAI itself talks — and replayed the
-  whole matrix on it (76 case×dialect checks now). Live:
+  whole matrix on it (86 case×dialect checks now). Live:
   `~/tools/bench_provider_conformance.py` re-asks the endpoint-only
   obligations against the shipping model — measured 2026-09-26 on
   `qwen3:4b`: honest HTTP 404 for an unknown model, the full decision
@@ -596,12 +597,14 @@ piece-by-piece measured budgeting, transfers).
   genuinely contained the answer. What recall does cost is bounded by
   `MAX_RETRIEVED_MEMORIES = 5` and lands on the provider's side of the boundary:
   a turn whose five items arrive runs **0.1–0.5 s** longer at any store size,
-  with identical replies. What
-  the run surfaced instead is a dead end unrelated to memory: when the runtime
-  demands a tool and the model answers anyway, `LLMBrain`'s guard ends the turn
+  with identical replies. What the run surfaced instead is a dead end unrelated
+  to memory: when the runtime
+  demands a tool and the model answers anyway, `LLMBrain`'s guard ended the turn
   with *"I need to inspect the current information before answering"* and
-  inspects nothing — 3 of 27 continuing-conversation turns, one of them against
-  an empty store. That is **#269**, and it is a honesty defect, not a speed one.
+  inspected nothing — 3 of 27 continuing-conversation turns, one of them against
+  an empty store. That is **#269**, and it is a honesty defect, not a speed one,
+  since the answer it discarded was usually correct. It has since been closed;
+  see *She finishes the thing*, *Measured, and closed*.
   Tables in `docs/MODELS.md`, *A full memory store does not crowd the tool out*.
 - **The wait is one call, and its length is not ours to set.** Measurement
   says a trivial turn is exactly one provider request whose whole cost is
@@ -840,6 +843,25 @@ two of those three axes are in place and the third is named as missing below.
 
 ### Measured, and closed
 
+- **A demanded check that does not come back is asked for by name (#269).** The
+  guard that catches a reply answering when the runtime demanded a tool used to
+  end the turn with *"I need to inspect the current information before
+  answering."* — promising an inspection nobody performed, and discarding an
+  answer that was usually correct (the file line, the CPU count, the hour).
+  Measured on the shipped path (`~/tools/check_required_guard.py`), repeating
+  the identical request recovered **10 of 28** refusals and re-rolled the same
+  answer every time on the ones that had committed; sending
+  `tool_choice: "required"` on the wire recovered **6 of 18**, and its six came
+  from a refusal the identical ask already flipped; asking again with the demand
+  named — that reply carried no tool call, conversation text is not a fresh
+  observation, reply with `kind=tool` — recovered **28 of 28**. So `decide`
+  re-asks once, never in a loop and never after an observation, and when even
+  the named demand comes back an answer the turn says *"I have not checked that,
+  so I will not guess it."* Nothing is executed on the model's behalf: the re-ask
+  asks her to name a capability, and the runtime still authorizes, validates and
+  tiers the call it names (rule 3). Post-fix, the guard ended **0 of 18**
+  production turns while all three refusals inside them were recovered. Reasoning
+  and tables in `docs/MODELS.md`, *A demanded check is asked for by name*.
 - **The agentic techniques reviewed and rejected here** — batched
   plan-ahead calls, plan-level approval, critic passes and sub-agents — are
   recorded with their reasoning under *Deferred designs and their

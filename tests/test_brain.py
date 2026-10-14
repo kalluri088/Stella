@@ -3,7 +3,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from stella.brain import Brain, Decision, DecisionKind, LLMBrain, SimpleBrain
+from stella.brain import (
+    NOT_INSPECTED_REPLY,
+    Brain,
+    Decision,
+    DecisionKind,
+    LLMBrain,
+    SimpleBrain,
+)
 from stella.context import (
     MAX_DROPPED_PROPOSALS,
     Context,
@@ -74,6 +81,38 @@ class TwoCallLLM(LLMClient):
 
     def chat_with_tools(self, messages, tools, tool_choice=ToolUseMode.AUTO):
         return LLMResponse(tool_calls=self.calls)
+
+
+class DemandThenCheckLLM(LLMClient):
+    """An answer where the runtime demanded a check, and what comes back when
+    the demand is named out loud."""
+
+    def __init__(self, first: str, second: LLMResponse) -> None:
+        self.first = first
+        self.second = second
+        self.requests: list[list[Message | dict[str, str]]] = []
+        self.calls = 0
+
+    def chat(self, messages: list[Message | dict[str, str]]) -> str:
+        raise AssertionError("the decision path asks for tools, not plain chat")
+
+    def chat_with_tools(self, messages, tools, tool_choice=ToolUseMode.AUTO):
+        self.requests.append(messages)
+        self.calls += 1
+        return (
+            LLMResponse(content=self.first) if self.calls == 1 else self.second
+        )
+
+
+def _user_text(messages: list[Message | dict[str, str]]) -> str:
+    """The user payload of one recorded request, as text."""
+
+    return "\n".join(
+        str(message["content"] if isinstance(message, dict) else message.content)
+        for message in messages
+        if (message.get("role") if isinstance(message, dict) else message.role)
+        == "user"
+    )
 
 
 class KwargRecordingLLM(LLMClient):
@@ -858,8 +897,57 @@ def test_required_policy_rejects_fallback_answer() -> None:
 
     assert decision == Decision(
         DecisionKind.ASK,
-        content="I need to inspect the current information before answering.",
+        content=NOT_INSPECTED_REPLY,
     )
+    # The demand is asked for twice and only twice: a second identical answer
+    # is the dead end, and a loop of retries is not what the turn is for.
+    assert len(llm.messages) == 2
+
+
+def test_a_demanded_check_that_never_arrives_is_asked_for_once_more() -> None:
+    llm = DemandThenCheckLLM(
+        '{"kind": "answer", "content": "The current time is noon."}',
+        LLMResponse(tool_calls=(LLMToolCall("datetime", {"kind": "time"}),)),
+    )
+
+    decision = LLMBrain(llm).decide(
+        Context(user_input="What is the current time?")
+    )
+
+    assert decision == Decision(
+        DecisionKind.TOOL, capability="datetime", arguments={"kind": "time"}
+    )
+    assert llm.calls == 2
+    assert "Runtime note:" not in _user_text(llm.requests[0])
+    assert "Runtime note:" in _user_text(llm.requests[1])
+
+
+def test_the_unverified_answer_is_never_what_the_owner_gets() -> None:
+    refused = '{"kind": "answer", "content": "The current time is noon."}'
+    llm = DemandThenCheckLLM(refused, LLMResponse(content=refused))
+
+    decision = LLMBrain(llm).decide(
+        Context(user_input="What is the current time?")
+    )
+
+    # Nothing was inspected, so the words say that — and never promise the
+    # check the runtime could not get (#269).
+    assert decision.kind is DecisionKind.ASK
+    assert "noon" not in (decision.content or "")
+    assert decision.content == NOT_INSPECTED_REPLY
+    assert llm.calls == 2
+
+
+def test_the_reask_is_never_sent_when_the_first_ask_was_not_demanded() -> None:
+    llm = DemandThenCheckLLM(
+        '{"kind": "answer", "content": "Tea is a leaf."}',
+        LLMResponse(content='{"kind": "answer", "content": "Tea is a leaf."}'),
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What is tea?"))
+
+    assert decision.kind is DecisionKind.ANSWER
+    assert llm.calls == 1
 
 
 def test_successful_observation_changes_required_policy_to_auto() -> None:

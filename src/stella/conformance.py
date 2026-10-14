@@ -7,7 +7,8 @@ of any particular provider, and proves them offline by driving the real
 client classes (``OpenAILLMClient``, ``OllamaLLMClient`` compat and
 native) against a loopback ``http.server`` that replays the exact wire
 shapes real providers are known to produce — clean JSON, fence-wrapped
-JSON, stringified or malformed tool arguments, empty replies, prose
+JSON, stringified or malformed tool arguments, an answer where the runtime
+demanded a tool call (and the re-ask that follows one), empty replies, prose
 instead of decisions, and HTTP 500s.
 
 Every check is deterministic and CPU-only: no network beyond 127.0.0.1,
@@ -27,7 +28,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Self
 
-from stella.brain import Decision, DecisionKind, LLMBrain
+from stella.brain import (
+    NOT_INSPECTED_REPLY,
+    Decision,
+    DecisionKind,
+    LLMBrain,
+)
 from stella.context import Context
 from stella.llama_server import LlamaServerLLMClient
 from stella.llm import LLMClient
@@ -83,6 +89,10 @@ class ConformanceCase:
     reply: WireReply
     expectation: ConformanceExpectation
     dialects: frozenset[str] = field(default_factory=lambda: ALL_DIALECTS)
+    # What the endpoint answers the second time, for the one case where the
+    # runtime asks again. Unset means the case is over after the first reply,
+    # and a second request is the error it should be.
+    reask_reply: WireReply | None = None
 
 
 @dataclass(frozen=True)
@@ -518,20 +528,38 @@ CONFORMANCE_CASES: tuple[ConformanceCase, ...] = (
         obligation=(
             "when a tool is REQUIRED and the provider answers anyway "
             "(compat endpoints do not enforce required), the answer guard "
-            "turns it into a clarification, never a claimed inspection"
+            "re-asks once naming the demand and, still unanswered, turns it "
+            "into a clarification that promises no inspection"
         ),
         user_input="What is the current time?",
         reply=WireReply(
             content='{"kind":"answer","content":"It is 3pm."}'
         ),
+        reask_reply=WireReply(
+            content='{"kind":"answer","content":"It is 3pm."}'
+        ),
         expectation=ConformanceExpectation(
             decision=Decision(
                 DecisionKind.ASK,
-                content=(
-                    "I need to inspect the current information before "
-                    "answering."
-                ),
+                content=NOT_INSPECTED_REPLY,
             )
+        ),
+    ),
+    ConformanceCase(
+        name="required-tool-demand-named-recovers-the-call",
+        obligation=(
+            "the guard's one re-ask, which names the runtime's demand in the "
+            "request, turns a provider that answers instead of calling into "
+            "the tool decision the turn needed"
+        ),
+        user_input="What is the current time?",
+        reply=WireReply(content='{"kind":"answer","content":"It is 3pm."}'),
+        reask_reply=WireReply(
+            content=None,
+            tool_calls=(("datetime", {"kind": "time"}),),
+        ),
+        expectation=ConformanceExpectation(
+            decision=_tool("datetime", {"kind": "time"})
         ),
     ),
     ConformanceCase(
@@ -638,6 +666,8 @@ def run_case(case: ConformanceCase, dialect: str) -> ConformanceResult:
     factory = DIALECT_CLIENTS[dialect]
     with SimulatedProvider() as provider:
         provider.queue(case.reply)
+        if case.reask_reply is not None:
+            provider.queue(case.reask_reply)
         brain = conformance_brain(factory(provider))
         context = Context(user_input=case.user_input)
         try:

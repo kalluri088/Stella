@@ -575,15 +575,16 @@ memory at all.
 **What the run actually found is a dead end that has nothing to do with memory.**
 Three of the 27 continuing-conversation turns — one of them against an *empty*
 store — dispatched no capability and ended with the words *"I need to inspect the
-current information before answering."* That sentence is not the model's: it is
-`LLMBrain.decide`'s own guard (brain.py:507), fired when the runtime demanded a
-tool (`ToolUseMode.REQUIRED`) and the model answered anyway. It promises an
-inspection, then returns `needs_more_information=True` and the turn ends with
+current information before answering."* That sentence was not the model's: it was
+`LLMBrain.decide`'s own guard, fired when the runtime demanded a
+tool (`ToolUseMode.REQUIRED`) and the model answered anyway. It promised an
+inspection, then returned `needs_more_information=True` and the turn ended with
 nothing inspected and no question asked. Rule 9's "stop with words naming what
-ran" is the right shape and this is not it — the words name an action nobody
-takes. Carried as **#269**: prove whether one more bounded ask turns the refused
+ran" is the right shape and this was not it — the words named an action nobody
+took. Carried as **#269**: prove whether one more bounded ask turns the refused
 call into a call, and if it does not, say what went unchecked instead of
-promising to check.
+promising to check. Both halves of that were measured and built; the next
+section is that record.
 
 Bench rows: `/tmp/bench_recall_authority.json` (paired arms),
 `/tmp/bench_recall_authority_shared_history.json` (the earlier shape, whose
@@ -592,6 +593,71 @@ purpose). `~/tools/check_recall_relevance.py` reads the same store with no LLM i
 the loop and shows what recall returns for a question it cannot bear on —
 "Read notes.txt…" matches 36 of 120 items on the verb alone. This section
 measures; it changes no `src/` file.
+
+### A demanded check is asked for by name, and said plainly when it does not come (#269)
+
+`ToolUsePolicy` demands a capability — `ToolUseMode.REQUIRED` — when the request's
+own terms hit an intent list a live tool can serve and nothing has been observed
+yet. When the reply answered instead, `LLMBrain` discarded that answer and ended
+the turn with *"I need to inspect the current information before answering."*
+Nothing was inspected, and the discarded answer was usually **true**: the bench
+captured `The third line is "the retry budget is eight calls"` and `This machine
+has 20 CPUs`, both read out of the conversation the runtime had just told the
+model was not an observation. So the owner lost a correct answer and got a
+sentence describing an action nobody takes — rule 9's wrong shape. It fired on 3
+of 27 continuing-conversation turns in #268 (one against an empty store) and
+reproduced against the shipped path in `~/tools/check_required_guard.py`: two
+refused calls in one run, three in another, each replayed eight or four times per
+arm. Scoring matters here — this brain returns decisions as JSON **text**, so a
+replay counted only as structured `tool_calls` reads as a wall of refusals that
+the runtime never saw. The bench scores with `brain._parse_decision`.
+
+| replay of the same refused request | recovered the call | what it shows |
+| --- | --- | --- |
+| the identical request again | 10 of 28 | a re-roll, not a fix: 0 of 8, then 0 of 4 and 0 of 4 on the refusals that had committed |
+| `tool_choice: "required"` on the wire | 6 of 18 | the 6 came from one refusal the *identical* ask already flipped 8 of 8 — the state, not the flag |
+| the same request with the demand named | 28 of 28 | every refusal in both runs |
+
+The wire flag is not a lever and was never the cause: `OllamaClient._native_chat`
+has always sent `"tool_choice": "auto"`, so the guard fires on what Stella *knows*
+about the turn, not on anything the provider was told. Repeating the request
+flips a coin that this model has already landed. What moved every time was saying
+out loud what the first request left implicit.
+
+So `decide` now asks **once** more, with `DEMAND_AGAIN_NOTE` appended to the user
+message: that reply carried no tool call, words earlier in the conversation are
+not a fresh observation, reply again with `kind=tool` naming the capability and
+its arguments, and use `kind=ask` only when a required argument is genuinely
+unknown. If even that comes back an answer, the turn says *"I have not checked
+that, so I will not guess it."* — the two states that shared one sentence now have
+two, and the second names what did not happen instead of promising one.
+
+**What the fix does not touch.** The model still proposes and the runtime still
+authorizes: the re-ask asks the model to *name* a capability, and the call it
+names goes through the same validation, risk tier and approval path as any other,
+so nothing is executed on the model's behalf (rule 3). One re-ask per decision,
+never a loop, and never after an observation, because the guard only fires while
+`tool_observations` is empty (rule 9). No Settings row and no environment
+variable — this adds no knob, so commitment 6 has nothing new to reach. No trace
+change: the extra call rides the same decision stage.
+
+**What it costs.** One provider call, only on the refusal path — ~1.7 s on the
+local brain, and on the 18 production turns of the post-fix re-run the guard
+ended **0** turns while the three refusals that still happened (inside 39 decision
+calls) were recovered by the named demand and the turn went on to its tool. A
+bench cannot tune relevance scoring on one synthetic store, so recall's own
+matching was left alone; a demanded call that never comes back is now rarer than
+the 3-in-27 this started from, and when it does, the words are true.
+
+`tests/test_brain.py` holds the four shapes (named demand yields the call; a
+second answer gets the honest sentence; an undemanded answer is untouched; the
+refusal path makes exactly two provider calls). `stella.conformance` gained
+`ConformanceCase.reask_reply` — unset means the case is over after the first
+reply, so a second request is the error it should be — with one scripted case per
+outcome, proving the wire replay against a simulated provider rather than only a
+stub. Bench rows: `/tmp/check_required_guard.json`;
+`/tmp/check_required_guard2.log` (before) and
+`/tmp/check_required_guard_fixed.log` (after).
 
 ## Token accounting (`/usage`)
 

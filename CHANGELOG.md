@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### A demanded check is asked for by name, then said plainly when it does not come (#269)
+
+- **What was found.** `ToolUsePolicy` demands a capability
+  (`ToolUseMode.REQUIRED`) when the request's own terms name a live check and
+  nothing has been observed yet. When the reply answered instead, `LLMBrain`
+  discarded that answer — usually a *correct* one, read out of the conversation
+  the runtime had just said was not an observation: the third line of
+  `notes.txt`, "20 CPUs", the hour — and ended the turn with *"I need to inspect
+  the current information before answering."* Nothing was inspected and no
+  question was asked. #268 saw it on 3 of 27 continuing-conversation turns, one
+  against an empty store, and `~/tools/check_required_guard.py` reproduced it on
+  the shipped path. Words naming an action nobody takes is rule 9's wrong shape,
+  and it cost the owner a true answer to say them.
+- **The remedies, measured on the same refused requests.** The identical request
+  again recovered **10 of 28** refusals and re-rolled the *same* answer every
+  time on the ones that had committed (0 of 8, then 0 of 4 twice).
+  `tool_choice: "required"` on the wire recovered **6 of 18** — and those six
+  came from a single refusal the identical ask already flipped 8 of 8, so the
+  flag was not doing the work; our own `_native_chat` has always sent `"auto"`,
+  which means the guard has never been a request property but a statement about
+  what Stella knows. Asking again **with the demand named** — that reply carried
+  no tool call, earlier words in the conversation are not a fresh observation,
+  reply with `kind=tool` naming the capability and its arguments, `kind=ask`
+  only when a required argument is genuinely unknown — recovered **28 of 28**.
+- **What changed.** `LLMBrain.decide` splits the former single request into
+  `_decide_once` and, when a demanded check comes back an answer, makes one more
+  request carrying `DEMAND_AGAIN_NOTE`. If that is answered too, the turn says
+  *"I have not checked that, so I will not guess it."* (`NOT_INSPECTED_REPLY`).
+  The two states that shared one sentence now have two, and the second names
+  what did not happen instead of promising one. The refusal path now costs one
+  extra provider call — ~1.7 s on the local brain — and nothing else does.
+- **What did not.** Authority is unchanged: the re-ask asks the model to *name*
+  a capability, and the named call goes through the same validation, risk tier
+  and approval as any other, so nothing is executed on the model's behalf
+  (rule 3). One re-ask per decision, never a loop, and unreachable once an
+  observation exists (rule 9). No Settings row, `config.json` key or environment
+  variable — this adds no knob, so commitment 6 has nothing new to reach — and
+  no trace change; the extra call rides the same decision stage. Recall scoring
+  was left alone: a single synthetic store cannot tune it, and its relevance
+  floor is adjacent to the owner-gated #245.
+- **Validation.** On the shipped path against real Ollama, the same bench that
+  produced the defect now ends **0 of 18** turns at the guard while all three
+  refusals inside those turns were recovered by the named demand and each went on
+  to its tool. Offline: `tests/test_brain.py` (+4 tests, 73 passed) covers the
+  re-ask yielding the call, a second answer yielding the honest sentence, an
+  undemanded answer staying untouched, and exactly two provider calls on the
+  refusal path; `stella.conformance` gained `ConformanceCase.reask_reply` — unset
+  means the case ends with the first reply, so a second request is the error it
+  should be — with one scripted case per outcome (90 passed, 4 skipped; 86
+  case×dialect checks). `tests/test_stella.py` 93 passed; `ruff check .` and
+  `git diff --check` clean.
+- **Documentation.** `docs/MODELS.md`, *A demanded check is asked for by name,
+  and said plainly when it does not come*; the `ToolUsePolicy` paragraph in
+  `docs/ARCHITECTURE.md`; a `docs/ROADMAP.md` bullet under *She finishes the
+  thing*, with #268's bullet and the conformance counts corrected for wording
+  that no longer ships.
+
 ### A memory full of neutral facts never replaced a call (#268 — measured, no code)
 
 - **Why it was asked.** #267 seeded 120 memory items to price recall and two of
@@ -25,11 +82,12 @@
   search (still #267's 2–9 ms). The #267 observation is corrected — not calling
   when the recalled words genuinely held the answer was the right decision.
 - **The defect that surfaced on the way, and is not memory.** When the runtime
-  demands a tool (`ToolUseMode.REQUIRED`) and the model answers anyway,
-  `LLMBrain`'s guard ends the turn with *"I need to inspect the current
-  information before answering."* and inspects nothing — 3 of 27
+  demanded a tool (`ToolUseMode.REQUIRED`) and the model answered anyway,
+  `LLMBrain`'s guard ended the turn with *"I need to inspect the current
+  information before answering."* and inspected nothing — 3 of 27
   continuing-conversation turns, one against an empty store. Words naming an
-  action nobody takes is rule 9's wrong shape, so it is carried as **#269**.
+  action nobody takes is rule 9's wrong shape, so it was carried as **#269**,
+  now fixed above.
 - **Documentation.** `docs/MODELS.md`, *A full memory store does not crowd the
   tool out*; a bullet in `docs/ROADMAP.md`. No `src/` file changed.
 

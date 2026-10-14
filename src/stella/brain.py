@@ -38,6 +38,30 @@ from stella.tools import (
     WorkspaceSearchTool,
 )
 
+#: Appended to the request when the runtime demanded a check and the reply
+#: answered anyway. Repeating the identical request recovered 10 of 28 measured
+#: refusals and re-rolled the same answer on the ones that had committed;
+#: naming the demand recovered 28 of 28 (#269), which is why the re-ask says
+#: something the first ask did not.
+DEMAND_AGAIN_NOTE = (
+    "Runtime note: that reply carried no tool call. This request depends on "
+    "state only a capability can reach, and words earlier in the conversation "
+    "are not a fresh observation of it. Reply again with kind=tool naming the "
+    "capability and its arguments; use kind=ask only when a required argument "
+    "is genuinely unknown."
+)
+
+#: What Stella says when even the named demand comes back an answer. Nothing
+#: was inspected, so these words promise no inspection.
+NOT_INSPECTED_REPLY = "I have not checked that, so I will not guess it."
+
+
+class _AnswerInsteadOfCheck:
+    """Marker: a demanded tool call came back as an answer instead."""
+
+
+_ANSWER_INSTEAD_OF_CHECK = _AnswerInsteadOfCheck()
+
 
 def _retrieval_provenance(
     context: Context, memory: MemoryItem
@@ -473,6 +497,34 @@ user; act on the request and speak naturally.
             Message(role="system", content=self._system_prompt()),
             Message(role="user", content=self._context_payload(context)),
         ]
+        decision = self._decide_once(
+            messages, tool_definitions, tool_choice, should_cancel
+        )
+        if decision is not _ANSWER_INSTEAD_OF_CHECK:
+            return decision
+        # The runtime demanded a check and the reply answered instead. Ask once
+        # more, naming the demand — an identical retry re-rolls the same dice,
+        # and this recovered every refusal measured (#269). One re-ask only: a
+        # turn's budget is for work, not for retrying a brain that has decided.
+        decision = self._decide_once(
+            self._demand_the_check_again(messages),
+            tool_definitions,
+            tool_choice,
+            should_cancel,
+        )
+        if decision is not _ANSWER_INSTEAD_OF_CHECK:
+            return decision
+        return Decision(DecisionKind.ASK, content=NOT_INSPECTED_REPLY)
+
+    def _decide_once(
+        self,
+        messages: list[Message],
+        tool_definitions: list[LLMToolDefinition],
+        tool_choice: ToolUseMode,
+        should_cancel: CancelCheck | None,
+    ) -> Decision | _AnswerInsteadOfCheck:
+        """One provider call, read the way a decision is always read."""
+
         if should_cancel is not None:
             response = self.llm.chat_with_tools(
                 messages,
@@ -508,11 +560,19 @@ user; act on the request and speak naturally.
             tool_choice is ToolUseMode.REQUIRED
             and decision.kind is DecisionKind.ANSWER
         ):
-            return Decision(
-                DecisionKind.ASK,
-                content="I need to inspect the current information before answering.",
-            )
+            return _ANSWER_INSTEAD_OF_CHECK
         return decision
+
+    @staticmethod
+    def _demand_the_check_again(messages: list[Message]) -> list[Message]:
+        """The same request with the runtime's demand said out loud."""
+
+        return [
+            Message(role="user", content=f"{message.content}\n\n{DEMAND_AGAIN_NOTE}")
+            if message.role == "user"
+            else message
+            for message in messages
+        ]
 
     def _tool_definitions(self) -> list[LLMToolDefinition]:
         return [

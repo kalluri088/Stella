@@ -149,7 +149,10 @@ where, and a swap there requires its stated evidence bar.
   splits the final response, `_speak_chunks` synthesizes sentence by
   sentence on the worker while a consumer thread plays and disposes
   each artifact — first audio lands after one sentence of rendering
-  (~1–2 s), because synthesis is faster than real time. **Stop
+  (measured 2026-10-14: a median **4.0 s** on real spoken replies, worst
+  9.2 s, because that one sentence is a median 114 characters at
+  ~0.037 s of rendering each — see `docs/VOICE.md`, *Honest latency*),
+  because synthesis is faster than real time. **Stop
   speaking** ends the whole spoken reply (playing + queued), a cancel
   drains and discards the queue, mid-reply synthesis failures speak
   what they have plus one honest error line, and single-sentence
@@ -545,6 +548,30 @@ someone from paying for the same measurement twice.
   runtime answered *"the tool to check the time is unavailable"*, while the
   candidate named a capability on all 36. `docs/MODELS.md` carries the tables; the
   defect landed as #258 and is written up in `docs/ARCHITECTURE.md`.
+- **B8d. What a spoken reply costs to hear, and what would not make it cheaper
+  (#270 — measured, no code).** `docs/VOICE.md` promised first audio "roughly half a
+  second to a second" and **A9** above promised ~1–2 s; neither had ever been timed.
+  Two benches. `~/tools/bench_speech_synthesis.py` renders written-out sentences on the
+  installed resident worker: warm chunks of 32–68 characters take a median **1.31 s**
+  (slowest 2.64 s) and a cold worker — process start, model load and that first chunk —
+  costs **5.0 s**. `~/tools/bench_first_audio.py` runs 12 spoken and 12 typed production
+  turns through `session.run_turn(..., spoken=True)`, splits each reply exactly as
+  `app._speak_after` splits it and renders only chunk 1, because chunk k+1 renders while
+  chunk k plays. A real spoken reply's first chunk is a median **114 characters**, so the
+  wait the owner hears is a median **4.0 s** with a worst case of **9.2 s**: the promised
+  sub-second start was true of a one-line answer and nothing else. The rates say why the
+  overlap cannot hide it — render runs ~0.037 s per character against audio at ~0.065 s,
+  so one chunk's playtime covers the next chunk's render only while the next is ≲1.7× its
+  length, and the first chunk has nothing playing before it. Two levers measured and
+  declined. Splitting the opening sentence at a clause break, with a head long enough to
+  cover what follows it (`~/tools/bench_first_chunk_pieces.py`, 11 real openers), found a
+  usable break in **1 of 11** and left a **+1.6 s silence in the middle of that one** —
+  the failure the bound exists to prevent, so `sentence_chunks` stays as it is. Having
+  `stella doctor` synthesize to report the number would load a second model onto the
+  owner's daily driver to measure a failure the window already says, against doctor's own
+  standing rule that an endpoint check sends `GET /models` and no prompt. What is left is
+  the core change **A9** always named: overlap the first chunk's synthesis with the tokens
+  still arriving. The two documents now carry these numbers instead of the promise.
 
 **The closing verdict of Stage D, kept whole** — a set of declined
 borrowings, not a backlog:

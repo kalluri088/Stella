@@ -192,11 +192,41 @@ variable outranks that saved answer for a single launch without rewriting it
 (the worker Stella finds at `~/tools` is already resident, which is why the
 saved default is off).
 
-Honest latency: with the resident Kokoro worker the first audio of a reply
-lands roughly half a second to a second after the reply text is finished,
-because the first sentence is synthesized before it is played. Overlapping that
-synthesis with the tokens still arriving would need a streaming turn, which is
-a core change rather than a voice one (see `ROADMAP.md`).
+Honest latency, measured on this machine (2026-10-14) against the installed
+resident Kokoro worker. What the owner waits for is the **render of the first
+chunk**, and rendering costs about **0.03–0.037 s per character**: warm chunks of
+32–68 characters took a median **1.31 s** (slowest 2.64 s), and a cold worker —
+process start, model load and that first chunk — cost **5.0 s**, charged once per
+session. So a short one-line reply starts in about 1.3–1.7 s; the "half a second
+to a second" this document used to promise was only ever true of a sentence that
+short. Real spoken replies are not sentences that short: across 12 production
+spoken turns the first chunk was a median **114 characters**, and the median wait
+for first audio was **4.0 s** (worst **9.2 s**). The same six questions asked by
+keyboard were no faster (median first chunk 88 characters, 3.05 s) and the spoken
+turns were the slower half of that comparison — the note meant to compress a
+spoken answer never reaches the brain that writes it, which #271 measured and is
+recorded under **Spoken conversation turns**.
+
+Only that first chunk is a wait anyone hears. Chunk k+1 renders while chunk k
+plays, and the pipeline hides it because audio runs at about **0.065 s per
+character** against a render of 0.037 s — one sentence's playtime covers the next
+sentence's synthesis as long as the next is not much more than 1.7× its length.
+Two levers on the remaining wait were measured and neither shipped. Splitting the
+opening sentence at a clause break, with a head long enough to cover what follows
+it, found a usable break in **1 of 11** replies and left a **+1.6 s silence** in
+the middle of that one — the exact failure the head-length bound exists to
+prevent, so a rule that almost never fires and sometimes breaks prosody is a
+change to `sentence_chunks` nobody should make. Shortening the whole reply does
+not shorten its first sentence (#271). Overlapping the first chunk's synthesis
+with the tokens still arriving would need a streaming turn, which is a core
+change rather than a voice one (see `ROADMAP.md`).
+
+`stella doctor` deliberately does **not** synthesize anything to report this
+number. Doctor's endpoint check sends `GET /models` and no prompt, which is the
+most a read-only command may send to a metered server, and a real speech probe
+would load a second model into the owner's session to measure a thing that is
+already visible: a reply that never starts speaking has its failure said in the
+window, and the session reports a dying worker and a slow worker differently.
 
 ```bash
 STELLA_SPEECH_COMMAND="$HOME/tools/stella-speak-server" \

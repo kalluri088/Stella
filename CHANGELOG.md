@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### What a spoken reply really costs before she starts talking (#270 — measured, one promise corrected)
+
+- **What was found.** `docs/VOICE.md` said the first audio of a reply lands
+  "roughly half a second to a second" after the reply text is finished, and
+  `docs/ROADMAP.md`'s A9 said ~1–2 s. Neither number had ever been measured —
+  they were carried forward from the first chunking experiment, where a
+  one-line answer was the thing on the bench.
+- **The measurement.** `~/tools/bench_speech_synthesis.py` timed the installed
+  resident Kokoro worker on written-out sentences: a warm chunk of 32–68
+  characters renders in a median **1.31 s** (slowest 2.64 s), a cold worker —
+  process start, model load and the first chunk — costs **5.0 s**, and synthesis
+  runs at **0.03–0.037 s per character** against about **0.065 s per character**
+  of audio. `~/tools/bench_first_audio.py` then ran 12 spoken and 12 typed
+  production turns through `session.run_turn(..., spoken=True)`, split each
+  reply exactly as `app._speak_after` splits it, and rendered the first chunk,
+  which is the only chunk anyone waits for. A real spoken reply opens with a
+  median **114 characters**, so the median wait for first audio is **4.0 s** and
+  the worst was **9.2 s**. The promise was true of a one-line answer only. The
+  same six questions by keyboard were no faster (median first chunk 88
+  characters, 3.05 s), so the spoken path currently costs time rather than
+  saving it.
+- **Two remedies measured and declined.** A clause split of the opening
+  sentence, with a head long enough to cover the render of what follows it
+  (`~/tools/bench_first_chunk_pieces.py`: every piece under 80 characters, each
+  head at least 60), found a usable break in **1 of 11** real openers — and that
+  one left a **+1.6 s silence mid-sentence**, which is precisely the failure the
+  head-length bound exists to prevent. `sentence_chunks` is unchanged. A
+  `stella doctor` voice probe was declined for the same kind of reason it
+  declines prompts: doctor's endpoint check sends `GET /models` and no prompt,
+  and a real speech probe would load a second model onto the owner's daily
+  driver to measure a failure the window already reports — the session
+  distinguishes a dying worker from a slow one and says both.
+- **What changed.** Documentation: the latency paragraph in `docs/VOICE.md` now
+  carries the rates, the medians, the cold-worker charge and the two declines,
+  and ROADMAP's **A9** line and a new **B8d** replace the ~1–2 s claim. No
+  behaviour, setting, `config.json` key or environment variable moved — this
+  adds no knob, so commitment 6 has nothing new to reach, and no trace change.
+- **What is still owed.** Overlapping the first chunk's synthesis with the
+  tokens still arriving is a streaming turn, which is a core change rather than
+  a voice one; that is what A9 has always named and what this measurement makes
+  the only remaining lever on the wait.
+- **Validation.** Out-of-tree benches against real Ollama on 11434 and the
+  worker at `~/tools/stella-speak-server`, each started from a `free -m` check
+  (15 GiB available, no swap in use) and run with `STELLA_SESSION_WINDOW=1`; row
+  dumps in `/tmp/bench_speech_synthesis.json`, `/tmp/bench_first_audio.json` and
+  `/tmp/bench_first_chunk_pieces.json`. No source file changed, so the offline
+  suites were not re-run; `ruff check .` and `git diff --check` are clean.
+- **Documentation.** `docs/VOICE.md` (*Honest latency*), `docs/ROADMAP.md`
+  (**A9** and the new **B8d**).
+
 ### A demanded check is asked for by name, then said plainly when it does not come (#269)
 
 - **What was found.** `ToolUsePolicy` demands a capability

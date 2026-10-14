@@ -572,7 +572,20 @@ piece-by-piece measured budgeting, transfers).
   GB card (`docs/MODELS.md`, *The idle reload, measured*). What remains
   unmeasured is a genuine cold-desktop six-question run — for that the pieces
   still break: a supervised brain (llama.cpp, not Ollama) is ready in 4–19 s
-  (A10), and one warm trivial turn costs 10–68 s.
+  (A10), and one warm trivial turn costs 10–68 s behind the thinking brain
+  (#257's no-thinking build answers the same turn in 0.5–0.7 s).
+- **Nothing of ours is left on the clock (#267, measured — no code).** The
+  stage breakdowns above were all taken while a turn cost 10–68 s, so anything
+  under a second was invisible; re-measured on the fast local brain, a whole
+  warm turn is **the provider's decode and nothing else** — Stella's own glue
+  0–1 ms, tool execution 0–2 ms, memory recall against a 120-item store 2–9 ms.
+  Prompt size goes the same way: a warm 5,994-token decision prompt prefills in
+  **21 ms**, and the second call of a tool turn — same prefix, new tail — in
+  **34 ms**, because #228's byte-stable prefix really is reused (5,836 of 5,882
+  tokens come back from the cache). What is left is the cold read of 2.39 s of
+  prefill plus the load #259 already weighed, and the answer's own decode.
+  Neither is a code change; both are the owner's choice of brain. Table and
+  reasoning in `docs/MODELS.md`, *The turn, stage by stage, on the fast brain*.
 - **The wait is one call, and its length is not ours to set.** Measurement
   says a trivial turn is exactly one provider request whose whole cost is
   decoding the thinking channel (~44 tok/s), and that the channel is

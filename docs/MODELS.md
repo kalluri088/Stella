@@ -445,6 +445,88 @@ minutes, not an infinite one) stays available if real use ever shows a
 *session-opening* turn that reads as slow for a reason the owner can see; it is
 not built on a hypothetical.
 
+### The turn, stage by stage, on the fast brain (#267)
+
+Every stage breakdown in this file was taken while the brain cost 10–68 s a
+turn (#243, *Where the 16.8 seconds go*). At that size anything under a second
+is invisible, and the conclusions drew the line where the provider's decode
+begins. #257 then put a 1.7 s brain on the same path, which changes the
+arithmetic: 300 ms of Stella's own work would now be a fifth of a turn. Nobody
+had re-measured, so this is the re-measurement — the shipped production path
+(`build_application` → `StellaApplication.run_turn`), the fast local brain
+through Ollama on `127.0.0.1`, a throwaway state directory, no voice model, no
+embedding model, nothing leaving the machine
+(`~/tools/bench_turn_stages.py`).
+
+Medians over three passes of six turns, all milliseconds:
+
+| turn | whole turn | of which provider | tools | recall | Stella's own glue |
+| --- | --- | --- | --- | --- | --- |
+| arithmetic | 683 | 683 | 0 | 0 | 0 |
+| greeting | 734 | 734 | 0 | 0 | 0 |
+| time (1 tool) | 1219 | 1218 | 0 | 0 | 0 |
+| cpus (1 tool) | 1365 | 1364 | 2 | 0 | 0 |
+| read-file (1 tool) | 1135 | 1133 | 0 | 0 | 0 |
+| fact | 745 | 744 | 0 | 0 | 0 |
+
+Memory recall was re-run against a store seeded to 120 items, because an empty
+store makes "recall is free" true by construction: **2–9 ms**, still under 1%
+of a turn. Tool execution — dispatcher, argument validation, risk
+classification, the approval check, the work itself — **0–2 ms**. The residue
+that is Stella's own code (prompt assembly, `json.dumps` of the payload,
+history, trace, outcome building) is **0–1 ms**, which is below what this
+harness can resolve.
+
+So on the brain this machine can run without sending her words anywhere, a turn
+is *entirely* the provider's decode. Nothing is left on our side of the
+boundary, and two ideas the speed research left standing die on these numbers:
+prompt-diet ordering, and re-phrasing the answer path to share the cached
+prefix.
+
+**Prompt size is not a lever.** #263 costed "reading the whole decision prompt
+from nothing" at ~3.0 s and then treated ~140 added tokens as something to weigh.
+`~/tools/bench_prompt_cache.py` captures the real request from a real turn —
+5,994 prompt tokens, 19 tools, 28,491 chars — and asks Ollama what each shape of
+*next* call costs, reading the server's own `prompt_eval_*` fields after
+expiring the cache with `keep_alive: 0` for the cold arm:
+
+| the next request | prompt tokens | reused from cache | prefill |
+| --- | --- | --- | --- |
+| cold read, cache expired | 5,994 | 0 | **2,386 ms** (+1,532 ms load) |
+| same prompt again | 5,994 | 5,993 | **21 ms** |
+| a turn's second call: same prefix, new tail carrying an observation | 5,882 | 5,836 | **34 ms** |
+| a different system message — the shape of the `synthesise` path | 2,566 | 3 | **915 ms** |
+
+#228's byte-stable prefix is doing essentially all of its work: a warm turn
+reads 21 ms of a 6,000-token prompt, and the second call of a tool turn — the
+one that carries the observation — pays 34 ms, not 3.0 s. Trimming tokens to
+save time would save tens of milliseconds; the ~140 tokens #263 added are under
+0.1% of a warm turn. That number is also why no prompt diet is proposed here.
+
+**The synthesis call's different prefix is real but rare, and stays.** The last
+row is the interesting one: starting a request with a *different* system message
+throws the cache away completely (`cached: 3`), so the path at
+`Stella._answer_messages` — which opens with "Generate the final response…"
+instead of the decision rules — pays ~0.9 s of prefill a prefix-sharing phrasing
+would pay ~34 ms for. It is not adopted, for two reasons. It fired on **0 of 30
+turns** in the run above: `answer_content_is_final` means the decision's own
+content is the answer, and terminal capabilities render without an LLM call at
+all, so the path survives only as the missing-content guard. And the different
+opening is what stops that guard from being answered with another decision JSON —
+buying 0.9 s on a path that does not run, with a behavioural risk on the one
+place the protocol already had to be defended, is rule 13's wrong side.
+
+What remains, honestly, is the cold read: **2.39 s of prefill plus 1.53 s of
+load**, and #259 already measured that load and rejected `keep_alive` for
+pinning 3.9 GB of a 6.1 GB card. On the shipped fast brain, decode is the turn,
+the first turn of a session pays about 4 s to read its own prompt, and neither
+is ours to make cheaper without a different model or more of the GPU — both of
+which are the owner's choices in Settings, not a code change.
+
+Bench scripts and raw JSON (`/tmp/bench_turn_stages.json`,
+`/tmp/bench_prompt_cache.json`) live outside the tree with the other benches;
+this section records a measurement and changes no `src/` file.
+
 ## Token accounting (`/usage`)
 
 Every provider client can carry one `UsageRecorder` (`stella.llm`), and

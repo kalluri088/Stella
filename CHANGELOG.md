@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### A whole turn, timed, and none of it is ours (#267 — measured, no code)
+
+- **What was measured.** Every stage breakdown in `docs/MODELS.md` was taken
+  while a turn cost 10–68 s, so anything under a second was invisible, and the
+  standing conclusions drew the line at the provider's decode. #257 put a 1.7 s
+  brain on the same path, which changes the arithmetic — 300 ms of Stella's own
+  work would now be a fifth of a turn. So the shipped production path was
+  re-run against the fast local model on `127.0.0.1`, with every boundary a turn
+  can cross wrapped and tallied (`~/tools/bench_turn_stages.py`, six turns ×
+  three passes), and the shape of the *next* request priced from Ollama's own
+  `prompt_eval_*` fields (`~/tools/bench_prompt_cache.py`).
+- **What it says.** A warm turn is entirely decode: Stella's own glue
+  (prompt assembly, serialization, history, trace, outcome building) is **0–1
+  ms**, tool execution including dispatcher, validation, risk and approval
+  checks is **0–2 ms**, and memory recall against a store seeded to 120 items
+  is **2–9 ms**. Prompt size is not a lever either: the shipped decision prompt
+  is 5,994 tokens and prefills in **21 ms** warm, and the second call of a tool
+  turn — same prefix, new tail carrying the observation — costs **34 ms** with
+  5,836 of its 5,882 tokens served from cache. #228's byte-stable prefix is
+  doing its whole job.
+- **One cost found, deliberately not taken.** A request that starts with a
+  *different* system message gets no cache reuse at all (`cached: 3`) and pays
+  **915 ms** of prefill against 34 ms for a prefix-sharing phrasing — and the
+  answer-synthesis path at `Stella._answer_messages` is exactly that shape. It
+  fired on **0 of 30** measured turns, because `answer_content_is_final` makes
+  the decision's own content the reply and terminal capabilities render without
+  a second call. Buying 0.9 s on a path that does not run, by re-opening the
+  one place the protocol had to defend against a model answering with another
+  decision JSON, is rule 13's wrong side of the ledger. Recorded, not built.
+- **What is left, and whose it is.** The cold read: **2.39 s of prefill plus
+  1.53 s of load**, of which the load is #259's already-weighed idle reload
+  (`keep_alive` rejected for pinning 3.9 GB of a 6.1 GB card) and the prefill
+  is paid once per session. Beyond that the wait is the answer's own decode,
+  which is the brain's length — the owner's choice in Settings, per #237 and
+  #257, not a code change.
+- **Documentation.** `docs/MODELS.md`, *The turn, stage by stage, on the fast
+  brain*, carries both tables; the `docs/ROADMAP.md` cold-start claim is scoped
+  to the thinking brain it was measured on, and 0.5–0.7 s noted for the
+  no-thinking build. No `src/` file, no test and no default changed.
+
 ### A proposal the step could not run is said, not lost (#264)
 
 - **What changed.** A native reply that carries more than one tool call still

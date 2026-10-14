@@ -527,6 +527,72 @@ Bench scripts and raw JSON (`/tmp/bench_turn_stages.json`,
 `/tmp/bench_prompt_cache.json`) live outside the tree with the other benches;
 this section records a measurement and changes no `src/` file.
 
+### A full memory store does not crowd the tool out (#268, measured — no code)
+
+#267 seeded a 120-item store to price recall, and two of its twelve turns stopped
+reaching the capability their own question needed: the reply came from recalled
+text instead of a call. Rule 5 says memory is persistence and never authority, so
+that looked like a breach — but the seeded text was accidentally adversarial,
+every item repeating a phrase also planted in `notes.txt`, so an answer drawn
+from memory was an answer drawn from something true. `~/tools/bench_recall_authority.py`
+re-runs the question fairly: memories that answer nothing (where the owner's
+sister lives, how she takes her coffee), three arms — 0, 40, 120 items — three
+tool-dependent turns (CPU count, the third line of `notes.txt`, the time), each
+turn judged on whether it dispatched the capability and whether the reply
+contained the fact only that call could supply. The arms share one resident
+model, and the pass order rotates so no arm always runs third.
+
+| conversation shape | store | turns | reached the call | said the call's fact | median turn |
+| --- | --- | --- | --- | --- | --- |
+| one turn at a time | 0 | 9 | 9 | 9 | 1.59 s |
+| one turn at a time | 40 | 9 | 9 | 9 | 1.75 s |
+| one turn at a time | 120 | 9 | 9 | 9 | 1.70 s |
+| one continuing talk | 0 | 9 | 8 | 8 | 1.76 s |
+| one continuing talk | 40 | 9 | 8 | 8 | 2.09 s |
+| one continuing talk | 120 | 9 | 8 | 8 | 1.96 s |
+
+**Memory is not the cause.** With a store of 120 items every turn still made its
+call — 27 of 27 in the isolated shape, and the two misses in the continuing one
+are not memory either (see below). The #267 observation was the seed text doing
+its job: the answer really was in the recalled words, so not calling was right,
+not rule 5 slipping.
+
+**Recall's cost is the provider reading the recalled text, and it is bounded.**
+`MAX_RETRIEVED_MEMORIES = 5` caps what reaches a request no matter how large the
+store, which is why 40 items and 120 items cost the same: 1.75 s against 1.70 s,
+inside noise. What a turn pays tracks *how many items landed*, not how many are
+stored. The CPU question in the isolated shape matched none of the neutral facts
+at any store size and moved 1.57→1.58 s; the same question inside a continuing
+talk — where the earlier turns' wording is folded into the recall query and five
+items clear the ceiling — moved 1.69→2.23 s. The time and file turns, which
+recalled five in every seeded arm, moved 1.55→1.80 and 1.64→1.79. Replies are the
+same length in every arm, so this is not a longer answer — it is a bigger request
+to read, on the provider's side of the boundary #267 drew, while our own search
+stays the 2–9 ms it measured. Nothing to buy back here: five items is the
+ceiling, and 0.1–0.5 s on a 1.6 s turn is what the owner is paying for having a
+memory at all.
+
+**What the run actually found is a dead end that has nothing to do with memory.**
+Three of the 27 continuing-conversation turns — one of them against an *empty*
+store — dispatched no capability and ended with the words *"I need to inspect the
+current information before answering."* That sentence is not the model's: it is
+`LLMBrain.decide`'s own guard (brain.py:507), fired when the runtime demanded a
+tool (`ToolUseMode.REQUIRED`) and the model answered anyway. It promises an
+inspection, then returns `needs_more_information=True` and the turn ends with
+nothing inspected and no question asked. Rule 9's "stop with words naming what
+ran" is the right shape and this is not it — the words name an action nobody
+takes. Carried as **#269**: prove whether one more bounded ask turns the refused
+call into a call, and if it does not, say what went unchecked instead of
+promising to check.
+
+Bench rows: `/tmp/bench_recall_authority.json` (paired arms),
+`/tmp/bench_recall_authority_shared_history.json` (the earlier shape, whose
+history-coupled recall is what the continuing-conversation arm reproduces on
+purpose). `~/tools/check_recall_relevance.py` reads the same store with no LLM in
+the loop and shows what recall returns for a question it cannot bear on —
+"Read notes.txt…" matches 36 of 120 items on the verb alone. This section
+measures; it changes no `src/` file.
+
 ## Token accounting (`/usage`)
 
 Every provider client can carry one `UsageRecorder` (`stella.llm`), and

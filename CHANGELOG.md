@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### A memory full of neutral facts never replaced a call (#268 — measured, no code)
+
+- **Why it was asked.** #267 seeded 120 memory items to price recall and two of
+  its twelve turns then answered from recalled text instead of calling
+  `system_info` / `file`. Rule 5 says memory is persistence and never authority,
+  so that looked like a breach — except the seeded text was accidentally
+  adversarial: every item repeated a phrase also planted in `notes.txt`, so an
+  answer drawn from memory was drawn from something true.
+- **The fair run.** `~/tools/bench_recall_authority.py` pairs three arms (0, 40,
+  120 items) against the shipped path on one resident local model, with memories
+  that answer none of the three questions (CPU count, the third line of
+  `notes.txt`, the time) and a rotating pass order. Each arm runs in two
+  conversation shapes: one turn at a time, and one continuing talk.
+- **What it says.** Memory takes no authority at any store size — **27 of 27**
+  isolated turns dispatched the capability their question needed and every reply
+  carried the fact only that call could supply, and the two seeded-arm misses in
+  the continuing shape have an empty-store twin. `MAX_RETRIEVED_MEMORIES = 5`
+  bounds what a store can cost, which is why 40 and 120 items are the same speed;
+  what a turn pays is the five items arriving: **0.1–0.5 s**, with replies of
+  identical length, so it is the provider reading a bigger request, not our
+  search (still #267's 2–9 ms). The #267 observation is corrected — not calling
+  when the recalled words genuinely held the answer was the right decision.
+- **The defect that surfaced on the way, and is not memory.** When the runtime
+  demands a tool (`ToolUseMode.REQUIRED`) and the model answers anyway,
+  `LLMBrain`'s guard ends the turn with *"I need to inspect the current
+  information before answering."* and inspects nothing — 3 of 27
+  continuing-conversation turns, one against an empty store. Words naming an
+  action nobody takes is rule 9's wrong shape, so it is carried as **#269**.
+- **Documentation.** `docs/MODELS.md`, *A full memory store does not crowd the
+  tool out*; a bullet in `docs/ROADMAP.md`. No `src/` file changed.
+
 ### A whole turn, timed, and none of it is ours (#267 — measured, no code)
 
 - **What was measured.** Every stage breakdown in `docs/MODELS.md` was taken

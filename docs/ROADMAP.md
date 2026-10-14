@@ -586,6 +586,23 @@ piece-by-piece measured budgeting, transfers).
   prefill plus the load #259 already weighed, and the answer's own decode.
   Neither is a code change; both are the owner's choice of brain. Table and
   reasoning in `docs/MODELS.md`, *The turn, stage by stage, on the fast brain*.
+- **A full memory store costs a turn time, never authority (#268, measured — no
+  code).** #267's seeded run appeared to show recalled text replacing a tool
+  call, which would have been rule 5 slipping; re-run with memories that answer
+  nothing and paired arms of 0, 40 and 120 items, **store size never changed
+  whether a call happened** — all 27 turns of the isolated shape dispatched
+  theirs, and the two misses in the seeded continuing arms have an identical
+  twin against an empty store. The original misses were recalled words that
+  genuinely contained the answer. What recall does cost is bounded by
+  `MAX_RETRIEVED_MEMORIES = 5` and lands on the provider's side of the boundary:
+  a turn whose five items arrive runs **0.1–0.5 s** longer at any store size,
+  with identical replies. What
+  the run surfaced instead is a dead end unrelated to memory: when the runtime
+  demands a tool and the model answers anyway, `LLMBrain`'s guard ends the turn
+  with *"I need to inspect the current information before answering"* and
+  inspects nothing — 3 of 27 continuing-conversation turns, one of them against
+  an empty store. That is **#269**, and it is a honesty defect, not a speed one.
+  Tables in `docs/MODELS.md`, *A full memory store does not crowd the tool out*.
 - **The wait is one call, and its length is not ours to set.** Measurement
   says a trivial turn is exactly one provider request whose whole cost is
   decoding the thinking channel (~44 tok/s), and that the channel is

@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### The speculation flag Stella has shipped since report 09 was A/B'd against its absence (#260)
+
+- **What was asked.** `BRAIN_LAUNCH_ARGS` has carried
+  `--spec-type ngram-mod` on the strength of report 09's **+20 %** — measured
+  on synthetic repetitive text. Reports 15/20 then watched real decision
+  traffic and found draft acceptance of ~0.44 ("a modest help, not a rescue"),
+  and D1 closed the prefill bench without ever testing the flag itself. The
+  missing measurement was the same line with the three speculation flags
+  removed, on wall clock. The owner unblocked it on 2026-10-14 (*"Access to
+  download llama.cpp given"*); llama.cpp was already built here, so nothing was
+  installed.
+- **What was measured.** Two sequential arms, one GGUF (the incumbent
+  qwen3:4b Thinking-2507), Stella's own `LlamaBrainServer` launch line through
+  a subclass so the command is literally `BRAIN_LAUNCH_ARGS`, six production
+  decision cases × 3 passes, temp ports 8151/8152 — never the live 8080, never
+  the Ollama daemon. Wall clock is a **wash**: median 11.30 s with speculation
+  vs 10.91 s without, mean 18.44 vs 17.70, and with the known long case set
+  aside the arms trade places depending on which statistic is taken. Paired
+  per-case, shipped wins 4 of 6. The server's own meter does move — 47.0 vs
+  45.6 t/s median — at acceptance mean 0.508 / median 0.475 over 17 requests,
+  confirming reports 15/20 and retiring +20 % as a Stella number. VRAM
+  identical (3810 MiB), 0 errors, no strict-pass cost.
+- **The verdict is to change nothing.** Report 100, `docs/ROADMAP.md` D1a.
+  Keeping a flag that costs nothing measured and buys 3 % decode throughput is
+  the smaller change than removing one and handing the 3 % back for no
+  end-to-end gain; re-open only for a brain whose real acceptance clears ~0.6,
+  or for the short spoken reply, which has never been timed separately.
+- **What changed in the tree.** Two sentences of documentation only. The
+  module docstring no longer quotes +20 % as if it were Stella's number, and
+  the comment above `BRAIN_LAUNCH_ARGS` says what the flag now measures instead
+  of the older guess that speculation "is free when it cannot help". The tuple
+  itself is byte-for-byte untouched.
+- **Validation.** 18 decisions per arm with 0 errors, all through
+  `LLMBrain.decide`; raw data `/tmp/ngram_ab.json`, server logs
+  `/tmp/ngram_server_{shipped,nospec}.log`. Offline:
+  `tests/test_llama_server.py` 25 passed and `tests/test_llm.py` 16 passed with
+  the launch line unchanged, `uv run ruff check .` and `git diff --check` clean.
+
 ### Remembering a fact the owner stated is no longer an action she approves (#246)
 
 - **What was asked.** Since the first memory write, `memory_write` carried a

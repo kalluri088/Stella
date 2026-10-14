@@ -3,7 +3,9 @@
 Research report 09 measured the brain launch line on this machine
 (gpt-oss-20b mxfp4, ``-cmoe`` experts, 2 KV slots with q8_0 cache,
 ngram-mod speculation: ~2.77 GB VRAM, 8.6 t/s voice turns, +20 % on
-structured output), and the systemd-topology report found the real gap:
+structured output — a synthetic-text figure report 100 later measured at
+~+3 % throughput and no wall-clock change on real decisions), and the
+systemd-topology report found the real gap:
 nothing supervised the brain server. Stella therefore spawns and owns
 it — the launch line and the VRAM budget stay in one head, and stopping
 Stella stops the server (SIGTERM first, so the process cleans itself
@@ -48,8 +50,10 @@ KILL_GRACE_SECONDS = 5.0
 # smoke re-verified the total fits alongside the embed model.
 # -ngl 99 -cmoe keeps the attention layers on GPU with all MoE expert
 # weights in RAM (the only configuration that fits a 6 GB card); -np 2
-# keeps voice turns at full speed; ngram-mod speculation is free when
-# it cannot help.
+# keeps voice turns at full speed; ngram-mod speculation was A/B'd
+# against its absence on the incumbent weights (report 100): +3 %
+# decode throughput, no wall-clock change, no VRAM cost — kept because
+# removing it would give the 3 % back for nothing measured.
 BRAIN_LAUNCH_ARGS: tuple[str, ...] = (
     "-ngl",
     "99",

@@ -399,6 +399,33 @@ someone from paying for the same measurement twice.
   and `--spec-type draft-mtp` cannot load gpt-oss weights at all.
   Every modified arm drew more of the known peg-500 flake than
   base (0/12), which alone fails the quality gate's premise.
+- **D1a. The speculation flag itself, A/B'd against its absence (#260).**
+  D1 kept the line but never tested `--spec-type ngram-mod`, which has
+  shipped since report 09 measured **+20 %** — on synthetic repetitive
+  text. Reports 15/20 watched real acceptance (~0.44) and inferred it was
+  "a modest help, not a rescue"; the missing measurement was the wall
+  clock with the flag present and absent. Two arms, one GGUF (the
+  incumbent qwen3:4b Thinking-2507), Stella's own `LlamaBrainServer`
+  launch line via a subclass so the command is literally
+  `BRAIN_LAUNCH_ARGS`, six production decision cases × 3 passes, temp
+  ports 8151/8152.
+  *Measured 2026-10-14 (research report 100,
+  `~/tools/bench_ngram_ab.py`): KEEP — no launch-line change.* Wall clock
+  is a wash: median 11.30 s shipped vs 10.91 s without, mean 18.44 vs
+  17.70; with the known long case set aside (n=15) the arms trade places
+  depending on whether you take the median (10.72 vs 10.14) or the mean
+  (12.14 vs 12.32), which is the signal that nothing moved. Paired
+  per-case, shipped wins 4 of 6. The server's own meter does move — 47.0
+  vs 45.6 t/s median — at draft acceptance mean 0.508 / median 0.475 over
+  17 requests, confirming reports 15/20 on these weights and retiring
+  +20 % as a Stella number: the honest figure is **~+3 % throughput, no
+  end-to-end change**. VRAM identical (3810 MiB at ready), 0 errors, no
+  strict-pass cost. Keeping a flag that costs nothing and buys 3 % is the
+  smaller change than removing one and handing the 3 % back for no
+  measured gain. Re-open only for a brain whose real acceptance clears
+  ~0.6, or for the voice turn specifically — a spoken reply is short, so
+  drafting's fixed per-request overhead is a larger share of it, and that
+  arm has never been timed.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

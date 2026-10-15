@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### What the fixed prompt costs on the brain she runs, and why it is not the number that matters (#274)
+
+- **What was asked.** Every prefill figure in this repo is Ollama's: ~3.0 s
+  to read the decision prompt cold, ~0.07 s from a cached prefix. Her saved
+  config is the router (`provider=openai, preset=freellmapi, model=auto`),
+  where a cold read is milliseconds — so before anyone proposed cutting the
+  ~4,100 tokens of rules and persona out of `_SYSTEM_PROMPT`, the block was
+  priced on the transport it would actually be removed from.
+- **What was measured.** A real production request was captured (not
+  hand-written) by spying on the client inside `session.run_turn`: **2
+  messages, 19 tools, 16,944 characters of system message and 10,594 of tool
+  definitions**. Replaying that request at four sizes against one pinned
+  candidate, arms interleaved round by round, a 42 % bigger prompt (+2,502
+  tokens) cost **+208 ms at the median — 83 ms per 1,000 tokens** — while the
+  three readings inside every single arm swung between 1,025 and 4,310 ms.
+  Pooled over all twelve requests the slope comes out *negative*
+  (−409 ms per 1,000 tokens, R²=0.09). Nothing is measurable at n=3 per arm.
+- **The routing finding is the bigger one.** With `model=auto` — her
+  setting — **11 different candidates served 12 requests**. The byte-stable
+  prefix #228 protects is therefore an Ollama property: on this transport
+  there is no warm prefix to lose, and the same request shape took **0.92 s
+  to 6.38 s** depending on which candidate answered. Candidate choice, not
+  prompt size, is her per-decision latency, and the only lever that reaches
+  it is the model name in Settings — #237's policy half, which stays the
+  owner's.
+- **No code change.** Rule 13: at the highest price this run can support,
+  deleting the entire fixed block buys ~340 ms on a 1.7–5.6 s request,
+  against rules that are the reason a 4B model puts the check in the right
+  field. No diet was written, no candidate ranking was run (a dozen hosted
+  turns of her words per arm is a tier-two decision), and nothing was
+  switched. One correction along the way: 16,000 filler characters counted
+  as 2,502 tokens, so the ~4-chars-per-token estimator used in these docs
+  over-states growth.
+- **Validation.** Nothing in `src/` changed, so no tests are owed;
+  `git diff --check` clean, `uv run ruff check .` clean. Evidence:
+  `~/research/104-prompt-size-on-the-router.md`, harness
+  `~/tools/bench_prompt_prefill_router.py`, raw
+  `~/research/data/bench_prompt_prefill_router{,_pin_gemini}/results.json`.
+
 ### What a spoken reply actually costs to hear, re-measured — and the 4.0 s was stale (#273)
 
 - **What was asked.** `docs/VOICE.md` and `docs/ROADMAP.md` A9/B8d carried first

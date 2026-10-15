@@ -68,7 +68,11 @@ Reading all of it from nothing costs ~3.0 s on this machine;
 reading it again from a server that cached the prefix costs ~0.07 s. That
 cache is the whole difference between a turn that starts instantly and one
 that stalls, and it keys on the *beginning* of the prompt — change one
-early byte and everything after it is re-read.
+early byte and everything after it is re-read. (Both numbers are the local
+server's. On the router she now runs, #274 found `auto` drawing 11 different
+candidates in 12 decisions, so there is no warm prefix to lose and the
+stable-prefix work is a capacity and correctness benefit there, not a
+latency one.)
 
 So the rule is that nothing a real next turn changes may live in the
 system prompt. The clock used to: a minute-granular timestamp closed the
@@ -774,6 +778,67 @@ The rules that keep the numbers honest: nothing is persisted, nothing is
 estimated, a cancelled or failed request records nothing, and a provider
 that reports no counts still counts the call and then says so out loud on
 `/usage` instead of showing a quiet zero.
+
+### The fixed block, priced on the router she actually runs (#274)
+
+Every prefill figure above is an Ollama number: ~3.0 s to read the prompt
+from nothing, ~0.07 s from a warm prefix, so the ~4,100 tokens of rules and
+persona were priced locally and the rules diet was left as "a separate
+decision with its own evidence requirement". Her brain is not Ollama — the
+saved config is `provider=openai, preset=freellmapi, model=auto`, a local
+router container forwarding to hosted candidates — so the separate evidence
+was gathered on the transport the diet would actually be cut from.
+
+A real production turn was captured, not hand-written: `build_application`
+plus `session.run_turn("What is 2 plus 2?")` with a spy on the client's
+`chat.completions.create` recorded exactly what Stella sends. It is
+**2 messages and 19 tools — 16,944 characters of system message and 10,594
+of tool definitions** — and that request was then replayed four ways with
+filler appended to the system message, arms interleaved round by round and
+order reversed on odd rounds, against one pinned candidate so the only
+variable was size:
+
+| Arm | prompt tokens | median wall clock | spread within the arm |
+| --- | ---: | ---: | ---: |
+| as shipped | 5,908 | 2,328 ms | 2,742 ms |
+| +626 | 6,534 | 3,588 ms | 4,310 ms |
+| +1,252 | 7,160 | 1,933 ms | 1,210 ms |
+| +2,502 | 8,410 | 2,535 ms | 1,025 ms |
+
+**A 42 % larger prompt cost 208 ms at the median — 83 ms per 1,000 tokens** —
+and every arm's three readings swing further than that. Pooled over all
+twelve requests the slope is *negative* (−409 ms per 1,000 tokens, R²=0.09).
+The honest statement is that no size effect is measurable at n=3 per arm,
+which is the claim a diet would have had to beat. At the highest price this
+run can support, deleting the whole fixed block buys ~340 ms on a request
+that takes 1.7–5.6 s, against a cost every other section of this file names:
+those rules are why a 4B model puts the check in the right field. **No diet
+was written** (rule 13 — no demonstrated weakness, no change). One estimator
+correction came out of it: 16,000 filler characters counted as 2,502 tokens
+on this candidate, so the ~4-chars-per-token convention used elsewhere here
+over-states growth by half.
+
+The finding nobody asked for is the one that matters more. The same harness
+with `model=auto` served **11 distinct candidates across 12 requests**, and
+the same request shape took **0.92 s to 6.38 s** depending on which one
+answered. Two things follow. First, the cached prefix #228 made byte-stable
+is an Ollama property: a decision that lands on a different hosted model
+every time has nothing of ours cached, so the 0.07 s warm read does not
+describe her brain and neither does the re-read cost of changing an early
+byte. Second, on this transport **candidate choice, not prompt size, is the
+per-decision latency** — a 7× swing from a variable that is not in Stella's
+code. The one lever that reaches it is the model name she types in Settings,
+which is #237's policy half and stays hers; no candidate ranking was run
+because that would be a dozen hosted turns of her words per arm (tier two),
+and nothing was switched.
+
+Limits, stated before the conclusion: one pinned candidate, three passes per
+arm, one machine, one evening; `GET /v1/models` answers 401 so `auto`'s
+drawlist is opaque and can change without warning; and token counts are each
+candidate's own tokenizer's — the *identical* shipped request read 6,181,
+6,246 and 6,287 across three other candidates. Harness
+`~/tools/bench_prompt_prefill_router.py`, raw
+`~/research/data/bench_prompt_prefill_router{,_pin_gemini}/results.json`.
 
 ## Tier-0 pre-router (experimental, NOT shipped)
 

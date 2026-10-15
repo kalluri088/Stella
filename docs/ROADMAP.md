@@ -450,6 +450,28 @@ someone from paying for the same measurement twice.
   demonstrated weakness — and a standing method note for every flag bench on
   this rig, including reports 25 and 100, which drew the same swing and should
   be re-read as inside it.*
+- **D1c. What the fixed prompt block costs on the brain she actually runs
+  (#274).** Every prefill number in this repo is Ollama's, and her saved
+  config is the router. The open question was whether the ~4,100 tokens of
+  rules and persona are worth a diet there, where a cold read costs
+  milliseconds rather than 3 seconds.
+  *Measured 2026-10-15 (research report 104,
+  `~/tools/bench_prompt_prefill_router.py`): NO CHANGE, and the routing
+  finding is bigger than the prompt one.* A real `session.run_turn` was
+  captured through a client spy (2 messages, 19 tools, 16,944 characters of
+  system message, 10,594 of tool definitions) and replayed at four sizes on
+  one pinned candidate, arms interleaved: **+2,502 prompt tokens (42 % more)
+  bought +208 ms at the median — 83 ms per 1,000 tokens — against
+  within-arm spreads of 1,025–4,310 ms**, with a pooled slope that comes out
+  negative (R²=0.09). Nothing is measurable at n=3 per arm, so a rules diet
+  has no price to pay for itself and rule 13 closes it. `model=auto` served
+  **11 distinct candidates over 12 requests**, so the byte-stable prefix #228
+  protects is an Ollama property with no hosted equivalent, and the same
+  request shape swings **0.92–6.38 s** purely on which candidate answers —
+  candidate choice, not prompt size, is her per-decision latency. The only
+  lever is the model name in Settings, which is #237's policy half and stays
+  the owner's; ranking the candidates would mean a dozen hosted turns of her
+  words per arm, so it was not run.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

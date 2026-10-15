@@ -35,8 +35,10 @@
   of the older guess that speculation "is free when it cannot help". The tuple
   itself is byte-for-byte untouched.
 - **Validation.** 18 decisions per arm with 0 errors, all through
-  `LLMBrain.decide`; raw data `/tmp/ngram_ab.json`, server logs
-  `/tmp/ngram_server_{shipped,nospec}.log`. Offline:
+  `LLMBrain.decide`; every number above is written into report 100, because
+  this machine reaps `/tmp` and the raw JSON and server logs did not survive
+  the session that produced them. Future benches in `~/tools/` now write their
+  evidence under `~/research/data/` instead. Offline:
   `tests/test_llama_server.py` 25 passed and `tests/test_llm.py` 16 passed with
   the launch line unchanged, `uv run ruff check .` and `git diff --check` clean.
 

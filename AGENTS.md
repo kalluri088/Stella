@@ -80,6 +80,15 @@ owner's daily driver, not a test rig.
   command, even when it "looks cheap".
 * Before launching anything that loads models (voice, OCR, embeddings),
   check `free -m` first and stop instead of adding load when it is tight.
+* Bench evidence goes under `~/research/data/`, never `/tmp` — this machine
+  reaps `/tmp`, and a finished run's JSON and server logs can be gone before
+  the write-up starts (report 100) or mid-round with nothing recorded (report
+  102).
+* A launch-line flag A/B must interleave its arms round by round, and check
+  what else is on the machine first. Reports 25, 100 and 102 each measured the
+  *same* command 20 % apart because a sequential arm list ran against the
+  owner's IDE and browser; on a bandwidth-bound `-cmoe` decode that swing is
+  larger than any flag effect, so an unpaired screen proves nothing.
 
 **Definition of done** for a meaningful change: implementation → tests →
 security/invariant review → documentation → validation. At minimum:

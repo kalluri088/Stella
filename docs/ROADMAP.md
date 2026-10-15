@@ -426,6 +426,29 @@ someone from paying for the same measurement twice.
   ~0.6, or for the voice turn specifically — a spoken reply is short, so
   drafting's fixed per-request overhead is a larger share of it, and that
   arm has never been timed.*
+- **D1b. `--threads` and `-fa`, the two knobs with no measurement behind
+  them (#272).** `-cmoe` puts every MoE expert in RAM, so most of a
+  decision's compute is CPU-side and the thread count is the decode
+  determinant; `-fa` has always run at `auto`. Four arms, the same six
+  production cases, forward and then in reverse order.
+  *Measured 2026-10-15 (research report 102,
+  `~/tools/bench_threads_fa.py`): KEEP — no launch-line change, and the
+  bench itself is the finding.* The server picks **`n_threads = 6`** for
+  this line on a 14-core/20-thread machine; forward order said shipped 10.98 s
+  / 46.2 t/s against 16.9–17.3 s and 32.6–36.7 t/s for `-fa on`, `-t 14` and
+  `-t 20`, which reads as a 29 % loss — until the reverse run measured the
+  **byte-identical shipped command at 16.15 s / 37.0 t/s** (+47 % wall clock,
+  −20 % decode for no change in what was being tested) and made `-t 14`, the
+  arm that looked 58 % slower first, the fastest arm second. Every between-arm
+  gap is inside that swing. The cause is the machine: these runs happened
+  while the owner's IDE and browser held CPU on her daily driver, and a
+  bandwidth-bound `-cmoe` decode shares exactly that resource. An interleaved
+  paired harness was written for the tie-break
+  (`~/tools/bench_threads_interleaved.py`) and died two decisions into round 1
+  with its `/tmp` scope, recording nothing. No code change, because there is no
+  demonstrated weakness — and a standing method note for every flag bench on
+  this rig, including reports 25 and 100, which drew the same swing and should
+  be re-read as inside it.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

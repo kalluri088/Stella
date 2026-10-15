@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### The brain line's last two untuned knobs were measured, and the bench turned out to be the finding (#272)
+
+- **What was asked.** `-cmoe` keeps every MoE expert in RAM, so most of a
+  decision's compute is CPU-side and `--threads` is the decode determinant;
+  `-fa` has always run at `auto`. Report 25 tuned prefill flags, report 100
+  tuned speculation, and neither of them looked at these.
+- **What was measured.** Four arms on the incumbent qwen3 weights through
+  Stella's own supervised launch line, six production decision cases, then the
+  same four arms in reverse order. The server picks **`n_threads = 6`** for this
+  line on a 14-core / 20-thread machine. Forward order said shipped 10.98 s and
+  46.2 t/s against 16.9–17.3 s and 32.6–36.7 t/s for `-fa on`, `-t 14` and
+  `-t 20`. Reverse order measured the **byte-identical shipped command at 16.15
+  s and 37.0 t/s** and made `-t 14` — the arm that had looked 58 % slower — the
+  fastest. Every gap between arms is inside the swing of the arm that did not
+  change.
+- **The verdict is KEEP, with no code change** (report 102, `docs/ROADMAP.md`
+  D1b). There is no demonstrated weakness in a knob, so there is nothing to
+  adopt — and the reason matters more than the result: these runs happened on
+  the owner's daily driver while her IDE and browser held CPU, and a
+  bandwidth-bound `-cmoe` decode shares exactly that resource. The interleaved
+  tie-break harness was written, got two decisions into round 1 at 20–22 s each,
+  and died with the `/tmp` scope it was writing to, recording nothing.
+- **What did change is how work is done here.** `AGENTS.md` now says bench
+  evidence goes to `~/research/data/` and never `/tmp`, because a finished run's
+  JSON and logs can vanish before the write-up (report 100) or a live run can
+  lose its whole record (report 102); and a launch-line A/B must interleave its
+  arms round by round and check what else is on the machine, because reports
+  25, 100 and 102 all drew this same ±20 % on an unchanged command. That
+  re-reads two earlier verdicts as *inside* the noise band rather than as
+  evidence of order.
+- **Validation.** None of the repository's behaviour was touched: no `src/`
+  change, so no test was owed and none claimed. `git diff --check` clean.
+  Evidence: `~/research/102-threads-fa-ab.md`,
+  `~/research/data/bench_threads_fa{,_reverse}/results.json`, harnesses
+  `~/tools/bench_threads_fa.py` and `~/tools/bench_threads_interleaved.py`.
+
 ### The speculation flag Stella has shipped since report 09 was A/B'd against its absence (#260)
 
 - **What was asked.** `BRAIN_LAUNCH_ARGS` has carried

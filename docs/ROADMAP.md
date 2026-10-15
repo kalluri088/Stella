@@ -472,6 +472,29 @@ someone from paying for the same measurement twice.
   lever is the model name in Settings, which is #237's policy half and stays
   the owner's; ranking the candidates would mean a dozen hosted turns of her
   words per arm, so it was not run.*
+- **D1d. Does naming a router candidate make a decision faster (#275).**
+  #274 left the model name as the only lever reaching hosted latency, so the
+  router's candidates were screened on the captured shipped request (12 names ×
+  3 rounds), then the three best ran #237's six production questions.
+  *Measured 2026-10-15 (research report 105,
+  `~/tools/bench_router_candidates.py`, `~/tools/bench_router_interleaved.py`):
+  NO NAME CHANGE — `auto` stays.* Among arms with a full set of readings `auto`
+  has the **lowest median (1,048 ms)** and is the only arm that never lost a
+  turn to availability; the pins that beat it died after one or two readings.
+  Interleaved on real turns: `auto` 6/6 answered / 4/6 correct / median 4.02 s /
+  **0 rate limits**, `ministral-3-8b` 4/6 answered / **4/4 correct** / **median
+  1.62 s** (2.5× faster, and it routed both tool turns correctly) but **2 turns
+  lost to `429`**, and `gemini-3.5-flash-lite` — the most format-reliable name on
+  the screen — answered **nothing** because its route was exhausted. A named
+  candidate buys a lower median by giving up the fallback pool, which on a free
+  tier is the wrong trade; one sequential arm list also had to be rerun
+  interleaved, since burning a route's quota before its arm starts produced 11
+  rate-limited turns out of 12. Three ids in `/models` answer `503` on every
+  request, and a pinned name pins a route not a build (`ministral-14b` served
+  two different model names). **The defect this found instead is #276:** two of
+  `auto`'s six trivial turns were not slow but *unreadable* — "what is 2 plus 2?"
+  ended with the runtime's "I couldn't make sense of that answer. Try asking
+  again." after a single attempt.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

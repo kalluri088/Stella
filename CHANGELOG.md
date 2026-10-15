@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Which router candidate answers a Stella decision fastest, and why the answer is to name none of them (#275)
+
+- **What was asked.** #274 closed prompt size and left one lever reaching
+  hosted latency: the model name in Settings. Twelve candidate names — `auto`
+  plus everything her own traffic had drawn — were screened three times each on
+  the captured shipped request, then the best three ran #237's six production
+  questions through the real `session.run_turn`.
+- **What was measured.** Among arms that produced a full set of readings,
+  **`auto` has the lowest median (1,048 ms)** and is the only arm with anywhere
+  to fall back; every pin that looked faster died after one or two readings. On
+  the interleaved production pass `auto` answered 6/6 (4/6 correct, median 4.02 s,
+  zero rate limits), `ministral-3-8b` answered 4/6 with **4/4 correct at a 1.62 s
+  median** — 2.5× faster, routing both tool turns correctly — but lost 2 turns to
+  `429`, and `gemini-3.5-flash-lite`, the most format-reliable name on the screen,
+  answered **nothing**: its route was exhausted. A name buys a lower median by
+  giving up the pool, and three ids in `/models` answer `503` on every request
+  while a pinned name pins a route, not a build.
+- **No name change, nothing switched.** Her 2026-10-12 decision (the router
+  stays her brain, `model=auto`) is the choice this evidence supports, and one
+  interleaved pass of six questions is not a ranking of 212 ids. The first
+  version of that pass *was* thrown out: run with sequential arms it produced 11
+  rate-limited turns out of 12, because a bench that spends one route's quota
+  before that arm starts measures the queue, not the model.
+- **The defect this found instead is #276.** Two of `auto`'s six trivial turns
+  were not slow but **unreadable** — "what is 2 plus 2?" came back as a reply the
+  parser could not use, failed closed, and after a **single** attempt ended with
+  the runtime's honest sentence: "I couldn't make sense of that answer. Try
+  asking again." That asks the owner to do what the runtime could do itself, once,
+  inside the budget it already has.
+- **Validation.** No `src/` change, so no tests are owed; `git diff --check`
+  clean, `uv run ruff check .` clean. Evidence:
+  `~/research/105-router-candidate-speed.md`, harnesses
+  `~/tools/bench_router_candidates.py` and `~/tools/bench_router_interleaved.py`,
+  raw `~/research/data/bench_router_{candidates,interleaved}/`.
+
 ### What the fixed prompt costs on the brain she runs, and why it is not the number that matters (#274)
 
 - **What was asked.** Every prefill figure in this repo is Ollama's: ~3.0 s

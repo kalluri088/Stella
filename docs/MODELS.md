@@ -840,6 +840,58 @@ candidate's own tokenizer's — the *identical* shipped request read 6,181,
 `~/tools/bench_prompt_prefill_router.py`, raw
 `~/research/data/bench_prompt_prefill_router{,_pin_gemini}/results.json`.
 
+### Naming a candidate: the speed screen, and what pinning one costs (#275)
+
+The paragraph above ends on a lever — the model name she types into Settings is
+the only thing that reaches hosted latency — so it was priced. The router lists
+**212 ids**; the screen covered `auto` plus the candidates `auto`'s own traffic
+drew, three times each, on the captured shipped request.
+
+| arm | median | spread | usable decisions |
+| --- | ---: | ---: | --- |
+| `auto` (her config) | 1,048 ms | 10,578 ms | 1 of 3 |
+| ministral-3-8b | 1,026 ms | 318 ms | 2 of 2 |
+| lfm2.5-2.6b | 1,373 ms | 1,319 ms | 0 of 3 |
+| ministral-14b | 1,553 ms | 399 ms | 2 of 3 |
+| gemini-3.5-flash-lite | 1,761 ms | 887 ms | 3 of 3 |
+| gemini-3.1-flash-lite | 2,574 ms | 7,230 ms | 3 of 3 |
+| nemotron-3-super-120b | 2,687 ms | 5,868 ms | 0 of 3 |
+
+Three of the twelve names answered `503` on every attempt — an id in the list is
+not a route the router serves — and a pinned name pins a *route*, not a build:
+`ministral-14b` served `ministral-14b-2512` twice and `ministral-14b-latest`
+once. Among arms with three readings **`auto` has the lowest median**; every pin
+that looked faster survived only one or two readings before its quota ran out.
+
+The six production questions (#237's set) then ran against the three most
+promising arms, **interleaved turn by turn with pacing** — after a first attempt
+that ran the arms sequentially and came back with 11 of 12 pinned turns rate
+limited, which is the same "sequential arms prove nothing" lesson this rig has
+learned twice, here with a route-quota twist. `auto`: 6/6 answered, 4/6 correct,
+median 4.02 s, **zero turns lost to availability**. `ministral-3-8b`: 4/6
+answered, **4/4 correct**, median **1.62 s** — 2.5× faster, and it routed
+`datetime` and `filesystem_read` correctly, answering the file question in 1.95 s
+where `auto` took 7.43 s by spending a step on `workspace_list` first — but it
+lost 2 turns to `429`. `gemini-3.5-flash-lite`, the most format-reliable name on
+the screen, answered **nothing**: its route was exhausted.
+
+So the trade is not speed against speed. A named candidate buys a lower median
+and a bounded tail at the price of the pool: `auto` is the only arm with anywhere
+to fall back, and a free tier is exactly the place where that matters. **No name
+change is supported by this evidence** and nothing was switched — her decision of
+2026-10-12 stands, and one interleaved pass of six turns is not a ranking.
+
+What the run did surface is a defect no candidate choice fixes: `auto`'s two
+failures were not slow turns but **unreadable** ones. "what is 2 plus 2?" came
+back as a reply the parser could not use, failed closed, and after **one**
+attempt ended with the runtime's honest sentence — "I couldn't make sense of
+that answer. Try asking again." — which asks the owner to do what the runtime
+could do itself, once, inside the budget it already has (#276).
+
+Harnesses `~/tools/bench_router_candidates.py`,
+`~/tools/bench_router_interleaved.py`; raw
+`~/research/data/bench_router_{candidates,interleaved}/`, research report 105.
+
 ## Tier-0 pre-router (experimental, NOT shipped)
 
 Cactus Needle 3 (121M) with a LoRA trained on the 49-turn routing

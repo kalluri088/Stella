@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### A reply that comes back with no decision in it is now asked for again (#276)
+
+- **What was wrong.** About one decision request in fifteen on her configured
+  brain came back as a reply the parser could not use, and the runtime made
+  exactly **one** attempt before saying "I couldn't make sense of that answer.
+  Try asking again." — handing the owner a retry the runtime could do itself.
+  Measured on her own shipped decision body across four paced passes: **11
+  unreadable replies in 160 answered requests (~7 %)**, and every one of them was
+  a complete **correct answer with the JSON envelope dropped**
+  (`"\n\n2 plus 2 equals 4."`, `finish_reason=stop`), never a truncation. Two
+  candidates out of the eighteen drawn carry it — `agnes-2.5-flash` on 8 of its
+  32 draws (25 %) and `liquid/lfm-2.5-2.6b:free` on 3 of 18 (17 %) — while the
+  other 110 draws dropped none.
+- **What she does now.** `LLMBrain.decide()` makes **one more request**, with a
+  runtime note naming what the reply was missing — the shape #269 proved for the
+  neighbouring lapse — and at most two requests per decision in total, whichever
+  lapse earned it. The unreadable reply is never fed back into the retry, so
+  nothing the model wrote unsanctioned re-enters the request being repaired.
+  Conditioned on the failures themselves, **8 of 8 second requests read back**.
+- **What that costs, and what it does not fix.** A median 2.3 s on a turn whose
+  answer had already been lost, and ~60 tokens on the ~7 % of decisions that
+  failed. The honest half: the control arm — a retry with nothing appended —
+  recovered 5 of 5 too, three of them served by the very candidate that had just
+  failed, so what is proven is the *second request*, not the wording. The note
+  stays because an identical retry against a pinned or byte-stable brain is
+  literally the same roll, and because naming a lapse is what recovered the
+  refused-check case where re-rolling did not. Neither unreliable candidate is
+  removed from the pool: there is no client-side way to exclude a name from
+  `auto`, and #275's finding that no name change is supported stands.
+- **Invariants unchanged.** The second reply is read by the same parser and
+  authorised by the same runtime. An unreadable decision still carries no
+  capability, no arguments and no memory write; a retry that also fails leaves
+  the turn exactly where #244 put it, with the runtime's own sentence and the
+  model's prose still unspoken; rule 9's 8-calls-or-90-seconds budget bounds the
+  whole thing, because a re-ask lives inside the decision it replaces.
+- **Validation.** `tests/test_brain.py` 79 passed (4 new: the re-ask reads the
+  reply back, the retry never carries the unreadable text, a second unreadable
+  reply fails closed with no third request, and a re-ask can still come back as a
+  tool call). The provider-conformance matrix moved with it: `bare-prose-fails-
+  closed` and `empty-reply-fails-closed` now script the second reply the runtime
+  asks for — asked twice and still unreadable is the same fail-closed decision —
+  and a new obligation, `bare-prose-is-reasked-into-a-decision`, pins that the
+  second reply is what gets acted on and that the prose is replaced, never
+  promoted. Both hold on all five client dialects (95 passed, 4 skipped), plus
+  `tests/test_stella.py` 95, the adversarial-boundary and workspace-brain security
+  suites, `test_app.py` 99, `uv run ruff check .` clean, `git diff --check` clean.
+  Evidence: `~/research/106-unreadable-reask.md`, harness
+  `~/tools/bench_unreadable_reask.py`, raw
+  `~/research/data/bench_unreadable_reask_{auto_pool,auto_plain_pool,lfm-2.5-2.6b}/`.
+
 ### Which router candidate answers a Stella decision fastest, and why the answer is to name none of them (#275)
 
 - **What was asked.** #274 closed prompt size and left one lever reaching

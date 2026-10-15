@@ -495,6 +495,38 @@ someone from paying for the same measurement twice.
   `auto`'s six trivial turns were not slow but *unreadable* — "what is 2 plus 2?"
   ended with the runtime's "I couldn't make sense of that answer. Try asking
   again." after a single attempt.*
+- **D1e. What a reply with no decision in it should do next (#276).** #275
+  handed the defect over: one request, then a sentence telling the owner to do
+  the retry by hand. Before building it, the base rate and the shape of the
+  failures were measured on her shipped request.
+  *Measured 2026-10-16 (research report 106,
+  `~/tools/bench_unreadable_reask.py`): SHIPPED — one re-ask, and it names what
+  was missing.* The rate is **11 unreadable replies in 160 answered requests of
+  her shipped body across four paced passes, ~7 %**, and it comes from **two
+  candidates out of the eighteen drawn**: `agnes-2.5-flash` dropped the envelope
+  on 8 of its 32 draws (25 %) and `liquid/lfm-2.5-2.6b:free` on 3 of 18 (17 %),
+  while the other 110 draws dropped none — which is why the pass-to-pass rate
+  swung 12.5 %, 5 %, 3.6 %, 8.3 % and was never a changing behaviour. Every
+  failure was the **correct answer with the JSON envelope dropped** —
+  `"\n\n2 plus 2 equals 4."`, `finish_reason=stop`, never truncated — which
+  killed the length hypothesis and shows prose and fenced JSON already read
+  through `_decision_payload`. Conditioned on the failures themselves, **8 of 8
+  second requests read back**: 3 with the note naming the missing envelope, 5
+  with nothing appended as the control — and 3 of those 5 came from the *same*
+  candidate that had just failed, so the write-up credits the second request,
+  not the wording. `LLMBrain.decide()` now asks twice per decision at most,
+  whichever lapse earned it (#269's shape), never feeds the unreadable reply
+  back into the retry, and leaves a retry that also fails exactly where #244 put
+  it: the runtime's sentence, no capability, no memory write. The retry costs
+  2.3 s at the median on a turn that had already lost its answer. The provider
+  conformance matrix moved with the change: the two fail-closed obligations now
+  script the second reply (asked twice and still unreadable is the same
+  decision), and a new obligation, `bare-prose-is-reasked-into-a-decision`, pins
+  that the re-ask's reply is what gets acted on — replaced, never promoted — on
+  all five client dialects.
+  **Deliberately not done:** neither unreliable candidate is removed from the
+  pool — there is no client-side way to exclude one name from `auto`, and #275's
+  finding that no name change is supported by evidence stands.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

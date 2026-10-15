@@ -89,9 +89,10 @@ class ConformanceCase:
     reply: WireReply
     expectation: ConformanceExpectation
     dialects: frozenset[str] = field(default_factory=lambda: ALL_DIALECTS)
-    # What the endpoint answers the second time, for the one case where the
-    # runtime asks again. Unset means the case is over after the first reply,
-    # and a second request is the error it should be.
+    # What the endpoint answers the second time, for the cases where the runtime
+    # asks again: the demanded check it did not get (#269), or a reply with no
+    # decision object in it (#276). Unset means the case is over after the first
+    # reply, and a second request is the error it should be.
     reask_reply: WireReply | None = None
 
 
@@ -435,18 +436,30 @@ CONFORMANCE_CASES: tuple[ConformanceCase, ...] = (
     ),
     ConformanceCase(
         name="bare-prose-fails-closed",
-        obligation="a reply with no decision JSON at all is do_nothing and its prose is never spoken; the unreadable flag lets the runtime say so in its own words",
+        obligation="a reply with no decision JSON at all is do_nothing and its prose is never spoken; asked a second time and still unreadable, it fails closed the same way; the unreadable flag lets the runtime say so in its own words",
         user_input="Say hello.",
         reply=WireReply(content="Hello there! How are you?"),
+        # The runtime re-asks what this reply was missing (#276); a provider that
+        # says the same prose again must not be read as a decision.
+        reask_reply=WireReply(content="Hello there! How are you?"),
         expectation=ConformanceExpectation(
             decision=Decision(DecisionKind.DO_NOTHING, unreadable=True)
         ),
     ),
     ConformanceCase(
+        name="bare-prose-is-reasked-into-a-decision",
+        obligation="the reply that had no decision object is asked for once more, and the second reply is the one acted on — the prose is never promoted, only replaced",
+        user_input="Say hello.",
+        reply=WireReply(content="Hello there! How are you?"),
+        reask_reply=WireReply(content=ANSWER_JSON),
+        expectation=ConformanceExpectation(decision=_answer()),
+    ),
+    ConformanceCase(
         name="empty-reply-fails-closed",
-        obligation="an empty assistant turn (no content, no calls) is do_nothing, not a crash",
+        obligation="an empty assistant turn (no content, no calls) is do_nothing, not a crash, and an empty turn in answer to the re-ask fails closed too",
         user_input="Say hello.",
         reply=WireReply(content=None),
+        reask_reply=WireReply(content=None),
         expectation=ConformanceExpectation(
             decision=Decision(DecisionKind.DO_NOTHING, unreadable=True)
         ),

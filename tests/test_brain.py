@@ -89,8 +89,9 @@ class TwoCallLLM(LLMClient):
 
 
 class DemandThenCheckLLM(LLMClient):
-    """An answer where the runtime demanded a check, and what comes back when
-    the demand is named out loud."""
+    """What the brain sends first, and what comes back when the runtime asks
+    once more — the re-ask being either the demanded check (#269) or the
+    decision envelope a reply was missing (#276)."""
 
     def __init__(self, first: str, second: LLMResponse) -> None:
         self.first = first
@@ -1000,6 +1001,67 @@ def test_the_reask_is_never_sent_when_the_first_ask_was_not_demanded() -> None:
 
     assert decision.kind is DecisionKind.ANSWER
     assert llm.calls == 1
+
+
+def test_a_reply_with_no_decision_in_it_is_asked_for_once_more() -> None:
+    # Measured on her router, the unreadable replies are not wrong answers: they
+    # are the right answer with the JSON envelope dropped ("\n\n2 plus 2 equals
+    # 4.", finish_reason=stop), and a second request read all 8 conditioned
+    # retries back (#276).
+    llm = DemandThenCheckLLM(
+        "2 plus 2 equals 4.",
+        LLMResponse(content='{"kind": "answer", "content": "2 plus 2 is 4."}'),
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What is 2 plus 2?"))
+
+    assert decision == Decision(DecisionKind.ANSWER, content="2 plus 2 is 4.")
+    assert llm.calls == 2
+    assert "Runtime note:" not in _user_text(llm.requests[0])
+    assert "no decision object" in _user_text(llm.requests[1])
+
+
+def test_the_reask_never_sends_back_the_reply_it_could_not_read() -> None:
+    # The note is the runtime's own words. Feeding the unsanctioned prose back
+    # would give the model its own unauthorised text as though it were context,
+    # so the retry carries the original request plus the note and nothing else.
+    llm = DemandThenCheckLLM(
+        "2 plus 2 equals 4.",
+        LLMResponse(content='{"kind": "answer", "content": "2 plus 2 is 4."}'),
+    )
+
+    LLMBrain(llm).decide(Context(user_input="What is 2 plus 2?"))
+
+    assert "2 plus 2 equals 4." not in _user_text(llm.requests[1])
+
+
+def test_a_retry_that_still_cannot_be_read_fails_closed_once() -> None:
+    prose = "2 plus 2 equals 4."
+    llm = DemandThenCheckLLM(prose, LLMResponse(content=prose))
+
+    decision = LLMBrain(llm).decide(Context(user_input="What is 2 plus 2?"))
+
+    # The second reply gets exactly the same treatment as the first: no
+    # capability, no memory write, no borrowed authority — and no third request.
+    # The owner still hears the runtime's own sentence (#244).
+    assert decision == Decision(DecisionKind.DO_NOTHING, unreadable=True)
+    assert llm.calls == 2
+
+
+def test_an_unreadable_reply_can_still_be_asked_back_into_a_check() -> None:
+    # The re-ask is not an invitation to answer instead: when the request needs
+    # a capability, the reply that comes back is dispatched like any other.
+    llm = DemandThenCheckLLM(
+        "It is quarter past nine.",
+        LLMResponse(tool_calls=(LLMToolCall("datetime", {"kind": "time"}),)),
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What time is it?"))
+
+    assert decision == Decision(
+        DecisionKind.TOOL, capability="datetime", arguments={"kind": "time"}
+    )
+    assert "no decision object" in _user_text(llm.requests[1])
 
 
 def test_successful_observation_changes_required_policy_to_auto() -> None:

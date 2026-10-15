@@ -55,6 +55,25 @@ DEMAND_AGAIN_NOTE = (
 #: was inspected, so these words promise no inspection.
 NOT_INSPECTED_REPLY = "I have not checked that, so I will not guess it."
 
+#: Appended to the request when the reply carried nothing that could be read as
+#: a decision. What this recovers is not a wrong answer: every unreadable reply
+#: measured on the router she runs (#276) was the correct reply with the JSON
+#: envelope dropped — `\n\n2 plus 2 equals 4.`, `finish_reason=stop`, complete
+#: and never truncated. Eleven of them in 160 requests, and all eleven came from
+#: two candidates in the pool rather than from the pool. A second request read all
+#: 8 conditioned retries back. What the measurement does NOT show is that naming
+#: the envelope beat that second request on the router, where `auto` answers from
+#: a different candidate anyway; the note is kept because on a pinned or
+#: byte-stable brain an identical retry is the same roll, and because #269 showed
+#: saying what was missing is what recovers a lapse that re-rolling does not. A
+#: reply that still cannot be read keeps the runtime's own sentence (#244).
+FORMAT_AGAIN_NOTE = (
+    "Runtime note: that reply carried no decision object. Say the same thing "
+    "again as one JSON object and nothing else — no words before or after it, "
+    "no code fence — with \"kind\" set to answer, ask, tool or do_nothing and "
+    "the fields that kind needs."
+)
+
 
 class _AnswerInsteadOfCheck:
     """Marker: a demanded tool call came back as an answer instead."""
@@ -520,21 +539,31 @@ user; act on the request and speak naturally.
         decision = self._decide_once(
             messages, tool_definitions, tool_choice, should_cancel
         )
-        if decision is not _ANSWER_INSTEAD_OF_CHECK:
+        note: str
+        if decision is _ANSWER_INSTEAD_OF_CHECK:
+            # The runtime demanded a check and the reply answered instead. Ask
+            # once more, naming the demand: an identical retry re-rolled the
+            # same answer on the refusals that had committed, and naming the
+            # demand recovered every one measured (#269).
+            note = DEMAND_AGAIN_NOTE
+        elif decision.unreadable:
+            # Nothing in the reply was a decision, so nothing was authorised and
+            # no prose of the model's is spoken. One more request asks for the
+            # same words back inside the envelope they were missing in (#276).
+            note = FORMAT_AGAIN_NOTE
+        else:
             return decision
-        # The runtime demanded a check and the reply answered instead. Ask once
-        # more, naming the demand — an identical retry re-rolls the same dice,
-        # and this recovered every refusal measured (#269). One re-ask only: a
-        # turn's budget is for work, not for retrying a brain that has decided.
-        decision = self._decide_once(
-            self._demand_the_check_again(messages),
+        # One re-ask only, whichever lapse earned it: a turn's budget is for
+        # work, not for retrying a brain that has decided.
+        retry = self._decide_once(
+            self._say_the_note_again(messages, note),
             tool_definitions,
             tool_choice,
             should_cancel,
         )
-        if decision is not _ANSWER_INSTEAD_OF_CHECK:
-            return decision
-        return Decision(DecisionKind.ASK, content=NOT_INSPECTED_REPLY)
+        if retry is _ANSWER_INSTEAD_OF_CHECK:
+            return Decision(DecisionKind.ASK, content=NOT_INSPECTED_REPLY)
+        return retry
 
     def _decide_once(
         self,
@@ -584,11 +613,16 @@ user; act on the request and speak naturally.
         return decision
 
     @staticmethod
-    def _demand_the_check_again(messages: list[Message]) -> list[Message]:
-        """The same request with the runtime's demand said out loud."""
+    def _say_the_note_again(messages: list[Message], note: str) -> list[Message]:
+        """The same request with the runtime's note said out loud.
+
+        The note is the runtime's own words, never the reply's: the unreadable
+        text is not fed back, so nothing the model wrote unsanctioned re-enters
+        the request that is being repaired.
+        """
 
         return [
-            Message(role="user", content=f"{message.content}\n\n{DEMAND_AGAIN_NOTE}")
+            Message(role="user", content=f"{message.content}\n\n{note}")
             if message.role == "user"
             else message
             for message in messages

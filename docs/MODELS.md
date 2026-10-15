@@ -892,6 +892,74 @@ Harnesses `~/tools/bench_router_candidates.py`,
 `~/tools/bench_router_interleaved.py`; raw
 `~/research/data/bench_router_{candidates,interleaved}/`, research report 105.
 
+### One more request for a reply that reads as prose (#276)
+
+The defect #275 handed over was measured before anything was written against it,
+and the measurement moved it. Four paced passes of her shipped decision request —
+the captured body sent unmodified, every reply classified by Stella's own
+`_parse_decision` — produced **11 unreadable replies in 160 answered requests,
+6.9 %**. And they were not spread over the pool. They came from two names:
+
+| Candidate | Draws on `auto` | Envelope dropped |
+| --- | --- | --- |
+| `agnes-2.5-flash` | 32 | **8 (25 %)** |
+| `liquid/lfm-2.5-2.6b:free` | 18 | **3 (17 %)** |
+| the other sixteen names drawn | 110 | **0** |
+
+That is the whole defect: nearly a third of `auto`'s draws land on a candidate
+that drops the decision envelope about one time in five, and nothing else in the
+pool fails this way. The swing between passes — 12.5 %, then 5 %, then 3.6 %, then
+8.3 % — was never a changing model behaviour, only which names the router happened
+to draw.
+
+So this was never a pool-wide format problem and never a length problem. Each
+failure was a **complete correct answer with the JSON envelope dropped** —
+`"\n\n2 plus 2 equals 4."`, `finish_reason=stop` on all of them, never
+truncated — and the parser already tolerates the milder lapses: JSON wrapped in
+prose and JSON inside a ``` fence both read, because `_decision_payload` scans
+for the first decodable object anywhere in the reply. What fails is the reply
+that contains no object at all.
+
+The repair is the one #269 already proved on the neighbouring lapse: the runtime
+makes **one** more request, and says what the first reply was missing. Measured
+on the failures themselves, not on the whole pool:
+
+| Arm | Conditioned retries | Read back | Retry wall (median) |
+| --- | --- | --- | --- |
+| re-ask naming the missing envelope | 3 | **3** | 2.30 s |
+| re-ask with nothing appended (control) | 5 | **5** | 3.41 s |
+
+Eight of eight. The honest part of that number: the control arm recovered too,
+and 3 of its 5 retries were served by the **same** candidate that had just
+failed, so a second request — not the note — is what was demonstrated to work.
+The note stays because on a pinned or byte-stable brain an identical retry is
+literally the same roll, and because naming a lapse is what recovered the
+refused-check case where re-rolling did not. It costs ~60 tokens on the ~7 % of
+decisions that had already failed, which at #274's 83 ms per 1,000 tokens is
+noise inside a 2-3 s retry.
+
+What shipped is bounded and changes no authority: `LLMBrain.decide()` asks twice
+per decision at most, whichever lapse earned it, and the unreadable reply still
+carries no capability, no arguments and no memory write. The model's prose is
+still never spoken — a retry that comes back unreadable leaves the turn exactly
+where #244 put it, with the runtime's own sentence — and rule 9's budget still
+bounds the whole thing, because the re-ask is inside the one decision it
+replaces. The owner no longer has to do by hand the retry the runtime can do
+itself.
+
+What this deliberately does not do is drop `agnes-2.5-flash` or
+`liquid/lfm-2.5-2.6b:free` from the pool: there is no client-side way to exclude
+one name from `auto`, and #275 already found no name change supported by
+evidence. The pool is the owner's decision of 2026-10-12 and it stands — which is
+exactly why the retry is the mitigation that exists.
+
+Harness `~/tools/bench_unreadable_reask.py` (with `STELLA_BENCH_PLAIN=1` for the
+control arm); raw `~/research/data/bench_unreadable_reask_{auto_pool,
+auto_plain_pool,lfm-2.5-2.6b}/`, research report 106. One limit worth keeping:
+the pinned single-route arm of this harness returned 429 to 38 of 40 requests
+after answering two — a named free tier cannot be sampled at the rate the pool
+can, which is why both measured arms ran on `auto`, paced.
+
 ## Tier-0 pre-router (experimental, NOT shipped)
 
 Cactus Needle 3 (121M) with a LoRA trained on the 49-turn routing

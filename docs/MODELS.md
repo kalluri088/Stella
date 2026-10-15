@@ -527,6 +527,12 @@ the first turn of a session pays about 4 s to read its own prompt, and neither
 is ours to make cheaper without a different model or more of the GPU — both of
 which are the owner's choices in Settings, not a code change.
 
+**Every number above is a cached-prefix number, and the brain she runs has no
+prefix to cache.** On the hosted router the same arithmetic gives a different
+shape: a turn's second request is not 34 ms of reused prefill but a second
+round trip that costs as much as the first. That split is measured in *A router
+turn is hosted round trips* below (#277).
+
 Bench scripts and raw JSON (`/tmp/bench_turn_stages.json`,
 `/tmp/bench_prompt_cache.json`) live outside the tree with the other benches;
 this section records a measurement and changes no `src/` file.
@@ -959,6 +965,104 @@ auto_plain_pool,lfm-2.5-2.6b}/`, research report 106. One limit worth keeping:
 the pinned single-route arm of this harness returned 429 to 38 of 40 requests
 after answering two — a named free tier cannot be sampled at the rate the pool
 can, which is why both measured arms ran on `auto`, paced.
+
+### A router turn is hosted round trips, and a tool turn makes two (#277, measured — no code)
+
+#267's stage table was taken on a **local** brain whose prompt prefix is cached:
+there, a turn's second request read 34 ms of it. Her saved brain is
+`provider=openai, preset=freellmapi, model=auto`, and #274 established there is no
+prefix to reuse on the router — every decision is a network round trip of 0.9–6.4 s
+to whichever candidate the router draws. So the same arithmetic was redone on the
+brain she actually runs (`~/tools/bench_router_turn_stages.py`, 24 production turns
+through `run_turn`, timed at the SDK call), because one term changes meaning
+completely: "the turn makes two requests" is not cached prefill here, it is a second
+lottery ticket.
+
+Medians over four passes, milliseconds:
+
+| turn | whole turn | hosted | requests | 1st | 2nd | tools | glue | hosted share |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| arithmetic | 2,099 | 2,098 | 1.0 | 2,098 | — | 0 | 1 | 100 % |
+| greeting | 1,266 | 1,265 | 1.0 | 1,265 | — | 0 | 1 | 100 % |
+| time | 2,843 | 2,841 | 2.0 | 1,375 | 1,431 | 0 | 2 | 100 % |
+| cpus | 5,458 | 5,456 | 2.5 | 2,452 | 1,198 | 0 | 2 | 100 % |
+| read-file | 3,854 | 3,851 | 2.0 | 1,158 | 2,292 | 1 | 2 | 100 % |
+| list-dir | 3,947 | 3,945 | 2.0 | 1,265 | 2,194 | 1 | 1 | 100 % |
+
+- **The turn is nothing but hosted round trips.** Tool execution is 0–2 ms and
+  Stella's own glue is 1–2 ms, so the residue #267 could not resolve is still
+  unresolvable. Everything that can be fast on our side of the boundary already
+  is; the only latency term left is *how many times we ask, and whom*.
+- **The second request is not cheaper than the first**, and it is not big either —
+  ~56 more prompt tokens (median 7,288 → 7,344) carries the whole observation. It
+  costs a full round trip because on this brain a turn's cost is its request count
+  multiplied by a draw from the pool. Three of 24 turns made three requests,
+  because the brain planned more than one step.
+- **`tool_final` was volunteered on 0 of 16 tool turns.** The path built to remove
+  that second request (`Tool.terminal`, `docs/TOOL_EXECUTION.md`) is tested and
+  does not run on her brain: the signal it waits for is a courtesy the router's
+  candidates do not extend. `docs/TOOL_EXECUTION.md` records what that means for
+  the fast path's status.
+- **0 of 40 decisions came back unreadable.** #276's ~7 % was measured on one
+  repeated trivial request; on these six production shapes the pool read the
+  format every time. That bounds #276's exposure, and is said plainly here so the
+  7 % is not read as a rate on real turns.
+- **The pool is not a uniform lottery in practice:** 36 of 43 requests were served
+  by `agnes-2.5-flash` — also one of the two names #276 attributed every unreadable
+  reply to.
+
+Then a paired A/B priced the skip (`~/tools/bench_terminal_fastpath_ab.py`, arms
+interleaved turn by turn and reversed on odd rounds, the armed arm differing in one
+thing only: a decision naming a registry-`terminal` capability is treated as final
+by the harness). A terminal turn went from a median of **3,968 ms to 1,570 ms**
+(2.5×); the armed arm won **11 of 12** pairs and removed a request in 12 of 12,
+while the non-terminal control (`filesystem_read`) stayed a coin flip at 2/4. The
+price is her words: `It is Friday.` becomes `Friday` and `It is currently
+01:17:21 AM (+0530).` becomes `01:17:07 +0530` — the same string the voice path
+speaks, since `run_turn` returns one `response` (`src/stella/app.py:385`). One
+shipped `weekday` answer was also *wrong in a way the armed arm could not be*: the
+tool returned `Friday` and the second request — the one that exists to phrase it —
+said `Today is Thursday.`
+
+**No code shipped, and the reason is a distinction in the contract rather than a
+number.** `Tool.terminal` says *this output may be shown as written*; it does not
+say *this call is the whole request*. Ending a turn on the runtime's own knowledge
+would assume the second silently, and the request that breaks is an ordinary one —
+"What time is it? Remind me in ten minutes." would answer the time in 1.6 s and
+never propose the reminder, losing a capability to gain speed. 0 of 8 stage-1
+terminal turns went on to a *different* capability (one re-called `system_info`:
+hesitation, not planning), so this sample never needed the truncation — and all
+twenty-four stage-1 questions were single-part, which is exactly why the sample
+says nothing about the composite request that is the reason not to assume it. The
+cheaper-looking variant (runtime writes its own sentence from a host-generated
+fact, keeping the correctness and costing only the shape) still ends the turn, so
+it inherits the same loss and is not the free option it looks like. What is
+genuinely free is already shipped: the fast path runs when a brain volunteers the
+marker.
+
+Deliberately not attempted: no prompt nudge to raise the `tool_final` rate (#276
+just measured this pool ignoring an explicit format instruction, and the marker's
+instruction is already in the system prompt — 0 of 16 is the evidence that more
+prose is not the lever), and no heuristic inside the loop guessing whether a request
+has one part or two (rules 13 and 15). Her real usage mix is unmeasurable —
+transcripts are off, `stella_transcript.db` holds 0 rows — so no number exists for
+how many of her turns reach `datetime` or `system_info` at all, which is another
+reason the 2.4 s is her call and not this bench's.
+
+Carried out of the run: **a candidate claimed a capability it had been given does
+not exist** — two of 24 `cpus` readings answered "the system_info tool is
+unavailable on this machine" while the registry had it, had just handed it in the
+tools array, and in one case had already returned a successful observation. It
+happened in both arms, so it is not a fast-path problem; it is a rule 9 problem and
+a commitment-1 one (#278).
+
+Harnesses and raw data: `~/tools/bench_router_turn_stages.py`,
+`~/tools/bench_terminal_fastpath_ab.py`,
+`~/research/data/bench_router_turn_stages_pool/`,
+`~/research/data/bench_terminal_fastpath_ab_pool/`, research report 107. Limits
+worth keeping: one pass, 24 + 32 turns, overnight, on a free tier whose pool
+composition drifts, and `auto` redraws per request so a pair's two arms are not the
+same candidate — the request-count delta is the finding, not the milliseconds.
 
 ## Tier-0 pre-router (experimental, NOT shipped)
 

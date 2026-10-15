@@ -527,6 +527,40 @@ someone from paying for the same measurement twice.
   **Deliberately not done:** neither unreliable candidate is removed from the
   pool — there is no client-side way to exclude one name from `auto`, and #275's
   finding that no name change is supported by evidence stands.*
+- **D1f. Split a router turn into hosted round trips, and price the second one
+  (#277).** #267's stage table was taken on a local brain whose prefix is cached,
+  where a second request costs 34 ms; on her router brain (#274: no prefix to
+  reuse) the same term is a second draw from the pool. Both halves of that
+  arithmetic had never been measured on the brain she runs.
+  *Measured 2026-10-16 (research report 107,
+  `~/tools/bench_router_turn_stages.py`, `~/tools/bench_terminal_fastpath_ab.py`):
+  NO CODE — the saving is real and the reason not to take it is in the contract.*
+  24 production turns through `run_turn`, timed at the SDK boundary: **a router turn
+  is entirely hosted round trips** (tools 0–2 ms, our glue 1–2 ms, 100 % hosted
+  share), a tool turn pays **two** requests, and the second is not cheaper (1,375 ms
+  then 1,431 ms) while carrying only ~56 more prompt tokens — it costs what it costs
+  because it is another round trip. **`tool_final` was volunteered on 0 of 16 tool
+  turns**, so the fast path built to skip it does not run on her brain. **0 of 40
+  decisions unreadable**, which bounds #276's ~7 % to the trivial request it was
+  measured on. Arming the skip for registry-`terminal` capabilities, interleaved and
+  reversed per #272's rule, won **11 of 12 paired turns** and moved the median
+  terminal turn **3,968 → 1,570 ms (2.5×)**, removing a request in 12 of 12 while a
+  non-terminal control stayed a coin flip — the price being her words (`It is
+  Friday.` → `Friday`, and the voice path speaks that same string). What stops it:
+  `Tool.terminal` means *this output may be shown as written*, not *this call is the
+  whole request*, and a runtime-declared final would end "What time is it? Remind me
+  in ten minutes." having lost the reminder. 0 of 8 stage-1 terminal turns went on to
+  a different capability, so nothing in this sample *needed* the truncation — and all
+  24 questions were single-part, which is why the sample cannot license assuming it.
+  The runtime-writes-its-own-sentence variant still ends the turn, so it is not free
+  either. Deliberately not done: no prompt nudge for the marker (its instruction is
+  already in the system prompt and 0 of 16 says prose is not the lever), no
+  one-part-or-two heuristic in the loop (rules 13/15), and her real usage mix is
+  unmeasurable — transcripts are off, 0 rows — so buying the 2.4 s stays her call.
+  **The defect this found instead is #278:** twice a candidate answered *"the
+  system_info tool is unavailable on this machine"* while the registry had it and had
+  just returned a successful observation, in both arms — rule 9 words that are not
+  true about what she tried.*
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

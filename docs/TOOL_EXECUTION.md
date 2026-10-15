@@ -203,6 +203,20 @@ successful output is fully constructed by trusted code — a value from a
 fixed allowlist (`datetime`, `system_info`) — may set it. A tool that could
 echo fetched or file-sourced text stays on the synthesized path.
 
+Measured on the owner's configured brain, the marker is never volunteered: `auto`
+set `tool_final` on **0 of 16** tool turns (report 107), so in production today
+this fast path is a local-brain path — it runs when a brain chooses the signal and
+saves the second hosted round trip when it does. The runtime does not decide
+finality itself, and that is deliberate rather than unfinished. `Tool.terminal`
+states *this output may be shown as written*; it does not state *this call is the
+whole request*. Treating the registry's declaration as the second statement would
+end "What time is it? Remind me in ten minutes." on the time and never propose the
+reminder — a turn measured 2.5× faster (3,968 → 1,570 ms median) that has lost a
+capability, and the rendered string would be a bare field value (`Friday`) that the
+voice path then speaks. Only the model knows whether it intends another step after
+this observation, so only the model may say that it does not; the skip stays the
+offer the runtime accepts when the proposal arrives.
+
 ## Verification & receipts (mutating tools)
 
 Every filesystem, memory, persona, and network mutation verifies its

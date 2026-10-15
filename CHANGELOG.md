@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### What a turn on the router costs, and why the fast path that saves it does not run (#277, measured — no behaviour change)
+
+- **What was asked.** Every previous turn-cost table was taken on a **local**
+  brain whose prompt prefix is cached, where a turn's second request reads 34 ms
+  of it. Her saved brain is the hosted router (`model=auto`), where #274 found no
+  prefix to reuse and every decision is a network round trip. So the arithmetic
+  was redone on the brain she actually runs — 24 production turns through
+  `run_turn`, timed at the SDK boundary — and one term changes meaning: "the turn
+  makes two requests" is not cached prefill here, it is a second lottery draw.
+- **What it measured.** **A router turn is entirely hosted round trips**: tool
+  execution 0–2 ms, Stella's own glue 1–2 ms, 100 % of the wall clock in the
+  provider's hands. A tool turn pays **two** requests and the second is not
+  cheaper (1,375 ms then 1,431 ms for "what time is it"), while carrying only ~56
+  more prompt tokens — it costs what it costs because it is *another round trip*,
+  not because it is big. `tool_final` was volunteered on **0 of 16** tool turns,
+  so the path built to skip that second request never runs on her brain.
+  Reassuringly, **0 of 40** decisions came back unreadable, which bounds #276's
+  ~7 % to the trivial request it was measured on.
+- **What the saving would be.** A paired A/B (arms interleaved turn by turn,
+  reversed on odd rounds) armed the skip for registry-`terminal` capabilities:
+  a terminal turn went **3,968 ms → 1,570 ms median, 2.5×**, armed won 11 of 12
+  pairs and removed a request in 12 of 12, while the non-terminal control stayed
+  a coin flip. The price is her words — `It is Friday.` becomes `Friday`, and the
+  voice path speaks that same string.
+- **Why nothing shipped (rule 13).** `Tool.terminal` means *this output may be
+  shown as written*; it does not mean *this call is the whole request*, and a
+  runtime-declared final would assume the second. "What time is it? Remind me in
+  ten minutes." would answer the time and lose the reminder — a turn 2.4 s faster
+  that has lost a capability. 0 of 8 stage-1 terminal turns went on to a
+  different capability, so the sample never *needed* the truncation, and says
+  nothing about the composite request that is the reason it must not be assumed.
+- **Bonus finding, carried as #278.** In two of 24 readings a candidate answered
+  *"the system_info tool is unavailable on this machine"* while the registry had
+  it and had just returned a successful observation — in both arms, so not a
+  fast-path problem. It is a rule 9 problem: words that are not true about what
+  she tried.
+- **Invariants unchanged, because no code changed.** `src/` and tests untouched;
+  the fast path still requires the model's marker, approval and risk
+  classification still precede it, and rule 3 still owns every render.
+- **Validation.** `uv run ruff check .` clean, `git diff --check` clean, no test
+  delta owed. Evidence: research report
+  `~/research/107-router-round-trips.md`, harnesses
+  `~/tools/bench_router_turn_stages.py` and `~/tools/bench_terminal_fastpath_ab.py`,
+  raw `~/research/data/bench_router_turn_stages_pool/` and
+  `~/research/data/bench_terminal_fastpath_ab_pool/`.
+
 ### A reply that comes back with no decision in it is now asked for again (#276)
 
 - **What was wrong.** About one decision request in fifteen on her configured

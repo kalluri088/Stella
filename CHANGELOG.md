@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### What a spoken reply actually costs to hear, re-measured — and the 4.0 s was stale (#273)
+
+- **What was asked.** `docs/VOICE.md` and `docs/ROADMAP.md` A9/B8d carried first
+  audio at a median **4.0 s** (worst 9.2 s) from a render rate of 0.037 s per
+  character and a 5.0 s cold worker, all recorded 2026-10-14. #271 had since
+  changed the text a spoken reply is written from, so the number needed a second
+  look before anything else was built to attack it.
+- **What was measured.** The same two benches on the same installed resident
+  worker. The 4.0 s did not reproduce, and the difference was in the render rate,
+  not the chunk length: a warm chunk now costs **0.0125 s per character** idle,
+  so the recorded 0.037 was stale. A cold worker is **1.7–1.8 s**. Audio runs at
+  **0.054–0.059 s per character**, so one chunk's playtime covers the next
+  chunk's render to about **4×** its length rather than the 1.7× the documents
+  said. A real spoken reply opens on a median **91-character** first chunk and
+  starts speaking at a median **1.19 s** (worst 1.84 s); a typed reply opens at
+  114 characters and **1.39 s** (worst 2.25 s) — so the spoken half is no longer
+  the slower half, which is #271 showing up in the latency numbers.
+- **Contention was measured and ruled out — and the real mechanism is CPU.**
+  `~/tools/bench_tts_brain_contention.py` (new) renders the full chunk set while
+  the supervised brain is loaded and a real 59.4 s decision is generating:
+  **0.0134 s per character against 0.0125 idle**, 7 % apart. One resident
+  decision cannot explain a threefold gap. What can: that worker runs on
+  `CPUExecutionProvider` — no GPU provider is installed in its venv — so a slow
+  render competes for CPU and memory bandwidth, the exact resource #272 measured
+  swinging ±20 % on this laptop while her IDE and browser are open. Warm chunk
+  and cold start were both threefold apart on identical inputs, which is the
+  machine, not the sentence. **The render rate is therefore not a constant of
+  Stella's voice**: a day can come when a spoken reply starts in four seconds
+  for reasons that are nobody's defect, and `docs/VOICE.md` now says to measure
+  before believing the brain caused it.
+- **No code change.** Rule 13: the thing the documents named as the remaining
+  lever (streaming the first chunk, **A9**) is still a core change, and it is now
+  a smaller prize — it attacks about 1.2 s of a 1.19 s median wait, not 4.0 s.
+  `docs/VOICE.md` carries the 2026-10-15 figures with the superseded 2026-10-14
+  set kept visibly below them and the overlap bound corrected from 1.7× to 4–5×;
+  `docs/ROADMAP.md` B8d carries the supersession and A9 the new median. Two
+  harnesses moved their evidence out of `/tmp`, per the rule #272 added — and
+  #270's own rows, written to `/tmp`, are gone, so its 2026-10-14 figures
+  survive only as prose in `docs/VOICE.md` until re-run.
+- **Validation.** Nothing in `src/` changed, so no test was owed and none
+  claimed. `git diff --check` clean, `uv run ruff check .` clean.
+  Evidence: `~/research/103-first-audio-recheck.md`,
+  `~/research/data/bench_first_audio.json`,
+  `~/research/data/bench_speech_synthesis.json`,
+  `~/research/data/bench_tts_brain_contention_run.log`.
+
 ### The brain line's last two untuned knobs were measured, and the bench turned out to be the finding (#272)
 
 - **What was asked.** `-cmoe` keeps every MoE expert in RAM, so most of a

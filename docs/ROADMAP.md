@@ -149,9 +149,10 @@ where, and a swap there requires its stated evidence bar.
   splits the final response, `_speak_chunks` synthesizes sentence by
   sentence on the worker while a consumer thread plays and disposes
   each artifact — first audio lands after one sentence of rendering
-  (measured 2026-10-14: a median **4.0 s** on real spoken replies, worst
-  9.2 s, because that one sentence is a median 114 characters at
-  ~0.037 s of rendering each — see `docs/VOICE.md`, *Honest latency*),
+  (measured 2026-10-15: a median **1.19 s** on real spoken replies, worst
+  1.84 s, because that one sentence is a median 91 characters at
+  ~0.013 s of rendering each — see `docs/VOICE.md`, *Honest latency*; the
+  4.0 s this carried from 2026-10-14 could not be reproduced),
   because synthesis is faster than real time. **Stop
   speaking** ends the whole spoken reply (playing + queued), a cancel
   drains and discards the queue, mid-reply synthesis failures speak
@@ -631,6 +632,22 @@ someone from paying for the same measurement twice.
   standing rule that an endpoint check sends `GET /models` and no prompt. What is left is
   the core change **A9** always named: overlap the first chunk's synthesis with the tokens
   still arriving. The two documents now carry these numbers instead of the promise.
+  **Re-measured 2026-10-15 (#273) and the 4.0 s did not reproduce.** The same two
+  benches on the same worker: a warm chunk renders at **0.0125 s per character** idle and
+  **0.0134 s** with the supervised brain loaded and a real 59.4 s decision in flight —
+  **7 % apart**. That test is the right one rather than a GPU one because the worker has
+  no GPU provider installed: Kokoro runs on `CPUExecutionProvider`, so what slows a render
+  is CPU and memory bandwidth, the resource #272 measured swinging this much on a laptop
+  with her IDE open — and warm chunk and cold start were both threefold apart on identical
+  inputs, which is the machine rather than the sentence. Today: cold worker **1.7–1.8 s**,
+  audio **0.055–0.063 s per character**, so the overlap covers a next chunk about
+  **4–5×** its length rather than 1.7×. A real spoken reply now opens on a median
+  **91-character** first chunk and starts at a median **1.19 s** (worst 1.84 s) against a
+  typed 114 characters at **1.39 s** (worst 2.25 s): **#271**'s spoken-answer rewrite is
+  visible in the numbers and reversed this bullet's finding that spoken turns were the
+  slower half of the comparison. `docs/VOICE.md` carries both sets with the superseded one
+  kept visible, and streaming the first chunk remains **A9**'s change — a smaller prize
+  than it looked while the wait was 4.0 s.
 
 **The closing verdict of Stage D, kept whole** — a set of declined
 borrowings, not a backlog:
@@ -651,7 +668,9 @@ piece-by-piece measured budgeting, transfers).
   a replay was — six questions, each one a real `session.run_turn` with real tool
   execution and real final words, and #257 ran them twice — but they are still a
   synthetic question set in a temporary state directory, started warm, on one
-  machine in one evening. What
+  machine in one evening. #273 adds that even a *rate* is not constant here: the
+  voice worker rendered identical inputs at 0.0125 s per character and, the day
+  before, at 0.037 — CPU load, not the sentence. What
   the cold path costs is now measured for any Ollama-backed brain (#259): the
   idle
   reload that starts an intermittent session is **~1.5–3.3 s, once**, inside

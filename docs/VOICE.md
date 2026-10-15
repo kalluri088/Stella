@@ -192,34 +192,64 @@ variable outranks that saved answer for a single launch without rewriting it
 (the worker Stella finds at `~/tools` is already resident, which is why the
 saved default is off).
 
-Honest latency, measured on this machine (2026-10-14) against the installed
-resident Kokoro worker. What the owner waits for is the **render of the first
-chunk**, and rendering costs about **0.03–0.037 s per character**: warm chunks of
-32–68 characters took a median **1.31 s** (slowest 2.64 s), and a cold worker —
-process start, model load and that first chunk — cost **5.0 s**, charged once per
-session. So a short one-line reply starts in about 1.3–1.7 s; the "half a second
-to a second" this document used to promise was only ever true of a sentence that
-short. Real spoken replies are not sentences that short: across 12 production
-spoken turns the first chunk was a median **114 characters**, and the median wait
-for first audio was **4.0 s** (worst **9.2 s**). The same six questions asked by
-keyboard were no faster (median first chunk 88 characters, 3.05 s) and the spoken
-turns were the slower half of that comparison — the note meant to compress a
-spoken answer never reaches the brain that writes it, which #271 measured and is
-recorded under **Spoken conversation turns**.
+Honest latency, measured on this machine (2026-10-15, superseding the
+2026-10-14 numbers below) against the installed resident Kokoro worker. What the
+owner waits for is the **render of the first chunk**, and rendering costs about
+**0.013 s per character**: warm chunks of 32–68 characters took a median
+**0.44 s** (slowest 0.94 s), and a cold worker — process start, model load and
+that first chunk — costs **1.7–1.8 s**, charged once per session. Across 24
+production turns (12 spoken, 12 typed, two passes of six questions) a real
+spoken reply's first chunk was a median **91 characters** and the median wait
+for first audio was **1.19 s** (worst 1.84 s). The same questions typed were the
+slower half: median first chunk **114 characters**, median wait **1.39 s** (worst
+2.25 s). That ordering is #271's change showing up in the text — the note that is
+meant to write a spoken answer for the ear now reaches the brain that writes it,
+and the spoken first chunk is about a fifth shorter than the typed one. The
+"roughly half a second to a second" this document once promised is therefore
+close to true for the *start* of a spoken reply; what it was never true of is the
+whole reply, and the 2026-10-14 pass below had measured a 4.0 s median wait that
+two runs on 2026-10-15 could not reproduce.
+
+The older reading, kept because it is what was said on 2026-10-14 and because a
+number that cannot be reproduced should stay visible: rendering was then measured
+at **0.03–0.037 s per character** (warm chunks 1.31 s median, slowest 2.64 s), a
+cold worker at **5.0 s**, a spoken first chunk at **114 characters** and the
+median first-audio wait at **4.0 s** (worst 9.2 s) — with the spoken turns the
+*slower* half of the typed comparison, because the brevity note had not yet been
+fixed. Both of that day's figures — warm chunk and cold worker — sat about
+**threefold** above the 2026-10-15 ones, which points at the worker's own speed
+rather than at anything Stella asked it to say. The mechanism is not the card:
+Kokoro runs on `CPUExecutionProvider` in that venv, no GPU provider is installed,
+so the voice worker competes for CPU and memory bandwidth, not for VRAM — and
+that is exactly the resource #272 measured swinging ±20 % on this laptop while
+the owner's IDE and browser are open. A single supervised decision generating is
+not enough to account for it either: with the llama.cpp brain loaded and a real
+59-second decision in flight while the chunks rendered, the rate was
+**0.0134 s per character** against **0.0125** on an otherwise idle machine, 7 %
+apart. So the honest statement is that the render rate is not a constant of
+Stella's voice — it is a function of how busy the machine is, and a day can come
+when it is three times slower. If a spoken reply starts in four seconds again,
+re-measure against this paragraph before believing the brain, or the chunking, or
+the reply text is the cause.
 
 Only that first chunk is a wait anyone hears. Chunk k+1 renders while chunk k
-plays, and the pipeline hides it because audio runs at about **0.065 s per
-character** against a render of 0.037 s — one sentence's playtime covers the next
-sentence's synthesis as long as the next is not much more than 1.7× its length.
-Two levers on the remaining wait were measured and neither shipped. Splitting the
-opening sentence at a clause break, with a head long enough to cover what follows
-it, found a usable break in **1 of 11** replies and left a **+1.6 s silence** in
-the middle of that one — the exact failure the head-length bound exists to
-prevent, so a rule that almost never fires and sometimes breaks prosody is a
-change to `sentence_chunks` nobody should make. Shortening the whole reply does
-not shorten its first sentence (#271). Overlapping the first chunk's synthesis
-with the tokens still arriving would need a streaming turn, which is a core
-change rather than a voice one (see `ROADMAP.md`).
+plays, and the pipeline hides it easily now: audio runs at about **0.055–0.063 s
+per character** on the production chunks (0.054–0.059 on the fixed bench
+sentences) against a render of 0.013 s, so one sentence's playtime covers the
+next sentence's synthesis as long as the next is not much more than **4–5×** its
+length — measured directly, the worst ratio across those 24 turns was **3.8×**,
+inside the bound. Two levers on the remaining wait were measured and neither
+shipped.
+Splitting the opening sentence at a clause break, with a head long enough to cover
+what follows it, found a usable break in **1 of 11** replies and left a **+1.6 s
+silence** in the middle of that one — the exact failure the head-length bound
+exists to prevent, so a rule that almost never fires and sometimes breaks prosody
+is a change to `sentence_chunks` nobody should make. Shortening the whole reply
+does not shorten its first sentence (#271). Overlapping the first chunk's
+synthesis with the tokens still arriving would need a streaming turn, which is a
+core change rather than a voice one (see `ROADMAP.md`) — and with the render now at
+1.2 s for a whole first chunk, it is a smaller prize than it looked when the wait
+was 4.0 s.
 
 `stella doctor` deliberately does **not** synthesize anything to report this
 number. Doctor's endpoint check sends `GET /models` and no prompt, which is the

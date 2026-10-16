@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### What running one capability per step costs, counted from turns already on disk (#280, measured — no behaviour change)
+
+- **What was asked.** When a native reply carries two tool calls the runtime
+  dispatches the first and reports the rest as `unhandled_proposals` (#264), which on
+  a local brain costs a cached re-ask and on her router brain costs another draw from
+  the pool (#277: 1,375 ms, then 1,431 ms). Nobody had counted how often that happens,
+  so the rule was neither defended nor indicted by evidence.
+- **What it measured.** 184 retained live turns across seven passes, analysed offline
+  with no new hosted traffic: a decision naming more than one capability occurred on
+  **15 turns (8 %)**, and those turns paid **3–4 hosted requests** against **2–3** for
+  the same shape naming one. Ten of fifteen eventually ran everything proposed. Five
+  did not — and three of those five are the rule *working*: the next decision, having
+  seen the first observation, chose a different capability than the one it had
+  proposed (`workspace_search` for `workspace_find`, a second `workspace_list` for a
+  read). The other two were #279's marker ending the turn, not this rule.
+- **Why nothing shipped (rule 3, and rule 13).** A relaxation would buy back roughly
+  one round trip on one turn in twelve by executing, on the model's behalf, an
+  intention the same data shows it abandoning one observation later — the exact
+  half-written intention #264 declined to complete. Request counts are the finding;
+  the millisecond columns swing both ways on a free tier and are quoted as such.
+- **What would reopen it — neither is code.** Her real usage mix (transcripts are off,
+  so 8 % is a rate on prompts built to provoke two-part requests, not on traffic), and
+  **#232**: local, reversible, approval-free capabilities are where *"the model might
+  have cancelled"* is weakest, but rule 10 makes a tier her explicit per-tool yes and
+  forbids moving one inside another change.
+- **Validation.** `uv run ruff check .` and `git diff --check` clean; `src/` and tests
+  untouched, so dispatch, approval, audit and the `unhandled_proposals` report behave
+  exactly as before. Evidence: research report
+  `~/research/110-multi-call-one-step.md`, script
+  `~/tools/analyze_multi_call_cost.py`, inputs the retained
+  `~/research/data/bench_{router_turn_stages_pool,capability_denial_*,terminal_marker_exposure_*}/`
+  passes. Its first run reported 0 multi-call turns in five of the seven passes because
+  the reply splitter looked for a trailing `>` the function had already stripped — fixed,
+  and recorded because an offline parser carries the same duty to be right as a live one.
+
 ### The terminal marker was given a legal channel, and what came back decided against it (#279, measured — no behaviour change)
 
 - **What was asked.** #277 priced the fastest available win in the project — a

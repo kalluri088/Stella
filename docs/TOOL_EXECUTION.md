@@ -169,6 +169,30 @@ ran, never an unbounded loop. Each dangerous action inside the loop still
 requires its own exact approval. See `ARCHITECTURE.md`
 for the orchestration details.
 
+**What the rule costs, now that it has been counted (#280, no change).** The
+re-ask is not free on the brain she runs: report 107 measured a tool turn's second
+request at 1,375 ms against a first at 1,431 ms, so one extra decision is one more
+draw from the pool. Counted across 184 retained live turns from seven passes
+(`~/tools/analyze_multi_call_cost.py`, research report 110 — no new hosted traffic),
+a reply naming more than one capability happened on **15 turns, 8 %**, and those turns
+paid **3 to 4 requests** where the same shape naming one paid **2 to 3**. Ten of the
+fifteen eventually ran everything the model had named. Five did not, and three of
+those five are the rule earning its keep rather than failing: after seeing the first
+observation the next decision chose a *different* capability (`workspace_search`
+instead of the proposed `workspace_find`; a second `workspace_list` instead of a
+read) — the model abandoned an intention, and being asked again is the only way it
+can. The other two were report 109's marker finalising the turn, not this rule.
+
+So the rule stands, unfixed and unrelaxed: buying back one round trip on one turn in
+twelve would mean executing a proposal on the model's behalf that the data shows is
+sometimes dropped one observation later. Two things would reopen it, and neither is
+code — her real usage mix, which stays unmeasurable with transcripts off (8 % is a
+rate on prompts built to provoke two-part requests, not on traffic), and **#232**, the
+tier map. A relaxation has a defensible subset — capabilities that are local,
+reversible and approval-free are precisely the ones where *"the model might have
+cancelled"* is weakest — but rule 10 makes that subset her explicit per-tool decision
+and forbids moving a tier inside another change, so the measurement waits there.
+
 ## Registered capabilities (as composed in app.py)
 
 | Capability | Risk | Owning spec |

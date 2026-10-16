@@ -598,6 +598,28 @@ someone from paying for the same measurement twice.
   (#275's finding against pinning names), and widening `additionalProperties`.
   Deliberately no change to the shipped schemas; n=4 markers bounds nothing, and her
   usage mix is still unmeasurable with transcripts off.
+- **D1h. Count what one-step-one-capability costs before defending or relaxing it
+  (#280).** #264 settled that a reply naming two calls dispatches one and reports the
+  rest, on the reasoning that the runtime does not complete a half-written intention.
+  #277 then established that a re-ask on her brain is a full draw from the pool, so the
+  rule has a latency price nobody had counted — and an uncounted cost argues neither
+  for nor against the rule it belongs to.
+  *Measured 2026-10-16 (research report 110, `~/tools/analyze_multi_call_cost.py`):
+  NO CODE — offline, from 184 turns already on disk, no new hosted traffic.* A decision
+  naming more than one capability occurred on **15 turns (8 %)** across seven passes,
+  paying **3–4 hosted requests** against **2–3** for the same shape naming one. Ten of
+  fifteen ran everything proposed eventually; five did not, and **three of those five
+  are the rule working** — the next decision, having seen the first observation, chose a
+  different capability than the one it had proposed (`workspace_search` instead of
+  `workspace_find`, a second `workspace_list` instead of a read). The other two were
+  #279's marker, not this rule. So the rule stands: buying back ~1 round trip on one
+  turn in twelve means executing an intention the same data shows the model abandoning
+  one observation later (rule 3), and the millisecond columns swing both ways on a free
+  tier, which is the third time this month that requests — not wall clock — are the
+  measurement. Reopening needs two things that are not code: her usage mix, still
+  unmeasurable with transcripts off, and **#232**, because local/reversible/approval-free
+  capabilities are exactly where *"might have cancelled"* is weakest and rule 10 makes a
+  tier her per-tool yes rather than another change's side effect.
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

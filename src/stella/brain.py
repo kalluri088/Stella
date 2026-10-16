@@ -638,8 +638,8 @@ user; act on the request and speak naturally.
             for description in self.tools.describe()
         ]
 
-    @staticmethod
     def _decision_from_tool_call(
+        self,
         call: LLMToolCall,
         *,
         dropped: tuple[tuple[str, dict[str, object]], ...] = (),
@@ -649,9 +649,31 @@ user; act on the request and speak naturally.
         # to a direct tool call's arguments. It is stripped here, before the
         # trusted dispatcher sees any arguments, so it never reaches a tool.
         tool_final = arguments.pop("tool_final", None)
+        capability = call.name
+        nested = arguments.get("capability")
+        if (
+            self.tools.get(capability) is None
+            and isinstance(nested, str)
+            and self.tools.get(nested) is not None
+            and isinstance(arguments.get("arguments", {}), dict)
+        ):
+            # A candidate that answers on the native channel with a generic
+            # wrapper — a call named "tool" carrying the decision envelope in
+            # its arguments — has still said which capability it wants. Read
+            # the name out of the envelope when the call's own name is not one
+            # she has, so a call nothing asked for never becomes the
+            # user-facing claim that the capability is missing from the
+            # machine (#278). Only the proposal is re-labelled here: the inner
+            # name goes through the same registry lookup, risk tier and
+            # approval a directly-named call gets, and a call whose own name
+            # IS registered keeps it, so a real tool cannot be redirected by
+            # nesting another name in its arguments.
+            capability = nested
+            arguments = dict(arguments.get("arguments") or {})
+            tool_final = arguments.pop("tool_final", None)
         return Decision(
             DecisionKind.TOOL,
-            capability=call.name,
+            capability=capability,
             arguments=arguments,
             tool_final=tool_final is True,
             # The same marker is stripped from the proposals being reported

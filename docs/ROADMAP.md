@@ -558,9 +558,12 @@ someone from paying for the same measurement twice.
   one-part-or-two heuristic in the loop (rules 13/15), and her real usage mix is
   unmeasurable — transcripts are off, 0 rows — so buying the 2.4 s stays her call.
   **The defect this found instead is #278:** twice a candidate answered *"the
-  system_info tool is unavailable on this machine"* while the registry had it and had
-  just returned a successful observation, in both arms — rule 9 words that are not
-  true about what she tried.*
+  system_info tool is unavailable on this machine"* while the registry had it and
+  had just handed it in the tools array, in both arms — rule 9 words that are not
+  true about what she tried. (This sentence first claimed the registry "had just
+  returned a successful observation"; #278's re-read of the same evidence found a
+  0.33 ms dispatcher refusal of an unregistered name and no success at all. Now
+  fixed — see the #278 entry under *Her own objectivity*.)
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.
@@ -901,6 +904,38 @@ be turned off, while Stella's is a file.
   nothing (rule 9 is untouched), a garbled summary after a successful tool
   step still shows the tool's output, and the fallback grants exactly what it
   always granted: no capability, no arguments, no memory write, no approval.
+- **#278. A capability she was given is no longer reported as missing —
+  done.** Measured on 40 live turns: one candidate answers the native tool
+  channel with a generic function name and puts the real decision inside its
+  arguments — `tool:{"capability": "workspace_list", "arguments": {"dir": ""}}`
+  — so the call was dispatched as `tool`, refused by the dispatcher in ~0.3 ms,
+  and the *next* drawn candidate reported that refusal to you as a fact about
+  the machine: *"the system_info tool for CPU information is unavailable"*.
+  5 of 40 turns carried such a call, 5 of the 7 wrapper rejections observed across
+  the passes ended in the false claim, and 2 of the 20 turns that could genuinely
+  have been answered ended in it. It is the worst sentence she can say under commitments 1 and 9:
+  not a wrong fact about the world but a wrong fact about herself, delivered in
+  the same voice as a true one. The fix is in the parse, not the prompt:
+  `LLMBrain._decision_from_tool_call` reads the name out of the envelope **only
+  when the call's own name is unregistered and the name inside it is**, and the
+  inner name then takes the same exact lookup, argument validation, `RiskLevel`
+  tier, approval handshake and audit as one named plainly — so the authority
+  surface does not move (rule 3) and a registered call can never be re-pointed
+  by nesting a different capability in its arguments. The runtime's refusal
+  string was the other half: `tool:{"path": "notes.txt"}` names no capability
+  and is deliberately not guessed (`path` belongs to read, write *and* delete,
+  so inferring it would let a confused proposal choose which of her tools runs),
+  but its rejection now says *no capability named `"tool"` is registered here,
+  so nothing ran and nothing changed — which says nothing about the
+  capabilities you were given this turn* instead of *"unavailable"*. Live, on 112
+  turns in three passes: the turns that could be answered and ended in the claim
+  went **2 of 20 → 1 of 16 → 0 of 20**, and every wrapper that named its
+  capability ran as that capability. A
+  contradiction-re-ask guard was built for this and **never run**: its
+  conditions fired on 0 of the 2 real claims and on 3 honest refusals, because
+  the defect was upstream of the answer. `do_nothing` arriving as a function
+  name is still dispatched and rejected rather than turned into a silent turn —
+  recorded as intentionally not done.
 - **C1. Persona as data — done.** `persona.md` (yours) plus a learned
   `persona.addons.md` compose into the system prompt under a fixed,
   app-owned invariant block that persona text can never override; no

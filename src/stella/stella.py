@@ -469,9 +469,10 @@ class Stella:
             # A tool proposal that names no capability is not a thing the
             # runtime can authorize: there is no tool to risk-tier, no
             # approval to ask for and nothing to execute. Dispatching it
-            # anyway manufactured a "Tool capability unavailable"
-            # observation, which the brain then read back as an apology for
-            # a tool that never existed — measured on live turns (#257).
+            # anyway manufactured a dispatcher rejection that named no tool at
+            # all, which the brain then read back as an apology for
+            # a tool that never existed — measured on live turns (#257, and
+            # the same sentence re-worded for the same reason in #278).
             # Guessing the missing name from the arguments is not the fix
             # either: the model proposes and the runtime authorizes (rule
             # 3), so a capability Stella invented is one nobody asked for.

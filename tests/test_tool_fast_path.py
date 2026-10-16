@@ -11,11 +11,22 @@ from stella.stella import Stella
 from stella.tools import (
     EchoTool,
     RiskLevel,
+    SystemInfoTool,
     Tool,
     ToolApproval,
     ToolDispatcher,
     ToolResult,
 )
+
+
+class _UnusedLLM(LLMClient):
+    """Fills the brain's client slot for tests that parse a reply only."""
+
+    def chat(self, messages):
+        raise AssertionError("reading a reply makes no request")
+
+    def chat_with_tools(self, messages, tools, tool_choice=None):
+        raise AssertionError("reading a reply makes no request")
 
 
 class RecordingTool(Tool):
@@ -334,7 +345,12 @@ def test_llm_brain_parses_tool_final_flag() -> None:
 def test_reserved_tool_final_stripped_from_native_tool_calls() -> None:
     from stella.llm import LLMToolCall
 
-    armed = LLMBrain._decision_from_tool_call(
+    brain = LLMBrain(
+        _UnusedLLM(),
+        ToolDispatcher([SystemInfoTool(), EchoTool()]),
+    )
+
+    armed = brain._decision_from_tool_call(
         LLMToolCall(
             name="system_info",
             arguments={"kind": "hostname", "tool_final": True},
@@ -343,7 +359,7 @@ def test_reserved_tool_final_stripped_from_native_tool_calls() -> None:
     assert armed.tool_final is True
     assert armed.arguments == {"kind": "hostname"}
 
-    unarmed = LLMBrain._decision_from_tool_call(
+    unarmed = brain._decision_from_tool_call(
         LLMToolCall(
             name="system_info",
             arguments={"kind": "hostname", "tool_final": "yes"},
@@ -352,7 +368,7 @@ def test_reserved_tool_final_stripped_from_native_tool_calls() -> None:
     assert unarmed.tool_final is False
     assert unarmed.arguments == {"kind": "hostname"}
 
-    plain = LLMBrain._decision_from_tool_call(
+    plain = brain._decision_from_tool_call(
         LLMToolCall(name="echo", arguments={"text": "hi"})
     )
     assert plain.tool_final is False

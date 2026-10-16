@@ -52,6 +52,7 @@ from stella.tools import (
     ToolApproval,
     ToolDispatcher,
     ToolResult,
+    capability_not_registered_output,
 )
 from stella.trace import ApprovalEvent, DecisionEvent
 
@@ -870,7 +871,8 @@ def test_stella_collection_cannot_execute_unknown_capability() -> None:
     result = stella.process(Context(user_input="Use an unknown tool"))
 
     assert result.tool_result == ToolResult(
-        success=False, output="Tool capability unavailable."
+        success=False,
+        output=capability_not_registered_output("not-approved"),
     )
     assert tool.arguments == []
 
@@ -2304,7 +2306,8 @@ def test_stella_fails_closed_for_unavailable_tool_capability(
     result = stella.process(Context(user_input="Use a tool"))
 
     assert result.tool_result == ToolResult(
-        success=False, output="Tool capability unavailable."
+        success=False,
+        output=capability_not_registered_output(capability),
     )
     assert tool.arguments == []
 
@@ -2317,7 +2320,7 @@ def test_stella_refuses_a_tool_decision_that_names_no_capability(
 
     Measured on live turns (#257): a brain that answered
     ``{"kind": "tool", "arguments": {...}}`` with no capability was dispatched
-    anyway, the dispatcher reported "Tool capability unavailable", and the turn
+    anyway, the dispatcher reported an unavailable-capability failure, and the turn
     ended apologising for a tool that never existed. The runtime cannot
     authorize what is not named (rule 3), it must not invent a capability from
     the arguments, and it must not dress the absence up as a tool that ran and

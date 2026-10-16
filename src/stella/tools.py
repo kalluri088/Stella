@@ -2596,6 +2596,43 @@ class NetworkReadTool(Tool):
                 connection.close()
 
 
+# How much of a proposed name the runtime quotes back. The name is model text,
+# and this sentence is both fed to the next request and rendered as the turn's
+# outcome line, so it is bounded rather than echoed whole.
+QUOTED_CAPABILITY_LIMIT = 80
+
+
+def capability_not_registered_output(capability: str | None) -> str:
+    """The runtime's sentence for a proposed name that is not one of hers.
+
+    A model reads this and then says it out loud, so it names the *proposal*
+    and nothing else: the old "Tool capability unavailable." was about a name
+    too, and candidates reported it as "the filesystem read tool isn't
+    available on this machine" (#278) — a false claim about her capabilities,
+    spoken faithfully.
+
+    The proposal itself is untrusted input (rule 6) and this string reaches
+    both the next prompt and the panel, so it is flattened to printable text
+    on one line and cut to `QUOTED_CAPABILITY_LIMIT`.
+    """
+
+    name = capability if isinstance(capability, str) else ""
+    flattened = "".join(
+        character if character.isprintable() else " " for character in name
+    )
+    requested = " ".join(flattened.split())
+    if not requested:
+        requested = "(nothing named)"
+    elif len(requested) > QUOTED_CAPABILITY_LIMIT:
+        requested = requested[:QUOTED_CAPABILITY_LIMIT].rstrip() + "…"
+    return (
+        f'No capability named "{requested}" is registered here, so nothing '
+        "ran and nothing changed. That says nothing about the capabilities "
+        "you were given this turn, which are all still available: name one "
+        "of them exactly as it was given, or answer without a tool."
+    )
+
+
 class ToolDispatcher:
     """Application-owned exact-capability dispatcher for approved tools."""
 
@@ -2757,7 +2794,8 @@ class ToolDispatcher:
         try:
             if tool is None:
                 result = ToolResult(
-                    success=False, output="Tool capability unavailable."
+                    success=False,
+                    output=capability_not_registered_output(capability),
                 )
                 audit_arguments = {}
                 return result

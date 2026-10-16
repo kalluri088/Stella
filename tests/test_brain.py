@@ -561,6 +561,84 @@ def test_the_reported_proposal_keeps_no_reserved_marker() -> None:
     assert decision.dropped_calls == (("outline_search", {"term": "x"}),)
 
 
+def test_a_wrapper_call_that_names_the_capability_is_read_out() -> None:
+    """A candidate that wraps the decision in a call named "tool" still said
+    which capability it wanted, and the runtime reads it (#278).
+
+    Measured on the router: ``mistral-code-latest`` answers the native channel
+    with ``tool: {"capability": "workspace_list", "arguments": {...}}``. Taking
+    the function name as the capability dispatched nothing, the dispatcher
+    answered its own words "Tool capability unavailable.", and the next
+    candidate told the owner the workspace listing capability does not exist on
+    this machine — 2 of 20 turns that could have been answered, and the 2 of 2
+    calls of this shape that occurred.
+    """
+    llm = TwoCallLLM(
+        (LLMToolCall("tool", {"capability": "workspace_list", "arguments": {}}),)
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What files do I have?"))
+
+    assert decision.kind is DecisionKind.TOOL
+    assert decision.capability == "workspace_list"
+    assert decision.arguments == {}
+
+
+def test_a_wrapped_call_keeps_the_reserved_marker_rule() -> None:
+    llm = TwoCallLLM(
+        (
+            LLMToolCall(
+                "tool",
+                {
+                    "capability": "datetime",
+                    "arguments": {"kind": "time", "tool_final": True},
+                },
+            ),
+        )
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What time is it?"))
+
+    assert decision.capability == "datetime"
+    assert decision.arguments == {"kind": "time"}
+    assert decision.tool_final is True
+
+
+def test_a_registered_call_is_never_redirected_by_a_nested_name() -> None:
+    """The envelope is read only when the call's own name is not one of hers.
+
+    Rule 3: the model proposes and the runtime authorizes by the name it can
+    see. A reply that names a real capability and *also* carries a
+    "capability" key must not have its target swapped by untrusted arguments.
+    """
+    llm = TwoCallLLM(
+        (
+            LLMToolCall(
+                "system_info",
+                {"kind": "hostname", "capability": "filesystem_delete"},
+            ),
+        )
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="What is my hostname?"))
+
+    assert decision.capability == "system_info"
+    assert decision.arguments == {
+        "kind": "hostname",
+        "capability": "filesystem_delete",
+    }
+
+
+def test_a_wrapper_naming_nothing_she_has_stays_rejected() -> None:
+    llm = TwoCallLLM(
+        (LLMToolCall("tool", {"capability": "delete_everything", "arguments": {}}),)
+    )
+
+    decision = LLMBrain(llm).decide(Context(user_input="anything"))
+
+    assert decision.capability == "tool"
+
+
 def test_the_next_decision_is_told_what_was_not_run() -> None:
     llm = ResponseLLM('{"kind": "answer", "content": "ok"}')
 

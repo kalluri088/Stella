@@ -58,6 +58,26 @@ OpenAI SDK. Native calls improve selection reliability, but they do not grant
 authority: only `ToolDispatcher` can look up, validate, approve, and execute a
 capability.
 
+One shape of native reply is not a capability name. A hosted candidate on the
+`chat` dialect sometimes proposes a call whose function name is a generic
+`tool` with the decision envelope inside its arguments —
+`tool:{"capability": "workspace_list", "arguments": {…}}` — which is the envelope
+`_recover_text_channel_tool_call` has tolerated on the *text* channel since the
+1.0.0 hardening, arriving on the other one.
+`LLMBrain._decision_from_tool_call` reads the name out of it when the call's own
+name is not registered and the name inside it is, because taking the wrapper
+literally dispatched nothing and the dispatcher's rejection — "Tool capability
+unavailable.", a sentence about a *name* — came back to the owner as "that
+capability does not exist on this machine" (2 of 20 turns that could have been
+answered, #278). The inner name is then authorized by the same lookup, tier and
+approval as any proposal; a call whose own name *is* registered keeps it, so
+nested model text cannot re-point a real call. A wrapper that names no capability
+at all (`tool:{"path": "notes.txt"}`) is still refused, and the refusal is now
+built by `capability_not_registered_output()`, which quotes the proposed name back
+and states that nothing ran rather than that anything is unavailable — the same
+sentence no longer reaches the owner as a fact about her machine. See
+`TOOL_EXECUTION.md`.
+
 `stella.brain.ToolUsePolicy` supplies the application-level distinction that
 native `auto` alone cannot provide. It deterministically returns
 provider-neutral `AUTO` for ordinary requests and `REQUIRED` only when a

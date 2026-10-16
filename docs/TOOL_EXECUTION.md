@@ -32,10 +32,96 @@ Brain proposes capability + arguments
 ```
 
 Unknown, missing, or mismatched capabilities return
-`ToolResult(False, "Tool capability unavailable.")` without validation or
+`ToolResult(False, capability_not_registered_output(name))` without validation or
 execution; Stella never falls back to another tool. Tool exceptions become the
 deterministic `Tool execution failed.` result so the failure is visible to the
 final response path without leaking stack traces, and Stella does not retry.
+
+### A wrapper is not an unknown capability — and the rejection is not a fact about her
+
+Measured on her router brain (#278, 2026-10-16, 112 production turns across three
+passes): a candidate sometimes proposes a call whose function name is the generic
+`tool` instead of a capability. Two shapes arrived, both from the same candidate:
+
+```
+tool:{"capability": "workspace_list", "arguments": {"dir": ""}}   # named inside
+tool:{"path": "notes.txt"}                                        # not named at all
+```
+
+Taken literally each is an unknown capability: refused in ~0.3 ms, and the next
+candidate — a fresh draw, with no idea that the refusal was about a *name* — said
+the rejection back in first person. *"the workspace listing capability is
+unavailable on this machine"*, *"the system_info tool for CPU information is
+unavailable"*, *"I can't read notes.txt — the filesystem read tool isn't available
+right now"*. **Of the 7 wrapper rejections observed across the three passes and
+report 107, 5 ended with her claiming a capability she has does not exist on this
+machine**, and before the change that happened on 2 of the 20 turns that could
+simply have been answered. Nothing had failed: in the first shape the right
+capability had been named correctly and thrown away, and in the second the runtime
+had described its own refusal as an unavailability and been quoted back.
+
+So the change has two halves, and each is the smallest thing that answers the part
+it covers.
+
+**1. Read the name out of the envelope.** `LLMBrain._decision_from_tool_call`
+unwraps the first shape **only when the call's own name is not registered and the
+name inside it is**, and strips a nested `tool_final` exactly as it strips a
+top-level one. The second shape is deliberately not guessed at: `path` is an argument of
+`filesystem_read`, `filesystem_write` **and** `filesystem_delete`, so inferring the
+capability from the argument keys would let a confused proposal pick which of her
+tools runs — the thing rule 3 forbids and #258 already refused to do, now with a
+safety reason rather than only a tidiness one. What is unchanged, and is why this
+is not a new permission:
+
+- The inner name goes through the same exact lookup, argument validation,
+  `RiskLevel` classification, approval handshake and audit as a directly-named
+  proposal. Every capability reachable through a wrapper is reachable by naming it
+  plainly; the dispatcher's authority surface does not move.
+- A call whose own name **is** registered keeps it, so model text cannot re-point a
+  real call by nesting a different capability in its arguments
+  (`tests/test_brain.py::test_a_registered_call_is_never_redirected_by_a_nested_name`).
+- A wrapper naming something she does not have is still dispatched as the wrapper
+  name and still refused, so #258's guards own it unchanged.
+- `do_nothing` arriving as a function name is deliberately **not** mapped onto a
+  real `DO_NOTHING` decision. It would be faithful to the model's intent and would
+  end the turn with silence, which #244 exists to prevent. It reached the dispatcher
+  7 times across the three passes and every turn then continued: one `list-dir` went
+  rejected → `workspace_list` → the right answer in 3.4 s. So the current path costs
+  one hosted round trip and produces words. Recorded as intentionally not done.
+
+**2. Say the rejection so that it cannot be read as a missing capability.** The
+first half leaves the un-guessable shape reachable, and its outcome was still the
+same lie. The wording is not cosmetic because the decision prompt *requires* the
+model to carry the observation's reason into its answer — "a `kind=answer` response
+MUST state plainly that the action did not succeed and give the reason from that
+observation" — so the runtime's sentence is her sentence, verbatim, to the owner.
+`capability_not_registered_output()` is now the single source of that sentence, and
+it says only what is true of the proposal:
+
+> `No capability named "tool" is registered here, so nothing ran and nothing
+> changed. That says nothing about the capabilities you were given this turn, which
+> are all still available: name one of them exactly as it was given, or answer
+> without a tool.`
+
+The refusal of an unregistered name no longer contains the word *unavailable* at
+all, and a test holds that
+(`tests/test_tools.py::test_rejecting_a_name_never_reports_a_capability_as_unavailable`).
+The quoted name is the proposal, which is untrusted input (rule 6), and this string
+is both fed back into the next request and rendered as the turn's outcome line — so
+it is flattened to printable text on one line and cut to `QUOTED_CAPABILITY_LIMIT`
+(80) rather than echoed whole. The per-tool failure strings (`Date/time unavailable.`,
+`System information unavailable.`) are a different claim — about a value this
+machine did not return, not about a capability — and are unchanged. Auditing is
+untouched: an unregistered name still records no arguments and still executes
+nothing.
+
+**What the two halves measured.** Turns that could have been answered and ended in
+the false claim went **2 of 20 → 1 of 16 → 0 of 20** across the three passes; every
+wrapper that named its capability (5 of 5 in the fixed tree) now dispatches as that
+capability, and both of the final pass's un-named rejections were followed by a
+correctly-named call and a true answer. Small numbers on a drifting free-tier pool —
+the mechanism is the finding, the rates are the indication. Report 108 holds the
+turn-by-turn evidence.
 
 ### One step, one capability: what happens to the rest of a reply
 

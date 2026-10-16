@@ -1050,11 +1050,22 @@ how many of her turns reach `datetime` or `system_info` at all, which is another
 reason the 2.4 s is her call and not this bench's.
 
 Carried out of the run: **a candidate claimed a capability it had been given does
-not exist** — two of 24 `cpus` readings answered "the system_info tool is
-unavailable on this machine" while the registry had it, had just handed it in the
-tools array, and in one case had already returned a successful observation. It
-happened in both arms, so it is not a fast-path problem; it is a rule 9 problem and
-a commitment-1 one (#278).
+not exist** — two readings answered "the system_info tool is unavailable on this
+machine" / "the tool capability was unavailable" while the registry had both the
+capability and the tools array that named it. It happened in both arms, so it is
+not a fast-path problem; it is a rule 9 problem and a commitment-1 one (#278).
+
+That paragraph originally added "and in one case had already returned a successful
+observation". Re-reading the retained per-request evidence for those same two turns
+says the opposite, and the difference is the whole finding: each turn had exactly
+one tool step, costing **0.33 ms and 0.35 ms**, and each turn's first request
+completed in 21 and 23 tokens. That is not a read of `/proc/cpuinfo` and it is not
+a sentence — it is the dispatcher refusing a name that is not in the registry, in a
+call whose arguments held the right name. Nothing succeeded in either turn. #278
+measured the shape on 40 fresh turns, found 5 of them carrying such a call (all
+five from one candidate on the router), and fixed both the parse that discarded the
+name and the rejection sentence that models were repeating; see
+`TOOL_EXECUTION.md` (*A wrapper is not an unknown capability*).
 
 Harnesses and raw data: `~/tools/bench_router_turn_stages.py`,
 `~/tools/bench_terminal_fastpath_ab.py`,

@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### A capability she was given is no longer reported as missing (#278)
+
+- **What was wrong.** A candidate that answers on the native tool channel with a
+  generic function name — `tool` with the real decision inside its arguments,
+  `tool:{"capability": "workspace_list", "arguments": {"dir": ""}}` — had its call
+  dispatched as the name `tool`, which is not one of hers. The dispatcher refused
+  it in ~0.3 ms with `"Tool capability unavailable."`, and the next candidate,
+  freshly drawn, said that sentence back to the owner in first person: *"the
+  system_info tool for CPU information is unavailable on this machine"*. Nothing
+  had failed; the capability had been named correctly and thrown away. Measured on
+  live turns: **5 of 40 turns carried such a call, 4 of 5 observed wrapper
+  rejections produced a false claim about her own capabilities, and 2 of 20 turns
+  that could have been answered ended in the lie** — all five malformed calls served
+  by one candidate, which named the right capability every time.
+- **What changed, first half.** `LLMBrain._decision_from_tool_call` reads the
+  envelope out of the arguments **only when the call's own name is not registered
+  and the name inside it is**, and strips a nested `tool_final` exactly as it
+  strips a top-level one. The inner name then goes through the same lookup,
+  argument validation, `RiskLevel` tier, approval handshake and audit as a
+  directly-named proposal, so the authority surface does not move (rule 3); a call
+  whose own name *is* registered keeps it, so model text cannot re-point a real
+  call by nesting another capability in its arguments. This is the rule
+  `_recover_text_channel_tool_call` has applied to the text channel since 1.0.0,
+  extended to the channel that was missing it.
+- **What changed, second half.** The re-worded parse left one shape reachable —
+  `tool:{"path": "notes.txt"}`, where no capability is named at all — and guessing
+  it is refused: `path` belongs to `filesystem_read`, `filesystem_write` *and*
+  `filesystem_delete`, so inferring it would let a confused proposal pick which of
+  her tools runs. What was fixed instead is the sentence. `ToolDispatcher`'s
+  unregistered-name refusal is now built by `capability_not_registered_output()`
+  and names the proposal: *no capability named `"tool"` is registered here, so
+  nothing ran and nothing changed — that says nothing about the capabilities you
+  were given this turn.* Per-tool strings like `System information unavailable.`
+  are untouched, because those report a real attempt. The name quoted back is the
+  proposal — untrusted input (rule 6) in a string that goes both to the next request
+  and to the panel's outcome line — so it is flattened to one printable line and cut
+  to 80 characters.
+- **The guard that was not written.** A paired A/B of a runtime contradiction
+  check (answer denies a capability while this turn's observations say otherwise)
+  was built and **never run**: the condition fires on **0 of the 2 real claims** —
+  nothing succeeded in either turn — and on 3 of 20 honest refusals, where the
+  denial is *true*. The defect was upstream in the parse, not in the answer.
+- **Intentionally not done.** `do_nothing` arriving as a function name is still
+  dispatched and rejected rather than mapped onto a real `DO_NOTHING` decision:
+  that would end the turn in silence, which #244 exists to prevent, and both
+  observed cases were requests she genuinely cannot serve.
+- **Validation.** 4 new tests in `tests/test_brain.py` (read out, marker rule
+  kept, registered call never redirected, wrapper naming nothing she has stays
+  rejected), 2 new in `tests/test_tools.py` (the wording, and the bounded quote);
+  `tests/test_tool_fast_path.py` and `tests/test_stella.py` follow the renamed
+  helper. Offline batches: 105 + 163 + 102 passed, `uv run ruff check .` and
+  `git diff --check` clean. Live: the same screen on her configured brain, 112
+  production turns in three passes — turns that could have been answered and ended
+  in the claim went **2 of 20 → 1 of 16 → 0 of 20**, all 5 capability-naming
+  wrappers in the fixed tree dispatched as the capability they named, and both of
+  the final pass's un-named rejections were followed by a correctly-named call and
+  a true answer. One pass was lost to the router container crash-restarting and its
+  evidence is kept aside rather than counted.
+- **Evidence.** Research report `~/research/108-wrapper-capability-denial.md`;
+  harnesses `~/tools/bench_capability_denial.py` (run pre-fix, post-parse-fix and
+  post-both-fixes) and `~/tools/bench_denial_reask_ab.py` (unrun, kept for its
+  refuted premise); raw `~/research/data/bench_capability_denial_{pool,postfix,wordfix}/`.
+  Docs: `docs/TOOL_EXECUTION.md`, `docs/ARCHITECTURE.md`, `docs/MODELS.md` and
+  `CHANGELOG.md`'s #277 note corrected in the same change.
+
 ### What a turn on the router costs, and why the fast path that saves it does not run (#277, measured — no behaviour change)
 
 - **What was asked.** Every previous turn-cost table was taken on a **local**
@@ -33,11 +98,15 @@
   that has lost a capability. 0 of 8 stage-1 terminal turns went on to a
   different capability, so the sample never *needed* the truncation, and says
   nothing about the composite request that is the reason it must not be assumed.
-- **Bonus finding, carried as #278.** In two of 24 readings a candidate answered
-  *"the system_info tool is unavailable on this machine"* while the registry had
-  it and had just returned a successful observation — in both arms, so not a
-  fast-path problem. It is a rule 9 problem: words that are not true about what
-  she tried.
+- **Bonus finding, carried as #278.** In two of the 32 paired readings a
+  candidate answered *"the system_info tool is unavailable on this machine"* or
+  *"the tool capability was unavailable"* while the registry had it and had just
+  handed it in the tools array — in both arms, so not a fast-path problem. It is
+  a rule 9 problem: words that are not true about what she tried. (This entry
+  first said one of those turns "had already returned a successful observation",
+  and said "two of 24"; #278's re-read of the same evidence found a 0.33 ms
+  refusal of an unregistered name, no success at all, and 2 of 32 — which is the
+  bug.)
 - **Invariants unchanged, because no code changed.** `src/` and tests untouched;
   the fast path still requires the model's marker, approval and risk
   classification still precede it, and rule 3 still owns every render.

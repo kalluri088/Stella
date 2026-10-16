@@ -1217,8 +1217,15 @@ two of those three axes are in place and the third is named as missing below.
   Resolving that is the owner's call — nothing here migrates or downgrades her
   database (see `docs/RESEARCH-RUNNING-OUTLINE.md`).
 - **How much she may do without asking is the owner's open decision.** #232
-  is the tier mapping; until it is agreed, the reach recorded in B6 and E1
-  runs under today's capability-by-capability risk levels.
+  is the tier mapping, and the map is now printed — all 28 capabilities, each
+  row read from `requires_approval()` itself, in `docs/TOOL_EXECUTION.md`
+  (*The printed tier map*). It says three things the prose did not: SENSITIVE
+  has no dispatch consequence, so rule 10's middle tier is audit-only; the
+  credential elevation fires on an argument named `path`, which the workspace
+  readers do not have; and `outline_bulk` sits in the same silent tier as
+  `outline_create` although it writes many hosted records at once. Until she
+  marks the sheet, the reach recorded in B6 and E1 runs under today's
+  capability-by-capability risk levels.
 
 ## 4. She remembers you from the first day
 
@@ -1754,7 +1761,11 @@ commitment and this file does not renegotiate it. What lives here is the
 machinery that makes the third tier real: what a person is shown before an
 irreversible action, what authorizes it, and what can be answered afterwards.
 #232 — which tools move into which tier — is open and needs the owner's
-explicit yes before any code changes.
+explicit yes before any code changes. The sheet she marks is printed:
+`docs/TOOL_EXECUTION.md`, *The printed tier map*, from `~/tools/tier_map.py`.
+It records that the middle of the three tiers above is not a behaviour today —
+`SENSITIVE` asks for nothing — and that is the first thing her yes has to
+settle.
 
 - **A2. Content-aware approval previews — done.** Approvals now show a
   bounded unified diff (edit), new content (write), loss excerpt

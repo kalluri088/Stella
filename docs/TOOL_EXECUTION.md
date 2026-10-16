@@ -215,6 +215,112 @@ user's own text, which reads as a fake assistant response (found during
 dogfooding; see the comment at the composition root). It remains a test
 fixture only.
 
+This is the always-registered set only. The gated families — desktop,
+Outline, web, shell, browser — and the approval each of the 28 capabilities
+actually asks for are printed, per row, in *The printed tier map* below.
+
+## The printed tier map, and the questions it puts (#232 — no tier moved)
+
+Rule 10 leaves *which capability sits in which tier* open as the owner's
+explicit per-tool yes, and forbids moving one inside another change. So this
+is the sheet she is being asked to mark: `~/tools/tier_map.py` prints what the
+runtime applies today, not what prose says it applies. It reads
+`requires_approval()`'s own answer per row, and asserts the predicate for
+every floor and every argument each tool's own `validate_arguments` accepts —
+the footer's claim is proved in the run, not typed in.
+
+It is read-only in the strongest sense this machine allows. The brain is
+constructed and never asked, so no model loads and nothing is sent off the
+machine; no tool executes; no stored secret is read. The fifteen core
+capabilities come from `build_application` with every Settings gate closed —
+the real composition root. The five gated families are read off their classes
+instead of built, because forcing those gates open is exactly what the standing
+rules forbid: the web builder resolves the stored TinyFish key (#265), the
+Outline builder probes a live server, and the desktop tools need a real
+session. Their floors are class constants and their elevations read only the
+arguments, so nothing built would answer differently from what is printed.
+
+| capability | floor | family | what the runtime does |
+|---|---|---|---|
+| `datetime` | SAFE | core | runs silently; output may be shown verbatim |
+| `system_info` | SAFE | core | runs silently; output may be shown verbatim |
+| `filesystem_read` | SENSITIVE | core | runs silently, **except** a `path` naming credential material |
+| `filesystem_write` | DANGEROUS | core | asks, with a preview |
+| `filesystem_edit` | DANGEROUS | core | asks, with a diff preview |
+| `filesystem_delete` | DANGEROUS | core | asks, with a preview |
+| `workspace_list` | SENSITIVE | core | runs silently |
+| `workspace_find` | SENSITIVE | core | runs silently |
+| `workspace_search` | SENSITIVE | core | runs silently |
+| `network_read` | DANGEROUS | core | asks, with a preview |
+| `memory_list` | SENSITIVE | core | runs silently |
+| `memory_write` | SENSITIVE | core | runs silently, unless the runtime's provenance guard adds a prompt (#246) |
+| `memory_update` | DANGEROUS | core | asks, with a preview |
+| `memory_forget` | DANGEROUS | core | asks, with a preview |
+| `persona_edit` | DANGEROUS | core | asks, with a diff preview |
+| `screen_read` | SENSITIVE | desktop | runs silently for the focused window; `scope=full_screen` asks |
+| `window_focus` | SENSITIVE | desktop | runs silently |
+| `key_send` | DANGEROUS | desktop | asks, with a preview |
+| `desktop_control` | DANGEROUS | desktop | asks, with a preview |
+| `outline_search` | SAFE | outline | runs silently |
+| `outline_create` | SENSITIVE | outline | runs silently |
+| `outline_update` | SENSITIVE | outline | runs silently |
+| `outline_bulk` | SENSITIVE | outline | runs silently |
+| `web_search` | DANGEROUS | web | asks, with a preview |
+| `web_fetch` | DANGEROUS | web | asks, with a preview |
+| `shell_run` | DANGEROUS | shell | asks, with the literal command |
+| `browser_read` | DANGEROUS | browser | asks, with the exact address |
+| `browser_screenshot` | DANGEROUS | browser | asks, with a preview |
+
+28 capabilities; 14 ask at their floor and 14 do not. Four things the map says
+that no document said before it was printed.
+
+**Three levels, two behaviours.** The harness asserts, for every capability and
+every argument it accepts, that `requires_approval()` is exactly "the effective
+level is `DANGEROUS`" (`tools.py:2732`). So `SENSITIVE` has no dispatch
+consequence at all — it orders the elevation arithmetic and nothing else. Rule
+10's middle tier (*written or sent to a hosted service: done visibly and
+audited*) is therefore carried by the audit trail alone: a SENSITIVE write is
+recorded after it happens, and nothing about it is visible before. The same
+asymmetry shows in previews: `Tool.preview()` is reached from the approval
+branch of `Stella._execute_tool` (`stella.py:1205`) and from one persona-prompt
+path in `app.py`, and `action_summary()` — the plain-language line every prompt
+header uses (`cli.py:467`, `ui.py:1616`, `headless_voice.py:758`) — is called
+from those prompts and nowhere else. So `memory_write`, `window_focus` and
+`screen_read` build a summary no one sees under today's floors, and the Outline
+family, which overrides no `preview` at all, has its `outline_tool_summaries`
+wording held in reserve for a prompt that never comes.
+
+**The elevation is keyed to an argument name, not to radius.** The credential
+check fires on a `path` argument, so `filesystem_read secrets/api.env` asks
+while `workspace_list dir=secrets` — the same directory, one call away from
+naming every file in it — runs silently, because that tool's argument is called
+`dir`. `screen_read` shows the other shape: its elevation is on a *value*
+(`scope=full_screen`) and does exactly what rule 10 asks of it. A line drawn by
+argument name will keep missing the calls that rename the argument.
+
+**Two rows where radius and tier disagree in opposite directions.**
+`outline_bulk` — one action across many records, on a hosted server — carries
+the same SENSITIVE floor as `outline_create`, which changes one. And the
+workspace writes plus `persona_edit` ask every time although they are local and
+reversible, which is the tier rule 10 says "is done without asking". Neither is
+fixed here: they are the two ends of the question, and the answer is hers.
+
+**One document was wrong about this.** `docs/OUTLINE.md` claimed every
+SENSITIVE Outline call "is approved by a human… before it leaves". Nothing in
+the dispatcher does that, and nothing did when the sentence was written; the
+summaries it describes are the text a prompt *would* show. Corrected in this
+change, since a false statement about the approval surface is the one thing
+that must not be inherited by the next reader.
+
+Three things are asked of the owner, one per group, and nothing moves until she
+answers: whether the local reversible writes (`filesystem_write`,
+`filesystem_edit`, `persona_edit`) should stop asking; whether the hosted
+writes (`outline_create`, `outline_update`, `outline_bulk`) should start; and
+whether the workspace readers should inherit the credential elevation their
+`path`-named sibling has. #280's parked relaxation — running two
+local/reversible/approval-free capabilities in one step — waits behind the first
+of these, because it can only be drawn against the map, not against prose.
+
 ## Decision-prompt routing rules
 
 `LLMBrain` receives the same dispatcher as Stella and passes approved tool

@@ -26,9 +26,12 @@ back is data rather than instruction (rules 6 and 7).
 | `outline_update` | SENSITIVE | one action on one existing item, including attaching and detaching a person |
 | `outline_bulk` | SENSITIVE | one action across many tasks in a single request |
 
-Every SENSITIVE call is approved by a human with an exact-argument summary
-before it leaves (`outline_tool_summaries`), so the approval card reads "mark
-the Outline task with id 7 complete" and never a raw JSON body. Editing a
+Their SENSITIVE floor does **not** cost an approval today — rule 10's
+dispatcher asks only when the effective level is DANGEROUS, and moving these
+three into the asking tier is the owner's per-tool decision (#232). What the
+summaries do is make a prompt say something intelligible *if one is ever
+shown*: `outline_tool_summaries` turns the exact arguments into "mark the
+Outline task with id 7 complete" rather than a raw JSON body, and editing a
 record names the *fields* being written, not the values.
 
 The family stays four. Capabilities grow as `kind` and `action` values, never

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### The tier map is printed, and three questions are waiting on it (#232, docs — no tier moved)
+
+- **What was asked.** Rule 10 draws safety by blast radius and leaves *which
+  capability sits where* as the owner's explicit per-tool yes. Every previous answer
+  about that surface was prose, including one document that was wrong.
+- **What was built.** `~/tools/tier_map.py`, read-only: the fifteen core
+  capabilities come from `build_application` with every Settings gate closed, the
+  thirteen gated ones from their classes — building those would have read the stored
+  TinyFish key (#265), probed a live Outline server or driven the owner's desktop. No
+  model is asked, so nothing loads and nothing leaves the machine; no tool executes;
+  no secret is read. Each row reports `requires_approval()`'s own answer, and the
+  harness *asserts* the predicate over every floor and every argument each tool's
+  validation accepts.
+- **What the map says.** 28 capabilities, 14 asking and 14 silent.
+  `SENSITIVE` has no dispatch consequence — the assertion holds that approval is
+  exactly "effective level is DANGEROUS" — so rule 10's middle tier (*written or sent
+  to a hosted service: done visibly and audited*) is today audit-after-the-fact only,
+  and the previews those silent capabilities build are reached from a prompt that
+  never comes. The credential elevation fires on an argument named `path`, so
+  `filesystem_read secrets/api.env` asks while `workspace_list dir=secrets` does not.
+  And `outline_bulk` — many records, one hosted request — carries the same floor as
+  `outline_create`, while `filesystem_write`, `filesystem_edit` and `persona_edit` ask
+  every time for local, reversible writes.
+- **Why nothing shipped (rule 10).** Every one of those is her per-tool decision, and
+  moving a tier inside another change is exactly what the rule forbids. The map is the
+  artifact the decision needs; #280's parked relaxation waits behind it.
+- **One correction.** `docs/OUTLINE.md` claimed every SENSITIVE Outline call "is
+  approved by a human… before it leaves". Nothing in the dispatcher does that, and
+  nothing did when the sentence was written (`c610ed6`); the summaries it describes
+  are the wording a prompt *would* use. Rewritten to say that.
+- **Validation.** `uv run ruff check .` and `git diff --check` clean; `src/` and tests
+  untouched, so dispatch, approval, preview and audit behave exactly as before.
+  Evidence: `~/research/data/tier_map_2026-10-16.txt`, the full table and the four
+  findings in `docs/TOOL_EXECUTION.md` (*The printed tier map*).
+
 ### What running one capability per step costs, counted from turns already on disk (#280, measured — no behaviour change)
 
 - **What was asked.** When a native reply carries two tool calls the runtime

@@ -2,7 +2,7 @@ import stella
 
 
 def test_stella_package_is_importable() -> None:
-    assert stella.__version__ == "1.5.0"
+    assert stella.__version__ == "1.6.0"
 
 
 def test_the_package_version_is_the_one_metadata_reports() -> None:

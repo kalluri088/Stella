@@ -17,7 +17,7 @@
 # and left for you to decide about.
 #
 # Options (as environment variables, since `curl | sh` has no argument list):
-#   STELLA_VERSION=1.5.0   install one exact version instead of the latest
+#   STELLA_VERSION=1.6.0   install one exact version instead of the latest
 #   STELLA_WHEEL=/path.whl install a wheel you already have, skipping the
 #                          download (a checksum beside it is still verified)
 #   STELLA_EMBED=1         also install the 'embed' extra (pulls torch, ~2 GB)
@@ -29,7 +29,7 @@
 set -eu
 
 REPO="kalluri088/Stella"
-DEFAULT_VERSION="1.5.0"
+DEFAULT_VERSION="1.6.0"
 WHEEL_BASE="stella"
 
 say() { printf '%s\n' "$*"; }

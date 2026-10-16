@@ -6,4 +6,4 @@ The single source of the version: hatch reads ``__version__`` from here (see
 between 1.4.0 (``pyproject.toml``) and this file's stale 0.1.0.
 """
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"

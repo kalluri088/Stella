@@ -564,6 +564,40 @@ someone from paying for the same measurement twice.
   returned a successful observation"; #278's re-read of the same evidence found a
   0.33 ms dispatcher refusal of an unregistered name and no success at all. Now
   fixed — see the #278 entry under *Her own objectivity*.)
+- **D1g. Give the terminal marker a legal channel, and measure what comes back
+  (#279).** #277's 0 of 16 had two possible explanations and only one had been
+  assumed: that the pool ignores the prose inviting `tool_final`, or that the
+  argument is *unexpressible on the channel she runs* — every capability is declared
+  with `additionalProperties: false` and all arguments `required`, so the reserved
+  argument the prompt invites is one the schema forbids. That half was checkable
+  offline (19 definitions, `tool_final` in none; two terminal capabilities), and the
+  rest needed a live screen that asked the harder question: not whether candidates
+  would set the marker, but whether they would set it **correctly**.
+  *Measured 2026-10-16 (research report 109,
+  `~/tools/bench_terminal_marker_exposure.py`): NO CODE — the gap is real, the signal
+  is still not dependable, and the speed number is the trap.* Arms differed only in
+  whether the two terminal schemas advertised the optional boolean; four shapes (two
+  single-part, two where finalising loses half the ask), interleaved and reversed per
+  #272's rule, 4 rounds, 32 turns. Exposing it raised the rate **0 of 16 → 4 of 16**
+  terminal turns, so the schema explains the zero and not the low — twelve turns
+  ignored the invitation written into the declaration itself. Of the four markers,
+  **both** that landed on a two-part request were wrong: "what time is it, and how
+  many CPUs" finalised on the time and never asked for the CPUs (`09:05:53 +0530`,
+  2.7 s); "what time is it? then read notes.txt" finalised on the time and never read
+  the file. Two of eight exposed two-part turns lost half of the owner's request
+  against zero of eight shipped. A fourth marker rode a call the dispatcher had just
+  refused, spending the turn's re-decision — the recovery step #278 measured — on
+  skipping it. The exposed median was faster (5,632 vs 7,226 ms, 2 requests against
+  3), which is exactly why this arm cannot be read as a win: the run's two fastest
+  turns were its two incomplete answers, and a latency table cannot tell "cheaper"
+  from "stopped working". So #277's contract argument is now measured rather than
+  asserted — the only source that can claim a call is the whole request claims it
+  falsely — and the three variants that would still take the saving stay declined:
+  the runtime guessing how many parts a sentence has (rules 13/15), a per-route
+  allowlist making a hosted pool's behaviour a security property of this machine
+  (#275's finding against pinning names), and widening `additionalProperties`.
+  Deliberately no change to the shipped schemas; n=4 markers bounds nothing, and her
+  usage mix is still unmeasurable with transcripts off.
 - **D5. First-response thinking-off experiment (gated).** His trick:
   reasoning is off for the first spoken reply — nobody should wait
   on a thinking phase to hear "hi" — and stays on for tool work.

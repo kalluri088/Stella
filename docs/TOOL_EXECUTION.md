@@ -303,6 +303,35 @@ voice path then speaks. Only the model knows whether it intends another step aft
 this observation, so only the model may say that it does not; the skip stays the
 offer the runtime accepts when the proposal arrives.
 
+**That reasoning has now been tested from the other side, and it holds (#279).** Two
+facts had to be separated: whether the zero was a *channel* problem — the decision
+prompt invites `"tool_final": true` as a reserved argument, while every capability is
+declared with `additionalProperties: false` and all its arguments `required`, so the
+native call cannot express the invited argument — and whether candidates use the
+signal *correctly* when they can. A two-arm live screen answered both. Adding the
+optional boolean to the two terminal schemas and nothing else raised the marker rate
+from **0 of 16** turns to **4 of 16**, so the schema gap explains the zero but not a
+low rate: twelve turns ignored the invitation even written into the declaration. And
+of the four markers, **the two set on a two-part request were both wrong** — "what
+time is it, and how many CPUs does this machine have?" finalised on the time and never
+asked the CPU count, "what time is it? then read notes.txt" finalised on the time and
+never read the file. Two of eight exposed two-part turns lost half of the owner's
+request; zero of eight shipped-arm two-part turns did. One further use came on a call
+the dispatcher had just *refused*, where the marker spent the turn's re-decision — the
+step report 108 measured as its chance to recover — on skipping it.
+
+So the schema is not changed, for the reason the paragraph above already gives, now
+with the measurement behind it: giving the model a legal way to claim finality is not
+the same as being able to rely on the claim, and the failure is silent in exactly the
+direction speed metrics reward — a turn that stops doing half the work is a fast turn.
+The three variants that would still ship the win were each declined: the runtime
+guessing how many parts an English request has (rules 13 and 15), accepting the marker
+only from routes that use it well (a hosted router's behaviour would become a security
+property of this machine, on a pool that redraws per request), and widening every
+schema's `additionalProperties` to allow reserved arguments. What is true and free
+stays as it was: the fast path runs when a brain volunteers the marker and means it.
+Report 109 records the screen, its four markers and its limits.
+
 ## Verification & receipts (mutating tools)
 
 Every filesystem, memory, persona, and network mutation verifies its

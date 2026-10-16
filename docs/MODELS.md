@@ -1075,6 +1075,62 @@ worth keeping: one pass, 24 + 32 turns, overnight, on a free tier whose pool
 composition drifts, and `auto` redraws per request so a pair's two arms are not the
 same candidate — the request-count delta is the finding, not the milliseconds.
 
+### The skip that never arrives, given a legal way to arrive (#279, measured — no code)
+
+#277 left the cheapest speed item in the project unshipped because the signal it
+waits for never comes: `tool_final` was volunteered on **0 of 16** tool turns, and the
+path built to remove a tool turn's second hosted round trip — worth **3,968 → 1,570 ms
+median**, 11 of 12 pairs — therefore does not run on her brain. The inference there was
+that this pool ignores prompt prose. There was a second candidate explanation, and it
+was checkable offline: the prompt invites `"tool_final": true` as a reserved argument,
+while every capability is declared with `additionalProperties: false` and all of its
+arguments `required`. On the channel she actually runs, the invited argument is one the
+declaration forbids.
+
+A two-arm live screen separated the two questions — can they say it, and do they say it
+*correctly* — by adding the optional boolean to the two terminal schemas
+(`datetime`, `system_info`) and to nothing else, then running four shapes: two single-
+part requests where finalising is right, and two where it loses half the ask ("what
+time is it, and how many CPUs does this machine have?"; "what time is it? then read
+notes.txt and tell me its third line"). Arms interleaved turn by turn, reversed on odd
+rounds, 4 rounds, 32 turns.
+
+| arm | markers | requests/turn (median) | median ms | two-part turns that lost a half |
+| --- | ---: | ---: | ---: | ---: |
+| shipped schema | **0 of 16** | 3 | 7,226 | 0 of 8 |
+| terminal schemas offer `tool_final` | **4 of 16** | 2 | 5,632 | **2 of 8** |
+
+So the schema gap explains the zero and not the low: write the invitation into the
+declaration and a quarter of terminal turns answer it, twelve still don't. And every
+marker this pool set on a request that had a second half was wrong — 2 of 2. The
+turns it produced were fast and incomplete: `09:05:53 +0530` in 2.7 s for a request
+that also asked for the CPU count, which then never ran; `09:06:26 +0530` for a request
+that also asked for a file, which was never read. A fourth marker landed on a call the
+dispatcher had just refused, spending the turn's re-decision — the recovery step #278
+measured — on skipping it.
+
+**Nothing ships, and the speed number is the reason not to trust it.** Exposed median
+5,632 ms against 7,226 is real arithmetic over a run whose two fastest turns were its
+two incomplete answers: a turn that stops doing half the work is fast, and a latency
+table cannot tell that apart. This is #277's contract argument measured instead of
+argued — the runtime cannot know that a call is the whole request, and the only source
+that can say it says it falsely often enough that the offer must stay an offer. The
+rejected shortcuts are recorded in `TOOL_EXECUTION.md` (*Terminal tools and the
+`tool_final` fast path*): no runtime guess at how many parts a sentence has, no
+per-route allowlist turning a hosted pool's behaviour into a property of this machine,
+no widened `additionalProperties`.
+
+Harness `~/tools/bench_terminal_marker_exposure.py`; raw
+`~/research/data/bench_terminal_marker_exposure_marker/` (two earlier single-round
+passes are kept as `_smoke_wiring` / `_smoke2_wiring`: wiring checks, one of them with
+a channel-counting bug, neither a result). Limits: **n = 4 markers**, which bounds
+nothing — the *shape* of the failure is the finding, and one dropped half of a direct
+two-part request is enough to disqualify a change whose entire product is ending turns
+early; a free tier that redraws per request, so arms are never the same candidate and
+one shape ranged 685 ms to 47,376 ms; four synthetic shapes chosen to make finality
+checkable, against a usage mix that stays unmeasurable with transcripts off. Research
+report 109.
+
 ## Tier-0 pre-router (experimental, NOT shipped)
 
 Cactus Needle 3 (121M) with a LoRA trained on the 49-turn routing

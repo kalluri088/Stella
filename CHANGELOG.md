@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+### The terminal marker was given a legal channel, and what came back decided against it (#279, measured — no behaviour change)
+
+- **What was asked.** #277 priced the fastest available win in the project — a
+  tool turn pays two hosted round trips, and arming the terminal skip took the
+  median **3,968 ms → 1,570 ms** — then declined it because the runtime cannot
+  know that one call is the whole request. It recorded that `tool_final` was
+  volunteered on **0 of 16** tool turns and inferred the pool ignores prose. One
+  competing explanation had never been checked, and it was checkable offline: the
+  prompt invites `"tool_final": true` as a *reserved argument*, while every
+  capability is declared with `additionalProperties: false` and all its arguments
+  `required`. On the native channel she actually runs, the invited argument is one
+  the declaration forbids — 19 tool definitions, `tool_final` in none of them.
+- **What was measured, and how.** A two-arm live screen, arms differing only in
+  whether the two terminal schemas (`datetime`, `system_info`) advertise one
+  optional boolean; four turn shapes, two single-part where finalising is right
+  and two where it loses half the ask; interleaved turn by turn and reversed on odd
+  rounds; 4 rounds, 32 turns, 12 s pacing, dev XDG and temp databases.
+- **The gap was real, and small.** Exposing the argument raised the marker rate
+  **0 of 16 → 4 of 16** terminal turns, so it explains the *zero* but not a low
+  rate: twelve turns ignored the invitation written into the declaration itself.
+  All four uses arrived as native function arguments.
+- **The correctness gate failed, and that is the finding.** Of the four markers,
+  **both** that landed on a two-part request were wrong: *"what time is it, and how
+  many CPUs does this machine have?"* finalised on the time and never asked for the
+  CPUs (`09:05:53 +0530`, 2.7 s); *"what time is it? then read notes.txt and tell
+  me its third line"* finalised on the time and never read the file. Two of eight
+  exposed two-part turns lost half of the owner's request; zero of eight shipped.
+  A fourth marker rode a call the dispatcher had just **refused**, spending the
+  turn's re-decision — the recovery step #278 measured — on skipping it.
+- **Why the speed number is not evidence.** The exposed arm was faster (median
+  5,632 vs 7,226 ms, 2 requests per turn against 3) and the run's two fastest turns
+  were its two incomplete answers. A turn that stops doing half the work is fast,
+  and a latency table cannot tell that apart from a saving. This converts #277's
+  contract argument from an assumption into a measurement: the only source that can
+  claim a call is the whole request claims it falsely.
+- **What intentionally did not change.** No schema change ships, and neither do
+  the three variants that would still take the saving: the runtime guessing how many
+  parts an English sentence has (rules 13 and 15), accepting the marker only from
+  routes that use it well (a hosted pool's behaviour would become a security property
+  of this machine, and #275 already declined pinning a name for less), or widening
+  `additionalProperties` so any reserved argument is expressible. The fast path stays
+  what it was: an offer the runtime accepts when a brain volunteers the marker and
+  means it. `src/` and tests untouched, so approval, risk tiering, audit and the
+  fail-closed parse all behave exactly as before.
+- **Validation.** `uv run ruff check .` and `git diff --check` clean; no test delta
+  owed, since nothing in `src/` changed. Evidence: research report
+  `~/research/109-terminal-marker-exposure.md`, harness
+  `~/tools/bench_terminal_marker_exposure.py`, raw
+  `~/research/data/bench_terminal_marker_exposure_marker/` (two earlier single-round
+  passes kept as `_smoke_wiring` / `_smoke2_wiring` — wiring checks, one with a
+  channel-counting bug, neither a result). Limits: **n = 4 markers**, which bounds
+  nothing; a free tier that redraws per request, so a pair's arms are never the same
+  candidate and one shape ranged 685 ms to 47,376 ms; four synthetic shapes chosen to
+  make finality checkable, against a usage mix that stays unmeasurable with
+  transcripts off.
+
 ### A capability she was given is no longer reported as missing (#278)
 
 - **What was wrong.** A candidate that answers on the native tool channel with a

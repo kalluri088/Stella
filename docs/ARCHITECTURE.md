@@ -768,26 +768,39 @@ the runtime from its own dispatch decision, has no `success` or `output` key,
 and is cleared by the next reply that carries one call.
 
 A `kind=tool` decision may carry the reserved marker `"tool_final": true`
-(when calling a tool directly, the same signal is one of its arguments; the
+(when calling a tool directly, the same signal is an argument on the call; the
 runtime strips it before execution). It declares that this single successful
 observation is the whole answer. The fast path runs only when the marker is
 set, the call was the turn's first and only tool step, and the tool itself
 opts in: `Tool.terminal` is a trusted runtime property, true only for
 capabilities whose successful output is already display-ready, non-secret
 text (`datetime`, `system_info`). Then the observation is
-rendered verbatim — for `terminal` tools — or synthesized in one dedicated
+rendered verbatim — for terminal tools — or synthesized in one dedicated
 final-response call, and the middle re-decision call is skipped entirely.
 Failed observations, every non-terminal capability, and the honest synthesis
 path are unchanged; approval, memory-write gating, tool-output limits,
 step trace and audit semantics run exactly as before. The marker never
 overrides approval and never applies to multi-step plans. Finality is the
-model's claim to make and the runtime's to honour: on the hosted router she
+model's claim to make and the runtime's to honour. On the hosted router she
 runs it has never been volunteered (0 of 16 tool turns), so this path is
 currently a local-brain path, and the runtime does not infer finality from
 `Tool.terminal` because that property says *this output may be shown as
 written*, not *this call is the whole request* — ending the turn on it would
 answer "What time is it? Remind me in ten minutes." and drop the reminder to
-save a round trip. `docs/TOOL_EXECUTION.md` carries the measurement.
+save a round trip.
+
+Both halves of that sentence are now measured rather than assumed. The argument
+the prompt invites is one the native declaration forbids — every capability is
+sent as a schema with `additionalProperties: false` and all its arguments
+`required`, so on the channel she runs the reserved argument was not expressible
+until a screen added it as an option to the two terminal schemas (#279). That
+raised the rate from 0 of 16 tool turns to **4 of 16**, and both of the four that
+landed on a request with a second half were wrong — the CPU count never asked, the
+file never read — while the arm's median looked 1.6 s *faster*, because a turn that
+stops doing half the work is fast. So the schemas stay as they are: making the claim
+legal does not make it reliable, and the runtime has no way to check a statement about
+the owner's request that only the model can make. `docs/TOOL_EXECUTION.md` carries the
+measurement, and research report 109 the data.
 
 For a normal terminal session, the CLI repeats this flow synchronously. It adds each user message and displayed response to the next context's conversation history. Typing `exit` or `quit` stops the session without sending that command through Stella.
 
